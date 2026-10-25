@@ -141,7 +141,7 @@ public:
     struct Status {
         uint32_t slots = 0;      ///< chunks the store holds
         uint32_t resident = 0;   ///< chunks on the device
-        uint32_t missing = 0;    ///< wanted at the last update and not on the device
+        uint32_t missing = 0;    ///< wanted at the last update and not on the device (of those the source holds)
         uint32_t inFlight = 0;   ///< queued or loading
         uint64_t loads = 0;      ///< chunks placed since open
         uint64_t evictions = 0;

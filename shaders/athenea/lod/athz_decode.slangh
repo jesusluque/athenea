@@ -1,0 +1,245 @@
+// Copyright (c) 2026 jesus luque.
+//
+// THE athz DECODER's body (athz_common.slang says what is coded and how),
+// included by athz_decode.slang (tables of up to 2^12, 16 KiB of workgroup
+// memory: past WebGPU's 16 384 bytes once the masks are counted) and
+// athz_decode11.slang (up to 2^11, 8 KiB: what WebGPU holds), which define
+// ATHZ_TABLE_LOG_MAX first.
+//
+// A workgroup of 256 threads is eight runs of 32 lanes, all of one kind
+// (merged groups or splats) and so the same planes in the same order: at
+// each plane of encoding 1 its table is loaded into workgroup memory once
+// for the eight, and every lane decodes its symbols of the plane -- symbol g
+// of a run is lane g % 32's. A lane's symbols are whole elements' bytes, so
+// it puts its words together itself and writes each one, once, into the
+// record's array where the page list says (`dst` and up): a slot of a
+// streaming pool's store, or a merged level's arrays. One dispatch a batch
+// of pages, never one a run.
+import athz_common;
+
+static const uint kRunsPerGroup = 8;
+static const uint kTableSize = 1u << ATHZ_TABLE_LOG_MAX;
+static const uint kMaxSteps = 8;   // 256 symbols a plane a run, 32 lanes
+
+struct AthzDecodeParams {
+    uint shWords;
+    uint normals;
+    uint emission;
+    uint pbrWords;
+    uint lobesWords;
+    uint transferWords;
+    uint shadowWords;
+    uint words;
+    uint pages;
+    uint pageRuns;
+    uint runGaussians;
+    uint tableLog;
+    uint planes;
+    uint layers;     ///< a bit a layer: those decoded (the rest left zero)
+    uint hasRans;    ///< a bit a layer: whether it has a plane of encoding 1
+    uint pad0;
+};
+ConstantBuffer<AthzDecodeParams> params;
+
+/// 8 uints a page: the byte offset in `source` of its G, A, T and K bytes
+/// (0xFFFFFFFF: not there), the element it is written from, its elements.
+StructuredBuffer<uint>  pageList;
+StructuredBuffer<uint4> planes;
+StructuredBuffer<uint>  tables;   ///< table t's slot s at t * 2^tableLog + s: sym | freq << 8 | cum << 20
+ByteAddressBuffer       source;
+
+RWByteAddressBuffer dstPositions;
+RWByteAddressBuffer dstShape;
+RWByteAddressBuffer dstSh;
+RWByteAddressBuffer dstTail;
+RWByteAddressBuffer dstNormals;
+RWByteAddressBuffer dstEmission;
+RWByteAddressBuffer dstPbr;
+RWByteAddressBuffer dstLobes;
+RWByteAddressBuffer dstTransfer;
+RWByteAddressBuffer dstShadow;
+/// [0]: lanes whose run did not come back to its first state, or read past
+/// its words -- a corrupt run.
+RWStructuredBuffer<Atomic<uint>> errors;
+
+groupshared uint gTable[kTableSize];
+groupshared Atomic<uint> gMask[kRunsPerGroup * 3];
+
+AthzLayout layout() {
+    AthzLayout l;
+    l.shWords = params.shWords;
+    l.normals = params.normals;
+    l.emission = params.emission;
+    l.pbrWords = params.pbrWords;
+    l.lobesWords = params.lobesWords;
+    l.transferWords = params.transferWords;
+    l.shadowWords = params.shadowWords;
+    return l;
+}
+
+void storeWord(uint e, uint w, uint value) {
+    const AthzLayout l = layout();
+    const uint2 f = athzField(l, w);
+    const uint at = athzAddress(l, f, e);
+    switch (f.x) {
+    case kFieldPositions: dstPositions.Store(at, value); break;
+    case kFieldShape: dstShape.Store(at, value); break;
+    case kFieldSh: dstSh.Store(at, value); break;
+    case kFieldTail: dstTail.Store(at, value); break;
+    case kFieldNormals: dstNormals.Store(at, value); break;
+    case kFieldEmission: dstEmission.Store(at, value); break;
+    case kFieldPbr: dstPbr.Store(at, value); break;
+    case kFieldLobes: dstLobes.Store(at, value); break;
+    case kFieldTransfer: dstTransfer.Store(at, value); break;
+    default: dstShadow.Store(at, value); break;
+    }
+}
+
+uint load16(uint base, uint j) {
+    const uint at = base + 2u * j;
+    const uint w = source.Load(at & ~3u);
+    return (at & 2u) != 0u ? (w >> 16) : (w & 0xFFFFu);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void athzDecode(uint3 group: SV_GroupID, uint3 local: SV_GroupThreadID) {
+    const uint sub = local.x / kAthzLanes;
+    const uint lane = local.x % kAthzLanes;
+    const uint run = group.x * kRunsPerGroup + sub;
+    const uint page = run / params.pageRuns;
+    const uint inPage = run % params.pageRuns;
+    const bool active = page < params.pages;
+    const uint n = params.tableLog;
+    const uint slotMask = (1u << n) - 1u;
+    const uint steps = params.runGaussians / kAthzLanes;
+    const uint R = params.runGaussians;
+
+    if (local.x < kRunsPerGroup * 3u) {
+        gMask[local.x].store(0u);
+    }
+
+    uint first = inPage * R;
+    uint here = 0u;
+    uint dst = 0u;
+    uint state[4] = { 0u, 0u, 0u, 0u };
+    uint wordsAt[4] = { 0u, 0u, 0u, 0u };
+    uint rawAt[4] = { 0u, 0u, 0u, 0u };
+    uint words[4] = { 0u, 0u, 0u, 0u };
+    uint read[4] = { 0u, 0u, 0u, 0u };
+    bool bad = false;
+    if (active) {
+        const uint count = pageList[page * 8u + 5u];
+        dst = pageList[page * 8u + 4u];
+        here = count > first ? min(count - first, R) : 0u;
+        for (uint L = 0; L < kAthzLayers; ++L) {
+            const uint src = pageList[page * 8u + L];
+            if (((params.layers >> L) & 1u) == 0u || src == 0xFFFFFFFFu) {
+                continue;
+            }
+            const uint start = src + (inPage == 0u ? 4u * params.pageRuns : source.Load(src + 4u * (inPage - 1u)));
+            if (((params.hasRans >> L) & 1u) != 0u) {
+                words[L] = source.Load(start);
+                state[L] = source.Load(start + 4u + 4u * lane);
+                wordsAt[L] = start + 4u + 4u * kAthzLanes;
+                rawAt[L] = wordsAt[L] + 4u * ((words[L] + 1u) / 2u);
+            } else {
+                rawAt[L] = start;
+            }
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    uint acc[kMaxSteps] = { 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
+    uint step = 0u;
+    for (uint b = 0; b < params.planes; ++b) {
+        const uint4 plane = planes[b];
+        const uint L = athzLayer(plane);
+        const bool wanted = ((params.layers >> L) & 1u) != 0u;
+        const uint shift = (b & 3u) * 8u;
+        if (wanted && athzEncoding(plane) == 1u) {
+            const uint table = plane.y * (1u << n);
+            for (uint i = local.x; i < (1u << n); i += 256u) {
+                gTable[i] = tables[table + i];
+            }
+            GroupMemoryBarrierWithGroupSync();
+            for (uint k = 0; k < steps; ++k) {
+                const uint g = lane + k * kAthzLanes;
+                const bool live = active && g < here;
+                bool need = false;
+                uint sym = 0u;
+                if (live) {
+                    const uint x = state[L];
+                    const uint slot = x & slotMask;
+                    const uint e = gTable[slot];
+                    sym = e & 0xFFu;
+                    state[L] = ((e >> 8) & 0xFFFu) * (x >> n) + slot - (e >> 20);
+                    need = state[L] < kAthzLow;
+                }
+                if (need) {
+                    gMask[sub * 3u + step % 3u].or(1u << lane);
+                }
+                if (lane == 0u) {
+                    gMask[sub * 3u + (step + 1u) % 3u].store(0u);
+                }
+                GroupMemoryBarrierWithGroupSync();
+                const uint mask = gMask[sub * 3u + step % 3u].load();
+                if (need) {
+                    const uint j = read[L] + countbits(mask & ((1u << lane) - 1u));
+                    uint word = 0u;
+                    if (j < words[L]) {
+                        word = load16(wordsAt[L], j);
+                    } else {
+                        bad = true;
+                    }
+                    state[L] = (state[L] << 16) | word;
+                }
+                read[L] += countbits(mask);
+                acc[k] |= sym << shift;
+                step += 1u;
+            }
+        } else if (wanted && active) {
+            const uint width = athzWidth(plane);
+            const uint base = athzBase(plane);
+            for (uint k = 0; k < steps; ++k) {
+                const uint g = lane + k * kAthzLanes;
+                if (g >= here) {
+                    continue;
+                }
+                uint v = 0u;
+                if (width != 0u && rawAt[L] != 0u) {
+                    const uint bit = g * width;
+                    const uint at = rawAt[L] + 4u * (plane.z + bit / 32u);
+                    const uint off = bit % 32u;
+                    v = source.Load(at) >> off;
+                    if (off + width > 32u) {
+                        v |= source.Load(at + 4u) << (32u - off);
+                    }
+                    v &= (1u << width) - 1u;
+                }
+                acc[k] |= ((v + base) & 0xFFu) << shift;
+            }
+        }
+        if ((b & 3u) == 3u) {
+            for (uint k = 0; k < steps; ++k) {
+                const uint g = lane + k * kAthzLanes;
+                if (active && g < here) {
+                    storeWord(dst + first + g, b >> 2, acc[k]);
+                }
+                acc[k] = 0u;
+            }
+        }
+    }
+    if (active) {
+        for (uint L = 0; L < kAthzLayers; ++L) {
+            if (((params.layers >> L) & 1u) == 0u || ((params.hasRans >> L) & 1u) == 0u ||
+                pageList[page * 8u + L] == 0xFFFFFFFFu) {
+                continue;
+            }
+            bad = bad || read[L] != words[L] || state[L] != kAthzLow;
+        }
+        if (bad) {
+            errors[0].add(1u);
+        }
+    }
+}

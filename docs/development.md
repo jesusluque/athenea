@@ -50,7 +50,7 @@ document, the header is right.
 | 13 | light | `light/LightTable.h` — a light on the device |
 | 14 | world | `world/GpuScene.h` — the scene as every technique reads it |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
-| 16 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `lod/ChunkSource.h` (where a streamed cloud's chunks come from, and which thread may do what), `lod/SplatStream.h` (live streams: pages pushed in epochs); `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
+| 16 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `lod/Athz.h` — the same for `.athz` (pages a GPU decodes: layers, rANS, the page table), with `shaders/athenea/lod/athz_common.slang` for the coding itself; `lod/ChunkSource.h` (where a streamed cloud's chunks come from, and which thread may do what), `lod/SplatStream.h` (live streams: pages pushed in epochs); `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
 | 17 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`), `usd/ShadowCatcher.h` (where a shadow catcher stands: the ground found, the patch on it -- a light catcher's too), `usd/LightGroups.h` (a car's lamps: the stage's groups and states, their weights a frame, and `athenea lights merge`) |
 | 18 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
 | 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — the ABI, copied verbatim from its own repository |
@@ -515,7 +515,7 @@ Nineteen binaries, one per area, all under `tests/`.
 | `athenea_geom_tests` | meshes, skinning, curves, subdivision |
 | `athenea_material_tests` | the texture store, the lobes, the MaterialX compiler |
 | `athenea_technique_tests` | visibility, display, materials, lights, splat shadows and visibility |
-| `athenea_lod_tests` | building levels, cut selection, `.athc` |
+| `athenea_lod_tests` | building levels, cut selection, `.athc`, `.athz` (`[athz]`: bit-exact round trip, tables, CRC, prefixes, the pool, SPZ export) |
 | `athenea_volume_tests` | volumes |
 | `athenea_usd_tests` | the delegate end to end |
 | `athenea_storm_oracle_tests` | Storm as the geometry oracle; its own process and device, and `HDX_MSAA_SAMPLE_COUNT=1` |

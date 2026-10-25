@@ -50,6 +50,7 @@ int main(int argc, char** argv) {
     athenea::cli::addLightmap(app);
     athenea::cli::addVisibility(app);
     athenea::cli::addLights(app);
+    athenea::cli::addAthzCensus(app);
 #if ATHENEA_HAVE_LIVE
     athenea::cli::addLive(app);
 #endif

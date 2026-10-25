@@ -19,6 +19,7 @@
 #include "athenea/io/Readers.h"
 #include "athenea/lod/Lod.h"
 #include "athenea/lod/Athc.h"
+#include "athenea/lod/Athz.h"
 #include "athenea/render/GaussianRayTracer.h"
 #include "athenea/render/PointRasterizer.h"
 #include "athenea/render/ReferenceRenderer.h"
@@ -92,21 +93,32 @@ int run(const RenderOptions& options, bool bench) {
     std::vector<std::unique_ptr<lod::LodCloud>> athcClouds;
     std::vector<std::unique_ptr<lod::StreamingPool>> pools;
     for (const std::string& path : options.splats) {
-        if (lod::isAthc(path)) {
+        if (lod::isAthc(path) || lod::isAthz(path)) {
+            const bool coded = lod::isAthz(path);
             if (options.lod <= 0.0F) {
-                std::fprintf(stderr, "%s: a .athc is drawn through its levels of detail: give --lod\n",
-                             path.c_str());
+                std::fprintf(stderr, "%s: a %s is drawn through its levels of detail: give --lod\n", path.c_str(),
+                             coded ? ".athz" : ".athc");
                 return 1;
             }
             if (options.streamBudget > 0) {
-                auto pool = lod::StreamingPool::open(**device, path, {options.streamBudget, 2});
+                Result<std::unique_ptr<lod::StreamingPool>> pool = Error(ErrorCode::Unknown, "");
+                if (coded) {
+                    auto source = lod::AthzSource::open(library, path);
+                    if (!source) {
+                        return cli::report(source.error());
+                    }
+                    pool = lod::StreamingPool::open(**device, std::unique_ptr<lod::ChunkSource>(std::move(*source)),
+                                                    {options.streamBudget, 2});
+                } else {
+                    pool = lod::StreamingPool::open(**device, path, {options.streamBudget, 2});
+                }
                 if (!pool) {
                     return cli::report(pool.error());
                 }
                 grow((*pool)->cloud().splats.bounds);
                 pools.push_back(std::move(*pool));
             } else {
-                auto read = lod::readAthc(**device, path);
+                auto read = coded ? lod::readAthz(library, path) : lod::readAthc(**device, path);
                 if (!read) {
                     return cli::report(read.error());
                 }

@@ -122,6 +122,15 @@ void releaseMetalBuffer(void* mtlBuffer);
 /// 0 off macOS or for a null device.
 [[nodiscard]] uint64_t metalAllocatedSize(void* mtlDevice);
 
+/// The device time a completed MTLCommandBuffer took -- its GPUEndTime less
+/// its GPUStartTime, the GPU's own clock -- in milliseconds. Negative off
+/// macOS, for a null buffer, or for one that has not run.
+[[nodiscard]] double metalCommandBufferMilliseconds(void* mtlCommandBuffer);
+/// An Objective-C object kept alive (retain) and let go (release); nothing
+/// off macOS.
+void retainObject(void* object);
+void releaseObject(void* object);
+
 /// Physical memory the system could hand out now without swapping, in
 /// bytes: free, inactive and purgeable pages (Mach's vm statistics) on
 /// macOS, MemAvailable on Linux. 0 where it cannot be read. On unified

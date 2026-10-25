@@ -487,6 +487,43 @@ uint64_t availablePhysicalMemory() {
 #endif
 }
 
+double metalCommandBufferMilliseconds(void* mtlCommandBuffer) {
+#if defined(__APPLE__)
+    if (mtlCommandBuffer == nullptr) {
+        return -1.0;
+    }
+    const auto time = [&](const char* selector) {
+        return reinterpret_cast<double (*)(void*, SEL)>(objc_msgSend)(mtlCommandBuffer, sel_registerName(selector));
+    };
+    const double start = time("GPUStartTime");
+    const double end = time("GPUEndTime");
+    return start > 0.0 && end >= start ? (end - start) * 1000.0 : -1.0;
+#else
+    (void)mtlCommandBuffer;
+    return -1.0;
+#endif
+}
+
+void retainObject(void* object) {
+#if defined(__APPLE__)
+    if (object != nullptr) {
+        reinterpret_cast<void* (*)(void*, SEL)>(objc_msgSend)(object, sel_registerName("retain"));
+    }
+#else
+    (void)object;
+#endif
+}
+
+void releaseObject(void* object) {
+#if defined(__APPLE__)
+    if (object != nullptr) {
+        reinterpret_cast<void (*)(void*, SEL)>(objc_msgSend)(object, sel_registerName("release"));
+    }
+#else
+    (void)object;
+#endif
+}
+
 uint64_t metalRecommendedWorkingSet(void* mtlDevice) {
 #if defined(__APPLE__)
     if (mtlDevice == nullptr) {

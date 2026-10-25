@@ -1,7 +1,9 @@
 // Copyright (c) 2026 jesus luque.
 #pragma once
 
+#include <cstdint>
 #include <cstdio>
+#include <string>
 
 #include <CLI/CLI.hpp>
 
@@ -51,6 +53,21 @@ void addLightmap(CLI::App& app);
 void addVisibility(CLI::App& app);
 void addLights(CLI::App& app);
 void addLive(CLI::App& app);
+void addAthzCensus(CLI::App& app);
+
+/// What `athenea convert` takes for a .athz (CmdAthz.cpp).
+struct AthzConvertOptions {
+    uint32_t degree = 3;
+    uint32_t chunkSplats = uint32_t{1} << 16;
+    uint32_t run = 256;
+    uint32_t pageRuns = 12;
+    uint32_t tableLog = 11;
+    bool     raw = false;
+    uint32_t spzVersion = 3;
+};
+/// A conversion into or out of a .athz (or a .athc into SPZ): done and true,
+/// or false when it is not one.
+bool convertWithAthz(const std::string& input, const std::string& output, const AthzConvertOptions& options);
 #if ATHENEA_HAVE_VIEW
 void addView(CLI::App& app);
 #endif

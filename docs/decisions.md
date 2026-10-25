@@ -15843,3 +15843,173 @@ states (none, 1 to 5) are seen, and the last is reached. The `.athc` Hydra test 
 - The live cloud's bounds are not known to the stage (`splats.bounds` is empty): framing and bounds queries do
   not see it.
 - Path tracing a live stream: the rasteriser alone draws it, as with any streamed asset.
+
+## .athz: pages a GPU decodes (research 101, core and E1, 25 Oct)
+
+A second container beside `.athc`, holding the same thing -- each merged level's groups and the cloud's own
+splats, the record a pool slot holds (`lod/ChunkSource.h`'s block) -- bit for bit, coded in pages the device
+decodes. Rendering does not change: the decode writes the record into its slot, and the cut, the rasteriser and
+everything after read it as before. Research proposal 101 is the design; what was taken from it, and what was
+changed:
+
+- **Planes.** Each byte of an element is a plane: byte b of every element of a run is one stream of symbols. A
+  plane is coded raw (encoding 0: `byte - base` in `width` bits, 0 to 8, the range over the asset; a constant
+  plane costs nothing) or by rANS of order 0 (encoding 1) on its own frequencies, one table per plane and per
+  kind (merged groups, splats) for the whole asset. The encoder chooses rANS where the table's entropy is under
+  0.97 of the raw width. Encoding 2 (a plane predicted from its parent page) is the next step, E1b; the header's
+  bit 4 for it is refused by this reader.
+- **Layers.** G (position, rotation, scales, the tail word, normal, material), A (the base colour -- shape word
+  2's high half and word 3 --, harmonics, emission), T (transfer and its open directions). K is reserved. Each
+  layer of a page is its own stream with its own lane states, in its own section, so a reader that does not want
+  one never reads it (`readAthz(..., layers)`; a layer left out decodes as zero).
+- **The rANS.** 32-bit state in [2^16, 2^32), 16-bit renormalisation, integer only. 32 lanes a run, symbol g of
+  a plane lane g % 32's: every lane meets a plane's end at once. The lanes share one word stream; at each step the
+  lanes that renormalise take consecutive words in lane order, found by a mask in workgroup memory and
+  `countbits` (three masks in turn, one barrier a step; no subgroup operation, 32-bit atomics only, WGSL's
+  `atomic<u32>` through Slang's `Atomic<uint>`). The encoder walks the steps backwards and writes the stream from
+  its end. A run is valid when every lane's state is back to 2^16 and every word was read: the decoder counts
+  the lanes that are not (`errors`), so a corrupt run that passes its CRC is still caught.
+- **Workgroups.** The decoder runs 256 threads, eight runs of one kind: at each rANS plane the plane's slot table
+  (2^n words: symbol, frequency, start) is loaded once for the eight. `athz_decode` holds tables up to 2^12 (16
+  KiB, past WebGPU's 16 384 bytes with the masks), `athz_decode11` up to 2^11 (8 288 bytes in all, compiled to
+  WGSL and checked). The encoder runs a workgroup of 32 lanes a run and a layer.
+- **What the file keeps of a table** is its 256 frequencies (u16, 512 bytes), not the 2^n slots the proposal
+  wrote (8 or 16 KiB): an element of 12 to 400 bytes has 48 to 1600 planes, and slot tables would have cost more
+  than small assets' pages. `athz_tables` expands them on the device at open.
+- **The tables do not depend on the page order.** Histograms are sums (workgroup counts added once each), the
+  normalisation to 2^n is integer and deterministic: every symbol seen keeps 1 at least, the most frequent takes
+  what rounding left, and an excess is taken from the largest.
+- **Pages.** `runGaussians` x `pageRuns` elements of one band (3072 by default, 12 x 256): a page is a pool's
+  chunk. A layer of a page is its run ends (u32 each), then each run: where the layer has rANS planes, the
+  stream's length in words, the 32 states and the words; then its raw planes, bit-packed, a word-aligned block
+  each.
+- **Container.** As the proposal laid it out (`lod/Athz.h` is the specification): a 64-byte header with a
+  CRC-32 of itself, TLV extensions (the source's name), the asset table at 4096, a 64-byte page entry (count,
+  band, octree level, parent page, f16 box rounded outwards, error, each layer's offset and bytes, CRC-32), the
+  finest level's group starts (raw), then sections G, A, T, each on a 4096-byte page. Pages are in band order:
+  the coarsest merged level's first, the splats' last. The parent page is the coarser level's page holding the
+  group's parent cell (a splat page: the finest level's page holding its first splat's group), found on the
+  device by a binary search of the cells.
+- **CRC.** zlib's CRC-32 over a page's layers, as stored, checked on the CPU before a page reaches the device
+  (in `readAthz`, and in `AthzSource::fetch` on a loader thread): a byte flipped or a file cut short is refused,
+  never decoded. It is integrity of bytes, as decompression is: no value is computed from them.
+- **Streaming.** `AthzSource` is a `ChunkSource` of a new payload, `ChunkFormat::Payload::Athz`: a loader copies
+  a page's coded layers into staging as they are, and the frame thread hands every page staged in an update to
+  `ChunkSource::decode`, which records one dispatch for them all into the update's batch -- never one a run or a
+  page. The merged levels are decoded at `openCloud`. `ChunkSource::available` says a chunk the file does not
+  hold (a prefix): the pool never asks for it nor counts it missing, and the cut draws the merged Gaussian
+  standing for it.
+- **Prefixes.** `writeAthzPrefix(in, out, bands)` copies the first bands' pages of every section and cuts the
+  tables short. Holding every merged level, it reads as a cloud whose splat chunks are absent; holding fewer, it
+  is a fixed cut, `readAthzCut` (the finest band it holds whole, as a cloud by itself).
+- **Export.** `writeSpzOfCloud`: the decoded record into the flattened record on the device (`athzFlat`),
+  `render::FlattenPack` packs SPZ's streams, `io::writeSpz` frames and compresses them. `athenea convert x.athz
+  x.spz` (and `x.athc x.spz`).
+- **Timing.** `gpu::GpuTimer`: a batch submitted alone, timed by the GPU's own clock where the backend gives one
+  -- Metal's command buffer `GPUStartTime`/`GPUEndTime`, read through the Objective-C runtime in Platform (the
+  slang-rhi in the tree writes no Metal timestamps: `cmdWriteTimestamp` is empty). Elsewhere the host's submit to
+  done, and it says so.
+
+### E1: what order 0 is worth, measured (Metal, M5 Pro)
+
+`athenea athz-census` over the clouds on the internal disk: the pawn's body (`example-pawn`, TX), the sparrow
+(`Sparrow_gs.usdc`) and the Corvette's close-up level at 5120 (`pieces/close/close_5120.usdc`, TX). No tier-4
+Corvette tree is on the internal disk (car1280's tree is gone; the car5120 master is on an external disk), so
+the Corvette row is a close-up level, not the tree the proposal named. Each cloud's levels were built here
+(`LodBuilder`, chunks of 65536); every size counts the merged levels and the splats. "gzip" is deflate at level 6
+of the whole `.athc` file -- today's container under the compression the player puts on it -- and, per plane, of
+each byte plane on its own (the paper's byte planes). Pages of 3072 elements in every row.
+
+| cloud | elements | `.athc` MB | gzip MB | byte planes + gzip | raw bit-pack | rANS 64, 2^11 | rANS 64, 2^12 | rANS 256, 2^11 | rANS 256, 2^12 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| pawn (TX, 304 B) | 1 323 433 + 272 795 | 486.1 | 259.8 | 0.837 | 1.829 | 1.225 | 1.221 | 1.202 | 1.199 |
+| sparrow (44 B) | 5 887 323 + 3 145 081 | 407.1 | 174.6 | 0.836 | 1.858 | 1.474 | 1.471 | 1.347 | 1.344 |
+| Corvette close 5120 (TX, 316 B) | 404 092 + 254 572 | 208.9 | 119.6 | 1.133 | 1.614 | 1.257 | 1.255 | 1.234 | 1.233 |
+
+(Ratios against gzip of the `.athc`.) Every rANS file decoded to its record bit for bit: the census compares
+every array of the levels and the splats on the device, 0 words differ.
+
+**The 0.9x bar is not met by order 0: 1.20x to 1.35x of gzip at runs of 256.** Runs of 256 beat runs of 64 by 2
+to 9 % (the states' 132 bytes a run and a layer); 2^12 tables beat 2^11 by 0.1 to 0.3 % -- not worth WebGPU's
+memory. Where it loses, by field (the splats; MB; rANS is the tables' entropy where a plane is coded so, else the
+raw width; "gzip" is each plane deflated alone):
+
+| field | sparrow rANS / gzip | pawn rANS / gzip | Corvette rANS / gzip |
+|---|---:|---:|---:|
+| position (16 B, G) | 65.6 / 40.1 | 14.2 / 8.4 | 3.5 / 2.3 |
+| shape (16 B, rotation, scales, colour) | 58.9 / 40.5 | 13.0 / 8.7 | 3.0 / 2.6 |
+| tail: finest group (4 B, G) | 15.5 / 1.3 | 2.9 / 0.2 | 0.9 / 0.1 |
+| shadow bits (T) | -- | 18.8 / 2.0 | 1.9 / 0.7 |
+| transfer (T) | -- | 198.9 / 150.6 | 76.0 / 74.0 |
+| normal (G) | -- | 5.2 / 4.1 | 1.6 / 1.5 |
+
+An order-0 table per asset sees each byte plane as one distribution over the whole cloud; deflate finds what
+neighbours share (the Morton order makes them share a lot). The tail word is the finest group's index, which
+rises by one every few splats: order 0 cannot see it, a delta can. The open-direction bits repeat from a
+gaussian to its neighbour. Positions and scales are float bytes whose high bytes change slowly along the order.
+The harmonics past band 0 and the lobes are nearly constant and cost nothing either way.
+
+**Decode**, GPU clock (Metal command buffer times), every page's layers decoded and written into the record:
+
+| cloud | runs, table | ms a page (median of 32, one a dispatch) | ms an 8 MiB batch (median) | GB/s of record written |
+|---|---|---:|---:|---:|
+| pawn | 64, 2^11 / 64, 2^12 | 1.01 / 1.30 | 3.85 / 5.21 | 5.4 / 8.8 |
+| pawn | 256, 2^11 / 256, 2^12 | 4.73 / 3.45 | 4.93 / 2.84 | 5.6 / 7.2 |
+| sparrow | 64, 2^11 / 64, 2^12 | 0.09 / 0.43 | 2.98 / 3.83 | 16.5 / 3.6 |
+| sparrow | 256, 2^11 / 256, 2^12 | 0.59 / 0.74 | 2.76 / 2.89 | 5.7 / 5.3 |
+| Corvette | 64, 2^11 / 64, 2^12 | 0.74 / 1.62 | 3.77 / 1.95 | 9.6 / 6.3 |
+| Corvette | 256, 2^11 / 256, 2^12 | 3.18 / 2.42 | 3.28 / 1.81 | 3.9 / 6.7 |
+
+An 8 MiB batch takes 1.8 to 5.2 ms: under the proposal's 2 ms in two rows of twelve. The spread between rows
+that should match (the same pages, a table twice the size) is the shared machine's: the same file's batches
+vary by about two times from one to the next, and a single page often costs as much as a batch of a hundred
+(the GPU's clock ramping on a short command buffer), so these are what one run on a busy Mac measured, not a
+throughput to plan by. A page's runs are the parallelism: a page of 12 runs of 256 is 96 lanes' work for twelve
+workgroups of 32 -- one dispatch a page is the wrong unit, as the proposal said, and batches are what to read.
+
+### What E1b should aim at
+
+Prediction from what the decoder already has, before the same order-0 rANS:
+- **The tail word** as a difference from the run's previous element (the finest group rises by 0 or 1): 15.5 MB
+  to under the 1.3 deflate finds on the sparrow, and 2.9 to under 0.2 on the pawn.
+- **Positions** as the residual from the parent page's cell (or the run's previous element): the 16 bytes a
+  splat that order 0 codes at 11 to 12 bytes and deflate at 7 (sparrow).
+- **Shadow bits** from the previous element or the parent group: 18.8 MB to 2 on the pawn.
+- **Scales and colour** in shape words 1 to 3 the same way; rotation stays near uniform.
+- **Transfer** is where TX clouds' bytes are (199 of 312 MB on the pawn, 76 of 147 on the Corvette) and order 0
+  takes only a third off its raw width; deflate does little better (151, 74). Its gain has to come from the parent
+  -- the merged group's transfer is the weighted mean of its children's -- or from the CPCA codec
+  (`transfer_codec.slang`), not from a better entropy coder.
+With those, the bar is 0.9x of gzip and then the proposal's 0.67x; both need the residual planes measured
+before the container's encoding 2 is fixed.
+
+### How it is checked
+
+`athenea_lod_tests "[athz]"` (Metal, M5 Pro), six cases:
+- **Bit for bit.** A cloud of 30 000 random splats and 3072 merged groups, with and without shading normals,
+  written five ways (runs of 256 x 12 with 2^11 tables, 64 x 48 with 2^12, 32 x 3 raw, 256 x 2 with 2^9, byte
+  planes 128 x 5) and read back: every word of every level, the starts and the splats compared on the device, 0
+  differ; the hash of the splats' positions the same; read with layer G alone, the positions equal and the
+  harmonics do not.
+- **Tables and page order.** The same cloud written with its histograms counted in file order and in a shuffled
+  order: the two files are the same bytes (compared on the device).
+- **Refused.** One byte flipped in a page: `readAthz` refuses it (`page 10 is corrupt`), and a pool's update
+  fails on it; the file cut to half: refused (`section 0 past the end`); the header's CRC: refused.
+- **Prefixes.** Every merged level and no splat: drawn at 0 pixels, the cut draws the 3072 finest merged
+  gaussians, equal to drawing that level alone (p99 0, max 0), and a pool over that prefix settles on the same
+  image (max 0); the coarsest band alone reads as a fixed cut equal to drawing level 0 (max 0) and is refused
+  as a cloud to stream.
+- **Streaming.** A pool over an `AthzSource` settles, at 0 and 24 pixels, on the image the cloud read whole draws:
+  the same splats and merged gaussians drawn, max 0.
+- **SPZ.** Exported and read back: p99 3, max 9 against the decoded cloud -- within the bounds the SPZ readers'
+  own tests hold a file to (p99 4, max 16).
+- **Unchanged.** The whole lod suite, 23 cases with the six above (the `.athc` pool, live streams, SPZ pages),
+  passes.
+
+### Not done
+
+- Encoding 2 (E1b, above); layer K; per-layer CRCs, so a reader of G alone still reads every layer to check one.
+- CUDA and WebGPU timings (the WGSL of `athz_decode11` compiles; nothing has run it), and the L4.
+- The player's web decoder (`athc_pages.rs`): this is the engine side only.
+- `decimate --athz`: a decimated stage is converted by `athenea convert` afterwards.
+- The page's box and error are written but nothing reads them yet: the engine's cut works from the levels.

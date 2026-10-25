@@ -1,5 +1,6 @@
 // Copyright (c) 2026 jesus luque.
 #include "athenea/usd/Export.h"
+#include "athenea/usd/PrimData.h"
 
 #include "athenea/scene/DecodeParams.h"
 #include "athenea/scene/GpuClouds.h"
@@ -717,6 +718,81 @@ Result<void> writeVisibility(const std::filesystem::path& path, const std::strin
         return Error::make(ErrorCode::IoFailure, "cannot save '{}'", path.string());
     }
     return ok();
+}
+
+Result<scene::GpuSplats> loadParticleField(scene::CloudLoader& loader, const std::filesystem::path& path,
+                                           const std::string& prim, uint32_t maxDegree) {
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    if (!stage) {
+        return Error::make(ErrorCode::IoFailure, "cannot open '{}'", path.string());
+    }
+    UsdPrim field;
+    if (!prim.empty()) {
+        field = stage->GetPrimAtPath(SdfPath(prim));
+    } else {
+        for (const UsdPrim& candidate : stage->Traverse()) {
+            if (candidate.IsA<UsdVolParticleField3DGaussianSplat>()) {
+                field = candidate;
+                break;
+            }
+        }
+    }
+    if (!field || !field.IsA<UsdVolParticleField3DGaussianSplat>()) {
+        return Error::make(ErrorCode::NotFound, "'{}' has no gaussian ParticleField{}", path.string(),
+                           prim.empty() ? std::string() : " at " + prim);
+    }
+    // The earliest value: a cloud whose arrays are sampled has no default.
+    const UsdTimeCode at = UsdTimeCode::EarliestTime();
+    const auto get = [&](const std::string& name) {
+        VtValue v;
+        if (const UsdAttribute a = field.GetAttribute(TfToken(name))) {
+            a.Get(&v, at);
+        }
+        return v;
+    };
+    const auto either = [&](const TfToken& full, const TfToken& half) {
+        VtValue v = get(full.GetString());
+        return v.IsEmpty() ? get(half.GetString()) : v;
+    };
+    const auto primvar = [&](const char* name) { return get(std::string("primvars:athenea:splat:") + name); };
+    ParticleFieldArrays a;
+    a.positions = either(UsdVolTokens->positions, UsdVolTokens->positionsh);
+    a.orientations = either(UsdVolTokens->orientations, UsdVolTokens->orientationsh);
+    a.scales = either(UsdVolTokens->scales, UsdVolTokens->scalesh);
+    a.opacities = either(UsdVolTokens->opacities, UsdVolTokens->opacitiesh);
+    const VtValue degree = get(UsdVolTokens->radianceSphericalHarmonicsDegree.GetString());
+    a.shDegree = degree.IsHolding<int>() ? degree.UncheckedGet<int>() : 0;
+    a.shCoefficients = either(UsdVolTokens->radianceSphericalHarmonicsCoefficients,
+                              UsdVolTokens->radianceSphericalHarmonicsCoefficientsh);
+    a.metallic = primvar("metallic");
+    a.roughness = primvar("roughness");
+    a.transmission = primvar("transmission");
+    a.cryptoObject = primvar("cryptoObject");
+    a.transferDirect = primvar("transferDirect");
+    a.transferIndirect = primvar("transferIndirect");
+    a.transferReflected = primvar("transferReflected");
+    a.transferZonal = primvar("transferZonal");
+    a.thinWalled = primvar("thinWalled");
+    a.schlickMetal = primvar("schlickMetal");
+    a.materialRoughness = primvar("materialRoughness");
+    a.curvature = primvar("curvature");
+    a.shadowBits = primvar("shadowBits");
+    a.normals = primvar("normal");
+    const VtValue linear = primvar("linear");
+    a.linear = linear.IsHolding<bool>() && linear.UncheckedGet<bool>();
+    a.emission = primvar("emission");
+    a.hardness = primvar("hardness");
+    a.specularWeight = primvar("specularWeight");
+    a.specularColour = primvar("specularColor");
+    a.specularIor = primvar("specularIor");
+    a.coatWeight = primvar("coatWeight");
+    a.coatRoughness = primvar("coatRoughness");
+    a.coatIor = primvar("coatIor");
+    a.sheenColour = primvar("sheenColor");
+    a.sheenRoughness = primvar("sheenRoughness");
+    a.coatDarkening = primvar("coatDarkening");
+    const scene::SplatStreams streams = splatStreams(a, path.filename().string());
+    return loader.upload(streams, maxDegree);
 }
 
 Result<io::RawSplats> readParticleFieldRecords(const std::filesystem::path& path, const std::string& prim,

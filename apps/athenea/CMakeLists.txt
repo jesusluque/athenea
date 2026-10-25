@@ -5,6 +5,7 @@ add_executable(athenea
     src/CmdCompare.cpp
     src/CmdRender.cpp
     src/CmdStage.cpp
+    src/CmdAthz.cpp
     src/CmdDecimate.cpp
     src/CmdMigrate.cpp
     src/CmdAofx.cpp
@@ -15,6 +16,13 @@ add_executable(athenea
     src/CmdLights.cpp
     src/Output.cpp)
 target_link_libraries(athenea PRIVATE athenea::usd athenea::lod athenea::technique athenea::aofx_host CLI11::CLI11)
+# zlib: the census's gzip baselines (CmdAthz.cpp).
+if(APPLE)
+    target_link_libraries(athenea PRIVATE z)
+else()
+    find_package(ZLIB REQUIRED)
+    target_link_libraries(athenea PRIVATE ZLIB::ZLIB)
+endif()
 if(ATHENEA_WITH_GENLOCK)
     target_sources(athenea PRIVATE src/CmdLive.cpp)
     target_link_libraries(athenea PRIVATE athenea::sched)

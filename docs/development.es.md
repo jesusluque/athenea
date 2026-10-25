@@ -50,7 +50,7 @@ coinciden, la cabecera tiene razón.
 | 13 | light | `light/LightTable.h` — una luz en el dispositivo |
 | 14 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
-| 16 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `lod/ChunkSource.h` (de dónde vienen los chunks de una nube en streaming, y qué hilo puede hacer qué), `lod/SplatStream.h` (streams en vivo: páginas empujadas por épocas); `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
+| 16 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `lod/Athz.h` — lo mismo para `.athz` (páginas que decodifica una GPU: capas, rANS, la tabla de páginas), con `shaders/athenea/lod/athz_common.slang` para la codificación en sí; `lod/ChunkSource.h` (de dónde vienen los chunks de una nube en streaming, y qué hilo puede hacer qué), `lod/SplatStream.h` (streams en vivo: páginas empujadas por épocas); `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
 | 17 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`), `usd/ShadowCatcher.h` (dónde se pone un shadow catcher: el suelo encontrado, el parche sobre él -- también el de un light catcher), `usd/LightGroups.h` (las lámparas de un coche: los grupos y estados de la escena, sus pesos por frame, y `athenea lights merge`) |
 | 18 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
 | 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — el ABI, copiado literal de su propio repositorio |
@@ -532,7 +532,7 @@ Diecinueve binarios, uno por área, todos bajo `tests/`.
 | `athenea_geom_tests` | mallas, skinning, curvas, subdivisión |
 | `athenea_material_tests` | el texture store, los lobes, el compilador de MaterialX |
 | `athenea_technique_tests` | visibilidad, display, materiales, luces, sombras y visibilidad de splats |
-| `athenea_lod_tests` | construir niveles, elegir el corte, `.athc` |
+| `athenea_lod_tests` | construir niveles, elegir el corte, `.athc`, `.athz` (`[athz]`: ida y vuelta bit a bit, tablas, CRC, prefijos, el pool, exportación a SPZ) |
 | `athenea_volume_tests` | volúmenes |
 | `athenea_usd_tests` | el delegate de punta a punta |
 | `athenea_storm_oracle_tests` | Storm como oráculo de geometría; su propio proceso y dispositivo, y `HDX_MSAA_SAMPLE_COUNT=1` |

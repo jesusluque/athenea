@@ -34,12 +34,20 @@ void addConvert(CLI::App& app) {
         bool noCamera = false;
         uint32_t chunkSplats = uint32_t{1} << 16;
         float maxGroupFraction = 0.5F;
+        AthzConvertOptions athz;
     };
     auto o = std::make_shared<Options>();
     auto* cmd = app.add_subcommand("convert",
-                                   "a splat file into a USD ParticleField stage, or into a .athc with levels of detail");
-    cmd->add_option("input", o->input, ".ply / .splat / .spz / .sog / meta.json")->required();
-    cmd->add_option("output", o->output, ".usda / .usdc / .usd / .athc")->required();
+                                   "a splat file into a USD ParticleField stage, or into a .athc or .athz with levels "
+                                   "of detail; a .athz back into a .athc or an SPZ");
+    cmd->add_option("input", o->input, ".ply / .splat / .spz / .sog / meta.json; .athc / .athz / .usd into .athz")
+        ->required();
+    cmd->add_option("output", o->output, ".usda / .usdc / .usd / .athc / .athz / .spz")->required();
+    cmd->add_option("--athz-run", o->athz.run, ".athz: elements a run (32 to 256, by 32)");
+    cmd->add_option("--athz-page-runs", o->athz.pageRuns, ".athz: runs a page");
+    cmd->add_option("--athz-table-log", o->athz.tableLog, ".athz: log2 of a rANS table (9 to 12)");
+    cmd->add_flag("--athz-raw", o->athz.raw, ".athz: every plane raw bit-packed, no rANS");
+    cmd->add_option("--spz-version", o->athz.spzVersion, ".spz from a .athz: 3 (gzip) or 4 (ZSTD)");
     cmd->add_option("--chunk-splats", o->chunkSplats, ".athc: splats per streamed chunk");
     cmd->add_option("--max-group-fraction", o->maxGroupFraction,
                     ".athc: the finest merged level holds at most this many groups per splat");
@@ -47,6 +55,11 @@ void addConvert(CLI::App& app) {
     cmd->add_option("--rotate-x", o->rotateX, "turn the cloud about x (COLMAP clouds: 180)");
     cmd->add_flag("--no-camera", o->noCamera, "do not add /World/Camera");
     cmd->callback([o] {
+        o->athz.degree = o->degree;
+        o->athz.chunkSplats = o->chunkSplats;
+        if (convertWithAthz(o->input, o->output, o->athz)) {
+            return;
+        }
         auto device = gpu::Device::create();
         if (!device) {
             cli::fail(device.error());

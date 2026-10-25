@@ -17,7 +17,8 @@
 //                  (PageQueue::push), and never see the device or the pool.
 //
 // A chunk's bytes are the .athc chunk block (or, for a live stream of SPZ
-// pages, an SPZ file: ChunkFormat::Payload): n positions (float4), n shapes
+// pages, an SPZ file; for a .athz, a page's coded layers: ChunkFormat::Payload).
+// The block is n positions (float4), n shapes
 // (4 uint), n * shWords SH words, n finest-group words, then -- where the
 // format says -- n normals, n emissions and each extra's n * words. n is at
 // most `chunkSplats`.
@@ -34,6 +35,8 @@
 #include "athenea/lod/Lod.h"
 
 namespace athenea::gpu {
+class Buffer;
+class CommandBatch;
 class Device;
 }
 
@@ -45,8 +48,11 @@ struct ChunkFormat {
     /// into the store as it is. Spz: an SPZ file (any version the reader
     /// takes), decompressed by a loader thread into staging and turned into
     /// the store's layout by the device (spz_records, then the validate and
-    /// decode every format takes) -- a live page only.
-    enum class Payload : uint8_t { Athc, Spz };
+    /// decode every format takes) -- a live page only. Athz: a .athz page's
+    /// coded layers (Athz.h), copied into staging as they are and decoded
+    /// into their slots by the device, a batch of pages in one dispatch
+    /// (ChunkSource::decode).
+    enum class Payload : uint8_t { Athc, Spz, Athz };
     Payload  payload = Payload::Athc;
     uint32_t chunkSplats = 0;     ///< the most splats a chunk holds
     uint32_t restPerColour = 0;   ///< 0, 3, 8, 15
@@ -59,6 +65,8 @@ struct ChunkFormat {
     uint32_t transferCount = 0;
     uint32_t transferWords = 0;
     uint32_t shadowWords = 0;
+    /// Athz: the most bytes a chunk's coded layers take (its staging).
+    uint64_t codedBytes = 0;
 
     /// Staging an SPZ chunk takes: a header, then its six streams (the most
     /// a splat's take, degree 4: 9 + 1 + 3 + 3 + 4 + 72 bytes), each on a word.
@@ -70,11 +78,15 @@ struct ChunkFormat {
         if (payload == Payload::Spz) {
             return kSpzSplatBytes;
         }
+        // Athz: what the chunk is once decoded (its staging is codedBytes).
         return 16 + 16 + 4 * uint64_t{shWords} + 4 + (normals ? 4 : 0) + (emission ? 4 : 0) +
                4 * uint64_t{pbrWords + lobesWords + transferWords + shadowWords};
     }
     /// The most a chunk takes in staging.
     [[nodiscard]] uint64_t chunkBytes() const noexcept {
+        if (payload == Payload::Athz) {
+            return codedBytes;
+        }
         return payload == Payload::Spz ? kSpzHeaderBytes + kSpzSplatBytes * chunkSplats + 6 * 4
                                        : elementBytes() * chunkSplats;
     }
@@ -87,7 +99,14 @@ struct ChunkRequest {
     uint32_t chunk = 0;
     uint64_t ticket = 0;
     uint32_t splats = 0;   ///< splats the version holds
-    uint64_t bytes = 0;    ///< splats * elementBytes
+    uint64_t bytes = 0;    ///< splats * elementBytes (Athz: its coded bytes)
+};
+
+/// A chunk a loader staged, and the slot it goes to (ChunkSource::decode).
+struct StagedChunk {
+    ChunkRequest request;
+    uint64_t     offset = 0;   ///< where its bytes start in the staging buffer
+    uint32_t     slot = 0;
 };
 
 /// A change a live source pushes: chunk `chunk` takes the version `request`
@@ -116,6 +135,10 @@ public:
     [[nodiscard]] virtual std::string name() const = 0;
     /// Whether chunks are pushed in epochs (poll) rather than loaded on demand.
     [[nodiscard]] virtual bool live() const noexcept { return false; }
+    /// Any thread: whether the source holds the chunk at all. A file cut to a
+    /// prefix of its bands (Athz.h) lacks its finer pages: the cut draws the
+    /// merged Gaussians standing for them, and they are never asked for.
+    [[nodiscard]] virtual bool available(uint32_t /*chunk*/) const noexcept { return true; }
 
     /// FRAME THREAD, once, at open: the cloud without its store -- the merged
     /// levels and the finest groups' starts on the device, the counts and the
@@ -130,6 +153,15 @@ public:
     /// exactly `request.bytes`. No device call. Several loaders call it at
     /// once, for different requests.
     [[nodiscard]] virtual Result<void> fetch(const ChunkRequest& request, std::span<std::byte> staging) = 0;
+
+    /// FRAME THREAD: the chunks a coded payload (ChunkFormat::Payload::Athz)
+    /// staged this update, decoded into their slots of `cloud`'s store --
+    /// recorded into `batch`, one dispatch for them all. A source of any
+    /// other payload is never asked.
+    [[nodiscard]] virtual Result<void> decode(gpu::CommandBatch& /*batch*/, const gpu::Buffer& /*staging*/,
+                                              std::span<const StagedChunk> /*chunks*/, LodCloud& /*cloud*/) {
+        return Error(ErrorCode::InvalidArgument, "this source's chunks are not coded");
+    }
 
     /// FRAME THREAD: `request` will never be fetched (its epoch was dropped);
     /// a source that holds its bytes frees them.

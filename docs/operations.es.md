@@ -160,7 +160,7 @@ athenea info
 
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
-| `--splats` | rutas ‹repetible› | — | `.ply`, `.splat`, `.spz`, `.sog`, `.athc` |
+| `--splats` | rutas ‹repetible› | — | `.ply`, `.splat`, `.spz`, `.sog`, `.athc`, `.athz` |
 | `--points` | rutas ‹repetible› | — | `.ply`, `.xyz`, `.txt`, `.pts`, `.csv`, `points3D.txt`/`.bin` de COLMAP |
 | `--technique` | `raster` \| `rt` \| `rt-hw` \| `rt-bvh` \| `reference` \| `reference-rt` | `raster` | las `reference*` son la verdad de referencia en GPU, lentas a propósito |
 | `--point-route` | `raster` \| `discs` | `raster` | |
@@ -205,17 +205,28 @@ Admite todas las opciones de `athenea render` menos `-o`, y añade:
 No escribe imagen. Con `--stages` informa por separado de la proyección, el
 sort por profundidad, las cuentas, el emit, el sort por tile y el blend.
 
-### 2.4 `athenea convert` — un fichero de splats a USD, o a un `.athc`
+### 2.4 `athenea convert` — un fichero de splats a USD, o a un `.athc` o un `.athz`
 
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
-| `input` | ruta, obligatoria | — | `.ply`, `.splat`, `.spz`, `.sog`, `meta.json` |
-| `output` | ruta, obligatoria | — | `.usda`, `.usdc`, `.usd` o `.athc` |
+| `input` | ruta, obligatoria | — | `.ply`, `.splat`, `.spz`, `.sog`, `meta.json`; a un `.athz` también `.athc`, `.athz` y un ParticleField de USD |
+| `output` | ruta, obligatoria | — | `.usda`, `.usdc`, `.usd`, `.athc` o `.athz`; desde un `.athz`, `.athc` o `.spz`; desde un `.athc`, `.spz` |
 | `--chunk-splats` | entero | `65536` | `.athc`: splats por chunk |
 | `--max-group-fraction` | número | `0.5` | `.athc`: grupos por splat que puede tener el nivel fundido más fino |
 | `--degree` | 0..3 | `3` | armónicos que se conservan |
 | `--rotate-x` | número | `0` | grados; las nubes de COLMAP quieren `180` |
 | `--no-camera` | flag | apagado | no añadir `/World/Camera` a la escena escrita |
+| `--athz-run` | entero | `256` | `.athz`: elementos por run, de 32 a 256 en pasos de 32 |
+| `--athz-page-runs` | entero | `12` | `.athz`: runs por página; una página lleva como mucho 65535 elementos |
+| `--athz-table-log` | entero | `11` | `.athz`: tablas rANS de 2^n entradas, de 9 a 12; 12 pasa de la memoria de grupo de WebGPU |
+| `--athz-raw` | flag | apagado | `.athz`: todos los planos en bit-packing crudo, sin rANS |
+| `--spz-version` | 3 o 4 | `3` | `.spz` desde un `.athz` o un `.athc`: 3 gzip, 4 ZSTD (necesita zstd) |
+
+Un `.athz` guarda lo mismo que un `.athc`, bit a bit, codificado en páginas
+que decodifica una GPU (`lod/Athz.h`, §8.2). Un SPZ sacado de él es la banda
+más fina que el fichero tiene entera, con streams de grado 3 y 8 bits por
+armónico; una nube en luz lineal escribe su color base como sRGB, exacto solo
+en grado 0.
 
 Un `.athc` de salida rechaza un `--rotate-x` distinto de cero: el contenedor
 guarda la nube como está, y el giro pertenece al prim que lo referencia.
@@ -228,7 +239,35 @@ Una nube en otra unidad se escala donde se referencia, o se edita el
 ```sh
 athenea convert capture.ply scene.usda
 athenea convert capture.ply capture.athc --chunk-splats 131072
+athenea convert cloud.usdc cloud.athz --athz-table-log 11
+athenea convert cloud.athz cloud.spz
 ```
+
+### 2.4.2 `athenea athz-census` — lo que cuestan los planos de bytes de una nube
+
+Escribe cada entrada (`.athc`, `.athz`, un ParticleField de USD, `.ply`,
+`.spz`, `.sog`) como `.athc`, como planos de bytes, en bit-packing crudo y con
+rANS para cada tamaño de run y de tabla pedido, comprueba que cada fichero rANS
+decodifica al registro bit a bit (en el dispositivo), y decodifica sus páginas
+de splats en el dispositivo, cronometrado. Imprime tablas en markdown por la
+salida estándar y escribe un CSV por plano junto a los ficheros
+(`<stem>.census.planes.csv`).
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `inputs` | rutas, obligatorias | — | una tabla cada una |
+| `--runs` | enteros | `64 256` | elementos por run; una página son 3072 elementos sea cual sea el run |
+| `--table-logs` | enteros | `11 12` | tablas rANS de 2^n entradas |
+| `--dir` | ruta | el directorio temporal del sistema | dónde van los ficheros medidos |
+| `--batch-mib` | entero | `8` | MiB codificados que toma como mucho un dispatch de decodificación cronometrado |
+| `--single-pages` | entero | `32` | páginas cronometradas además de una en una por dispatch |
+| `--degree` | 0..3 | `3` | armónicos que se conservan |
+| `--keep` | flag | apagado | conservar los ficheros medidos |
+
+"gzip" es deflate a nivel 6 en la CPU, sin los 18 bytes de marco de gzip.
+Los tiempos de decodificación son el reloj de la propia GPU en Metal (el inicio
+y el fin del command buffer) y el del host, del submit al final, en los demás;
+la tabla dice cuál.
 
 ### 2.4.1 `athenea decimate` — menos gaussianas, conservadas donde importan
 
@@ -2406,7 +2445,17 @@ de quien lo ejecuta: están en
 
 **Nubes que se leen.** `.ply` (3DGS), `.splat`, `.spz` (Niantic, necesita
 zstd), `.sog` o un `meta.json` suelto (PlayCanvas, necesita libwebp), `.athc`
-(el contenedor por chunks de este motor).
+(el contenedor por chunks de este motor), `.athz` (lo mismo, codificado en páginas que decodifica una GPU).
+
+**`.athz`.** `ATHZ`, versión 1. Una cabecera de 64 bytes con su propio CRC-32,
+extensiones que se pueden saltar, la tabla de asset en 4096 (la codificación
+de cada plano de bytes y las frecuencias de las tablas rANS), una entrada de
+64 bytes por página (elementos, banda, nivel, página padre, caja en f16,
+error, offset y bytes de cada capa, CRC-32), y luego las secciones G, A y T
+en orden de banda, la más gruesa primero: las primeras bandas de cada sección
+son por sí solas un corte fijo. El CRC de cada página se comprueba antes de
+que llegue al dispositivo; un bit de bandera que este lector no conoce, y el
+bit 4 (planos codificados desde la página padre), se rechazan.
 
 Un `.spz` (versiones 2 a 4) es el contrato de entrada de splats del motor:
 - **Ejes.** La extensión de sistema de coordenadas del fichero dice en cuál
@@ -2445,7 +2494,8 @@ solo se escribe como la vista previa de MCP.
 | `athenea info` | un informe por la salida estándar |
 | `athenea render` | un EXR: RGBA en media y `Z` |
 | `athenea bench` | nada; los tiempos por la salida estándar |
-| `athenea convert` | una escena USD, o un `.athc` |
+| `athenea convert` | una escena USD, un `.athc`, un `.athz` o un `.spz` |
+| `athenea athz-census` | tablas por la salida estándar; los ficheros medidos y un CSV por plano en `--dir` |
 | `athenea stage` | un EXR; o, con `--render-settings`, uno por producto |
 | `athenea view` | nada, o un EXR con `--snapshot` |
 | `athenea live` | un EXR por frame, numerado, cada uno con su timecode |
@@ -2502,6 +2552,9 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 | una bola de cristal enseña la sala pero no la dobla | la nube no tiene índice | `athenea mesh2splat` escribe el IOR del material de cristal; en una nube de otro origen pon `primvars:athenea:splat:ior` (1.5 es cristal). Una nube guarda un solo índice: con dos cristales de IOR distinto se queda el primero y la conversión lo avisa; una nube que lleva las capas dobla cada gaussiana por su propio índice especular |
 | una nube convertida sale negra | el bake no encontró luz | dale luces a la escena, o `--default-lights`, o `--no-bake` |
 | `<file>: not a readable .athc (unknown flag bits N; this reads bits 0 (normals), 1 (linear), 2 (emission), 4 (material) and 5 (transfer))` | el `.athc` lo escribió un motor más nuevo, con algo en sus bloques que esta compilación no sabe dónde buscar | léelo con ese motor, o actualiza este |
+| `<file>: page N is corrupt (its CRC-32 does not match)` | los bytes de la página del `.athz` no son los que se escribieron | vuelve a traer el fichero; un fichero cortado se lee hasta donde sus páginas están enteras solo a través de un prefijo escrito por el motor |
+| `<file>: not a readable .athz (section N past the end: a file cut short)` | el fichero se truncó | vuelve a traerlo |
+| `a prefix of bands that stops inside the merged levels ... is a fixed cut` | se dio un prefijo de `.athz` con solo parte de los niveles fundidos donde hace falta una nube con niveles | conviértelo a `.spz` (la banda entera más fina) o usa un prefijo más largo |
 | una nube sale roma y luego se afina | todavía están llegando chunks | sube `--stream-budget`, o espera; una imagen fija se asienta antes |
 | `OutOfMemory: ... does not fit in the GPU's memory budget`, código de salida 3 | el frame necesitaba más que el presupuesto del dispositivo, aun después de que el motor devolviera lo que pudo y bajara de nivel | cierra lo que más ocupe la GPU, renderiza más pequeño, da a un asset en streaming un presupuesto menor; `ATHENEA_GPU_BUDGET` sube o baja el presupuesto |
 | `OutOfMemory: ... does not fit in the memory the system has free` | en Apple silicon, la memoria libre de la máquina menos su reserva de 1,5 GiB no cabría la reserva: otros procesos ocupan el resto | cierra lo que más corra, o renderiza más pequeño; la reserva no se configura |

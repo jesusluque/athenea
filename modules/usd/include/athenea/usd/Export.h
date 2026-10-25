@@ -223,6 +223,17 @@ struct DeviceSplatRecords {
                                                              const std::string& prim = {},
                                                              std::string* where = nullptr, bool* moved = nullptr);
 
+/// THE FIELD AS THE DELEGATE DRAWS IT, uploaded: the first
+/// UsdVolParticleField3DGaussianSplat of the stage at `path` (or `prim`) at
+/// its earliest time, with every array the delegate reads beside the schema's
+/// -- material and its layers, transfer and open directions, normal,
+/// emission, linear light -- read as ParticleField.cpp reads them through
+/// Hydra and uploaded by `loader` (scene::SplatStreams): what `athenea
+/// convert` turns into a .athc or a .athz.
+[[nodiscard]] Result<scene::GpuSplats> loadParticleField(scene::CloudLoader& loader,
+                                                         const std::filesystem::path& path,
+                                                         const std::string& prim = {}, uint32_t maxDegree = 3);
+
 /// AN ARRAY A GAUSSIAN ELSE THE FIELD CARRIES: a vertex primvar (a
 /// material's values, an id, a rig, a transfer, which parts see the sky) or
 /// any other attribute one or more values a gaussian long, as 32-bit words --

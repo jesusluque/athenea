@@ -21,6 +21,7 @@
 #include "athenea/io/Readers.h"
 #include "athenea/scene/GpuClouds.h"
 #include "SpzStaging.h"
+#include "StoreDetail.h"
 
 namespace athenea::lod {
 namespace {
@@ -449,6 +450,17 @@ Result<void> makeStore(gpu::Device& device, LodCloud& lod, const ChunkFormat& fo
     lod.resident = std::move(*resident);
     return ok();
 }
+
+}   // namespace
+
+namespace detail {
+Result<void> makeStore(gpu::Device& device, LodCloud& lod, const ChunkFormat& format, uint64_t count,
+                       uint32_t chunks, uint32_t slots, const scene::Bounds& bounds, const std::string& name) {
+    return lod::makeStore(device, lod, format, count, chunks, slots, bounds, name);
+}
+}   // namespace detail
+
+namespace {
 
 Result<void> makeStore(gpu::Device& device, LodCloud& lod, const Layout& layout, uint32_t slots,
                        const std::filesystem::path& path) {
@@ -1022,6 +1034,8 @@ struct StreamingPool::Impl {
             auto placed = placeSpz(batch, l, slot, from);
             if (!placed) return std::move(placed).error();
             splats = *placed;
+        } else if (format.payload == ChunkFormat::Payload::Athz) {
+            coded.push_back({l.request, from, slot});   // decoded together (flushCoded)
         } else {
             placeStaged(batch, cloud, extra, slot, splats, staging.rhi(), from);
         }
@@ -1074,6 +1088,19 @@ struct StreamingPool::Impl {
         batch.markDirty();
         cloud.splats.antialiased = h.antialiased != 0;
         return h.count;
+    }
+
+    /// Coded chunks (ChunkFormat::Payload::Athz) staged this round, decoded
+    /// by their source in one dispatch before the batch is submitted.
+    std::vector<StagedChunk> coded;
+    Result<void> flushCoded(gpu::CommandBatch& batch) {
+        if (coded.empty()) {
+            return ok();
+        }
+        ATHENEA_TRY(source->decode(batch, staging, coded, cloud));
+        batch.markDirty();
+        coded.clear();
+        return ok();
     }
 
     /// Frame thread: what status() answers from now on.
@@ -1291,7 +1318,7 @@ Result<uint32_t> StreamingPool::Impl::updateOnDemand(bool wait, uint64_t budget)
         // slot not already promised to a load in flight.
         std::vector<uint32_t> missing;
         for (uint32_t c = 0; c < chunks; ++c) {
-            if (wantedNow[c] != 0 && lod.slots[c] < 0 && inFlight[c] == 0) {
+            if (wantedNow[c] != 0 && lod.slots[c] < 0 && inFlight[c] == 0 && source->available(c)) {
                 missing.push_back(c);
             }
         }
@@ -1370,6 +1397,7 @@ Result<uint32_t> StreamingPool::Impl::updateOnDemand(bool wait, uint64_t budget)
             ++placed;
             placedBytes += l.request.bytes;
         }
+        ATHENEA_TRY(flushCoded(batch));
         deferred = static_cast<uint32_t>(held.size());
         bool more = false;
         {
@@ -1394,7 +1422,7 @@ Result<uint32_t> StreamingPool::Impl::updateOnDemand(bool wait, uint64_t budget)
     uint32_t missing = 0;
     for (uint32_t c = 0; c < chunks; ++c) {
         resident += lod.slots[c] >= 0 ? 1 : 0;
-        missing += (wantedNow[c] != 0 && lod.slots[c] < 0) ? 1 : 0;
+        missing += (wantedNow[c] != 0 && lod.slots[c] < 0 && source->available(c)) ? 1 : 0;
     }
     counters.resident = resident;
     counters.missing = missing;
@@ -1560,6 +1588,7 @@ Result<uint32_t> StreamingPool::Impl::updateLive(bool wait, uint64_t budget) {
             ++placed;
             placedBytes += l.request.bytes;
         }
+        ATHENEA_TRY(flushCoded(batch));
         deferred = static_cast<uint32_t>(held.size());
         bool more = false;
         {
