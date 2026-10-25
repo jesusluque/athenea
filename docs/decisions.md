@@ -14034,7 +14034,8 @@ and the layers, and `LodBuilder` merges them (the transfer averaged, the bits
 by majority); the cut and the streaming pool draw it. What is missing for the
 TX car: no command writes a `.athc` from a USD ParticleField (`athenea convert`
 reads splat files, `mesh2splat -o x.athc` refuses `--transfer`), and a `.athc`
-keeps no curvature, so its sharp lobes would be drawn flat. The `.athz` pages
+keeps no curvature, so its sharp lobes would be drawn flat. (Both done below: `athenea convert` reads a USD field, and bit 6 keeps the
+curvature.) The `.athz` pages
 hold the same record as a pool slot, transfer included (layer T), so the two
 lines meet in that record.
 
