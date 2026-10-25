@@ -274,7 +274,9 @@ float3 relitToward<let kTransfer : int>(uint i, uint slot, float3 position, floa
     const float4 w0 = float4(params.w00, params.w01, params.w02, params.w03);
     const float4 w1 = float4(params.w10, params.w11, params.w12, params.w13);
     const float4 w2 = float4(params.w20, params.w21, params.w22, params.w23);
-    SplatSurface surface;
+    // Every field starts at zero, so one this builder does not set is not
+    // whatever an earlier kernel left in the thread's memory.
+    SplatSurface surface = {};
     surface.position = relightToWorld(w0, w1, w2, position);
     surface.normal = relightNormalToWorld(w0, w1, w2, cloudNormal);
     // What the cloud shows in this direction, in linear light already.
@@ -331,6 +333,12 @@ float3 relitToward<let kTransfer : int>(uint i, uint slot, float3 position, floa
     // The frame the gaussian has now -- posed, for a cloud a skeleton
     // carries -- which is what a zonal transfer's lobes turn with.
     splatTransferFrame(surface, transfer, r, w0, w1, w2);
+    // The sky turned into a turned cloud's frame, as `projectSplat` reads it.
+    // Left unset, a flatten read the sky's harmonics at whatever index the
+    // thread's memory held: zero in a fresh process, and in a host that had
+    // run two transfer bakes first (Blender, a cloud and its catcher), past
+    // the end of every buffer (CUDA_ERROR_ILLEGAL_ADDRESS).
+    surface.skyCloud = params.skyCloud;
     // `params.shadowBits` is the words a gaussian: two of the first
     // transfer's 64 bits, eight or thirty-two of a TX transfer's cells.
     surface.hasShadowBits = params.shadowBits != 0 && params.shadowBits < 8u && params.transferCount >= 9;

@@ -15500,3 +15500,13 @@ different faults reached it through the same door: slang-rhi asserting on a fail
   every time (exit 0xC0000409 after the command had returned 0). The context is now made once and never destroyed
   (`installProcessContext`): it lives as long as the process, and the system takes back its memory. With it, the
   same run exits 0.
+- *A flatten read the sky at an index nobody set.* `relitToward`, the surface a flatten shades from each of its
+  directions (`splat_project.slang`), never set `skyCloud`, the offset of the sky turned into a turned cloud's frame
+  that the projection's own surface does set. Uninitialised, it held whatever the thread's memory held: zero in a
+  fresh process -- every flatten from the CLI -- and, in a Blender that had converted a cloud and its shadow catcher
+  (two transfer bakes) before exporting, an index past every buffer: `CUDA_ERROR_ILLEGAL_ADDRESS` in the export, then
+  the same assertion. compute-sanitizer named the read (`relitByDome` inside `splatFlatten`, a garbage address far
+  from any allocation); the light records and the dome table read back right; a mesh2splat alone, or a catcher
+  alone, before the flatten did not do it, the two together did. The surface now starts zeroed and takes
+  `params.skyCloud` as the projection's does; `tx_module` then runs through the export, the points and the cancel
+  without a crash. A turned cloud's flatten read the world's sky where its frame wanted the turned one.
