@@ -13964,6 +13964,33 @@ Tried and left out, the image identical and the time not:
 What is left is arithmetic: two bilinear reads of two levels of the sky at
 every pixel a sharp record covers, and the shading's 18 ms.
 
+**A level's offset in closed form.** Priced again by switching parts of the
+sky read off in the blend: one level instead of two, 28.4 -> 19.3 ms; the
+texel reads replaced by arithmetic, 26.9; the texel's address replaced by a
+constant, 19.9. The address was the cost: `envLevelOffset` walked the levels
+below the one read, at every bilinear read. Where the base is a power of two
+-- every map `Environment` prepares -- the levels above the floor halve, and
+their squares sum to (4^(b+1) - 4^(b-m+1)) / 3; the walk stays for any other
+base. The two agree for every base from 1 to 32768 and every level.
+
+| | project | blend | frame | against the last commit |
+|---|---|---|---|---|
+| the last commit | 22.5 ms | 28.3 ms | 86.8 ms | |
+| the offset in closed form | 21.4 | 25.3 | 80.9 | relMSE 0, p99 0, max 0 |
+
+What the constant address saved beyond that (a further 5 ms) is the texels
+all falling in one place, which a real lookup cannot have.
+
+**Shading only the gaussians the blend reaches** would be exact: whether a
+pixel reaches a record depends on the opacities before it, never on a
+colour, so a walk with the geometry alone finds exactly the records the
+frame's blend weighs. A probe (the blend's own contribution count, not kept)
+counted them: 873 k of the 5.38 M from the scene's camera, 842 k from behind
+on the other side, 508 k from the side -- 9 to 16%. Shading those alone would
+save about 15 of the projection's 17 ms of shading, but finding them is a
+second walk of every pixel through its tile's records, the blend without its
+colours: 13.9 ms. The two cancel on this car; it is not built.
+
 The sorts run at the tiled radix route's own rate (12.4 ms for four passes
 over ten million pairs, above): the depth sort is three passes of 8 bits over
 the 5.3 M visible (6.5 ms), the tile sort two over 11.8 M pairs whose 13 bits

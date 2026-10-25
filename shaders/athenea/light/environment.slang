@@ -69,7 +69,22 @@ public uint envSideOf(uint level, uint baseSide) {
 }
 
 /// Where a level's texels start, counted in texels from the dome's own start.
+///
+/// IN CLOSED FORM where the base is a power of two (every map `Environment`
+/// prepares): the levels above the floor are B, B/2, ..., so their squares sum
+/// to (4^(b+1) - 4^(b-m+1)) / 3, and the rest are the floor's. The walk below
+/// is the same sum one level at a time; at every texel a sharp lobe reads it
+/// was a third of the TX car's blend.
 public uint envLevelOffset(uint level, uint baseSide) {
+    const uint base = max(baseSide, kEnvCoarseSide);
+    const uint levels = min(level, kEnvLevels);
+    if ((base & (base - 1u)) == 0u && base <= 16384u) {
+        const uint b = firstbithigh(base);
+        const uint f = firstbithigh(kEnvFloorSide);
+        const uint m = min(levels, b - f);
+        const uint above = ((1u << (2u * (b + 1u))) - (1u << (2u * (b - m + 1u)))) / 3u;
+        return above + (levels - m) * kEnvFloorSide * kEnvFloorSide;
+    }
     uint at = 0;
     for (uint k = 0; k < min(level, kEnvLevels); ++k) {
         const uint side = envSideOf(k, baseSide);
