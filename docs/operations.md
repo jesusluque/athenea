@@ -518,6 +518,9 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 | `--position-high-bits` | 0 to `--bits` | `--bits` | a position's bits past the sample, sent exact beside the video; 0 sends none (with `--position-block`, the box is what keeps it near) |
 | `--chroma` | flag | off | colours as YCoCg: each colour's Y a luma plane, its Co and Cg the Cb and Cr of that tile, one sample a 2 x 2 block of four consecutive Morton splats; 8 bits only |
 | `--chroma-weight` | `mean` or `area` | `mean` | a block's chroma: the plain mean of its splats, or weighed by opacity x the area of their two largest axes |
+| `--reduce` | `pairs`, `prune`, `mix`, `cut` | `pairs` | with `--gaussians`: merged by pairs; the least contributing (opacity x the area of the two widest axes) dropped; half the excess dropped, then merged; or the octree's cut by error, its tolerances scaled to the count. Whatever a capped merge leaves above the count is dropped |
+| `--merge-growth` | factor | `0`: none | `pairs`, `mix`: no merge wider (the square root of its covariance's trace) than this times the wider of the two |
+| `--merge-opacity` | 0 to 3 | `0` | `pairs`, `mix`: 0 the members' mean, the merge widened, under 0.99; 1 their mass over the widened area; 2 their mass, not widened; 3 their mass, not widened, up to 5 (drawn with Spark's harder kernel) |
 | `--gaussians` | count | the frame's | about this many a frame: each frame merged by pairs where merging loses least (the decimation's NanoGS merge, `docs/decisions.md`), never dropped; no surfels |
 | `--rendition` | 0..65535 | `0` | the id every record carries, one a rendition of a ladder (`athv_stream.py`) |
 | `--rate` | frames a second | the sequence's, or 30 | stored in the file; `athenea stream` plays at it |
@@ -560,6 +563,9 @@ hardware decode (and its p95) and the kernel, submitted and waited for as
 |---|---|---|---|
 | `input` | `.athv`, required | — | |
 | `--frames` | pictures | all | |
+| `--frame` | source frame, from 0 | `0` | with `--dump-compare` |
+| `--dump-compare` | CSV path | none | another decoder's gaussians of `--frame`, a row a splat in the frame's order (`i,x,y,z,opacity,lnsx,lnsy,lnsz,r,g,b,...`, a header line first): each group's largest and mean difference from this decode and the rows past a tolerance (1 mm, 0.02, 0.1, 0.02), and this decode's opacity and widest log scale |
+| `--luma-histogram` | flag | off | each picture's plane 0 as the decoder left it: lowest and highest sample, and the share at 128, under 16 and over 235 (a full-range picture spans 0-255) |
 
 ### 2.8 `athenea mesh2splat` — a model into gaussians
 
@@ -2596,7 +2602,10 @@ size, mean Mbit/s, codec string and hvcC), first and then once a second; and
 every record, byte for byte as the file holds it but for the presentation
 frame (offset 8: counts on across loops, the same for the same instant in
 every rendition) and the PTP time (offset 12: `CLOCK_REALTIME` in ns when
-sent). Frame k of every rendition goes before frame k + 1, at start + k / rate
+sent); and, with `--anc` or `--env`, ancillary data (magic `ATVA`, record
+type 2, rendition 0xFFFF, the manifest's layout: JSON such as the
+environment the frames were drawn under) right after each manifest. Frame k
+of every rendition goes before frame k + 1, at start + k / rate
 on the monotonic clock, so the rate does not drift.
 
 | Option | Value | Default | Notes |
@@ -2605,6 +2614,8 @@ on the monotonic clock, so the rate does not drift.
 | `--rate` | frames a second | the files' | |
 | `--loops` | count | `0`: forever | |
 | `--manifest-every` | frames | the rate (a second) | |
+| `--anc` | JSON path | none | ancillary data (record type 2, magic `ATVA`, the manifest's layout): sent right after every manifest and again when the file changes |
+| `--env` | URL | none | an environment block naming that URL: the sparrow's dome, its latlong turned into the cloud's space (`toWorld`) |
 | `--spin-ms` | ms | `12` | how long before a frame's time it stops sleeping and spins: a sleeping process wakes up to ~10 ms late (3 ms left 7 ms of jitter, 12 ms 0.5 ms) |
 | `--stats` | flag | off | a line a second on stderr: frames a second, Mbit/s, how late the latest frame went out |
 
@@ -2676,6 +2687,7 @@ A script's own header says what it needs and where it puts things.
 | `measure: an empty window` | `athenea compare --window` (or the effect's `window`) holds no pixel | give X0 < X1 and Y0 < Y1 inside the image |
 | a shader compile error naming a path | the shaders on disk do not match the binary | rebuild, or point `ATHENEA_SHADER_DIR` at this build's `shaders` |
 | `this build reads no .spz` | zstd was missing when this binary was built | rebuild with zstd, or convert the capture elsewhere |
+| `video: the stream's SPS says video range (16-235); video planes are full range` | an HEVC stream whose VUI does not set full range was given to the planes decoder | encode with `athenea video-encode` (full range, '420f'), or re-encode the stream full range |
 | `SPZ data stored in coordinate system N; this reader reads right-up-back (4) and right-down-front (6)` | the file's coordinate-system extension names another system | re-export it right-up-back or right-down-front |
 | `.sog` refused | libwebp was missing | install it and rebuild |
 | `a .athc is drawn through its levels of detail: give --lod` | a container was given to a plain render | add `--lod`, and use `--technique raster` |

@@ -352,6 +352,16 @@ private:
             return Error::make(ErrorCode::InvalidArgument, "video: parameter sets the decoder cannot read ({})",
                                static_cast<int>(st));
         }
+        // The planes are full range, and this decoder asks for full range
+        // out: a stream that says video range would come back stretched
+        // from 16-235, every sample skewed, so it is refused.
+        const auto full = static_cast<CFBooleanRef>(
+            CMFormatDescriptionGetExtension(format_, kCMFormatDescriptionExtension_FullRangeVideo));
+        if (full == nullptr || !CFBooleanGetValue(full)) {
+            reset();
+            return Error(ErrorCode::InvalidArgument,
+                         "video: the stream's SPS says video range (16-235); video planes are full range");
+        }
         CFMutableDictionaryRef spec = newDictionary();
         CFDictionarySetValue(spec, kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
                              kCFBooleanTrue);

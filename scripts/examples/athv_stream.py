@@ -14,6 +14,9 @@ length and then that many bytes:
         frame and their size, mean Mbit/s, codec string and hvcC. Sent first
         and again every --manifest-every frames (a second by default), just
         before that frame's pictures.
+  ATVA  ancillary data (JSON), right after every manifest and whenever its
+        file changes: --anc FILE.json, or --env URL to send an environment
+        block (the dome the frames were drawn under; docs/operations.md).
   ATVF  a picture, byte for byte as the file holds it but for two fields at
         fixed offsets: the presentation frame (offset 8, u32: counts on
         across loops, the same for the same instant in every rendition) and
@@ -46,14 +49,31 @@ import athv_read as athv
 
 
 
-def manifest_message(manifest, frame):
-    payload = json.dumps(manifest, separators=(",", ":")).encode()
-    body = struct.pack("<4sHHIQIHHI", b"ATVM", athv.MANIFEST, 0xFFFF, frame, time.time_ns(), 0, 2, 0, len(payload))
+def json_message(magic, kind, payload_object, frame):
+    """The fixed prefix, a u32 length and JSON, padded to four bytes: a manifest or ancillary data."""
+    payload = json.dumps(payload_object, separators=(",", ":")).encode()
+    body = struct.pack("<4sHHIQIHHI", magic, kind, 0xFFFF, frame, time.time_ns(), 0, 2, 0, len(payload))
     body += payload
     body += b"\0" * (-len(body) % 4)
     body = bytearray(body)
     struct.pack_into("<I", body, athv.BYTES_AT, len(body))
     return struct.pack("<I", len(body)) + bytes(body)
+
+
+def manifest_message(manifest, frame):
+    return json_message(b"ATVM", athv.MANIFEST, manifest, frame)
+
+
+# The sparrow's dome (camera_sky.usda): a plain DomeLight on a Z-up stage, no transform, so its frame is the
+# stage's world (athenea leaves an authored dome as USD reads it: its pole on world +Y). The cloud's own space
+# (where decoded positions are) is the stage's world turned by /Live's rotateX(270): world = (x, z, -y). So a
+# direction d in the dome's frame is toWorld . d in the cloud's space, toWorld = these rows.
+DOME_TO_CLOUD = [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]]
+
+
+def environment_block(url):
+    return dict(environment=dict(url=url, mime="image/vnd.radiance", format="latlong", toWorld=DOME_TO_CLOUD,
+                                 intensity=1.0, exposure=0.0, background=True))
 
 
 def main():
@@ -62,6 +82,8 @@ def main():
     ap.add_argument("--rate", type=float, default=0.0, help="frames a second (default: the files')")
     ap.add_argument("--loops", type=int, default=0, help="times the frames are played (default 0: forever)")
     ap.add_argument("--manifest-every", type=int, default=0, help="frames between manifests (default: a second)")
+    ap.add_argument("--anc", metavar="JSON", help="ancillary data to send (a JSON file), re-read when it changes")
+    ap.add_argument("--env", metavar="URL", help="send an environment block naming this URL (the sparrow's dome)")
     ap.add_argument("--spin-ms", type=float, default=12.0, help="ms before a frame's time spent spinning, not asleep")
     ap.add_argument("--stats", action="store_true", help="a line a second on stderr: frames, Mbit/s, lateness")
     a = ap.parse_args()
@@ -97,6 +119,25 @@ def main():
         f["entry"]["meanMbps"] = round(f["entry"]["meanBytesPerFrame"] * 8 * rate / 1e6, 2)
     manifest = dict(version=1, fps=dict(num=num, den=den), frames=frames, renditions=[f["entry"] for f in files])
     every = a.manifest_every if a.manifest_every > 0 else max(1, round(rate))
+    anc = {"mtime": None, "payload": None}
+
+    def ancillary():
+        """The ancillary payload, and whether it changed since it was last sent."""
+        if a.anc:
+            try:
+                mtime = os.stat(a.anc).st_mtime_ns
+            except OSError:
+                return anc["payload"], False
+            if mtime != anc["mtime"]:
+                with open(a.anc) as f:
+                    anc["payload"] = json.load(f)
+                changed = anc["mtime"] is not None
+                anc["mtime"] = mtime
+                return anc["payload"], changed
+            return anc["payload"], False
+        if a.env and anc["payload"] is None:
+            anc["payload"] = environment_block(a.env)
+        return anc["payload"], False
 
     out = sys.stdout.buffer
     period_ns = 1.0e9 / rate
@@ -113,10 +154,16 @@ def main():
             while time.monotonic_ns() < due:
                 pass
             worst_late = max(worst_late, time.monotonic_ns() - due)
-            if k % every == 0:
-                m = manifest_message(manifest, k)
-                out.write(m)
-                sent_bytes += len(m)
+            payload, changed = ancillary()
+            if k % every == 0 or changed:
+                if k % every == 0:
+                    m = manifest_message(manifest, k)
+                    out.write(m)
+                    sent_bytes += len(m)
+                if payload is not None:
+                    m = json_message(b"ATVA", 2, payload, k)
+                    out.write(m)
+                    sent_bytes += len(m)
             source = k % frames
             for f in files:
                 for at, size in f["frames"][source]:

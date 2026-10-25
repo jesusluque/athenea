@@ -87,6 +87,7 @@ public struct PairParams {
     public float histogramLo;    // log10 of the cheapest cost the histogram holds
     public float histogramStep;  // log10 a bin
     public uint  relaxed;        // 1: the guards are lifted (Lod.cpp, relaxTop); its merges' costs are recorded negative
+    public float maxGrowth;      // a merge whose size (sqrt of its covariance's trace) passes this times its larger member's is refused (0: off)
 };
 
 ConstantBuffer<PairParams>  params;
@@ -298,6 +299,14 @@ float mergeCost(Node a, Node b) {
     const float root = sqrt(max(trace * trace - 4.0 * i2, 0.0));
     const float aspect = sqrt((trace + root) / max(trace - root, 1.0e-30));
     if (aspect > max(params.maxAspect, 1.25 * max(aspectOf(a.sigma), aspectOf(b.sigma)))) {
+        return kNoMerge;
+    }
+    // NO MERGE MUCH WIDER THAN WHAT IT MERGES: two gaussians far apart
+    // moment-match into one that covers the gap between them, a smear --
+    // what a cloud halved for a phone lost its feathers to.
+    if (params.maxGrowth > 0.0 &&
+        trace > params.maxGrowth * params.maxGrowth *
+                    max(a.sigma[0][0] + a.sigma[1][1] + a.sigma[2][2], b.sigma[0][0] + b.sigma[1][1] + b.sigma[2][2])) {
         return kNoMerge;
     }
     // What the screen sees of it: the merged gaussian's width in pixels.

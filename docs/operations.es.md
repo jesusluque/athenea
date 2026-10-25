@@ -530,6 +530,9 @@ exacta, la baja por el códec. La croma se queda en gris medio, así que el
 | `--position-high-bits` | 0 a `--bits` | `--bits` | los bits de una posición por encima de la muestra, enviados exactos junto al vídeo; 0 no envía ninguno (con `--position-block`, la caja es lo que la mantiene cerca) |
 | `--chroma` | flag | no | colores como YCoCg: la Y de cada color un plano de luma, su Co y su Cg el Cb y el Cr de esa tesela, una muestra por bloque de 2 x 2 de cuatro gaussianas consecutivas en el orden de Morton; solo 8 bits |
 | `--chroma-weight` | `mean` o `area` | `mean` | el croma de un bloque: la media simple de sus gaussianas, o ponderada por opacidad x el área de sus dos ejes mayores |
+| `--reduce` | `pairs`, `prune`, `mix`, `cut` | `pairs` | con `--gaussians`: fusionadas por pares; las que menos aportan (opacidad x el área de los dos ejes más anchos) descartadas; la mitad del exceso descartada y después fusionadas; o el corte del octree por error, con sus tolerancias escaladas hasta la cuenta. Lo que una fusión limitada deja por encima de la cuenta se descarta |
+| `--merge-growth` | factor | `0`: ninguno | `pairs`, `mix`: ninguna fusión más ancha (la raíz de la traza de su covarianza) que este factor por la más ancha de las dos |
+| `--merge-opacity` | 0 a 3 | `0` | `pairs`, `mix`: 0 la media de sus miembros, la fusión ensanchada, por debajo de 0,99; 1 su masa sobre el área ensanchada; 2 su masa, sin ensanchar; 3 su masa, sin ensanchar, hasta 5 (dibujada con el núcleo más duro de Spark) |
 | `--gaussians` | número | las del frame | unas tantas por frame: cada frame fusionado por pares donde fusionar pierde menos (la fusión NanoGS de la decimación, `docs/decisions.md`), nunca descartadas; sin surfels |
 | `--rendition` | 0..65535 | `0` | el id que lleva cada registro, uno por rendición de una escalera (`athv_stream.py`) |
 | `--rate` | frames por segundo | el de la secuencia, o 30 | se guarda en el fichero; `athenea stream` lo reproduce a ese ritmo |
@@ -573,6 +576,9 @@ cronometra un kernel `ATHENEA_STAGES`.
 |---|---|---|---|
 | `input` | `.athv`, obligatorio | — | |
 | `--frames` | imágenes | todas | |
+| `--frame` | frame de origen, desde 0 | `0` | con `--dump-compare` |
+| `--dump-compare` | ruta CSV | ninguna | las gaussianas de `--frame` según otro decodificador, una fila por gaussiana en el orden del frame (`i,x,y,z,opacity,lnsx,lnsy,lnsz,r,g,b,...`, con una línea de cabecera): la mayor diferencia y la media de cada grupo respecto a esta decodificación y las filas que pasan una tolerancia (1 mm, 0,02, 0,1, 0,02), y la opacidad y la mayor escala logarítmica de esta decodificación |
+| `--luma-histogram` | flag | no | el plano 0 de cada imagen tal como lo dejó el decodificador: la muestra más baja y la más alta, y la proporción en 128, por debajo de 16 y por encima de 235 (una imagen de rango completo cubre 0-255) |
 
 ### 2.8 `athenea mesh2splat` — un modelo en gaussianas
 
@@ -2676,7 +2682,10 @@ su tamaño, Mbit/s medios, cadena de códec y hvcC), primero y después una vez
 por segundo; y cada registro, byte a byte como lo guarda el fichero salvo el
 frame de presentación (offset 8: sigue contando entre bucles, el mismo para
 el mismo instante en todas las rendiciones) y el tiempo PTP (offset 12:
-`CLOCK_REALTIME` en ns al enviarlo). El frame k de todas las rendiciones va
+`CLOCK_REALTIME` en ns al enviarlo); y, con `--anc` o `--env`, datos
+auxiliares (magic `ATVA`, tipo de registro 2, rendición 0xFFFF, la
+disposición del manifiesto: JSON como el entorno bajo el que se dibujaron
+los frames) justo después de cada manifiesto. El frame k de todas las rendiciones va
 antes que el frame k + 1, en inicio + k / ritmo según el reloj monótono, así
 que el ritmo no deriva.
 
@@ -2686,6 +2695,8 @@ que el ritmo no deriva.
 | `--rate` | frames por segundo | el de los ficheros | |
 | `--loops` | número | `0`: siempre | |
 | `--manifest-every` | frames | el ritmo (un segundo) | |
+| `--anc` | ruta JSON | ninguna | datos auxiliares (registro de tipo 2, magic `ATVA`, la disposición del manifiesto): se envían justo después de cada manifiesto y otra vez cuando cambia el fichero |
+| `--env` | URL | ninguna | un bloque de entorno que nombra esa URL: el domo del gorrión, su latlong girado al espacio de la nube (`toWorld`) |
 | `--spin-ms` | ms | `12` | cuánto antes del tiempo de un frame deja de dormir y espera activamente: un proceso dormido despierta hasta ~10 ms tarde (3 ms dejaron 7 ms de jitter, 12 ms 0,5 ms) |
 | `--stats` | flag | no | una línea por segundo en stderr: frames por segundo, Mbit/s, con qué retraso salió el último frame |
 
@@ -2758,6 +2769,7 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 | `measure: an empty window` | `athenea compare --window` (o el `window` del efecto) no contiene ningún píxel | da X0 < X1 e Y0 < Y1 dentro de la imagen |
 | un error de compilación de shader con una ruta | los shaders del disco no son los del binario | recompila, o apunta `ATHENEA_SHADER_DIR` al `shaders` de esta compilación |
 | `this build reads no .spz` | faltaba zstd cuando se compiló este binario | recompila con zstd, o convierte la captura en otro sitio |
+| `video: the stream's SPS says video range (16-235); video planes are full range` | se dio al decodificador de planos un stream HEVC cuyo VUI no marca rango completo | codifícalo con `athenea video-encode` (rango completo, '420f'), o vuelve a codificarlo en rango completo |
 | `SPZ data stored in coordinate system N; this reader reads right-up-back (4) and right-down-front (6)` | la extensión de sistema de coordenadas del fichero nombra otro sistema | reexpórtalo en right-up-back o right-down-front |
 | un `.sog` rechazado | faltaba libwebp | instálalo y recompila |
 | `a .athc is drawn through its levels of detail: give --lod` | se le dio un contenedor a un render normal | añade `--lod`, y usa `--technique raster` |

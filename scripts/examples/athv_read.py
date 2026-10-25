@@ -34,7 +34,7 @@ import time
 HEADER_BYTES = 128
 # Every record's fixed prefix (Athv.h, AthvRecordPrefix).
 MAGIC_AT, TYPE_AT, RENDITION_AT, FRAME_AT, PTP_AT, BYTES_AT, VERSION_AT, FLAGS_AT = 0, 4, 6, 8, 12, 20, 24, 26
-PICTURE, MANIFEST = 0, 1
+PICTURE, MANIFEST, ANCILLARY = 0, 1, 2
 
 
 # --- the file --------------------------------------------------------------
@@ -240,8 +240,9 @@ def describe(data):
     first = parse_record(data, records[0][0])
     frames = h["sourceFrames"] or len({parse_record(data, at)["source"] for at, _ in records})
     total = sum(size for _, size in records)
-    gaussians = statistics.median(struct.unpack_from("<I", data, at + 52)[0] for at, _ in records)
-    out = dict(id=h["rendition"], gaussians=int(gaussians), shDegree={0: 0, 3: 1, 8: 2, 15: 3}[h["restPerColour"]],
+    per_frame = [struct.unpack_from("<I", data, at + 52)[0] for at, _ in records]
+    gaussians = statistics.median(per_frame)
+    out = dict(id=h["rendition"], gaussians=int(gaussians), maxGaussians=max(per_frame), shDegree={0: 0, 3: 1, 8: 2, 15: 3}[h["restPerColour"]],
                quality=h["quality"], bits=h["bits"], restPerColour=h["restPerColour"], chunkSplats=h["chunkSplats"],
                columns=h["columns"], maxSplats=h["maxSplats"], hiInVideo=h["hiInVideo"],
                antialiased=h["antialiased"], positionBlock=h["positionBlock"],
@@ -327,6 +328,7 @@ def receive(seconds, rate_hint):
     frame_stamps = []
     frames_seen = []
     manifests = 0
+    ancillaries = 0
     broken = 0
     rate = rate_hint
     last_frame = None
@@ -360,6 +362,12 @@ def receive(seconds, rate_hint):
             if not rate:
                 rate = m["fps"]["num"] / m["fps"]["den"]
             continue
+        if magic == b"ATVA" and kind == ANCILLARY:
+            ancillaries += 1
+            jn, = struct.unpack_from("<I", body, 28)
+            if ancillaries == 1:
+                print("athv_read: ancillary data from frame %d: %s" % (frame, body[32:32 + jn].decode()))
+            continue
         if magic != b"ATVF" or kind != PICTURE or size != len(body):
             broken += 1
             continue
@@ -380,9 +388,9 @@ def receive(seconds, rate_hint):
     period = 1000.0 / rate if rate else statistics.median(gaps)
     missing = (frames_seen[-1] - frames_seen[0] + 1) - len(frames_seen)
     total = sum(c[1] for c in per.values())
-    print("athv_read: %d frames in %.2f s: %.2f frames/s, %.1f Mbit/s in all; %d manifests, %d broken, "
-          "%d frames missing" % (len(frames_seen), span, (len(frames_seen) - 1) / span, total * 8 / span / 1e6,
-                                 manifests, broken, missing))
+    print("athv_read: %d frames in %.2f s: %.2f frames/s, %.1f Mbit/s in all; %d manifests, %d ancillary, "
+          "%d broken, %d frames missing" % (len(frames_seen), span, (len(frames_seen) - 1) / span,
+                                            total * 8 / span / 1e6, manifests, ancillaries, broken, missing))
     for rid in sorted(per):
         c = per[rid]
         print("athv_read: rendition %d: %d records, %.2f records/s, %.2f Mbit/s"

@@ -132,32 +132,149 @@ Result<scene::GpuSplats> loadFrame(gpu::Device& device, scene::CloudLoader& load
     return std::move(*whole);
 }
 
-/// A frame merged by pairs to about `target` gaussians (lod::Decimator's
-/// NanoGS merge over the frame's own Morton order): the cloud the decimation
-/// keeps, its harmonics merged with it. No surfels: a scale of exactly 0 is
-/// a disc only to a reader that asks for discs.
-Result<scene::GpuSplats> reduced(gpu::ShaderLibrary& library, lod::LodBuilder& builder, lod::Decimator& decimator,
-                                 scene::GpuSplats cloud, uint32_t target) {
-    if (target == 0 || cloud.count <= target) return cloud;
-    if (!cloud.origin.valid()) {
-        // A frame put together from pages has no record index of its own:
-        // its splats are its records (an index list, bookkeeping).
-        std::vector<uint32_t> index(cloud.count);
-        for (uint32_t k = 0; k < cloud.count; ++k) index[k] = k;
-        auto origin = gpu::Buffer::fromSpan(library.device(), std::span<const uint32_t>(index), "video.origin");
-        if (!origin) return std::move(origin).error();
-        cloud.origin = std::move(*origin);
+/// HOW A FRAME IS CUT TO FEWER GAUSSIANS (--gaussians): merged by pairs
+/// (lod::Decimator's NanoGS merge, optionally refusing a merge wider than
+/// `growth` times its wider member), pruned by contribution (opacity x the
+/// area of the two widest axes, video_reduce.slang), both (`mix`: half the
+/// excess pruned, the rest merged), or the octree's own cut by error
+/// (lod::Decimator::decimate, its tolerances scaled until the count is near).
+/// Whatever a capped merge leaves above the target is pruned.
+struct Reduction {
+    std::string mode = "pairs";
+    float       growth = 0.0F;
+    /// lod::PairSettings::opacityRule: 0 the members' mean, widened, under
+    /// 0.99; 3 their mass, not widened, up to 5 (Spark's harder kernel).
+    uint32_t    opacityRule = 0;
+};
+
+struct Reducer {
+    gpu::ShaderLibrary* library = nullptr;
+    std::optional<lod::LodBuilder> builder;
+    std::optional<lod::Decimator>  decimator;
+    std::optional<gpu::ComputeKernel> score;
+
+    Result<lod::LodCloud> build(scene::GpuSplats& cloud) {
+        if (!cloud.origin.valid()) {
+            // A frame put together from pages has no record index of its own:
+            // its splats are its records (an index list, bookkeeping).
+            std::vector<uint32_t> index(cloud.count);
+            for (uint32_t k = 0; k < cloud.count; ++k) index[k] = k;
+            auto origin = gpu::Buffer::fromSpan(library->device(), std::span<const uint32_t>(index), "video.origin");
+            if (!origin) return std::move(origin).error();
+            cloud.origin = std::move(*origin);
+        }
+        return builder->build(cloud);
     }
-    auto lod = builder.build(cloud);
-    if (!lod) return std::move(lod).error();
-    lod::PairSettings settings;
-    settings.ratio = static_cast<float>(cloud.count) / static_cast<float>(target);
-    settings.surfels = false;
-    auto kept = decimator.decimatePairs(*lod, cloud.origin, settings);
-    if (!kept) return std::move(kept).error();
-    kept->cloud.antialiased = cloud.antialiased;
-    return std::move(kept->cloud);
-}
+
+    /// The store of `lod` without its least contributing splats, about `goal` left.
+    Result<lod::LodCloud> pruneTo(const lod::LodCloud& lod, uint32_t goal) {
+        gpu::Device& device = library->device();
+        gpu::BufferDesc desc;
+        desc.bytes = uint64_t{std::max(lod.count, 1u)} * 4;
+        desc.elementBytes = 4;
+        desc.label = "video.score";
+        auto scores = gpu::Buffer::create(device, desc);
+        if (!scores) return std::move(scores).error();
+        {
+            gpu::CommandBatch batch(device);
+            score->dispatch(batch, {lod.count, 1, 1}, [&](rhi::ShaderCursor c) {
+                c["positions"].setBinding(lod.splats.positions.rhi());
+                c["shape"].setBinding(lod.splats.shape.rhi());
+                c["score"].setBinding(scores->rhi());
+                c["params"]["count"].setData(lod.count);
+            });
+            ATHENEA_TRY(batch.submit(true));
+        }
+        auto bins = decimator->scoreHistogram(*scores, lod.count);
+        if (!bins) return std::move(bins).error();
+        const uint64_t drop = lod.count > goal ? lod.count - goal : 0;
+        uint64_t sum = 0;
+        float threshold = 0.0F;
+        for (uint32_t k = 0; k < lod::Decimator::kScoreBins && drop > 0; ++k) {
+            sum += (*bins)[k];
+            if (sum >= drop) {
+                threshold = lod::Decimator::scoreOfBin(k + 1);
+                break;
+            }
+        }
+        return decimator->prune(lod, *scores, threshold);
+    }
+
+    static scene::GpuSplats storeOf(lod::LodCloud&& lod, const scene::GpuSplats& like) {
+        scene::GpuSplats out = std::move(lod.splats);
+        out.count = lod.count;
+        out.antialiased = like.antialiased;
+        return out;
+    }
+
+    Result<scene::GpuSplats> reduce(scene::GpuSplats cloud, uint32_t target, const Reduction& r) {
+        if (target == 0 || cloud.count <= target) return cloud;
+        auto lod = build(cloud);
+        if (!lod) return std::move(lod).error();
+        if (r.mode == "prune") {
+            auto kept = pruneTo(*lod, target);
+            if (!kept) return std::move(kept).error();
+            return storeOf(std::move(*kept), cloud);
+        }
+        if (r.mode == "cut") {
+            // The octree's cut by error, its four tolerances scaled together
+            // (bisected in their logarithm: the count falls as they grow).
+            double lo = std::log(1.0 / 64.0), hi = std::log(256.0);
+            std::optional<scene::GpuSplats> best;
+            uint32_t bestCount = 0;
+            for (int k = 0; k < 12; ++k) {
+                const double mid = 0.5 * (lo + hi);
+                const float m = static_cast<float>(std::exp(mid));
+                lod::DecimateSettings d;
+                d.colourTolerance *= m;
+                d.outliers = std::min(1.0F, d.outliers * m);
+                d.flatTolerance *= m;
+                d.reach *= m;
+                lod::DecimateStats stats;
+                auto kept = decimator->decimate(*lod, cloud.origin, d, {}, &stats);
+                if (!kept) return std::move(kept).error();
+                const uint32_t n = kept->cloud.count;
+                if (!best || (n >= target && (bestCount < target || n < bestCount)) ||
+                    (n < target && bestCount < target && n > bestCount)) {
+                    best = std::move(kept->cloud);
+                    bestCount = n;
+                }
+                (n > target ? lo : hi) = mid;
+            }
+            best->antialiased = cloud.antialiased;
+            if (bestCount <= target + target / 33) return std::move(*best);
+            auto again = build(*best);
+            if (!again) return std::move(again).error();
+            auto kept = pruneTo(*again, target);
+            if (!kept) return std::move(kept).error();
+            return storeOf(std::move(*kept), cloud);
+        }
+        // Pairs, after a prune of half the excess for `mix`.
+        const lod::LodCloud* from = &*lod;
+        std::optional<lod::LodCloud> pruned;
+        if (r.mode == "mix") {
+            auto kept = pruneTo(*lod, cloud.count - (cloud.count - target) / 2);
+            if (!kept) return std::move(kept).error();
+            pruned = std::move(*kept);
+            from = &*pruned;
+        }
+        lod::PairSettings settings;
+        settings.ratio = static_cast<float>(from->count) / static_cast<float>(target);
+        settings.surfels = false;
+        settings.maxGrowth = r.growth;
+        settings.opacityRule = r.opacityRule;
+        auto kept = decimator->decimatePairs(*from, cloud.origin, settings);
+        if (!kept) return std::move(kept).error();
+        kept->cloud.antialiased = cloud.antialiased;
+        if (kept->cloud.count <= target + target / 33) return std::move(kept->cloud);
+        // A capped merge stopped short: the rest pruned.
+        auto again = build(kept->cloud);
+        if (!again) return std::move(again).error();
+        auto rest = pruneTo(*again, target);
+        if (!rest) return std::move(rest).error();
+        return storeOf(std::move(*rest), cloud);
+    }
+};
 
 double median(std::vector<double> v) {
     if (v.empty()) return 0.0;
@@ -205,6 +322,125 @@ const char* groupOf(uint32_t a) {
     return "rest";
 }
 
+/// Another decoder's gaussians of one frame (a CSV, a row a splat in the
+/// frame's order) against this decode of it, on the device: what
+/// `video-decode --dump-compare` prints.
+void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::PlanesCodec& codec,
+                 video::AthvReader& reader, video::VideoDecoder& decoder, video::LumaTextures& textures,
+                 uint32_t frame, const std::string& csv) {
+    const video::AthvHeader& h = reader.header();
+    if (frame >= reader.sourceFrames()) {
+        cli::err("video-decode: no frame %u\n", frame);
+        throw CLI::RuntimeError(kExitFailure);
+    }
+    scene::GpuSplats store;
+    uint32_t total = 0;
+    for (const uint32_t k : reader.slicesOf(frame)) {
+        auto f = reader.read(k);
+        if (!f) cli::fail(f.error());
+        if (!store.positions.valid()) {
+            auto s = video::PlanesCodec::allocate(device, f->sourceSplats, h.restPerColour, "video.dump");
+            if (!s) cli::fail(s.error());
+            store = std::move(*s);
+            total = f->sourceSplats;
+        }
+        auto picture = decoder.decode(f->unit, f->parameterSets, f->keyframe);
+        if (!picture) cli::fail(picture.error());
+        auto layout = video::PlaneLayout::make(f->splats, h.bits, h.restPerColour, h.hiInVideo, h.chunkSplats,
+                                               h.columns, h.maxSplats, 0, 0, h.chroma);
+        if (!layout) cli::fail(layout.error());
+        layout->positionBlock = h.positionBlock;
+        layout->positionHighBits = h.positionHighBits;
+        auto side = sidePage(device, f->ranges, f->high);
+        if (!side) cli::fail(side.error());
+        auto luma = textures.wrap(**picture);
+        if (!luma) cli::fail(luma.error());
+        gpu::CommandBatch batch(device);
+        if (auto r = codec.decode(batch, *layout, luma->texture.get(), luma->chroma.get(), side->rhi(), 0,
+                                  layout->rangeBytes(), 0, f->splats, store, f->firstSplat, h.restPerColour);
+            !r) {
+            cli::fail(r.error());
+        }
+        if (auto s = batch.submit(true); !s) cli::fail(s.error());
+    }
+    // The CSV: read and parsed here, ten numbers a row (the file's i and
+    // anything past the base colour are not compared).
+    std::ifstream in(csv);
+    if (!in) {
+        cli::err("video-decode: cannot read %s\n", csv.c_str());
+        throw CLI::RuntimeError(kExitFailure);
+    }
+    constexpr uint32_t kStride = 10;
+    std::vector<float> rows;
+    std::string line;
+    std::getline(in, line);
+    uint32_t count = 0;
+    while (std::getline(in, line) && count < total) {
+        std::stringstream words(line);
+        std::string cell;
+        std::getline(words, cell, ',');   // i
+        for (uint32_t c = 0; c < kStride; ++c) {
+            if (!std::getline(words, cell, ',')) break;
+            rows.push_back(std::strtof(cell.c_str(), nullptr));
+        }
+        rows.resize(size_t{count + 1} * kStride, 0.0F);
+        ++count;
+    }
+    auto rowBuffer = gpu::Buffer::fromSpan(device, std::span<const float>(rows), "video.dumpRows");
+    if (!rowBuffer) cli::fail(rowBuffer.error());
+    std::vector<uint32_t> zero(14 + 256, 0);
+    auto counters = gpu::Buffer::fromSpan(device, std::span<const uint32_t>(zero), "video.dumpCounters");
+    if (!counters) cli::fail(counters.error());
+    auto kernel = gpu::ComputeKernel::create(library, "athenea/scene/video_dump_compare", "videoDumpCompare");
+    if (!kernel) cli::fail(kernel.error());
+    const float tolerances[4] = {1.0e-3F, 0.02F, 0.1F, 0.02F};
+    {
+        gpu::CommandBatch batch(device);
+        kernel->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) {
+            c["positions"].setBinding(store.positions.rhi());
+            c["shape"].setBinding(store.shape.rhi());
+            c["rows"].setBinding(rowBuffer->rhi());
+            c["counters"].setBinding(counters->rhi());
+            c["params"]["count"].setData(count);
+            c["params"]["stride"].setData(kStride);
+            c["params"]["positionTolerance"].setData(tolerances[0]);
+            c["params"]["opacityTolerance"].setData(tolerances[1]);
+            c["params"]["scaleTolerance"].setData(tolerances[2]);
+            c["params"]["colourTolerance"].setData(tolerances[3]);
+        });
+        if (auto s = batch.submit(true); !s) cli::fail(s.error());
+    }
+    std::vector<uint32_t> got(zero.size());
+    if (auto r = counters->read(device, 0, got.size() * 4, got.data()); !r) cli::fail(r.error());
+    const auto asFloat = [](uint32_t bits) {
+        float v = 0;
+        std::memcpy(&v, &bits, 4);
+        return v;
+    };
+    const char* names[4] = {"position (m, largest axis)", "opacity", "log scale (largest axis)",
+                            "base colour (largest channel)"};
+    const double units[4] = {1.0e-6, 1.0e-4, 1.0e-3, 1.0e-4};
+    cli::out("video-decode: frame %u of %s, %u splats decoded, %u rows compared\n", frame, reader.header().chroma
+             ? "a chroma .athv" : "a luma .athv", total, count);
+    cli::out("| attribute | max abs diff | mean abs diff | rows past tolerance (tolerance) |\n|---|---:|---:|---:|\n");
+    for (int g = 0; g < 4; ++g) {
+        cli::out("| %s | %.6g | %.6g | %u (%g) |\n", names[g], static_cast<double>(asFloat(got[g * 3])),
+                 got[g * 3 + 1] * units[g] / std::max(count, 1u), got[g * 3 + 2], static_cast<double>(tolerances[g]));
+    }
+    uint64_t seen = 0, below = 0;
+    for (uint32_t b = 0; b < 256; ++b) seen += got[14 + b];
+    double p99 = 0.0;
+    for (uint32_t b = 0; b < 256; ++b) {
+        below += got[14 + b];
+        if (below >= seen * 99 / 100) {
+            p99 = -16.0 + (b + 1) / 16.0;
+            break;
+        }
+    }
+    cli::out("video-decode: this decode: opacity max %.4f, mean %.4f; largest log scale p99 %.3f (bins of 1/16)\n",
+             static_cast<double>(asFloat(got[12])), got[13] * 1.0e-4 / std::max(count, 1u), p99);
+}
+
 }   // namespace
 
 void addVideo(CLI::App& app) {
@@ -214,6 +450,9 @@ void addVideo(CLI::App& app) {
         uint32_t bits = 8, keyInterval = 0, columns = 0, shDegree = 3, rendition = 0, gaussians = 0;
         uint32_t positionBlock = 0;
         int      positionHighBits = -1;
+        std::string reduce = "pairs";
+        float    mergeGrowth = 0.0F;
+        uint32_t mergeOpacity = 0;
         double quality = 0.5, megabits = 0.0, rate = 0.0;
         bool check = false, intra = false, chroma = false;
         std::string chromaWeight = "mean";
@@ -256,6 +495,17 @@ void addVideo(CLI::App& app) {
                   "Morton neighbours (8 bits)");
     enc->add_option("--chroma-weight", o->chromaWeight, "a block's chroma: mean, or area (weighed by opacity x area)")
         ->check(CLI::IsMember({"mean", "area"}));
+    enc->add_option("--reduce", o->reduce,
+                    "with --gaussians: pairs (merged), prune (the least contributing dropped), mix (half the excess "
+                    "pruned, then merged) or cut (the octree's cut by error)")
+        ->check(CLI::IsMember({"pairs", "prune", "mix", "cut"}));
+    enc->add_option("--merge-growth", o->mergeGrowth,
+                    "pairs, mix: no merge wider than this times the wider of the two (0: no limit); what it leaves "
+                    "above --gaussians is pruned");
+    enc->add_option("--merge-opacity", o->mergeOpacity,
+                    "pairs, mix: a merge's opacity -- 0 its members' mean, the merge widened, under 0.99; 1 their "
+                    "mass over the widened area; 2 their mass, not widened; 3 their mass, not widened, up to 5")
+        ->check(CLI::Range(0u, 3u));
     enc->add_option("--rendition", o->rendition, "the rendition's id, which every record carries (0..65535)")
         ->check(CLI::Range(0u, 65535u));
     enc->add_option("--max-picture", o->maxPicture,
@@ -307,15 +557,18 @@ void addVideo(CLI::App& app) {
         if (!loader) cli::fail(loader.error());
         auto codec = video::PlanesCodec::create(library);
         if (!codec) cli::fail(codec.error());
-        std::optional<lod::LodBuilder> builder;
-        std::optional<lod::Decimator> decimator;
+        Reducer reducer;
+        reducer.library = &library;
         if (o->gaussians != 0) {
             auto b = lod::LodBuilder::create(library);
             if (!b) cli::fail(b.error());
             auto d = lod::Decimator::create(library);
             if (!d) cli::fail(d.error());
-            builder = std::move(*b);
-            decimator = std::move(*d);
+            auto k = gpu::ComputeKernel::create(library, "athenea/scene/video_reduce", "videoReduceScore");
+            if (!k) cli::fail(k.error());
+            reducer.builder = std::move(*b);
+            reducer.decimator = std::move(*d);
+            reducer.score = std::move(*k);
         }
         const uint32_t restAsked = o->shDegree == 0 ? 0u : (o->shDegree + 1) * (o->shDegree + 1) - 1;
 
@@ -350,7 +603,7 @@ void addVideo(CLI::App& app) {
             auto cloud = loadFrame(**device, *loader, (*frames)[k], o->shDegree, aa);
             if (!cloud) cli::fail(cloud.error());
             if (o->gaussians != 0) {
-                cloud = reduced(library, *builder, *decimator, std::move(*cloud), o->gaussians);
+                cloud = reducer.reduce(std::move(*cloud), o->gaussians, Reduction{o->reduce, o->mergeGrowth, o->mergeOpacity});
                 if (!cloud) cli::fail(cloud.error());
             }
             if (encoder != nullptr) return std::move(*cloud);
@@ -596,8 +849,9 @@ void addVideo(CLI::App& app) {
     });
 
     struct DecodeOptions {
-        std::string input;
-        uint32_t frames = 0;
+        std::string input, dump;
+        uint32_t frames = 0, frame = 0;
+        bool histogram = false;
     };
     auto d = std::make_shared<DecodeOptions>();
     auto* dec = app.add_subcommand("video-decode",
@@ -605,6 +859,13 @@ void addVideo(CLI::App& app) {
                                    "kernel, timed");
     dec->add_option("input", d->input, "the .athv")->required();
     dec->add_option("--frames", d->frames, "at most this many pictures (default: all)");
+    dec->add_option("--dump-compare", d->dump,
+                    "a CSV of another decoder's gaussians of --frame (i,x,y,z,opacity,lnsx,lnsy,lnsz,r,g,b,...): "
+                    "compared, splat by splat, with this decode");
+    dec->add_option("--frame", d->frame, "with --dump-compare: the source frame, from 0");
+    dec->add_flag("--luma-histogram", d->histogram,
+                  "each picture's plane 0 as the decoder left it: its lowest and highest sample and how many are 128 "
+                  "(a full-range picture spans 0-255; one squeezed to video range, 16-235)");
     dec->callback([d] {
         auto reader = video::AthvReader::open(d->input);
         if (!reader) cli::fail(reader.error());
@@ -618,8 +879,23 @@ void addVideo(CLI::App& app) {
         if (!decoder) cli::fail(decoder.error());
         auto textures = video::createLumaTextures(**device);
         if (!textures) cli::fail(textures.error());
+        if (!d->dump.empty()) {
+            dumpCompare(**device, library, *codec, **reader, **decoder, **textures, d->frame, d->dump);
+            return;
+        }
         const uint32_t count = d->frames != 0 ? std::min(d->frames, (*reader)->frames()) : (*reader)->frames();
         std::vector<double> readMs, decodeMs, kernelMs;
+        std::optional<gpu::ComputeKernel> histogramKernel;
+        gpu::Buffer histogramBuffer;
+        if (d->histogram) {
+            auto k = gpu::ComputeKernel::create(library, "athenea/scene/video_dump_compare", "videoLumaHistogram");
+            if (!k) cli::fail(k.error());
+            histogramKernel = std::move(*k);
+            std::vector<uint32_t> zero(256, 0);
+            auto b = gpu::Buffer::fromSpan(**device, std::span<const uint32_t>(zero), "video.histogram");
+            if (!b) cli::fail(b.error());
+            histogramBuffer = std::move(*b);
+        }
         scene::GpuSplats store;
         for (uint32_t k = 0; k < count; ++k) {
             Clock::time_point t = Clock::now();
@@ -653,6 +929,33 @@ void addVideo(CLI::App& app) {
             }
             if (auto s = batch.submit(true); !s) cli::fail(s.error());
             kernelMs.push_back(std::chrono::duration<double, std::milli>(Clock::now() - t).count());
+            if (histogramKernel) {
+                const uint32_t w = (*frame)->width(), hgt = (*frame)->height();
+                gpu::CommandBatch hb(**device);
+                hb.encoder()->clearBuffer(histogramBuffer.rhi(), 0, 256 * 4);
+                hb.markDirty();
+                histogramKernel->dispatch(hb, {w * hgt, 1, 1}, [&](rhi::ShaderCursor c) {
+                    c["lumaPlane"].setBinding(luma->texture.get());
+                    c["histogram"].setBinding(histogramBuffer.rhi());
+                    c["lumaParams"]["count"].setData(w);
+                    c["lumaParams"]["stride"].setData(hgt);
+                });
+                if (auto s = hb.submit(true); !s) cli::fail(s.error());
+                std::vector<uint32_t> bins(256);
+                if (auto r = histogramBuffer.read(**device, 0, 1024, bins.data()); !r) cli::fail(r.error());
+                uint32_t lo = 255, hi = 0;
+                uint64_t total = 0;
+                for (uint32_t b = 0; b < 256; ++b) {
+                    if (bins[b] == 0) continue;
+                    lo = std::min(lo, b);
+                    hi = std::max(hi, b);
+                    total += bins[b];
+                }
+                cli::out("video-decode: picture %u (%u x %u): plane 0 from %u to %u, %.2f%% at 128, %.2f%% under 16, "
+                         "%.2f%% over 235\n", k, w, hgt, lo, hi, 100.0 * bins[128] / std::max<uint64_t>(total, 1),
+                         [&] { uint64_t n = 0; for (uint32_t b = 0; b < 16; ++b) n += bins[b]; return 100.0 * n / std::max<uint64_t>(total, 1); }(),
+                         [&] { uint64_t n = 0; for (uint32_t b = 236; b < 256; ++b) n += bins[b]; return 100.0 * n / std::max<uint64_t>(total, 1); }());
+            }
         }
         cli::out("video-decode: %u pictures of %s (%u frames, %.2f MB a picture): read %.2f ms, hardware decode %.2f "
                  "ms (p95 %.2f, %s), planes -> gaussians %.2f ms (p95 %.2f) a picture, medians\n",

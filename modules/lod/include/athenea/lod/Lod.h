@@ -265,6 +265,10 @@ struct PairSettings {
     /// at 4 the Corvette merged 10x came out worse (26.9 dB against 27.9), the
     /// ratio then taken from merges that cost more.
     float maxAspect = 1000.0F;
+    /// Where above 0: no merge wider (the square root of its covariance's
+    /// trace) than this times the wider of the two it merges -- no gaussian
+    /// that bridges a gap. The ratio is then the most it goes to.
+    float maxGrowth = 0.0F;
     /// With a tree: once nothing more may merge, the roots go on with the
     /// colour edge, the angle, the glass, the aspect and the pixel limit
     /// lifted, so a far view has coarse levels to cut to (the flat cloud is
