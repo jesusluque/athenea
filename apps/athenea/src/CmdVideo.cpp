@@ -33,7 +33,9 @@
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Device.h"
+#include "athenea/gpu/algo/PrefixSum.h"
 #include "athenea/gpu/ShaderLibrary.h"
+#include "athenea/io/Exr.h"
 #include "athenea/io/Readers.h"
 #include "athenea/lod/Lod.h"
 #include "athenea/scene/GpuClouds.h"
@@ -158,6 +160,96 @@ struct Reducer {
     std::optional<lod::LodBuilder> builder;
     std::optional<lod::Decimator>  decimator;
     std::optional<gpu::ComputeKernel> score;
+    std::optional<gpu::ComputeKernel> keepFlag, keepScatter;
+    std::optional<gpu::PrefixSum>     prefix;
+    /// `keep`: the first frame's choice, a flag a record, held for every frame.
+    gpu::Buffer flags, at, total;
+    uint32_t    keepRecords = 0;
+
+    /// The same records every frame: the first frame's highest scored, about
+    /// `target`, chosen once; each frame keeps exactly those, in order.
+    Result<scene::GpuSplats> keep(const scene::GpuSplats& cloud, uint32_t target) {
+        gpu::Device& device = library->device();
+        const uint32_t n = cloud.count;
+        const auto bindAll = [&](rhi::ShaderCursor c, const scene::GpuSplats& out, const gpu::Buffer& scores,
+                                 float threshold) {
+            c["keepScore"].setBinding(scores.rhi());
+            c["keepFlag"].setBinding(flags.rhi());
+            c["keepAt"].setBinding(at.rhi());
+            c["inPositions"].setBinding(cloud.positions.rhi());
+            c["inShape"].setBinding(cloud.shape.rhi());
+            c["inSh"].setBinding(cloud.sh.rhi());
+            c["outPositions"].setBinding(out.positions.rhi());
+            c["outShape"].setBinding(out.shape.rhi());
+            c["outSh"].setBinding(out.sh.rhi());
+            c["keepParams"]["count"].setData(n);
+            c["keepParams"]["shWords"].setData(cloud.shWords);
+            c["keepParams"]["threshold"].setData(threshold);
+        };
+        if (!flags.valid()) {
+            // The first frame: scored, a threshold from the histogram, flagged.
+            keepRecords = n;
+            gpu::BufferDesc desc;
+            desc.bytes = uint64_t{std::max(n, 1u)} * 4;
+            desc.elementBytes = 4;
+            desc.label = "video.keep";
+            auto scores = gpu::Buffer::create(device, desc);
+            auto f = gpu::Buffer::create(device, desc);
+            auto a = gpu::Buffer::create(device, desc);
+            desc.bytes = 4;
+            auto t = gpu::Buffer::create(device, desc);
+            if (!scores || !f || !a || !t) return Error(ErrorCode::OutOfMemory, "video: the kept records' flags");
+            flags = std::move(*f);
+            at = std::move(*a);
+            total = std::move(*t);
+            {
+                gpu::CommandBatch batch(device);
+                score->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) {
+                    c["positions"].setBinding(cloud.positions.rhi());
+                    c["shape"].setBinding(cloud.shape.rhi());
+                    c["score"].setBinding(scores->rhi());
+                    c["params"]["count"].setData(n);
+                    c["params"]["kind"].setData(scoreKind);
+                });
+                ATHENEA_TRY(batch.submit(true));
+            }
+            auto bins = decimator->scoreHistogram(*scores, n);
+            if (!bins) return std::move(bins).error();
+            const uint64_t drop = n > target ? n - target : 0;
+            uint64_t sum = 0;
+            float threshold = 0.0F;
+            for (uint32_t k = 0; k < lod::Decimator::kScoreBins && drop > 0; ++k) {
+                sum += (*bins)[k];
+                if (sum >= drop) {
+                    threshold = lod::Decimator::scoreOfBin(k + 1);
+                    break;
+                }
+            }
+            gpu::CommandBatch batch(device);
+            keepFlag->dispatch(batch, {n, 1, 1},
+                               [&](rhi::ShaderCursor c) { bindAll(c, cloud, *scores, threshold); });
+            batch.markDirty();
+            ATHENEA_TRY(prefix->apply(batch, flags, at, total, n));
+            ATHENEA_TRY(batch.submit(true));
+        }
+        if (n != keepRecords) {
+            return Error::make(ErrorCode::InvalidArgument,
+                               "video-encode: --reduce keep wants every frame of the first's {} gaussians, not {}",
+                               keepRecords, n);
+        }
+        uint32_t kept = 0;
+        ATHENEA_TRY(total.read(device, 0, 4, &kept));
+        auto out = video::PlanesCodec::allocate(device, std::max(kept, 1u), cloud.restPerColour, "video.kept");
+        if (!out) return std::move(out).error();
+        out->count = kept;
+        out->antialiased = cloud.antialiased;
+        out->linear = cloud.linear;
+        gpu::CommandBatch batch(device);
+        keepScatter->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) { bindAll(c, *out, flags, 0.0F); });
+        batch.markDirty();
+        ATHENEA_TRY(batch.submit(true));
+        return std::move(*out);
+    }
 
     Result<lod::LodCloud> build(scene::GpuSplats& cloud) {
         if (!cloud.origin.valid()) {
@@ -219,6 +311,7 @@ struct Reducer {
     Result<scene::GpuSplats> reduce(scene::GpuSplats cloud, uint32_t target, const Reduction& r) {
         if (target == 0 || cloud.count <= target) return cloud;
         scoreKind = r.score;
+        if (r.mode == "keep") return keep(cloud, target);
         auto lod = build(cloud);
         if (!lod) return std::move(lod).error();
         if (r.mode == "prune") {
@@ -460,7 +553,7 @@ void addVideo(CLI::App& app) {
     struct Options {
         std::vector<std::string> inputs;
         std::string output, hevc, range, hi = "side", order = "frame", ranges = "group", maxPicture;
-        uint32_t bits = 8, keyInterval = 0, columns = 0, shDegree = 3, rendition = 0, gaussians = 0;
+        uint32_t bits = 8, keyInterval = 0, columns = 0, shDegree = 3, rendition = 0, gaussians = 0, rangeGroup = 0;
         uint32_t positionBlock = 0;
         int      positionHighBits = -1;
         std::string reduce = "pairs";
@@ -470,7 +563,7 @@ void addVideo(CLI::App& app) {
         float    mergeAspect = 1000.0F;
         std::string pruneScore = "area";
         double quality = 0.5, megabits = 0.0, rate = 0.0;
-        bool check = false, intra = false, chroma = false;
+        bool check = false, intra = false, chroma = false, holdBoxes = false;
         std::string chromaWeight = "mean";
     };
     auto o = std::make_shared<Options>();
@@ -489,9 +582,17 @@ void addVideo(CLI::App& app) {
     enc->add_option("--hi", o->hi, "the position high parts: side (deflated beside the video, exact) or video "
                                    "(planes of their own, through the codec)")
         ->check(CLI::IsMember({"side", "video"}));
-    enc->add_option("--order", o->order, "first (the first frame's Morton order for every frame of as many splats) "
-                                         "or frame (each frame sorted again)")
-        ->check(CLI::IsMember({"first", "frame"}));
+    enc->add_option("--order", o->order, "first (the first frame's Morton order for every frame of as many splats), "
+                                         "frame (each frame sorted again) or stable (first, for frames that list "
+                                         "the same gaussians in the same order: index i is one gaussian throughout, "
+                                         "said in the file)")
+        ->check(CLI::IsMember({"first", "frame", "stable"}));
+    enc->add_flag("--hold-boxes", o->holdBoxes,
+                  "with --order stable and --position-block: each block's box the union over its range group's "
+                  "frames, so it does not jump from frame to frame");
+    enc->add_option("--range-group", o->rangeGroup,
+                    "frames whose attribute ranges are one union (default: the key interval); a whole sequence's "
+                    "keeps every quantisation step put");
     enc->add_option("--ranges", o->ranges, "group (each attribute's range over a group of pictures, so what "
                                            "stays put keeps its samples) or frame (each frame's own)")
         ->check(CLI::IsMember({"group", "frame"}));
@@ -513,8 +614,9 @@ void addVideo(CLI::App& app) {
         ->check(CLI::IsMember({"mean", "area"}));
     enc->add_option("--reduce", o->reduce,
                     "with --gaussians: pairs (merged), prune (the least contributing dropped), mix (half the excess "
-                    "pruned, then merged) or cut (the octree's cut by error)")
-        ->check(CLI::IsMember({"pairs", "prune", "mix", "cut"}));
+                    "pruned, then merged), cut (the octree's cut by error) or keep (the first frame's highest scored "
+                    "records, the same ones every frame: what --order stable needs)")
+        ->check(CLI::IsMember({"pairs", "prune", "mix", "cut", "keep"}));
     enc->add_option("--merge-growth", o->mergeGrowth,
                     "pairs, mix: no merge wider than this times the wider of the two (0: no limit); what it leaves "
                     "above --gaussians is pruned");
@@ -590,6 +692,15 @@ void addVideo(CLI::App& app) {
             if (!d) cli::fail(d.error());
             auto k = gpu::ComputeKernel::create(library, "athenea/scene/video_reduce", "videoReduceScore");
             if (!k) cli::fail(k.error());
+            auto kf = gpu::ComputeKernel::create(library, "athenea/scene/video_keep", "videoKeepFlag");
+            if (!kf) cli::fail(kf.error());
+            auto ks = gpu::ComputeKernel::create(library, "athenea/scene/video_keep", "videoKeepScatter");
+            if (!ks) cli::fail(ks.error());
+            auto ps = gpu::PrefixSum::create(library);
+            if (!ps) cli::fail(ps.error());
+            reducer.keepFlag = std::move(*kf);
+            reducer.keepScatter = std::move(*ks);
+            reducer.prefix = std::move(*ps);
             reducer.builder = std::move(*b);
             reducer.decimator = std::move(*d);
             reducer.score = std::move(*k);
@@ -620,6 +731,16 @@ void addVideo(CLI::App& app) {
         uint32_t keyInterval =
             o->intra ? 1u : (o->keyInterval != 0 ? o->keyInterval : static_cast<uint32_t>(std::lround(rate)));
         const bool groupRanges = o->ranges == "group";
+        const bool stable = o->order == "stable";
+        if (o->holdBoxes && (!stable || o->positionBlock == 0 || o->ranges != "group")) {
+            cli::err("video-encode: --hold-boxes wants --order stable, --position-block and group ranges\n");
+            throw CLI::RuntimeError(kExitFailure);
+        }
+        gpu::Buffer heldBoxes;
+        if (stable && o->gaussians != 0 && o->reduce != "keep") {
+            cli::err("video-encode: --order stable keeps a gaussian's index only with --reduce keep\n");
+            throw CLI::RuntimeError(kExitFailure);
+        }
         // A frame loaded; on the first, the pictures' size, the encoder, the
         // file and the checker made.
         const auto prepare = [&](size_t k) -> scene::GpuSplats {
@@ -700,6 +821,7 @@ void addVideo(CLI::App& app) {
             header.positionBlock = layout.positionBlock;
             header.positionHighBits = layout.positionHighBits;
             header.chroma = layout.chroma;
+            header.stableOrder = stable;
             auto w = video::AthvWriter::create(o->output, header);
             if (!w) cli::fail(w.error());
             writer = std::move(*w);
@@ -719,14 +841,26 @@ void addVideo(CLI::App& app) {
                      encoder->hardware() ? "hardware" : "software");
             return std::move(*cloud);
         };
-        for (size_t g = first; g <= last; g += keyInterval) {
-            const size_t groupEnd = std::min(last, g + keyInterval - 1);
+        const uint32_t groupFrames = o->rangeGroup != 0 ? o->rangeGroup : keyInterval;
+        for (size_t g = first; g <= last; g += groupFrames) {
+            const size_t groupEnd = std::min(last, g + groupFrames - 1);
             if (groupRanges) {
                 // The group's ranges first, over every frame of it.
                 for (size_t k = g; k <= groupEnd; ++k) {
                     scene::GpuSplats cloud = prepare(k);
                     if (auto r = codec->ranges(cloud, layout, cloud.count, frameRanges); !r) cli::fail(r.error());
                     if (auto r = codec->widen(layout, frameRanges, ranges, k == g); !r) cli::fail(r.error());
+                    if (o->holdBoxes) {
+                        // The stable order, from the first frame, and every
+                        // frame's boxes in it, their union held.
+                        if (orderedFor == 0) {
+                            if (auto r = codec->order(cloud, cloud.count, frameRanges, order); !r) cli::fail(r.error());
+                            orderedFor = cloud.count;
+                        }
+                        video::PlaneLayout whole = layout;
+                        whole.splats = cloud.count;
+                        if (auto r = codec->holdBoxes(cloud, whole, order, heldBoxes, k == g); !r) cli::fail(r.error());
+                    }
                 }
             }
             for (size_t k = g; k <= groupEnd; ++k) {
@@ -735,7 +869,12 @@ void addVideo(CLI::App& app) {
                 if (!groupRanges) {
                     if (auto r = codec->ranges(cloud, layout, cloud.count, ranges); !r) cli::fail(r.error());
                 }
-                if (o->order != "first" || orderedFor != cloud.count) {
+                if (stable && orderedFor != 0 && cloud.count != orderedFor) {
+                    cli::err("video-encode: --order stable: frame %zu has %u gaussians, the first %u\n", k, cloud.count,
+                             orderedFor);
+                    throw CLI::RuntimeError(kExitFailure);
+                }
+                if (o->order == "frame" || orderedFor != cloud.count) {
                     if (auto r = codec->order(cloud, cloud.count, ranges, order); !r) cli::fail(r.error());
                     orderedFor = cloud.count;
                 }
@@ -754,7 +893,8 @@ void addVideo(CLI::App& app) {
                         throw CLI::RuntimeError(kExitFailure);
                     }
                     Clock::time_point t = Clock::now();
-                    auto planes = codec->encode(cloud, *sliced, order, at, ranges);
+                    auto planes =
+                        codec->encode(cloud, *sliced, order, at, ranges, o->holdBoxes ? &heldBoxes : nullptr);
                     if (!planes) cli::fail(planes.error());
                     layMs.push_back(std::chrono::duration<double, std::milli>(Clock::now() - t).count());
                     t = Clock::now();
@@ -872,6 +1012,83 @@ void addVideo(CLI::App& app) {
             cli::out("video-encode: position high parts %s: %llu splat axes whose high part is not the source's\n",
                      far == 0 ? "exact" : "NOT exact", static_cast<unsigned long long>(far));
         }
+    });
+
+    struct FlickerOptions {
+        std::string video, source;
+        uint32_t first = 1, last = 61;
+    };
+    auto fl = std::make_shared<FlickerOptions>();
+    auto* flick = app.add_subcommand("video-flicker",
+                                     "how much a decode's error changes from frame to frame: per pixel, |(video_k - "
+                                     "source_k) - (video_k-1 - source_k-1)| in sRGB codes, mean and p99 over the "
+                                     "frames, from two directories of frame_NNNNN.exr (athenea stream -o)");
+    flick->add_option("video", fl->video, "frames drawn from the video")->required();
+    flick->add_option("source", fl->source, "the same frames drawn from the source")->required();
+    flick->add_option("--first", fl->first, "the first frame number");
+    flick->add_option("--last", fl->last, "the last frame number");
+    flick->callback([fl] {
+        auto device = gpu::Device::create();
+        if (!device) cli::fail(device.error());
+        gpu::ShaderLibrary library(*device);
+        auto kernel = gpu::ComputeKernel::create(library, "athenea/scene/video_flicker", "videoFlicker");
+        if (!kernel) cli::fail(kernel.error());
+        const auto load = [&](const std::string& dir, uint32_t k) {
+            char name[32];
+            std::snprintf(name, sizeof name, "frame_%05u.exr", k);
+            auto px = io::readExr(fs::path(dir) / name);
+            if (!px) cli::fail(px.error());
+            auto b = gpu::Buffer::fromSpan(**device, std::span<const float>(px->rgba), "video.flicker.frame");
+            if (!b) cli::fail(b.error());
+            return std::make_pair(std::move(*b), uint64_t{px->width} * px->height);
+        };
+        std::vector<uint32_t> zero(257, 0);
+        auto counters = gpu::Buffer::fromSpan(**device, std::span<const uint32_t>(zero), "video.flicker.counters");
+        if (!counters) cli::fail(counters.error());
+        std::vector<uint64_t> bins(256, 0);
+        uint64_t sum = 0, pixels = 0;
+        auto beforeV = load(fl->video, fl->first);
+        auto beforeS = load(fl->source, fl->first);
+        for (uint32_t k = fl->first + 1; k <= fl->last; ++k) {
+            auto nowV = load(fl->video, k);
+            auto nowS = load(fl->source, k);
+            const uint32_t n = static_cast<uint32_t>(nowV.second);
+            if (nowS.second != n || beforeV.second != n) {
+                cli::err("video-flicker: frame %u is not the others' size\n", k);
+                throw CLI::RuntimeError(kExitFailure);
+            }
+            gpu::CommandBatch batch(**device);
+            batch.encoder()->clearBuffer(counters->rhi(), 0, 257 * 4);
+            batch.markDirty();
+            kernel->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) {
+                c["videoNow"].setBinding(nowV.first.rhi());
+                c["sourceNow"].setBinding(nowS.first.rhi());
+                c["videoBefore"].setBinding(beforeV.first.rhi());
+                c["sourceBefore"].setBinding(beforeS.first.rhi());
+                c["counters"].setBinding(counters->rhi());
+                c["params"]["count"].setData(n);
+            });
+            if (auto r = batch.submit(true); !r) cli::fail(r.error());
+            std::vector<uint32_t> got(257);
+            if (auto r = counters->read(**device, 0, 257 * 4, got.data()); !r) cli::fail(r.error());
+            for (uint32_t b = 0; b < 256; ++b) bins[b] += got[b];
+            sum += got[256];
+            pixels += n;
+            beforeV = std::move(nowV);
+            beforeS = std::move(nowS);
+        }
+        uint64_t below = 0;
+        double p99 = 0.0, p999 = 0.0;
+        for (uint32_t b = 0; b < 256; ++b) {
+            below += bins[b];
+            if (p99 == 0.0 && below * 100 >= pixels * 99) p99 = (b + 1) / 4.0;
+            if (p999 == 0.0 && below * 1000 >= pixels * 999) p999 = (b + 1) / 4.0;
+        }
+        cli::out("video-flicker: frames %u-%u, %llu pixel pairs: mean %.4f codes, p99 %.2f, p99.9 %.2f (sRGB codes, "
+                 "the largest channel of the error's change)\n", fl->first, fl->last,
+                 static_cast<unsigned long long>(pixels),
+                 static_cast<double>(sum) / 16.0 / static_cast<double>(std::max<uint64_t>(pixels, 1)),
+                 p99, p999);
     });
 
     struct DecodeOptions {

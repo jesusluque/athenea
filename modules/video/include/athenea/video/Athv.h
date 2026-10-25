@@ -51,6 +51,9 @@ struct AthvHeader {
     bool     antialiased = false;
     /// Colours as YCoCg with Co and Cg in chroma (Planes.h, PlaneLayout::chroma).
     bool     chroma = false;
+    /// Index i is the same gaussian in every frame (video-encode --order
+    /// stable): a player may smooth a gaussian over frames.
+    bool     stableOrder = false;
     double   rate = 30.0;
     /// The rate as a fraction (30/1, 30000/1001): what a segmenter takes.
     uint32_t rateNumerator = 30;

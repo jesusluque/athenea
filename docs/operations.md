@@ -512,7 +512,9 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 | `--keyint` | pictures | the rate (a second) | between key frames: where a player can start |
 | `--intra` | flag | off | every picture a key frame |
 | `--hi` | `side` or `video` | `side` | the position high parts beside the video (exact) or as planes of their own (through the codec, and not exact: `docs/decisions.md`, "Video planes") |
-| `--order` | `frame` or `first` | `frame` | each frame sorted by Morton code, or the first frame's order kept while the count is the same |
+| `--order` | `frame`, `first` or `stable` | `frame` | each frame sorted by Morton code, or the first frame's order kept while the count is the same; `stable` is `first` for frames that list the same gaussians in the same order (`flatten --keep-order`), every frame the same count, and says so in the file (`stableOrder`): index i is one gaussian throughout |
+| `--range-group` | frames | the key interval | frames whose attribute ranges are one union: the whole sequence's keeps a still value's quantised step put |
+| `--hold-boxes` | flag | off | with `--order stable`, `--position-block` and group ranges: each block's box the union over its range group, so its position steps do not jump |
 | `--ranges` | `group` or `frame` | `group` | each attribute's range over a group of pictures (from one key frame to the next), or each frame's own |
 | `--sh-degree` | 0 to 3 | `3` | at most the source's |
 | `--columns` | tiles a row | the squarest mosaic | |
@@ -521,7 +523,7 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 | `--position-high-bits` | 0 to `--bits` | `--bits` | a position's bits past the sample, sent exact beside the video; 0 sends none (with `--position-block`, the box is what keeps it near) |
 | `--chroma` | flag | off | colours as YCoCg: each colour's Y a luma plane, its Co and Cg the Cb and Cr of that tile, one sample a 2 x 2 block of four consecutive Morton splats; 8 bits only |
 | `--chroma-weight` | `mean` or `area` | `mean` | a block's chroma: the plain mean of its splats, or weighed by opacity x the area of their two largest axes |
-| `--reduce` | `pairs`, `prune`, `mix`, `cut` | `pairs` | with `--gaussians`: merged by pairs; the least contributing (opacity x the area of the two widest axes) dropped; half the excess dropped, then merged; or the octree's cut by error, its tolerances scaled to the count. Whatever a capped merge leaves above the count is dropped |
+| `--reduce` | `pairs`, `prune`, `mix`, `cut`, `keep` | `pairs` | with `--gaussians`: merged by pairs; the least contributing (opacity x the area of the two widest axes) dropped; half the excess dropped, then merged; or the octree's cut by error, its tolerances scaled to the count. Whatever a capped merge leaves above the count is dropped. `keep`: the first frame's highest scored, the same records every frame (what `--order stable` needs) |
 | `--merge-growth` | factor | `0`: none | `pairs`, `mix`: no merge wider (the square root of its covariance's trace) than this times the wider of the two |
 | `--merge-opacity` | 0 to 3 | `0` | `pairs`, `mix`: 0 the members' mean, the merge widened, under 0.99; 1 their mass over the widened area; 2 their mass, not widened; 3 their mass, not widened, up to 5 (drawn with Spark's harder kernel) |
 | `--gaussians` | count | the frame's | about this many a frame: each frame merged by pairs where merging loses least (the decimation's NanoGS merge, `docs/decisions.md`), never dropped; no surfels |
@@ -569,6 +571,21 @@ hardware decode (and its p95) and the kernel, submitted and waited for as
 | `--frame` | source frame, from 0 | `0` | with `--dump-compare` |
 | `--dump-compare` | CSV path | none | another decoder's gaussians of `--frame`, a row a splat in the frame's order (`i,x,y,z,opacity,lnsx,lnsy,lnsz,r,g,b,...`, a header line first): each group's largest and mean difference from this decode and the rows past a tolerance (1 mm, 0.02, 0.1, 0.02), and this decode's opacity and widest log scale |
 | `--luma-histogram` | flag | off | each picture's plane 0 as the decoder left it: lowest and highest sample, and the share at 128, under 16 and over 235 (a full-range picture spans 0-255) |
+
+### 2.7.4 `athenea video-flicker` — how much a decode's error moves
+
+Two directories of `frame_NNNNN.exr` (`athenea stream -o`): frames drawn from
+a video and the same frames drawn from its source. Per pixel, the largest
+channel of |(video_k - source_k) - (video_k-1 - source_k-1)| in sRGB code
+values -- the error's change from one frame to the next, which is what reads
+as flicker; an error that holds still adds nothing. Prints the mean, p99 and
+p99.9 over every pixel of every pair (a kernel; the host reads its histogram).
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `video` | directory, required | — | |
+| `source` | directory, required | — | the same frame numbers and size |
+| `--first`, `--last` | frame numbers | `1`, `61` | |
 
 ### 2.8 `athenea mesh2splat` — a model into gaussians
 
@@ -713,6 +730,7 @@ kept beside the files).
 | `--time` | number | `0` | USD time code |
 | `--range` | `START:END[:STEP]` | unset | a sequence: every time code flattened and cut into SPZ pages, one epoch of a live stream a frame (§3.7); forces `--format spz` and makes `-o` a directory |
 | `--chunk-splats` | integer | `65536` | with `--range`: the most gaussians a page holds; a frame's gaussians are ordered along a Morton curve of its box and cut into runs of this many, so a page is a part of the model |
+| `--keep-order` | flag | off | with `--range`: each frame cut into pages in the order the stage lists its gaussians, not along a Morton curve: a skinned cloud's gaussian keeps its index in every frame (what `video-encode --order stable` needs) |
 | `--validate` | directory | none | measure a written file against the meshes path traced, material by material (§3.1, *A conversion measured*) |
 | `--validate-stage` | path | the input | the stage of meshes the GT is traced from |
 | `--validate-format` | `ply` \| `spz` | `spz` | which file is read back and measured |

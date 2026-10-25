@@ -38,3 +38,4 @@ void videoReduceScore(uint3 tid: SV_DispatchThreadID) {
     const float opacity = max(positions[s].w, 0.0);
     score[s] = params.kind == 0 ? opacity * exp(widest + middle) : opacity * exp(1.5 * widest - 0.5 * middle);
 }
+

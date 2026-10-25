@@ -158,8 +158,11 @@ private:
 class FlatChunker {
 public:
     [[nodiscard]] static Result<FlatChunker> create(gpu::ShaderLibrary& library);
+    /// `keepOrder`: the records cut into runs as they come, unsorted -- so a
+    /// sequence whose clouds list the same gaussians in the same order every
+    /// frame (a skinned cloud) keeps each gaussian at the same index.
     [[nodiscard]] Result<std::vector<FlatCloud>> chunk(const std::vector<FlatCloud>& clouds, const FlatStats& box,
-                                                       uint32_t chunkSplats);
+                                                       uint32_t chunkSplats, bool keepOrder = false);
 
 private:
     gpu::ShaderLibrary*            library_ = nullptr;

@@ -524,7 +524,9 @@ exacta, la baja por el códec. La croma se queda en gris medio, así que el
 | `--keyint` | imágenes | el ritmo (un segundo) | entre fotogramas clave: donde puede empezar un reproductor |
 | `--intra` | flag | no | cada imagen un fotograma clave |
 | `--hi` | `side` o `video` | `side` | las partes altas de la posición junto al vídeo (exactas) o como planos propios (por el códec, y no exactas: `docs/decisions.md`, "Video planes") |
-| `--order` | `frame` o `first` | `frame` | cada frame ordenado por código de Morton, o el orden del primer frame mientras el número sea el mismo |
+| `--order` | `frame`, `first` o `stable` | `frame` | cada frame ordenado por código de Morton, o el orden del primer frame mientras el número sea el mismo; `stable` es `first` para frames que listan las mismas gaussianas en el mismo orden (`flatten --keep-order`), con el mismo número en todos, y lo dice en el fichero (`stableOrder`): el índice i es una misma gaussiana de principio a fin |
+| `--range-group` | frames | el intervalo entre claves | frames cuyos rangos de atributo son una sola unión: la de toda la secuencia mantiene en su paso cuantizado un valor que no se mueve |
+| `--hold-boxes` | flag | no | con `--order stable`, `--position-block` y rangos por grupo: la caja de cada bloque es la unión sobre su grupo de rangos, para que sus pasos de posición no salten |
 | `--ranges` | `group` o `frame` | `group` | el rango de cada atributo sobre un grupo de imágenes (de un fotograma clave al siguiente), o el de cada frame |
 | `--sh-degree` | 0 a 3 | `3` | como mucho el de la fuente |
 | `--columns` | teselas por fila | el mosaico más cuadrado | |
@@ -533,7 +535,7 @@ exacta, la baja por el códec. La croma se queda en gris medio, así que el
 | `--position-high-bits` | 0 a `--bits` | `--bits` | los bits de una posición por encima de la muestra, enviados exactos junto al vídeo; 0 no envía ninguno (con `--position-block`, la caja es lo que la mantiene cerca) |
 | `--chroma` | flag | no | colores como YCoCg: la Y de cada color un plano de luma, su Co y su Cg el Cb y el Cr de esa tesela, una muestra por bloque de 2 x 2 de cuatro gaussianas consecutivas en el orden de Morton; solo 8 bits |
 | `--chroma-weight` | `mean` o `area` | `mean` | el croma de un bloque: la media simple de sus gaussianas, o ponderada por opacidad x el área de sus dos ejes mayores |
-| `--reduce` | `pairs`, `prune`, `mix`, `cut` | `pairs` | con `--gaussians`: fusionadas por pares; las que menos aportan (opacidad x el área de los dos ejes más anchos) descartadas; la mitad del exceso descartada y después fusionadas; o el corte del octree por error, con sus tolerancias escaladas hasta la cuenta. Lo que una fusión limitada deja por encima de la cuenta se descarta |
+| `--reduce` | `pairs`, `prune`, `mix`, `cut`, `keep` | `pairs` | con `--gaussians`: fusionadas por pares; las que menos aportan (opacidad x el área de los dos ejes más anchos) descartadas; la mitad del exceso descartada y después fusionadas; o el corte del octree por error, con sus tolerancias escaladas hasta la cuenta. Lo que una fusión limitada deja por encima de la cuenta se descarta. `keep`: las de mayor puntuación en el primer frame, los mismos registros en todos (lo que necesita `--order stable`) |
 | `--merge-growth` | factor | `0`: ninguno | `pairs`, `mix`: ninguna fusión más ancha (la raíz de la traza de su covarianza) que este factor por la más ancha de las dos |
 | `--merge-opacity` | 0 a 3 | `0` | `pairs`, `mix`: 0 la media de sus miembros, la fusión ensanchada, por debajo de 0,99; 1 su masa sobre el área ensanchada; 2 su masa, sin ensanchar; 3 su masa, sin ensanchar, hasta 5 (dibujada con el núcleo más duro de Spark) |
 | `--gaussians` | número | las del frame | unas tantas por frame: cada frame fusionado por pares donde fusionar pierde menos (la fusión NanoGS de la decimación, `docs/decisions.md`), nunca descartadas; sin surfels |
@@ -582,6 +584,22 @@ cronometra un kernel `ATHENEA_STAGES`.
 | `--frame` | frame de origen, desde 0 | `0` | con `--dump-compare` |
 | `--dump-compare` | ruta CSV | ninguna | las gaussianas de `--frame` según otro decodificador, una fila por gaussiana en el orden del frame (`i,x,y,z,opacity,lnsx,lnsy,lnsz,r,g,b,...`, con una línea de cabecera): la mayor diferencia y la media de cada grupo respecto a esta decodificación y las filas que pasan una tolerancia (1 mm, 0,02, 0,1, 0,02), y la opacidad y la mayor escala logarítmica de esta decodificación |
 | `--luma-histogram` | flag | no | el plano 0 de cada imagen tal como lo dejó el decodificador: la muestra más baja y la más alta, y la proporción en 128, por debajo de 16 y por encima de 235 (una imagen de rango completo cubre 0-255) |
+
+### 2.7.4 `athenea video-flicker` — cuánto se mueve el error de una decodificación
+
+Dos directorios de `frame_NNNNN.exr` (`athenea stream -o`): frames dibujados
+a partir de un vídeo y los mismos frames dibujados a partir de su fuente. Por
+píxel, el mayor canal de |(video_k - fuente_k) - (video_k-1 - fuente_k-1)| en
+valores de código sRGB -- el cambio del error de un frame al siguiente, que es
+lo que se ve como parpadeo; un error que no se mueve no suma nada. Imprime la
+media, el p99 y el p99,9 sobre todos los píxeles de todos los pares (un
+kernel; el host lee su histograma).
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `video` | directorio, obligatorio | — | |
+| `source` | directorio, obligatorio | — | los mismos números de frame y el mismo tamaño |
+| `--first`, `--last` | números de frame | `1`, `61` | |
 
 ### 2.8 `athenea mesh2splat` — un modelo en gaussianas
 
@@ -726,6 +744,7 @@ apagadas (`<output>_flatten_stage.usda`, que se queda junto a los ficheros).
 | `--time` | número | `0` | time code de USD |
 | `--range` | `INICIO:FIN[:PASO]` | sin fijar | una secuencia: cada time code aplanado y cortado en páginas SPZ, una época de un stream en vivo por frame (§3.7); fuerza `--format spz` y hace de `-o` un directorio |
 | `--chunk-splats` | entero | `65536` | con `--range`: las gaussianas que caben como mucho en una página; las de un frame se ordenan sobre una curva de Morton de su caja y se cortan en tramos de este tamaño, así que una página es una parte del modelo |
+| `--keep-order` | flag | no | con `--range`: cada frame se corta en páginas en el orden en que el stage lista sus gaussianas, no a lo largo de una curva de Morton: una gaussiana de una nube con esqueleto conserva su índice en todos los frames (lo que necesita `video-encode --order stable`) |
 | `--validate` | directorio | ninguno | medir un fichero escrito contra las mallas trazadas, material a material (§3.1, *Una conversión medida*) |
 | `--validate-stage` | ruta | la de entrada | la escena de mallas desde la que se traza el GT |
 | `--validate-format` | `ply` \| `spz` | `spz` | qué fichero se vuelve a leer y se mide |

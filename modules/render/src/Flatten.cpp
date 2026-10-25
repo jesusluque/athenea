@@ -264,7 +264,7 @@ Result<FlatChunker> FlatChunker::create(gpu::ShaderLibrary& library) {
 }
 
 Result<std::vector<FlatCloud>> FlatChunker::chunk(const std::vector<FlatCloud>& clouds, const FlatStats& box,
-                                                  uint32_t chunkSplats) {
+                                                  uint32_t chunkSplats, bool keepOrder) {
     if (chunkSplats == 0) {
         return Error(ErrorCode::InvalidArgument, "flatten: a chunk holds at least one gaussian");
     }
@@ -317,16 +317,19 @@ Result<std::vector<FlatCloud>> FlatChunker::chunk(const std::vector<FlatCloud>& 
             cursor["params"]["lo"].setData(lo);
             cursor["params"]["scale"].setData(scale);
         };
-        keys_.dispatch(batch, {n, 1, 1}, bind);
-        ATHENEA_TRY(sort_->sort(batch, sorting, n, 30));
-        gather_.dispatch(batch, {n, 1, 1}, bind);
+        if (!keepOrder) {
+            keys_.dispatch(batch, {n, 1, 1}, bind);
+            ATHENEA_TRY(sort_->sort(batch, sorting, n, 30));
+            gather_.dispatch(batch, {n, 1, 1}, bind);
+        }
+        const gpu::Buffer& from = keepOrder ? *all : *sorted;
         for (uint32_t first = 0; first < n; first += chunkSplats) {
             FlatCloud chunk;
             chunk.count = std::min(chunkSplats, n - first);
             auto records = floatsBuffer(device, uint64_t{chunk.count} * kFlatStride, "flatten.chunk");
             if (!records) return std::move(records).error();
             chunk.records = std::move(*records);
-            batch.encoder()->copyBuffer(chunk.records.rhi(), 0, sorted->rhi(), uint64_t{first} * record,
+            batch.encoder()->copyBuffer(chunk.records.rhi(), 0, from.rhi(), uint64_t{first} * record,
                                         uint64_t{chunk.count} * record);
             out.push_back(std::move(chunk));
         }

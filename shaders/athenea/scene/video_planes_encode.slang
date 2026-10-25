@@ -41,6 +41,7 @@ RWStructuredBuffer<uint>         values;
 RWStructuredBuffer<uint>         mosaic;     // width x height samples
 RWStructuredBuffer<uint>         chromaMosaic;   // width / 2 x height / 2 (Cb, Cr) byte pairs: NV12's second plane
 RWStructuredBuffer<uint>         high;       // the side payload, `highChunkBytes` a chunk
+RWStructuredBuffer<uint>         heldBoxes;  // videoPlanesBoxUnion: the boxes held over frames, laid as `high`
 ConstantBuffer<VideoPlanesParams> params;
 
 static const uint kRun = 1024;
@@ -275,4 +276,28 @@ void videoPlanesChroma(uint3 tid: SV_DispatchThreadID) {
         word |= (cb | (cr << 8u)) << (k * 16u);
     }
     chromaMosaic[tid.x] = word;
+}
+
+/// BOXES HELD OVER FRAMES: this frame's boxes (`high`, videoPlanesBlocks)
+/// into `heldBoxes` -- copied on the first frame of a group (`pad6` 1), else
+/// their union with what is there. A thread a box word (block, axis).
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void videoPlanesBoxUnion(uint3 tid: SV_DispatchThreadID) {
+    const uint perChunk = params.chunkSplats / params.positionBlock;
+    const uint chunks = (params.count + params.chunkSplats - 1) / params.chunkSplats;
+    const uint chunk = tid.x / (perChunk * 3u), w = tid.x % (perChunk * 3u);
+    if (chunk >= chunks) {
+        return;
+    }
+    const uint at = chunk * (params.highChunkBytes / 4u) + w;
+    const uint now = high[at];
+    if (params.pad6 != 0) {
+        heldBoxes[at] = now;
+        return;
+    }
+    const uint was = heldBoxes[at];
+    const uint lo = lowHalf(now) < lowHalf(was) ? (now & 0xFFFFu) : (was & 0xFFFFu);
+    const uint hi = highHalf(now) > highHalf(was) ? (now >> 16u) : (was >> 16u);
+    heldBoxes[at] = lo | (hi << 16u);
 }

@@ -116,6 +116,7 @@ void addFlatten(CLI::App& app) {
         std::vector<std::string> validateMaterials, paths;
         std::string range;
         uint32_t chunkSplats = 0;
+        bool     keepOrder = false;
     };
     auto o = std::make_shared<Options>();
     auto* cmd = app.add_subcommand(
@@ -167,6 +168,9 @@ void addFlatten(CLI::App& app) {
     cmd->add_option("--chunk-splats", o->chunkSplats,
                     "with --range: the most gaussians a page holds; each frame's gaussians are ordered along a "
                     "Morton curve and cut into runs of this many (default 65536)");
+    cmd->add_flag("--keep-order", o->keepOrder,
+                  "with --range: each frame's gaussians cut into pages in the order the stage lists them, not "
+                  "along a Morton curve -- a skinned cloud's gaussian keeps its index in every frame");
     cmd->add_option("--validate", o->validate,
                     "measure a written file against the meshes path traced, material by material, into this "
                     "directory");
@@ -393,7 +397,7 @@ void addFlatten(CLI::App& app) {
                         }
                         auto counted = pack->stats(flat, kLogScaleFloor);
                         if (!counted) return std::move(counted).error();
-                        auto chunks = chunker->chunk(flat, *counted, chunkSplats);
+                        auto chunks = chunker->chunk(flat, *counted, chunkSplats, o->keepOrder);
                         if (!chunks) return std::move(chunks).error();
                         uint64_t bytes = 0, gaussians = 0;
                         for (size_t c = 0; c < chunks->size(); ++c) {

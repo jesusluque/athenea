@@ -52,7 +52,7 @@ def parse_header(b):
     block, high_bits = struct.unpack_from("<2I", b, 64)
     return dict(version=version, codec=struct.pack("<I", codec).decode("latin-1"), bits=bits, restPerColour=rest,
                 chunkSplats=chunk, columns=columns, maxSplats=most, hiInVideo=bool(flags & 1),
-                antialiased=bool(flags & 2), chroma=bool(flags & 4), rendition=rendition, rate=rate,
+                antialiased=bool(flags & 2), chroma=bool(flags & 4), stableOrder=bool(flags & 8), rendition=rendition, rate=rate,
                 rateNumerator=num, rateDenominator=den,
                 sourceFrames=frames, quality=round(quality, 4), positionBlock=block, positionHighBits=high_bits)
 
@@ -247,7 +247,7 @@ def describe(data):
                quality=h["quality"], bits=h["bits"], restPerColour=h["restPerColour"], chunkSplats=h["chunkSplats"],
                columns=h["columns"], maxSplats=h["maxSplats"], hiInVideo=h["hiInVideo"],
                antialiased=h["antialiased"], positionBlock=h["positionBlock"],
-               positionHighBits=h["positionHighBits"], chromaPlanes=h["chroma"], picturesPerFrame=first["slices"],
+               positionHighBits=h["positionHighBits"], chromaPlanes=h["chroma"], stableOrder=h["stableOrder"], picturesPerFrame=first["slices"],
                pictureWidth=lay["width"], pictureHeight=lay["height"], meanBytesPerFrame=round(total / frames),
                meanMbps=round(total / frames * 8 * h["rate"] / 1e6, 2), fullRange=True)
     if len(first["sets"]) == 3:

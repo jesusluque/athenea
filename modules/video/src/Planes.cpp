@@ -178,6 +178,7 @@ Result<PlanesCodec> PlanesCodec::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(c.high_, enc, "videoPlanesHigh"));
     ATHENEA_TRY(make(c.blocks_, enc, "videoPlanesBlocks"));
     ATHENEA_TRY(make(c.chroma_, enc, "videoPlanesChroma"));
+    ATHENEA_TRY(make(c.boxUnion_, enc, "videoPlanesBoxUnion"));
     ATHENEA_TRY(make(c.decode_, dec, "videoPlanesDecode"));
     ATHENEA_TRY(make(c.compare_, dec, "videoPlanesCompare"));
     return c;
@@ -255,7 +256,8 @@ Result<void> PlanesCodec::order(const scene::GpuSplats& cloud, uint32_t count, c
 }
 
 Result<EncodedPlanes> PlanesCodec::encode(const scene::GpuSplats& cloud, const PlaneLayout& layout,
-                                          const gpu::Buffer& order, uint32_t first, const gpu::Buffer& ranges) {
+                                          const gpu::Buffer& order, uint32_t first, const gpu::Buffer& ranges,
+                                          const gpu::Buffer* heldBoxes) {
     gpu::Device& device = *device_;
     const uint32_t perWord = layout.bits > 8 ? 2u : 4u;
     const uint64_t lumaWords = uint64_t{layout.width} * layout.height / perWord;
@@ -293,7 +295,17 @@ Result<EncodedPlanes> PlanesCodec::encode(const scene::GpuSplats& cloud, const P
         };
         // The blocks' boxes first: the mosaic and the high parts are taken
         // over them.
-        if (blocks != 0) {
+        if (blocks != 0 && heldBoxes != nullptr) {
+            // The held boxes of this slice's chunks, the frame's from chunk
+            // first / chunkSplats on.
+            const uint64_t chunkBytes = layout.highChunkBytes();
+            const uint64_t from = uint64_t{first / layout.chunkSplats} * chunkBytes;
+            for (uint32_t c = 0; c < layout.chunks(); ++c) {
+                batch.encoder()->copyBuffer(highBuffer_.rhi(), c * chunkBytes, heldBoxes->rhi(), from + c * chunkBytes,
+                                            layout.blockBytes());
+            }
+            batch.markDirty();
+        } else if (blocks != 0) {
             blocks_.dispatch(batch, {blocks, 1, 1}, bind);
         }
         encode_.dispatch(batch, {static_cast<uint32_t>(lumaWords), 1, 1}, [&](rhi::ShaderCursor cursor) {
@@ -325,6 +337,36 @@ Result<EncodedPlanes> PlanesCodec::encode(const scene::GpuSplats& cloud, const P
         ATHENEA_TRY(highBuffer_.read(device, 0, out.high.size(), out.high.data()));
     }
     return out;
+}
+
+Result<void> PlanesCodec::holdBoxes(const scene::GpuSplats& cloud, const PlaneLayout& frame,
+                                   const gpu::Buffer& order, gpu::Buffer& held, bool firstFrame) {
+    gpu::Device& device = *device_;
+    if (frame.positionBlock == 0) {
+        return Error(ErrorCode::InvalidArgument, "video planes: boxes held over frames want --position-block");
+    }
+    const uint64_t sideBytes = uint64_t{frame.chunks()} * frame.highChunkBytes();
+    const uint32_t blocks = frame.chunks() * (frame.chunkSplats / frame.positionBlock);
+    ATHENEA_TRY(ensure(device, boxBuffer_, sideBytes, 4, "video.boxes"));
+    ATHENEA_TRY(ensure(device, held, sideBytes, 4, "video.boxesHeld"));
+    gpu::CommandBatch batch(device);
+    const auto bind = [&](rhi::ShaderCursor cursor) {
+        cursor["positions"].setBinding(cloud.positions.rhi());
+        cursor["shape"].setBinding(cloud.shape.rhi());
+        cursor["sh"].setBinding(cloud.sh.rhi());
+        cursor["order"].setBinding(order.rhi());
+        cursor["high"].setBinding(boxBuffer_.rhi());
+        cursor["heldBoxes"].setBinding(held.rhi());
+        rhi::ShaderCursor p = cursor["params"];
+        setLayout(p, frame);
+        p["first"].setData(uint32_t{0});
+        p["pad6"].setData(uint32_t{firstFrame ? 1u : 0u});
+        p["sourceShWords"].setData(cloud.shWords);
+        p["sourceRest"].setData(cloud.restPerColour);
+    };
+    blocks_.dispatch(batch, {blocks, 1, 1}, bind);
+    boxUnion_.dispatch(batch, {blocks * 3, 1, 1}, bind);
+    return batch.submit(true);
 }
 
 Result<void> PlanesCodec::decode(gpu::CommandBatch& batch, const PlaneLayout& layout, rhi::ITexture* luma,

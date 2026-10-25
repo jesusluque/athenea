@@ -159,8 +159,19 @@ public:
                                      gpu::Buffer& order);
     /// The mosaic and the side data of `cloud` in `order`, from Morton rank
     /// `first` (a slice), read back for the codec and the file.
+    /// `heldBoxes`: the blocks' boxes to use (holdBoxes' union, laid as the
+    /// whole frame's side payload) rather than this frame's own.
     [[nodiscard]] Result<EncodedPlanes> encode(const scene::GpuSplats& cloud, const PlaneLayout& layout,
-                                               const gpu::Buffer& order, uint32_t first, const gpu::Buffer& ranges);
+                                               const gpu::Buffer& order, uint32_t first, const gpu::Buffer& ranges,
+                                               const gpu::Buffer* heldBoxes = nullptr);
+    /// BOXES HELD OVER FRAMES: the blocks' boxes of the whole frame
+    /// (`frame`: its layout over all its splats, `positionBlock` set) in
+    /// `order`, into `held` laid as the frame's side payload -- this frame's
+    /// (`firstFrame`) or their union with what `held` has. A stable order
+    /// keeps a block's gaussians, so the union is the room they move in, and
+    /// a box that holds still keeps its steps still.
+    [[nodiscard]] Result<void> holdBoxes(const scene::GpuSplats& cloud, const PlaneLayout& frame,
+                                         const gpu::Buffer& order, gpu::Buffer& held, bool firstFrame);
 
     /// Frame splats `first` .. `first + count` into `store` from splat `at`:
     /// `luma` the decoded frame's luma plane (R8Unorm, or R16Unorm for 10
@@ -192,11 +203,11 @@ public:
 
 private:
     gpu::Device*       device_ = nullptr;
-    gpu::ComputeKernel partial_, finish_, widen_, morton_, encode_, high_, blocks_, chroma_, decode_, compare_;
+    gpu::ComputeKernel partial_, finish_, widen_, morton_, encode_, high_, blocks_, chroma_, boxUnion_, decode_, compare_;
     gpu::RadixSort     sort_;
     gpu::SortBuffers   sorting_;
     uint32_t           sortingFor_ = 0;
-    gpu::Buffer        partialBuffer_, mosaic_, chromaMosaic_, highBuffer_, errors_;
+    gpu::Buffer        partialBuffer_, mosaic_, chromaMosaic_, highBuffer_, boxBuffer_, errors_;
 };
 
 }   // namespace athenea::video
