@@ -14097,6 +14097,60 @@ the glass is a lattice (`car/lod_*_thresholds.png`). What is next:
   out of merges or merged as sheets;
 - then the threshold the car can play at, against the path trace.
 
+### A cut that reads its payload where it is, and merges that keep apart what faces apart
+
+**The payload stays where the levels keep it.** A `.athc` read whole has its
+store's extras and every level's joined into one buffer each (`joinPayload`:
+the store first, level k's group g at `payloadBase[k] + g`). A cut gathers
+positions, shapes, harmonics, normals and emission, 44 bytes a gaussian, and
+writes for each where its material, layers, ids, transfer, open directions
+and curvature are (`GpuSplats::payloadIndex`, `lodPayloadIndex`); the
+projection reads them there (`payloadOf`, `params.payloadIndexed`), the TX
+cache too, at that index. And a cut whose counts and selection are the last
+one's (`lodSelectionChanged`) is not gathered at all: its cloud keeps its
+revision, and what was kept of it. Checked by `athenea_lod_tests "[athc]"`: a
+cut read through its index is word for word the cut gathered -- a material,
+a transfer, its open directions and a curvature different for every gaussian
+-- at a threshold that draws splats and one that draws merged groups; and the
+same cut again keeps its revision. On the car the images are the gathered
+cut's to the bit.
+
+**Merges that do not spoil.** A TX cloud's levels sort a class above the
+Morton code (`lod_class.slang`, 33-bit keys) and a level's group holds one:
+the axis the shading normal leans most along and its sign, so a panel's two
+faces are never averaged into one normal -- the rings across the doors -- and
+glass and sheets (`lodKeptApart`: transmission over a half, or a thin wall
+that transmits), which the cut never draws merged (`params.pbrs`). Both read
+from the cloud. Checked: splats at the same places facing +z and -z give no
+merged normal under 0.9 along z at any level; the same cloud all glass, cut
+with every cell under the threshold, draws every splat and no group.
+
+**Measured** (1920 x 1080, medians of 11 frames; against the full cloud from
+its USD; the file 2.86 GB, its more numerous groups):
+
+| view | threshold | gaussians | frame | p99 / max | relMSE | before (gathered, unclassed) |
+|---|---|---|---|---|---|---|
+| scene camera | full | 5.38 M | 81.8 ms | | | 80.6 ms |
+| | 1 px | 5.38 M | 87.2 | 1 / 41 | 9e-6 | 114.0 ms |
+| | 2 px | 2.53 M | 56.4 | 27 / 215 | 0.0083 | 61.9 ms, p99 45, 0.35 |
+| | 4 px | 1.41 M | 41.9 | 42 / 185 | 0.0136 | 40.4 ms, p99 102, 2.6 |
+| rear | full | 5.38 M | 86.1 | | | 85.7 |
+| | 1 px | 5.38 M | 92.8 | 1 / 21 | 8e-6 | 118.0 |
+| | 2 px | 2.91 M | 66.7 | 18 / 203 | 0.0036 | 70.5, 39, 0.12 |
+| | 4 px | 1.47 M | 46.8 | 36 / 238 | 0.0084 | 46.5, 63, 0.22 |
+| front | full | 5.38 M | 70.4 | | | 72.3 |
+| | 1 px | 5.38 M | 80.0 | 1 / 38 | 9e-6 | 104.4 |
+| | 2 px | 3.36 M | 60.0 | 8 / 214 | 0.0048 | 69.8, 14, 0.02 |
+| | 4 px | 1.64 M | 44.9 | 46 / 233 | 0.0241 | 41.2, 123, 1.8 |
+
+The payload index alone, on the unclassed file: 1 px 90.0 / 94.3 / 79.0 ms,
+2 px 46.3 / 60.6 / 56.4, 4 px 33.2 / 38.7 / 38.1, the images the gathered
+cut's. At 1 px the cut still costs 5 to 9 ms over the full cloud: the cut's
+kernels and its two waits for counts. At 4 px the doors are softer and grained
+where groups of one side's splats meet (`car/lod_*_thresholds_classed.png`).
+Which threshold the car plays at is for the path trace to say, per material;
+that reference is blocked (above).
+
 ## The sun is the texels that are it
 
 env_sun found a dome's sun on a grid of 1.8 degree cells, measured its

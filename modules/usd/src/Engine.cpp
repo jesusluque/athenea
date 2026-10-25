@@ -1386,6 +1386,13 @@ Result<size_t> Engine::commit() {
                         }
                     } else {
                         auto read = lod::readAthc(*device_, asset.path);
+                        // The payload in one place, so a cut reads it where
+                        // it is (lod::joinPayload); left apart if that fails.
+                        if (read) {
+                            if (auto joined = lod::joinPayload(*device_, *read); !joined) {
+                                log::warn("hdAthenea: {}: {}", id.GetString(), joined.error().toString());
+                            }
+                        }
                         if (read) {
                             entry.lodCloud = std::make_unique<lod::LodCloud>(std::move(*read));
                         } else {

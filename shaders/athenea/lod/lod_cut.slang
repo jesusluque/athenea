@@ -6,6 +6,7 @@ import athenea.common.morton;
 import lod_common;
 
 StructuredBuffer<uint>    cells;      // per group: its cell code at `level`; per splat: its code
+StructuredBuffer<uint>    pbr;        // per group, where params.pbrs: its material (lodKeptApart)
 RWStructuredBuffer<uint>  selected;
 ConstantBuffer<LodParams> params;     // count; level (of `cells`); threshold; eye; coarsest
 
@@ -35,8 +36,11 @@ void lodCutGroups(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint cell = cells[g];
-    const bool here = small(cell, params.level);
-    const bool above = params.coarsest == 0 && small(cell >> 3, params.level - 1);
+    // Glass and sheets are never drawn merged: their groups hold nothing
+    // else (lod_class), and their parents are glass too.
+    const bool kept = params.pbrs != 0 && lodKeptApart(pbr[g]);
+    const bool here = !kept && small(cell, params.level);
+    const bool above = !kept && params.coarsest == 0 && small(cell >> 3, params.level - 1);
     selected[g] = (here && !above) ? 1u : 0u;
 }
 
@@ -61,8 +65,9 @@ void lodCutFinest(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint cell = cells[g];
-    const bool here = small(cell, params.level);
-    const bool above = params.coarsest == 0 && small(cell >> 3, params.level - 1);
+    const bool kept = params.pbrs != 0 && lodKeptApart(pbr[g]);
+    const bool here = !kept && small(cell, params.level);
+    const bool above = !kept && params.coarsest == 0 && small(cell >> 3, params.level - 1);
     bool resident = true;
     if (!here) {
         const uint end = g + 1 < params.count ? starts[g + 1] : params.splats;

@@ -1293,6 +1293,17 @@ En una escena, esos dos son `primvars:athenea:lod:threshold` y
 `primvars:athenea:stream:budget` en el prim que nombra el asset con
 `primvars:athenea:asset`.
 
+Los niveles de una nube TX mantienen aparte lo que una fusión estropearía: un
+grupo fundido reúne splats cuyas normales de sombreado se inclinan hacia el
+mismo lado del mismo eje -- las dos caras de un panel nunca son un grupo -- y
+el vidrio y las láminas (un material que transmite más de lo que refleja, o
+una pared delgada que transmite) nunca se dibujan fundidos, se dibujan sus
+splats. Las dos cosas se leen de la nube; nada se fija por asset. Un fichero
+así tiene más grupos, y sus chunks son tramos de un solo tipo de splat cada
+vez. Leído entero, el material, las capas, los ids, el transfer, las
+direcciones abiertas y la curvatura de un `.athc` se quedan donde los guardan
+sus niveles, y un corte los lee ahí en vez de copiarlos en cada fotograma.
+
 Un `.athc` funde celdas, y una nube que lleva un esqueleto no puede: una celda
 que juntara ala y cuerpo no sabría con cuál moverse. Esa nube tiene niveles de
 detalle convirtiéndola otra vez, más gruesa (`athenea mesh2splat --lod-levels`):

@@ -1153,3 +1153,191 @@ TEST_CASE("a shape operator packed into one word comes back within half a step",
     CHECK(counts[1] == 0);
     CHECK(counts[2] == 0);
 }
+
+// A CUT READS ITS PAYLOAD WHERE THE LEVELS KEEP IT (lod::joinPayload): the
+// same cloud's levels built twice, one joined, cut from the same view at a
+// threshold that draws merged groups and splats both. The joined cut's
+// payload, read through its index, is word for word what the other cut
+// gathered: a material, a transfer, its open directions and a curvature, each
+// different for every gaussian. And the joined cut, cut again from the same
+// view, is not gathered again: its cloud keeps its revision.
+TEST_CASE("a cut reads its payload through its index as it would have gathered it", "[lod][gpu][athc]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    CloudBuilder built = randomCloud(30000, 71, 0.003F, 0.05F);
+    auto cloud = h->loader.upload(built.raw, 3);
+    REQUIRE(cloud);
+    const uint32_t n = cloud->declared;
+    constexpr uint32_t kTransferWords = 56, kShadowWords = 8;
+    uint64_t state = 9;
+    const auto next = [&] {
+        state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+        return static_cast<uint32_t>(state >> 32);
+    };
+    const auto words = [&](uint64_t count, const char* label) {
+        std::vector<uint32_t> v(count);
+        for (uint32_t& w : v) {
+            w = next();
+        }
+        auto made = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, v, label);
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    cloud->transfer = words(uint64_t{n} * kTransferWords, "test.transfer");
+    cloud->transferCount = 112;
+    cloud->transferWords = kTransferWords;
+    cloud->shadowBits = words(uint64_t{n} * kShadowWords, "test.bits");
+    cloud->shadowWords = kShadowWords;
+    cloud->pbr = words(n, "test.pbr");
+    std::vector<float> shapes(size_t{n} * 3);
+    for (float& f : shapes) {
+        f = static_cast<float>(next() % 2000) * 0.01F - 10.0F;
+    }
+    auto curvature = gpu::Buffer::fromSpan<float>(*gpu->device, shapes, "test.curvature");
+    REQUIRE(curvature);
+    cloud->curvature = std::move(*curvature);
+    REQUIRE(scene::packCurvature(*gpu->library, *cloud));
+    lod::LodBuildSettings chunked;
+    chunked.chunkSplats = 2000;
+    auto apart = h->builder.build(*cloud, chunked);
+    auto joined = h->builder.build(*cloud, chunked);
+    if (!apart) FAIL(apart.error().toString());
+    if (!joined) FAIL(joined.error().toString());
+    REQUIRE(lod::joinPayload(*gpu->device, *joined));
+    REQUIRE(joined->payloadCount > joined->count);
+
+    auto other = lod::CutSelector::create(*gpu->library);
+    REQUIRE(other);
+    const render::Camera camera = render::Camera::lookingAt({6.0, 4.0, 30.0}, {0.0, 0.0, 0.0});
+    const render::Projection projection = render::projectionFor(camera, 320, 240);
+    gpu::ComputeKernel check = test::kernel(*gpu, "athenea/test/payload_check");
+    const std::vector<lod::LodInstance> a{{&*apart, render::Mat4::identity()}};
+    const std::vector<lod::LodInstance> b{{&*joined, render::Mat4::identity()}};
+    std::vector<lod::CutStats> statsA, statsB;
+    uint32_t mergedSeen = 0;
+    // Every splat at 1 px; merged groups at 64.
+    for (const float threshold : {64.0F, 1.0F}) {
+        auto cutA = h->cut.select(projection, a, threshold, &statsA);
+        auto cutB = other->select(projection, b, threshold, &statsB);
+        if (!cutA) FAIL(cutA.error().toString());
+        if (!cutB) FAIL(cutB.error().toString());
+        REQUIRE(cutA->size() == 1);
+        REQUIRE(cutB->size() == 1);
+        const scene::GpuSplats& gathered = *(*cutA)[0].splats;
+        const scene::GpuSplats& indexed = *(*cutB)[0].splats;
+        INFO("threshold " << threshold << ": " << statsB[0].splats << " splats and " << statsB[0].merged
+                          << " merged");
+        mergedSeen += statsB[0].merged;
+        REQUIRE(gathered.count == indexed.count);
+        REQUIRE(indexed.payloadIndex.valid());
+        REQUIRE_FALSE(gathered.payloadIndex.valid());
+        const auto off = [&](const gpu::Buffer& g, const gpu::Buffer& j, uint32_t perGaussian) {
+            gpu::Buffer wrong = test::uintBuffer(*gpu->device, 2, "test.wrong");
+            gpu::CommandBatch batch(*gpu->device);
+            check.dispatch(batch, {indexed.count, 1, 1}, [&](rhi::ShaderCursor c) {
+                c["gathered"].setBinding(g.rhi());
+                c["joined"].setBinding(j.rhi());
+                c["index"].setBinding(indexed.payloadIndex.rhi());
+                c["wrong"].setBinding(wrong.rhi());
+                c["params"]["count"].setData(indexed.count);
+                c["params"]["words"].setData(perGaussian);
+            });
+            REQUIRE(batch.submit(true));
+            std::array<uint32_t, 2> counts{};
+            REQUIRE(wrong.read(*gpu->device, 0, sizeof(counts), counts.data()));
+            REQUIRE(counts[1] == indexed.count * perGaussian);
+            return counts[0];
+        };
+        CHECK(off(gathered.pbr, indexed.pbr, 1) == 0);
+        CHECK(off(gathered.transfer, indexed.transfer, kTransferWords) == 0);
+        CHECK(off(gathered.shadowBits, indexed.shadowBits, kShadowWords) == 0);
+        CHECK(off(gathered.curvature, indexed.curvature, 1) == 0);
+    }
+    CHECK(mergedSeen > 0);
+    auto last = other->select(projection, b, 1.0F, &statsB);
+    REQUIRE(last);
+    const scene::GpuSplats& indexed = *(*last)[0].splats;
+    const uint32_t revision = indexed.revision;
+    auto again = other->select(projection, b, 1.0F, &statsB);
+    REQUIRE(again);
+    CHECK((*again)[0].splats->revision == revision);
+}
+
+// WHAT A MERGE MAY NOT MIX (lod_class.slang), in a TX cloud: splats whose
+// normals face apart -- every other one +z, the rest -z, at the same places,
+// a panel's two faces -- are never one group, so no merged normal at any level
+// leans less than 0.9 along z (an average of both faces is near nothing). And
+// glass is never drawn merged: the same cloud all glass, cut so far that every
+// cell is under the threshold, draws every splat and no merged group.
+TEST_CASE("a TX cloud's levels do not merge what faces apart, and never draw glass merged", "[lod][gpu][athc]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    CloudBuilder built = randomCloud(20000, 83, 0.003F, 0.05F);
+    auto cloud = h->loader.upload(built.raw, 3);
+    REQUIRE(cloud);
+    const uint32_t n = cloud->count;
+    gpu::ComputeKernel fill = [&] {
+        auto made = gpu::ComputeKernel::create(*gpu->library, "athenea/test/lod_class_check", "lodClassFill");
+        REQUIRE(made);
+        return std::move(*made);
+    }();
+    gpu::ComputeKernel check = [&] {
+        auto made = gpu::ComputeKernel::create(*gpu->library, "athenea/test/lod_class_check", "lodClassCheck");
+        REQUIRE(made);
+        return std::move(*made);
+    }();
+    cloud->normals = test::uintBuffer(*gpu->device, n, "test.normals");
+    gpu::Buffer unused = test::uintBuffer(*gpu->device, 2, "test.unused");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        fill.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) {
+            c["normals"].setBinding(cloud->normals.rhi());
+            c["wrong"].setBinding(unused.rhi());
+            c["params"]["count"].setData(n);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    const auto filled = [&](uint64_t words, uint32_t value, const char* label) {
+        std::vector<uint32_t> v(words, value);
+        auto made = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, v, label);
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    cloud->transfer = filled(uint64_t{n} * 8, 0x3C003C00u, "test.transfer");
+    cloud->transferCount = 16;
+    cloud->transferWords = 8;
+    auto lod = h->builder.build(*cloud);
+    if (!lod) FAIL(lod.error().toString());
+    uint32_t mixed = 0;
+    for (const lod::LodLevel& level : lod->levels) {
+        REQUIRE(level.gaussians.hasNormals());
+        gpu::Buffer wrong = test::uintBuffer(*gpu->device, 2, "test.wrong");
+        gpu::CommandBatch batch(*gpu->device);
+        check.dispatch(batch, {level.gaussians.count, 1, 1}, [&](rhi::ShaderCursor c) {
+            c["normals"].setBinding(level.gaussians.normals.rhi());
+            c["wrong"].setBinding(wrong.rhi());
+            c["params"]["count"].setData(level.gaussians.count);
+        });
+        REQUIRE(batch.submit(true));
+        std::array<uint32_t, 2> counts{};
+        REQUIRE(wrong.read(*gpu->device, 0, sizeof(counts), counts.data()));
+        REQUIRE(counts[1] == level.gaussians.count);
+        mixed += counts[0];
+    }
+    INFO("merged groups whose normal mixes both faces: " << mixed);
+    CHECK(mixed == 0);
+
+    cloud->pbr = filled(n, 0x00FF0000u, "test.glass");   // transmission one
+    auto glass = h->builder.build(*cloud);
+    if (!glass) FAIL(glass.error().toString());
+    const render::Camera camera = render::Camera::lookingAt({6.0, 4.0, 30.0}, {0.0, 0.0, 0.0});
+    const render::Projection projection = render::projectionFor(camera, 320, 240);
+    std::vector<lod::CutStats> stats;
+    const std::vector<lod::LodInstance> instances{{&*glass, render::Mat4::identity()}};
+    auto cut = h->cut.select(projection, instances, 1.0e6F, &stats);
+    if (!cut) FAIL(cut.error().toString());
+    REQUIRE(stats.size() == 1);
+    INFO("glass cut: " << stats[0].splats << " splats, " << stats[0].merged << " merged");
+    CHECK(stats[0].merged == 0);
+    CHECK(stats[0].splats == n);
+}

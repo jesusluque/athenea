@@ -86,7 +86,22 @@ public struct LodParams {
     /// follows the splats as the normals do, and whose weighted sum is three
     /// moments after theirs, divided by the weight per group.
     public uint  emission;
+    /// 1: `classes` (sorted with the splats) splits the groups: what faces
+    /// apart, and glass, are never one group (lod_class.slang).
+    public uint  classes;
+    /// 1: the cut reads each group's material (`pbr`): a group of glass or
+    /// a sheet is never drawn merged, its splats are.
+    public uint  pbrs;
 };
+
+/// A GLASS OR A SHEET, by its material word (splat_encoding's pbr): what
+/// transmits more than it reflects, or a thin wall that transmits at all.
+/// Kept out of merges: a merge of a pane is a lattice of holes.
+public bool lodKeptApart(uint pbrWord) {
+    const float transmission = float((pbrWord >> 16) & 0xFFu) / 255.0;
+    const bool thin = ((pbrWord >> 24) & 1u) != 0u;
+    return transmission > 0.5 || (thin && transmission > 0.0);
+}
 
 public uint levelShift(uint level) {
     return 3 * (kLevels - level);

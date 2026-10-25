@@ -71,6 +71,11 @@ StructuredBuffer<LightRecord> lights;
 // The Cryptomatte id a splat inherited from the prim it was made from (a
 // cloud athenea mesh2splat wrote). Read only where params.cryptoMode == 1.
 StructuredBuffer<uint>      cloudCrypto;
+/// Where each gaussian's payload is, where `params.payloadIndexed` (a cut).
+StructuredBuffer<uint>      payloadIndex;
+uint payloadOf(uint i) {
+    return params.payloadIndexed != 0 ? payloadIndex[i] : i;
+}
 RWStructuredBuffer<uint>    cryptoIds;    // one a slot, beside `proj`; written where cryptoMode != 0
 RWStructuredBuffer<ProjRecord> proj;
 RWStructuredBuffer<uint>    visible;      // 1 when the splat touches a tile
@@ -466,6 +471,9 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         return;
     }
     const uint slot = params.base + i;
+    // The payload's own index: `i` itself but in a cut, whose payload stays
+    // where the levels of detail keep it.
+    const uint p = payloadOf(i);
 
     float4 posOpacity = positions[i];
     const uint row = i * 4;
@@ -636,7 +644,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     if (kTransfer == kProjectCatcher) {
         // What the object takes depends on the lights and not on the eye:
         // kept a gaussian each while they stand (splatCatcherViewless).
-        posOpacity.w = params.txCache != 0 ? posOpacity.w * asfloat(txCache[i].x)
+        posOpacity.w = params.txCache != 0 ? posOpacity.w * asfloat(txCache[p].x)
                                            : catcherOpacity(i, posOpacity.xyz, r, scale, posOpacity.w);
     }
     // A THIN SHEET OF GLASS IS DRAWN AS A LAYER. Its gaussians cover what the
@@ -653,8 +661,8 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     // transmittance of its own); measured on the Corvette's windshield it is
     // the smaller error by far (s62b: relMSE 2.26 to 0.89 under the shop,
     // 0.31 to 0.067 under goegap).
-    const bool sheet = kTransfer < kProjectCatcher && params.hasPbr != 0 && pbrThinWalled(pbr[i]) &&
-                       pbrTransmission(pbr[i]) > 0.5;
+    const bool sheet = kTransfer < kProjectCatcher && params.hasPbr != 0 && pbrThinWalled(pbr[p]) &&
+                       pbrTransmission(pbr[p]) > 0.5;
     // A sheet's own share is its coverage as the conversion solved it, without
     // the 1/255 m2sCoverageAlpha adds for the radius it would be cut at: drawn
     // at the floor, nothing of it is cut, and at 0.0018 of coverage that
@@ -776,18 +784,18 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         // change with direction in them -- so it is the evaluated colour and
         // not the constant term alone.
         surface.albedo = colour;
-        surface.metallic = params.hasPbr != 0 ? pbrMetallic(pbr[i]) : 0.0;
-        surface.roughness = params.hasPbr != 0 ? pbrRoughness(pbr[i]) : 1.0;
-        surface.transmission = params.hasPbr != 0 ? pbrTransmission(pbr[i]) : 0.0;
-        surface.thinWalled = params.hasPbr != 0 && pbrThinWalled(pbr[i]);
-        surface.schlickMetal = params.hasPbr != 0 && pbrSchlickMetal(pbr[i]);
-        surface.materialRoughness = params.hasPbr != 0 ? pbrMaterialRoughness(pbr[i]) : -1.0;
+        surface.metallic = params.hasPbr != 0 ? pbrMetallic(pbr[p]) : 0.0;
+        surface.roughness = params.hasPbr != 0 ? pbrRoughness(pbr[p]) : 1.0;
+        surface.transmission = params.hasPbr != 0 ? pbrTransmission(pbr[p]) : 0.0;
+        surface.thinWalled = params.hasPbr != 0 && pbrThinWalled(pbr[p]);
+        surface.schlickMetal = params.hasPbr != 0 && pbrSchlickMetal(pbr[p]);
+        surface.materialRoughness = params.hasPbr != 0 ? pbrMaterialRoughness(pbr[p]) : -1.0;
         // WHAT A PICK MAY HAVE SAID ABOUT THIS PRIM. The id a gaussian carries
         // is the one the matte writes, so a table keyed on it is a material
         // override addressed by clicking (athenea/common/splat_override.slang).
         if (params.overrideCount != 0) {
             const SplatOverride said =
-                splatOverrideFor(splatOverrides, params.overrideCount, cloudCrypto[i]);
+                splatOverrideFor(splatOverrides, params.overrideCount, cloudCrypto[p]);
             if (said.found) {
                 surface.metallic = splatOverrideOf(surface.metallic, said.metallic);
                 surface.roughness = splatOverrideOf(surface.roughness, said.roughness);
@@ -811,7 +819,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         surface.exitDirection = float3(0.0, 0.0, 1.0);
         surface.lit = params.litBody != 0;
         surface.emission = params.hasEmission != 0 ? unpackRgb9e5(emission[i]) : float3(0.0);
-        surface.lobes = splatLobesOf(params.hasLobes != 0, lobes, i);
+        surface.lobes = splatLobesOf(params.hasLobes != 0, lobes, p);
         // THE INDEX A GAUSSIAN BENDS BY IS ITS OWN where its cloud carries
         // the layers: the specular's index is the material's, where the
         // cloud's single `ior` is whichever glass came first (task TX, step 5;
@@ -821,7 +829,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
             surface.ior = max(surface.lobes.specularIor, 1.0);
         }
         surface.transferCount = params.transferCount;
-        surface.transferBase = i * params.transferWords * 2;
+        surface.transferBase = p * params.transferWords * 2;
         // The frame the gaussian has now -- posed, for a cloud a skeleton
         // carries -- which is what a zonal transfer's lobes turn with.
         splatTransferFrame(surface, transfer, r, w0, w1, w2);
@@ -829,9 +837,9 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         // `params.shadowBits` is the words a gaussian: two of the first
         // transfer's 64 bits, eight or thirty-two of a TX transfer's cells.
         surface.hasShadowBits = params.shadowBits != 0 && params.shadowBits < 8u && params.transferCount >= 9;
-        surface.shadowBits = surface.hasShadowBits ? uint2(shadowBits[i * 2], shadowBits[i * 2 + 1]) : uint2(0);
+        surface.shadowBits = surface.hasShadowBits ? uint2(shadowBits[p * 2], shadowBits[p * 2 + 1]) : uint2(0);
         surface.cellWords = params.shadowBits >= 8u && params.transferCount >= 9 ? params.shadowBits : 0u;
-        surface.cellBase = i * surface.cellWords;
+        surface.cellBase = p * surface.cellWords;
         const uint shadowLights = params.shadowRays != 0 ? params.shadowLights : 0;
         // WHICH WAY THE SURFACE FACES A PIXEL AWAY (SplatSlope): the shape
         // operator, in the splat's first two axes, applied to the step in
@@ -845,7 +853,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
             // mesh's normal.
             const float3 axisN = float3(r[0][2], r[1][2], r[2][2]);
             const float faces = dot(cloudNormal, axisN) >= 0.0 ? 1.0 : -1.0;
-            const float3 shape = curvatureOf(i);
+            const float3 shape = curvatureOf(p);
             slope.curvature = faces * 0.5 * (shape.x + shape.z);
             // The bake's spread (m2sSpread at --specular-filter 1, a transfer
             // bake's): the largest principal curvature times the wider size.
@@ -889,7 +897,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                 const float held = 1.0 - fold;
                 slope.foldWiden = fold * 0.25 * turn * turn;
                 const float3 shapeUV =
-                    held * curvatureOf(i);
+                    held * curvatureOf(p);
                 const float2x2 shapeOf = float2x2(shapeUV.x, shapeUV.y, shapeUV.y, shapeUV.z);
                 // The shape operator was measured on the mesh's normal; the
                 // eye may be on the other side of the disc.
@@ -915,7 +923,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
         // the terms were kept for.
         if (kTransfer >= 2 && params.txCache != 0 && surface.transferCount != kTransferZonalCount &&
             dot(cloudNormal, storedFacing(r, scale, i)) > 0.0) {
-            const uint4 kept = txCache[i];
+            const uint4 kept = txCache[p];
             if (kept.w != 0u) {
                 slope.cached = true;
                 slope.cachedDome = uint(highHalf(kept.w) + 0.5) - 1u;
@@ -1070,7 +1078,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                                                                         : 0.0);
     proj[slot] = record;
     if (params.cryptoMode != 0) {
-        cryptoIds[slot] = params.cryptoMode == 1 ? cloudCrypto[i] : 0u;
+        cryptoIds[slot] = params.cryptoMode == 1 ? cloudCrypto[p] : 0u;
     }
     tileRects[slot * 4] = rect.x;
     tileRects[slot * 4 + 1] = rect.y;
@@ -1158,7 +1166,8 @@ void splatTransferViewless(uint3 tid: SV_DispatchThreadID) {
     if (i >= params.count) {
         return;
     }
-    txCache[i] = uint4(0u);
+    const uint p = payloadOf(i);
+    txCache[p] = uint4(0u);
     // The frame's first dome with a prepared sky: what relitSplat answers a
     // dome with, and the only one kept.
     uint dome = kEnvNone;
@@ -1183,11 +1192,11 @@ void splatTransferViewless(uint3 tid: SV_DispatchThreadID) {
     relightCloudFrame(s, w0, w1, w2);
     s.skyCloud = params.skyCloud;
     s.transferCount = params.transferCount;
-    s.transferBase = i * params.transferWords * 2;
+    s.transferBase = p * params.transferWords * 2;
     s.hasShadowBits = params.shadowBits != 0 && params.shadowBits < 8u;
-    s.shadowBits = s.hasShadowBits ? uint2(shadowBits[i * 2], shadowBits[i * 2 + 1]) : uint2(0);
+    s.shadowBits = s.hasShadowBits ? uint2(shadowBits[p * 2], shadowBits[p * 2 + 1]) : uint2(0);
     s.cellWords = params.shadowBits >= 8u ? params.shadowBits : 0u;
-    s.cellBase = i * s.cellWords;
+    s.cellBase = p * s.cellWords;
     s.lit = params.litBody != 0;
     if (s.lit) {
         return;
@@ -1198,7 +1207,7 @@ void splatTransferViewless(uint3 tid: SV_DispatchThreadID) {
     transferViewless<2>(s, transfer, shadowBits, environment.sh, environment.sun, dome, params.transferIndirect != 0, front, coupling,
                         sunShare);
     // The slice, one up, in the last half: zero is "not kept".
-    txCache[i] = uint4(packHalves(front.x, front.y), packHalves(front.z, coupling.x),
+    txCache[p] = uint4(packHalves(front.x, front.y), packHalves(front.z, coupling.x),
                        packHalves(coupling.y, coupling.z), packHalves(sunShare, float(dome + 1u)));
 }
 

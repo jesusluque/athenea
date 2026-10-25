@@ -97,6 +97,13 @@ struct GpuSplats {
     /// of detail carry (`packCurvature` below).
     gpu::Buffer curvature;
     bool        curvaturePacked = false;
+    /// A CUT'S PAYLOAD, READ WHERE IT IS (lod::CutSelector): uint per
+    /// gaussian, where in `pbr`, `lobes`, `crypto`, `transfer`, `shadowBits`
+    /// and `curvature` -- the levels of detail's own buffers, `payloadCount`
+    /// elements long -- its values are. Empty: they are this cloud's, a
+    /// gaussian each.
+    gpu::Buffer payloadIndex;
+    uint32_t    payloadCount = 0;
     /// THE LIGHT THE SURFACE GAVE OFF BY ITSELF: one uint a splat, linear
     /// radiance in RGB9E5 (packing.slang's `packRgb9e5`). A relit gaussian
     /// adds it, unshadowed, to what it reflects -- a converted lamp shade, a

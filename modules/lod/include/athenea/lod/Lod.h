@@ -66,6 +66,13 @@ struct LodCloud {
     float                 extent = 0.0F;     ///< the largest edge of the bounds
     /// Chunks come and go (a StreamingPool's): the cut says which it wants.
     bool                  streamed = false;
+    /// THE PAYLOAD IN ONE PLACE (joinPayload): the store's extras -- material,
+    /// layers, ids, transfer, open directions, curvature -- followed by each
+    /// level's, in `splats`' own buffers, level k's group g at
+    /// `payloadBase[k] + g`. A cut then draws its gaussians' payload where it
+    /// is (GpuSplats::payloadIndex) rather than copying it.
+    std::vector<uint32_t> payloadBase;
+    uint32_t              payloadCount = 0;   ///< elements in the joined buffers; 0: not joined
 
     [[nodiscard]] uint32_t chunks() const noexcept { return static_cast<uint32_t>(slots.size()); }
     [[nodiscard]] uint32_t chunkCount(uint32_t chunk) const noexcept {
@@ -79,6 +86,11 @@ struct LodCloud {
         return n;
     }
 };
+
+/// The store's extras and every level's into one buffer each, `splats`'
+/// own (LodCloud::payloadBase). A cloud that carries none, or whose levels
+/// do not all carry them, is left as it is.
+[[nodiscard]] Result<void> joinPayload(gpu::Device& device, LodCloud& lod);
 
 struct LodBuildSettings {
     /// The finest stored level is the deepest whose cells hold on average at
@@ -100,7 +112,7 @@ private:
     gpu::Device*       device_ = nullptr;
     gpu::RadixSort     sort_;
     gpu::PrefixSum     prefix_;
-    gpu::ComputeKernel morton_, reorder_, boundaries_, groups_, leafMoments_, mergeMoments_, finalize_;
+    gpu::ComputeKernel morton_, class_, reorder_, boundaries_, groups_, leafMoments_, mergeMoments_, finalize_;
     /// What a cloud carries beside its gaussians (lod_extras.slang).
     gpu::ComputeKernel extrasReorder_, extrasMerge_;
 };
@@ -145,7 +157,8 @@ private:
     struct Frame;
     gpu::Device*                        device_ = nullptr;
     gpu::PrefixSum                      prefix_;
-    gpu::ComputeKernel                  cutGroups_, cutFinest_, cutSplats_, chunkNeeds_, gather_, extrasGather_;
+    gpu::ComputeKernel                  cutGroups_, cutFinest_, cutSplats_, chunkNeeds_, gather_, extrasGather_,
+                                        payloadIndex_, selectionChanged_;
     std::vector<std::unique_ptr<Frame>> frames_;
 };
 

@@ -461,8 +461,10 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             }
             TxCache& entry = txCaches_[cloud];
             entry.seen = frameOfCaches_;
-            if (!entry.buffer.valid() || entry.buffer.bytes() < uint64_t{cloud->count} * 16) {
-                auto made = buffer(*device_, cloud->count, 16, "splat.txCache");
+            // A cut's terms are kept at its payload's index (GpuSplats::payloadIndex).
+            const uint32_t cacheCount = std::max(cloud->count, cloud->payloadCount);
+            if (!entry.buffer.valid() || entry.buffer.bytes() < uint64_t{cacheCount} * 16) {
+                auto made = buffer(*device_, cacheCount, 16, "splat.txCache");
                 if (!made) return std::move(made).error();
                 entry.buffer = *made;
                 entry.key = 0;
@@ -476,6 +478,10 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         uint32_t flatFirst = 0;
         const auto bindProject = [&](rhi::ShaderCursor cursor) {
             cursor["txCache"].setBinding(kept != nullptr ? kept->buffer.rhi() : slopes_.rhi());
+            // A cut's payload, read where the levels of detail keep it.
+            cursor["payloadIndex"].setBinding(cloud->payloadIndex.valid() ? cloud->payloadIndex.rhi()
+                                                                          : cloud->shape.rhi());
+            cursor["params"]["payloadIndexed"].setData(uint32_t{cloud->payloadIndex.valid() ? 1u : 0u});
             cursor["params"]["txCache"].setData(uint32_t{kept != nullptr && !viewless ? 1u : 0u});
             // How the surface turns under each splat, where the cloud keeps
             // it: a TX transfer's reflection then gets its slope (`slopes`).

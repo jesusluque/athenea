@@ -116,3 +116,31 @@ void lodExtrasGather(uint3 tid: SV_DispatchThreadID) {
         target[j * params.words + w] = source[k * params.words + w];
     }
 }
+
+/// WHERE A CUT'S GAUSSIAN'S PAYLOAD IS (GpuSplats::payloadIndex), in place of
+/// gathering it: `params.offset` is the part's first element in the joined
+/// payload (lod::joinPayload) -- a level's base, or a run's first store slot.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void lodPayloadIndex(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count || selected[i] == 0) {
+        return;
+    }
+    target[params.base + dest[i]] = params.offset + i;
+}
+
+/// HOW MANY ELEMENTS OF THIS FRAME'S SELECTION DIFFER FROM THE LAST
+/// (`source`, a copy of it), counted into `target[0]`: a cut that has not
+/// changed is not gathered again.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void lodSelectionChanged(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    if (selected[i] != source[i]) {
+        InterlockedAdd(target[0], 1u);
+    }
+}

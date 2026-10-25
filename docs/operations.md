@@ -1259,6 +1259,16 @@ On a stage, the same two are `primvars:athenea:lod:threshold` and
 `primvars:athenea:stream:budget` on the prim that names the asset with
 `primvars:athenea:asset`.
 
+A TX cloud's levels keep apart what a merge would spoil: a merged group holds
+splats whose shading normals lean the same way along the same axis -- a
+panel's two faces are never one group -- and glass and sheets (a material that
+transmits more than it reflects, or a thin wall that transmits) are never
+drawn merged, their splats are. Both are read from the cloud; nothing is set
+per asset. Such a file holds more groups, and its chunks are runs of one kind
+of splat at a time. Read whole, a `.athc`'s material, layers, ids, transfer,
+open directions and curvature stay where its levels keep them, and a cut reads
+them there rather than copying them each frame.
+
 A `.athc` merges cells, which a cloud a skeleton carries cannot: a cell that
 took wing and body would not know which to move with. Such a cloud has
 levels of detail by being converted again, coarser (`athenea mesh2splat

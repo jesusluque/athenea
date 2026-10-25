@@ -190,6 +190,12 @@ public struct FrameParams {
     /// axis -- a scale of exactly 0 -- as the disc it is, by the ray through
     /// each pixel (ProjRecord::surfel), 0 as the thin gaussian it projects to.
     public uint  surfels;
+    /// 1: THE CLOUD'S PAYLOAD IS READ THROUGH `payloadIndex` (a cut of a
+    /// `.athc`, lod::CutSelector): its positions and shapes are the cut's own,
+    /// a gaussian each; its material, layers, transfer, open directions,
+    /// curvature and ids stay where the levels of detail keep them, and
+    /// `payloadIndex[i]` says which. 0: read at `i`.
+    public uint  payloadIndexed;
     /// The lamps' weights this frame, a float4 a layer (linear rgb: the
     /// group's level times its radiance and colour), GpuSplats::
     /// kMaxLightGroups of them. Here and not a buffer, for the same count.

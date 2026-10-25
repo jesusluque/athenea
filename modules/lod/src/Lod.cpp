@@ -142,6 +142,53 @@ void setBounds(rhi::ShaderCursor p, const LodCloud& cloud) {
 
 }   // namespace
 
+Result<void> joinPayload(gpu::Device& device, LodCloud& lod) {
+    const std::vector<Extra> extras = extrasOf(lod.splats);
+    if (extras.empty() || lod.levels.empty()) {
+        return ok();
+    }
+    for (const Extra& e : extras) {
+        for (const LodLevel& level : lod.levels) {
+            if (!(level.gaussians.*e.member).valid()) {
+                return ok();
+            }
+        }
+    }
+    // The store's elements, as its first extra's buffer holds them (a pool's
+    // slots, or the cloud's splats read whole).
+    const Extra& first = extras.front();
+    const uint64_t store = (lod.splats.*first.member).bytes() / (4 * uint64_t{first.words});
+    uint64_t total = store;
+    std::vector<uint32_t> bases;
+    for (const LodLevel& level : lod.levels) {
+        bases.push_back(static_cast<uint32_t>(total));
+        total += level.gaussians.count;
+    }
+    if (total > 0xFFFFFFFFull) {
+        return ok();
+    }
+    gpu::CommandBatch batch(device);
+    for (const Extra& e : extras) {
+        const uint64_t word = 4 * uint64_t{e.words};
+        auto joined = buffer(device, total * e.words, 4, "lod.payload");
+        if (!joined) return std::move(joined).error();
+        batch.encoder()->copyBuffer(joined->rhi(), 0, (lod.splats.*e.member).rhi(), 0, store * word);
+        for (size_t k = 0; k < lod.levels.size(); ++k) {
+            const scene::GpuSplats& g = lod.levels[k].gaussians;
+            if (g.count > 0) {
+                batch.encoder()->copyBuffer(joined->rhi(), bases[k] * word, (g.*e.member).rhi(), 0,
+                                            uint64_t{g.count} * word);
+            }
+        }
+        lod.splats.*e.member = std::move(*joined);
+    }
+    batch.markDirty();
+    ATHENEA_TRY(batch.submit(true));
+    lod.payloadBase = std::move(bases);
+    lod.payloadCount = static_cast<uint32_t>(total);
+    return ok();
+}
+
 Result<LodBuilder> LodBuilder::create(gpu::ShaderLibrary& library) {
     LodBuilder b;
     b.device_ = &library.device();
@@ -158,6 +205,7 @@ Result<LodBuilder> LodBuilder::create(gpu::ShaderLibrary& library) {
         return ok();
     };
     ATHENEA_TRY(make(b.morton_, "athenea/lod/lod_morton", "lodMorton"));
+    ATHENEA_TRY(make(b.class_, "athenea/lod/lod_class", "lodClass"));
     ATHENEA_TRY(make(b.reorder_, "athenea/lod/lod_reorder", "lodReorder"));
     ATHENEA_TRY(make(b.boundaries_, "athenea/lod/lod_boundaries", "lodBoundaries"));
     ATHENEA_TRY(make(b.groups_, "athenea/lod/lod_groups", "lodGroups"));
@@ -196,6 +244,13 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
     ATHENEA_TRY(assign(sorting.values, "lod.order"));
     ATHENEA_TRY(assign(sorting.scratchKeysLo, "lod.keys2"));
     ATHENEA_TRY(assign(sorting.scratchValues, "lod.order2"));
+    // WHAT A MERGE MAY NOT MIX (lod_class.slang), for a TX cloud: what faces
+    // apart, and glass, sorted above the Morton code so a group holds one.
+    const bool classed = cloud.hasTransfer();
+    if (classed) {
+        ATHENEA_TRY(assign(sorting.keysHi, "lod.classes"));
+        ATHENEA_TRY(assign(sorting.scratchKeysHi, "lod.classes2"));
+    }
     const bool normals = cloud.hasNormals();
     const bool emission = cloud.hasEmission();
     auto splats = packed(device, n, cloud.restPerColour, cloud.shWords, "lod.splats", normals, emission);
@@ -210,7 +265,18 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
             cursor["params"]["count"].setData(n);
             setBounds(cursor["params"], lod);
         });
-        ATHENEA_TRY(sort_.sort(batch, sorting, n, 30));
+        if (classed) {
+            class_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["shape"].setBinding(cloud.shape.rhi());
+                cursor["normals"].setBinding(cloud.hasNormals() ? cloud.normals.rhi() : cloud.shape.rhi());
+                cursor["pbr"].setBinding(cloud.hasPbr() ? cloud.pbr.rhi() : cloud.shape.rhi());
+                cursor["classes"].setBinding(sorting.keysHi.rhi());
+                cursor["params"]["count"].setData(n);
+                cursor["params"]["normals"].setData(uint32_t{cloud.hasNormals() ? 1u : 0u});
+                cursor["params"]["pbrs"].setData(uint32_t{cloud.hasPbr() ? 1u : 0u});
+            });
+        }
+        ATHENEA_TRY(sort_.sort(batch, sorting, n, classed ? 33 : 30));
         reorder_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["order"].setBinding(sorting.values.rhi());
             cursor["srcPositions"].setBinding(cloud.positions.rhi());
@@ -269,6 +335,8 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
         gpu::CommandBatch batch(device);
         boundaries_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["keys"].setBinding(keys.rhi());
+            cursor["classes"].setBinding(classed ? sorting.keysHi.rhi() : keys.rhi());
+            cursor["params"]["classes"].setData(uint32_t{classed ? 1u : 0u});
             cursor["boundary"].setBinding(boundary->rhi());
             cursor["params"]["count"].setData(n);
             cursor["params"]["level"].setData(r);
@@ -430,6 +498,16 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
 struct CutSelector::Frame {
     scene::GpuSplats cloud;
     uint32_t         capacity = 0;
+    /// Where each drawn gaussian's payload is (GpuSplats::payloadIndex).
+    gpu::Buffer      payload;
+    /// The last cut gathered: its counts and selection, its cloud, whether
+    /// its payload was joined -- what tells the next cut it may keep it.
+    bool                     gathered = false;
+    const LodCloud*          gatheredFrom = nullptr;
+    bool                     joined = false;
+    std::vector<uint32_t>    lastCounts;
+    std::vector<gpu::Buffer> lastSelected;
+    gpu::Buffer              changes;
     /// Per part -- the levels, then the runs of the store the splats are
     /// drawn from -- which elements are drawn, where they go, how many.
     std::vector<gpu::Buffer> selected, dest, totals;
@@ -461,6 +539,8 @@ Result<CutSelector> CutSelector::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(c.chunkNeeds_, "athenea/lod/lod_cut", "lodChunkNeeds"));
     ATHENEA_TRY(make(c.gather_, "athenea/lod/lod_gather", "lodGather"));
     ATHENEA_TRY(make(c.extrasGather_, "athenea/lod/lod_extras", "lodExtrasGather"));
+    ATHENEA_TRY(make(c.payloadIndex_, "athenea/lod/lod_extras", "lodPayloadIndex"));
+    ATHENEA_TRY(make(c.selectionChanged_, "athenea/lod/lod_extras", "lodSelectionChanged"));
     return c;
 }
 
@@ -579,6 +659,9 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                 const bool finest = part + 1 == levels;
                 (finest ? cutFinest_ : cutGroups_).dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
                     cursor["cells"].setBinding(level.cells.rhi());
+                    // Glass and sheets drawn as their splats (lodKeptApart).
+                    const bool pbrs = level.gaussians.hasPbr();
+                    cursor["pbr"].setBinding(pbrs ? level.gaussians.pbr.rhi() : level.cells.rhi());
                     cursor["selected"].setBinding(frame.selected[part].rhi());
                     if (finest) {
                         cursor["starts"].setBinding(lod.starts.rhi());
@@ -586,6 +669,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                         cursor["state"].setBinding(frame.state.rhi());
                     }
                     setCut(cursor["params"], count, level.level, part == 0);
+                    cursor["params"]["pbrs"].setData(uint32_t{pbrs ? 1u : 0u});
                 });
             }
             for (size_t part = levels; part < parts; ++part) {
@@ -632,17 +716,71 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
             drawn += read[part];
             splatsDrawn += part < levels ? 0 : read[part];
         }
+        // THE PAYLOAD WHERE IT IS (joinPayload): a cut gathers positions,
+        // shapes, harmonics, normals and emission, and says of each gaussian
+        // where its material, layers, ids, transfer, open directions and
+        // curvature are -- four bytes, not the 330 a TX gaussian carries.
+        const bool joined = lod.payloadCount > 0;
+        // AND ONLY WHEN IT CHANGED: the same counts and the same selection as
+        // the last cut gathered leave the cloud as it is, and what was kept of
+        // it (a TX cloud's view-independent terms) with it.
+        bool changed = !frame.gathered || frame.gatheredFrom != &lod || frame.lastCounts.size() != parts ||
+                       frame.joined != joined;
+        for (size_t part = 0; !changed && part < parts; ++part) {
+            changed = frame.lastCounts[part] != read[part];
+        }
+        if (!changed) {
+            ATHENEA_TRY(ensure(frame.changes, 1, "cut.changes"));
+            gpu::CommandBatch batch(device);
+            const uint32_t zero = 0;
+            batch.encoder()->uploadBufferData(frame.changes.rhi(), 0, sizeof zero, &zero);
+            for (size_t part = 0; part < parts; ++part) {
+                selectionChanged_.dispatch(batch, {countOf(part), 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    for (const char* unused : {"order", "starts", "dest"}) {
+                        cursor[unused].setBinding(frame.selected[part].rhi());
+                    }
+                    cursor["positions"].setBinding(frame.cloud.positions.rhi());
+                    cursor["selected"].setBinding(frame.selected[part].rhi());
+                    cursor["source"].setBinding(frame.lastSelected[part].rhi());
+                    cursor["target"].setBinding(frame.changes.rhi());
+                    cursor["params"]["count"].setData(countOf(part));
+                });
+            }
+            batch.markDirty();
+            ATHENEA_TRY(batch.submit(true));
+            uint32_t differing = 0;
+            ATHENEA_TRY(frame.changes.read(device, 0, sizeof differing, &differing));
+            changed = differing != 0;
+        }
+        if (changed) {
         if (frame.capacity < drawn || frame.cloud.restPerColour != lod.splats.restPerColour ||
             frame.cloud.shWords != lod.splats.shWords || !frame.cloud.positions.valid() ||
             frame.cloud.hasNormals() != lod.splats.hasNormals() ||
-            frame.cloud.hasEmission() != lod.splats.hasEmission() || !sameExtras(lod.splats, frame.cloud)) {
+            frame.cloud.hasEmission() != lod.splats.hasEmission() || (!joined && !sameExtras(lod.splats, frame.cloud))) {
             const uint32_t capacity = std::max(drawn, frame.capacity + frame.capacity / 2);
             auto made = packed(device, std::max(capacity, 1u), lod.splats.restPerColour, lod.splats.shWords,
                                "cut.frame", lod.splats.hasNormals(), lod.splats.hasEmission());
             if (!made) return std::move(made).error();
-            ATHENEA_TRY(allocateExtras(device, lod.splats, std::max(capacity, 1u), *made));
+            if (!joined) {
+                ATHENEA_TRY(allocateExtras(device, lod.splats, std::max(capacity, 1u), *made));
+            }
             frame.cloud = std::move(*made);
             frame.capacity = std::max(capacity, 1u);
+        }
+        if (joined) {
+            for (const Extra& e : extrasOf(lod.splats)) {
+                frame.cloud.*e.member = lod.splats.*e.member;
+            }
+            frame.cloud.transferCount = lod.splats.transferCount;
+            frame.cloud.transferWords = lod.splats.transferWords;
+            frame.cloud.shadowWords = lod.splats.shadowWords;
+            frame.cloud.curvaturePacked = lod.splats.hasCurvature() && lod.splats.curvaturePacked;
+            ATHENEA_TRY(ensure(frame.payload, frame.capacity, "cut.payload"));
+            frame.cloud.payloadIndex = frame.payload;
+            frame.cloud.payloadCount = lod.payloadCount;
+        } else {
+            frame.cloud.payloadIndex = gpu::Buffer{};
+            frame.cloud.payloadCount = 0;
         }
         frame.cloud.source = lod.splats.source;
         frame.cloud.linear = lod.splats.linear;
@@ -678,8 +816,24 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                     cursor["params"]["offset"].setData(merged ? 0u : runs[part - levels].offset);
                     cursor["params"]["shWords"].setData(lod.splats.shWords);
                 });
+                if (joined) {
+                    // Where each one's payload is.
+                    payloadIndex_.dispatch(batch, {countOf(part), 1, 1}, [&](rhi::ShaderCursor cursor) {
+                        for (const char* unused : {"order", "starts", "source"}) {
+                            cursor[unused].setBinding(frame.dest[part].rhi());
+                        }
+                        cursor["positions"].setBinding(source.positions.rhi());
+                        cursor["selected"].setBinding(frame.selected[part].rhi());
+                        cursor["dest"].setBinding(frame.dest[part].rhi());
+                        cursor["target"].setBinding(frame.payload.rhi());
+                        cursor["params"]["count"].setData(countOf(part));
+                        cursor["params"]["base"].setData(base);
+                        cursor["params"]["offset"].setData(merged ? lod.payloadBase[part]
+                                                                  : runs[part - levels].offset);
+                    });
+                }
                 // And what the cloud carries beside, the same gaussians'.
-                for (const Extra& e : extrasOf(lod.splats)) {
+                for (const Extra& e : joined ? std::vector<Extra>{} : extrasOf(lod.splats)) {
                     if (!(source.*e.member).valid()) {
                         continue;
                     }
@@ -700,7 +854,20 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                 }
                 base += read[part];
             }
+            // The selection, kept to tell the next cut whether it changed.
+            frame.lastSelected.resize(parts);
+            for (size_t part = 0; part < parts; ++part) {
+                ATHENEA_TRY(ensure(frame.lastSelected[part], countOf(part), "cut.lastSelected"));
+                batch.encoder()->copyBuffer(frame.lastSelected[part].rhi(), 0, frame.selected[part].rhi(), 0,
+                                            uint64_t{countOf(part)} * 4);
+            }
+            batch.markDirty();
             ATHENEA_TRY(batch.submit(true));
+        }
+        frame.gathered = true;
+        frame.gatheredFrom = &lod;
+        frame.joined = joined;
+        frame.lastCounts.assign(read.begin(), read.begin() + static_cast<std::ptrdiff_t>(parts));
         }
         if (stats != nullptr) {
             CutStats s;
