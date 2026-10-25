@@ -15521,3 +15521,11 @@ for sixteen times the paths, the mean 0.962. A whole-number setting is now read 
 `double`, the host put in it (`_WholeSetting`): the path counts, the bounces, the motion buckets, the light samples,
 the cloud shadow's size and terms, `meshAntialias`, `splatView`, and an int `colourHalf`. `tx_module`'s cloud
 against its reference: relMSE 0.0533 and 8-bit p99 18, under the 0.25 and 40 it asks.
+
+**#43, the OpenFX server found its shaders only in the build tree.** `athenea-mcp` in
+`Athenea.ofx.bundle/Contents/Resources/bin` looks for a `shaders` folder up to three levels above itself and then at
+the build tree it was compiled in; the bundle carried none, so a copy anywhere else rendered only while that build
+tree stood. The bundle now carries them in `Contents/Resources/shaders` (the check kernels under `athenea/test` left
+out), copied after the build of `athenea_ofx`. Checked with the build tree's shaders moved aside: the bundle as it was,
+copied out of the tree, failed in `athenea_ofx_host` (`cannot open file 'athenea/algo/prefix_chunk_totals.slang'`);
+the new one rendered the frame (320 x 180, alpha mean 0.84).

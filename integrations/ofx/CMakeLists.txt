@@ -65,3 +65,16 @@ if(TARGET athenea-mcp)
                 "${ATHENEA_OFX_BUNDLE}/Contents/Resources/bin/$<TARGET_FILE_NAME:athenea-mcp>"
         VERBATIM)
 endif()
+# And the shaders it compiles at run time, where the server looks for them
+# first: a `shaders` folder within three levels above its executable
+# (gpu::shaderDirectory), here Contents/Resources/shaders. Without them a
+# bundle found the build tree's, and nothing once copied out of it. The
+# check kernels under athenea/test stay behind.
+if(TARGET athenea_shaders_copy)
+    add_dependencies(athenea_ofx athenea_shaders_copy)
+    add_custom_command(TARGET athenea_ofx POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${ATHENEA_SHADER_OUTPUT_DIR}"
+                "${ATHENEA_OFX_BUNDLE}/Contents/Resources/shaders"
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${ATHENEA_OFX_BUNDLE}/Contents/Resources/shaders/athenea/test"
+        VERBATIM)
+endif()

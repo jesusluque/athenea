@@ -2223,8 +2223,9 @@ The plugin loads none of the engine. It starts `athenea-mcp` (§6) as a child
 process the first time it renders and keeps it, with the cloud open, for the
 frames after; each frame comes back through a file in the temporary
 directory, never as a picture. A server that dies is started again for the
-next frame. The bundle carries the server in `Contents/Resources/bin`;
-`ATHENEA_MCP` names another. There is one server for the whole host process,
+next frame. The bundle carries the server in `Contents/Resources/bin` and the
+shaders it compiles in `Contents/Resources/shaders`, so a bundle copied out of
+the build tree runs as it is; `ATHENEA_MCP` names another server. There is one server for the whole host process,
 whatever number of instances of the node the host makes (Natron makes one per
 render thread), so a cloud is loaded once.
 

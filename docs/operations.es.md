@@ -2290,8 +2290,10 @@ El plugin no carga nada del motor. Arranca `athenea-mcp` (§6) como proceso
 hijo la primera vez que renderiza y lo conserva, con la nube abierta, para los
 frames siguientes; cada frame vuelve por un fichero del directorio temporal,
 nunca como imagen. Un servidor que muere se arranca otra vez para el frame
-siguiente. El bundle lleva el servidor en `Contents/Resources/bin`;
-`ATHENEA_MCP` nombra otro. Hay un servidor para todo el proceso del host, haga
+siguiente. El bundle lleva el servidor en `Contents/Resources/bin` y los
+shaders que compila en `Contents/Resources/shaders`, así que un bundle copiado
+fuera del árbol de build funciona tal cual; `ATHENEA_MCP` nombra otro
+servidor. Hay un servidor para todo el proceso del host, haga
 el host las instancias del nodo que haga (Natron hace una por hilo de render),
 así que una nube se carga una vez.
 
