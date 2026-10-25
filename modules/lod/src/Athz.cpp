@@ -25,7 +25,7 @@ namespace athenea::lod {
 namespace {
 
 constexpr char     kMagic[4] = {'A', 'T', 'H', 'Z'};
-constexpr uint16_t kVersion = 1;
+constexpr uint16_t kVersion = 2;   ///< 2: a word's transform in its plane entries (1: none)
 constexpr uint64_t kPage = 4096;
 constexpr uint32_t kHeaderBytes = 64;
 constexpr uint32_t kEntryBytes = 64;
@@ -34,13 +34,15 @@ constexpr uint32_t kFlagTransfer = 1;    ///< layer T is there
 constexpr uint32_t kFlagHarmonics = 2;   ///< layer A carries harmonics past the DC
 constexpr uint32_t kFlagTemporal = 4;    ///< layer K is there
 constexpr uint32_t kFlagLinear = 8;      ///< colours in linear light
-constexpr uint32_t kFlagPredicted = 16;  ///< a plane is coded from its parent page (encoding 2): not read yet
+constexpr uint32_t kFlagPredicted = 16;  ///< a word is coded against its parent group (transforms 4 to 6)
 constexpr uint32_t kFlagEmission = 32;   ///< elements carry RGB9E5 emission
 constexpr uint32_t kKnownFlags = kFlagTransfer | kFlagHarmonics | kFlagTemporal | kFlagLinear | kFlagPredicted |
                                  kFlagEmission;
 constexpr uint32_t kKinds = 2;           ///< 0 the merged levels' groups, 1 the cloud's own splats
 constexpr uint32_t kNone = 0xFFFFFFFFu;
 constexpr uint32_t kLanes = 32;
+/// The transforms a word may take (athz_common.slang).
+constexpr uint32_t kXfCount = 9;
 /// What the encoder's scratch may take at once.
 constexpr uint64_t kScratchBytes = uint64_t{96} << 20;
 /// What a read uploads at once.
@@ -81,6 +83,7 @@ Error bad(const std::filesystem::path& path, const std::string& why) {
 // --- the header ---------------------------------------------------------------
 
 struct Header {
+    uint16_t version = kVersion;
     uint32_t flags = 0;
     uint32_t layerMask = 0;
     uint64_t gaussians = 0;
@@ -97,7 +100,7 @@ struct Header {
 std::array<uint8_t, kHeaderBytes> encodeHeader(const Header& h) {
     std::array<uint8_t, kHeaderBytes> b{};
     std::memcpy(b.data(), kMagic, 4);
-    putAt<uint16_t>(b.data() + 4, kVersion);
+    putAt<uint16_t>(b.data() + 4, h.version);
     putAt<uint16_t>(b.data() + 6, kHeaderBytes);
     putAt<uint32_t>(b.data() + 8, h.flags);
     putAt<uint32_t>(b.data() + 12, h.layerMask);
@@ -123,13 +126,15 @@ Result<Header> decodeHeader(std::span<const std::byte> bytes, const std::filesys
     if (std::memcmp(b, kMagic, 4) != 0) {
         return bad(path, "no ATHZ magic");
     }
-    if (getAt<uint16_t>(b + 4) != kVersion) {
-        return bad(path, "version " + std::to_string(getAt<uint16_t>(b + 4)) + ", this reads 1");
+    const uint16_t version = getAt<uint16_t>(b + 4);
+    if (version < 1 || version > kVersion) {
+        return bad(path, "version " + std::to_string(version) + ", this reads 1 and 2");
     }
     if (getAt<uint16_t>(b + 6) != kHeaderBytes || getAt<uint32_t>(b + 60) != crcOf(b, 60)) {
         return bad(path, "the header's CRC");
     }
     Header h;
+    h.version = version;
     h.flags = getAt<uint32_t>(b + 8);
     h.layerMask = getAt<uint32_t>(b + 12);
     h.gaussians = getAt<uint64_t>(b + 16);
@@ -143,9 +148,6 @@ Result<Header> decodeHeader(std::span<const std::byte> bytes, const std::filesys
     h.tlvOffset = getAt<uint32_t>(b + 56);
     if ((h.flags & ~kKnownFlags) != 0) {
         return bad(path, "unknown flag bits " + std::to_string(h.flags & ~kKnownFlags));
-    }
-    if ((h.flags & kFlagPredicted) != 0) {
-        return bad(path, "planes coded from their parent page (encoding 2), which this version does not read");
     }
     if ((h.layerMask & kAthzGeometry) == 0 || (h.layerMask & ~uint32_t{kAthzAllLayers}) != 0) {
         return bad(path, "layers " + std::to_string(h.layerMask));
@@ -344,7 +346,16 @@ Result<Asset> decodeAsset(std::span<const std::byte> bytes, const Header& h, con
             return bad(path, "rANS table " + std::to_string(t) + " does not fill its slots");
         }
     }
-    for (const PlaneEntry& p : a.planeEntries) {
+    const uint32_t tailWord = 8 + f.shWords;
+    for (size_t i = 0; i < a.planeEntries.size(); ++i) {
+        PlaneEntry& p = a.planeEntries[i];
+        if (h.version < 2) {
+            p[3] = 0;   // version 1: the encoder's estimate, no transform
+        }
+        const uint32_t word = static_cast<uint32_t>(i % a.planes) / 4;
+        if (p[3] > 8 || (word == tailWord && p[3] > 3)) {
+            return bad(path, "a word's transform");
+        }
         const uint32_t encoding = p[0] & 0xFF, width = (p[0] >> 8) & 0xFF, layer = p[0] >> 24;
         if (encoding > 1 || width > 8 || layer > 3 || (encoding == 1 && p[1] >= a.tables) ||
             ((h.layerMask >> layer) & 1u) == 0) {
@@ -446,6 +457,17 @@ Arrays arraysOf(const scene::GpuSplats& s, const gpu::Buffer& tail) {
                &s.shadowBits};
     return a;
 }
+
+/// Where a kind's parents are (transforms 4 to 6): a level's arrays and
+/// cells, and its groups; none for the coarsest level.
+struct Parents {
+    Arrays   arrays{};
+    uint32_t count = 0;
+    bool     leaves = false;
+};
+
+constexpr std::array<const char*, 10> kParNames = {"parPositions", "parShape", "parSh", "parTail", "parNormals",
+                                                   "parEmission", "parPbr", "parLobes", "parTransfer", "parShadow"};
 
 constexpr std::array<const char*, 10> kSrcNames = {"srcPositions", "srcShape", "srcSh", "srcTail", "srcNormals",
                                                    "srcEmission", "srcPbr", "srcLobes", "srcTransfer", "srcShadow"};
@@ -697,7 +719,8 @@ public:
     /// offsets of G, A, T, K, the element written from, its elements) of
     /// `kind` out of `source` into `dst`. One dispatch.
     Result<void> record(gpu::CommandBatch& batch, uint32_t kind, const gpu::Buffer& source,
-                        std::span<const uint32_t> list, const Arrays& dst, uint32_t runGaussians, uint32_t pageRuns) {
+                        std::span<const uint32_t> list, const Arrays& dst, uint32_t runGaussians, uint32_t pageRuns,
+                        const Parents& parents) {
         const auto pages = static_cast<uint32_t>(list.size() / 8);
         if (pages == 0) {
             return ok();
@@ -722,6 +745,13 @@ public:
             c["params"]["planes"].setData(asset_->planes);
             c["params"]["layers"].setData(layers_);
             c["params"]["hasRans"].setData(hasRans_[kind]);
+            c["params"]["tailWord"].setData(8u + asset_->format.shWords);
+            c["params"]["parentCount"].setData(parents.count);
+            c["params"]["leaves"].setData(parents.leaves ? 1u : 0u);
+            for (size_t f = 0; f < kParNames.size(); ++f) {
+                const gpu::Buffer* b = parents.arrays.field[f];
+                c[kParNames[f]].setBinding((b != nullptr && b->valid() ? *b : dummy_).rhi());
+            }
             c["pageList"].setBinding(pageList.rhi());
             c["planes"].setBinding(planes_[kind].rhi());
             c["tables"].setBinding(tables_.rhi());
@@ -798,7 +828,7 @@ Result<Upload> uploadPages(gpu::Device& device, const Parsed& p, const std::vect
 /// element dstElement[i], in batches of at most kReadBatchBytes.
 Result<void> decodePages(gpu::Device& device, Decoder& decoder, const Parsed& p, uint32_t kind,
                          const std::vector<uint32_t>& pages, const std::vector<uint32_t>& dstElement,
-                         const Arrays& dst) {
+                         const Arrays& dst, const Parents& parents) {
     size_t at = 0;
     while (at < pages.size()) {
         std::vector<uint32_t> some, where;
@@ -813,7 +843,7 @@ Result<void> decodePages(gpu::Device& device, Decoder& decoder, const Parsed& p,
         if (!upload) return std::move(upload).error();
         gpu::CommandBatch batch(device);
         ATHENEA_TRY(decoder.record(batch, kind, upload->source, upload->list, dst, p.header.runGaussians,
-                                   p.header.pageRuns));
+                                   p.header.pageRuns, parents));
         ATHENEA_TRY(batch.submit(true));
         auto errors = decoder.takeErrors();
         if (!errors) return std::move(errors).error();
@@ -823,6 +853,46 @@ Result<void> decodePages(gpu::Device& device, Decoder& decoder, const Parsed& p,
         }
     }
     return ok();
+}
+
+/// Merged levels 0 .. last on the device, each decoded against the one above.
+Result<std::vector<LodLevel>> decodeLevels(gpu::Device& device, Decoder& decoder, const Parsed& p, uint32_t last) {
+    const Asset& a = p.asset;
+    std::vector<LodLevel> levels;
+    const std::string name = p.path.filename().string();
+    for (uint32_t li = 0; li <= last; ++li) {
+        const LevelEntry& e = a.levels[li];
+        LodLevel level;
+        level.level = e.level;
+        auto g = emptyCloud(device, a.format, e.groups, name, a.bounds);
+        if (!g) return std::move(g).error();
+        level.gaussians = std::move(*g);
+        auto cells = deviceBuffer(device, uint64_t{e.groups} * 4, 4, "athz.cells");
+        if (!cells) return std::move(cells).error();
+        level.cells = std::move(*cells);
+        std::vector<uint32_t> pages, where;
+        for (uint32_t k = 0; k < e.pages; ++k) {
+            pages.push_back(e.firstPage + k);
+            where.push_back(k * a.format.chunkSplats);
+        }
+        Parents parents;
+        if (li > 0) {
+            parents.arrays = arraysOf(levels.back().gaussians, levels.back().cells);
+            parents.count = levels.back().gaussians.count;
+        }
+        ATHENEA_TRY(decodePages(device, decoder, p, 0, pages, where, arraysOf(level.gaussians, level.cells), parents));
+        levels.push_back(std::move(level));
+    }
+    return levels;
+}
+
+/// The parents of the cloud's splats: its finest merged level.
+Parents leafParents(const LodLevel& finest) {
+    Parents parents;
+    parents.arrays = arraysOf(finest.gaussians, finest.cells);
+    parents.count = finest.gaussians.count;
+    parents.leaves = true;
+    return parents;
 }
 
 /// The merged levels and the finest level's starts on the device, as
@@ -840,24 +910,9 @@ Result<LodCloud> levelsOf(gpu::Device& device, Decoder& decoder, const Parsed& p
     lod.chunkSplats = a.format.chunkSplats;
     std::copy(a.boundsLo, a.boundsLo + 3, lod.boundsLo);
     lod.extent = a.extent;
-    const std::string name = p.path.filename().string();
-    for (const LevelEntry& e : a.levels) {
-        LodLevel level;
-        level.level = e.level;
-        auto g = emptyCloud(device, a.format, e.groups, name, a.bounds);
-        if (!g) return std::move(g).error();
-        level.gaussians = std::move(*g);
-        auto cells = deviceBuffer(device, uint64_t{e.groups} * 4, 4, "athz.cells");
-        if (!cells) return std::move(cells).error();
-        level.cells = std::move(*cells);
-        std::vector<uint32_t> pages, where;
-        for (uint32_t k = 0; k < e.pages; ++k) {
-            pages.push_back(e.firstPage + k);
-            where.push_back(k * a.format.chunkSplats);
-        }
-        ATHENEA_TRY(decodePages(device, decoder, p, 0, pages, where, arraysOf(level.gaussians, level.cells)));
-        lod.levels.push_back(std::move(level));
-    }
+    auto levels = decodeLevels(device, decoder, p, static_cast<uint32_t>(a.levels.size() - 1));
+    if (!levels) return std::move(levels).error();
+    lod.levels = std::move(*levels);
     auto starts = deviceBuffer(device, a.startsBytes, 4, "athz.starts", p.file.bytes().data() + a.startsOffset);
     if (!starts) return std::move(starts).error();
     lod.starts = std::move(*starts);
@@ -867,7 +922,7 @@ Result<LodCloud> levelsOf(gpu::Device& device, Decoder& decoder, const Parsed& p
 // --- the encoder ---------------------------------------------------------------
 
 struct EncodeKernels {
-    gpu::ComputeKernel histogram, normalize, encodeRuns, place, pageInfo;
+    gpu::ComputeKernel histogram, normalize, encodeRuns, place, pageInfo, parents, choose, entropy, context;
     gpu::PrefixSum     prefix;
 };
 
@@ -884,6 +939,10 @@ Result<EncodeKernels> encodeKernels(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(k.encodeRuns, "athzEncodeRuns"));
     ATHENEA_TRY(make(k.place, "athzPlace"));
     ATHENEA_TRY(make(k.pageInfo, "athzPageInfo"));
+    ATHENEA_TRY(make(k.parents, "athzParents"));
+    ATHENEA_TRY(make(k.choose, "athzChoose"));
+    ATHENEA_TRY(make(k.entropy, "athzEntropy"));
+    ATHENEA_TRY(make(k.context, "athzContext"));
     auto prefix = gpu::PrefixSum::create(library);
     if (!prefix) return std::move(prefix).error();
     k.prefix = std::move(*prefix);
@@ -1004,6 +1063,26 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
         kinds[1].elements = cloud.count;
     }
     const uint32_t totalPages = static_cast<uint32_t>((kinds[0].pageList.size() + kinds[1].pageList.size()) / 4);
+    // Each kind's elements interleaved, a record after another: what the
+    // encoder reads (one buffer for the records, one for their parents).
+    std::array<gpu::Buffer, 2> interleaved;
+    {
+        auto kernel = gpu::ComputeKernel::create(library, "athenea/lod/athz_interleave", "athzInterleave");
+        if (!kernel) return std::move(kernel).error();
+        for (uint32_t k = 0; k < kKinds; ++k) {
+            auto made = deviceBuffer(device, kinds[k].elements * f.elementBytes(), 0, "athz.records");
+            if (!made) return std::move(made).error();
+            interleaved[k] = std::move(*made);
+            gpu::CommandBatch batch(device);
+            kernel->dispatch(batch, {static_cast<uint32_t>(kinds[k].elements), 1, 1}, [&](rhi::ShaderCursor c) {
+                setLayout(c["params"], f);
+                c["params"]["count"].setData(static_cast<uint32_t>(kinds[k].elements));
+                bindSources(c, kinds[k].arrays, *dummy);
+                c["records"].setBinding(interleaved[k].rhi());
+            });
+            ATHENEA_TRY(batch.submit(true));
+        }
+    }
 
     // Each byte's layer; what the file holds of each.
     std::vector<uint32_t> layerOf(asset.planes);
@@ -1035,45 +1114,174 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
                 std::copy_n(ks.pageList.begin() + perm[i] * 4, 4, order.begin() + i * 4);
             }
         }
+        // THE PARENTS (transforms 4 to 6): each element's, among the merged
+        // arrays end to end.
+        std::vector<uint32_t> levelInfo;
+        {
+            uint32_t base = 0;
+            for (const LevelEntry& e : asset.levels) {
+                levelInfo.insert(levelInfo.end(), {base, e.groups, e.firstPage, e.level});
+                base += e.groups;
+            }
+        }
+        auto levelsBuffer = deviceBuffer(device, levelInfo.size() * 4, 16, "athz.levels", levelInfo.data());
+        auto fileList = deviceBuffer(device, ks.pageList.size() * 4, 16, "athz.list", ks.pageList.data());
+        auto parentOf = zeros(device, ks.elements, "athz.parentOf");
         std::vector<uint32_t> planeWords(uint64_t{asset.planes} * 4, 0u);
         for (uint32_t b = 0; b < asset.planes; ++b) planeWords[b * 4] = layerOf[b] << 24;
+        // Each word's transforms that keep every byte decodable from its own
+        // layer and G (G is always read): a byte may depend on a byte of G or
+        // of its own layer, never of another.
+        for (uint32_t w = 0; w < words; ++w) {
+            const auto L = [&](uint32_t b) { return layerOf[b]; };
+            const auto mayUse = [&](uint32_t from, uint32_t to) { return L(from) == 0 || L(from) == L(to); };
+            const uint32_t at = w * 4;
+            bool whole = true;   // 32-bit arithmetic: a byte depends on every byte under it
+            for (uint32_t j = 1; j < 4; ++j)
+                for (uint32_t i = 0; i < j; ++i) whole = whole && mayUse(at + i, at + j);
+            const bool halves = mayUse(at, at + 1) && mayUse(at + 2, at + 3);
+            const uint32_t pw = w == 0 ? 8 + f.shWords : (w == 8 + f.shWords + 1 ? 8 + f.shWords - 1 : w - 1);
+            bool within = halves;
+            for (uint32_t j = 0; j < 4; ++j) {
+                const std::array<uint32_t, 3> from = j < 2 ? std::array<uint32_t, 3>{pw * 4 + 2, pw * 4 + 3, at}
+                                                           : std::array<uint32_t, 3>{at, at + 1, at + 2};
+                for (uint32_t k : from) within = within && (k >= at + j || mayUse(k, at + j));
+            }
+            uint32_t mask = 1u | 8u | 64u;
+            if (whole) mask |= 2u | 16u;
+            if (halves) mask |= 4u | 32u;
+            if (within) mask |= 128u | 256u;
+            planeWords[at * 4 + 2] = mask;
+        }
         auto planesIn = deviceBuffer(device, planeWords.size() * 4, 16, "athz.planesIn", planeWords.data());
         auto listShuffled = deviceBuffer(device, order.size() * 4, 16, "athz.order", order.data());
         auto histogram = zeros(device, uint64_t{asset.planes} * 256, "athz.histogram");
         auto planesOut = zeros(device, uint64_t{asset.planes} * 4, "athz.planesOut");
         auto freqs = zeros(device, uint64_t{asset.planes} * 256, "athz.freqs");
-        for (auto* r : {&planesIn, &listShuffled, &histogram, &planesOut, &freqs}) {
+        for (auto* r : {&levelsBuffer, &fileList, &parentOf, &planesIn, &listShuffled, &histogram, &planesOut, &freqs}) {
             if (!*r) return std::move(*r).error();
+        }
+        const uint32_t tailWord = 8 + f.shWords;
+        const uint32_t allowed =
+            settings.bytePlanes ? 1u : ((settings.transforms & 0x1FFu) != 0 ? settings.transforms & 0x1FFu : 1u);
+        const auto bindTables = [&](rhi::ShaderCursor c) {
+            setLayout(c["params"], f);
+            c["params"]["pages"].setData(pages);
+            c["params"]["pageRuns"].setData(settings.pageRuns);
+            c["params"]["runGaussians"].setData(R);
+            c["params"]["tableLog"].setData(settings.tableLog);
+            c["params"]["planes"].setData(asset.planes);
+            c["params"]["allowRans"].setData(settings.rans && !settings.bytePlanes ? 1u : 0u);
+            c["params"]["extent"].setData(cloud.extent);
+            c["params"]["levels"].setData(static_cast<uint32_t>(asset.levels.size()));
+            c["params"]["leaves"].setData(kind);
+            c["params"]["tailWord"].setData(tailWord);
+            c["params"]["allowed"].setData(allowed);
+            c["params"]["elements"].setData(static_cast<uint32_t>(ks.elements));
+            c["levelInfo"].setBinding(levelsBuffer->rhi());
+            c["parentOf"].setBinding(parentOf->rhi());
+            c["records"].setBinding(interleaved[kind].rhi());
+            c["parentRecords"].setBinding(interleaved[0].rhi());
+        };
+        const auto histogramOf = [&](gpu::CommandBatch& batch, const gpu::Buffer& into, const gpu::Buffer& planeBuf,
+                                     uint32_t transform) {
+            kernels->histogram.dispatch(batch, {pages * 256, asset.planes, 1}, [&](rhi::ShaderCursor c) {
+                bindTables(c);
+                c["params"]["transform"].setData(transform);
+                c["pageList"].setBinding(listShuffled->rhi());
+                c["planes"].setBinding(planeBuf.rhi());
+                c["histogram"].setBinding(into.rhi());
+            });
+        };
+        {
+            gpu::CommandBatch batch(device);
+            kernels->parents.dispatch(batch, {PG, pages, 1}, [&](rhi::ShaderCursor c) {
+                bindTables(c);
+                c["pageList"].setBinding(fileList->rhi());
+                c["planes"].setBinding(planesIn->rhi());
+            });
+            ATHENEA_TRY(batch.submit(true));
+        }
+        // EACH WORD'S TRANSFORM: every one allowed counted, the least kept.
+        if (allowed != 1u) {
+            auto all = zeros(device, uint64_t{kXfCount} * asset.planes * 256, "athz.histograms");
+            auto choice = zeros(device, uint64_t{asset.planes} * 4, "athz.choice");
+            if (!all) return std::move(all).error();
+            if (!choice) return std::move(choice).error();
+            for (uint32_t t = 0; t < kXfCount; ++t) {
+                if (((allowed >> t) & 1u) == 0) continue;
+                auto one = zeros(device, uint64_t{asset.planes} * 256, "athz.histogramT");
+                if (!one) return std::move(one).error();
+                gpu::CommandBatch batch(device);
+                histogramOf(batch, *one, *planesIn, t);
+                batch.encoder()->copyBuffer(all->rhi(), uint64_t{t} * asset.planes * 256 * 4, one->rhi(), 0,
+                                            uint64_t{asset.planes} * 256 * 4);
+                batch.markDirty();
+                ATHENEA_TRY(batch.submit(true));
+            }
+            {
+                gpu::CommandBatch batch(device);
+                kernels->choose.dispatch(batch, {words, 1, 1}, [&](rhi::ShaderCursor c) {
+                    bindTables(c);
+                    c["histogram"].setBinding(all->rhi());
+                    c["planes"].setBinding(planesIn->rhi());
+                    c["planesOut"].setBinding(choice->rhi());
+                });
+                ATHENEA_TRY(batch.submit(true));
+            }
+            auto chosen = choice->readAll<uint32_t>(device);
+            if (!chosen) return std::move(chosen).error();
+            for (uint32_t b = 0; b < asset.planes; ++b) planeWords[b * 4 + 3] = (*chosen)[b * 4 + 3];
+            ATHENEA_TRY(planesIn->write(device, 0, planeWords.size() * 4, planeWords.data()));
         }
         {
             gpu::CommandBatch batch(device);
-            const auto bindParams = [&](rhi::ShaderCursor c) {
-                setLayout(c["params"], f);
-                c["params"]["pages"].setData(pages);
-                c["params"]["pageRuns"].setData(settings.pageRuns);
-                c["params"]["runGaussians"].setData(R);
-                c["params"]["tableLog"].setData(settings.tableLog);
-                c["params"]["planes"].setData(asset.planes);
-                c["params"]["allowRans"].setData(settings.rans && !settings.bytePlanes ? 1u : 0u);
-                c["params"]["extent"].setData(cloud.extent);
-            };
             if (pages > 0) {
-                kernels->histogram.dispatch(batch, {pages * 256, asset.planes, 1}, [&](rhi::ShaderCursor c) {
-                    bindParams(c);
-                    c["pageList"].setBinding(listShuffled->rhi());
-                    c["planes"].setBinding(planesIn->rhi());
-                    bindSources(c, ks.arrays, *dummy);
-                    c["histogram"].setBinding(histogram->rhi());
-                });
+                histogramOf(batch, *histogram, *planesIn, 0xFFu);
             }
             kernels->normalize.dispatch(batch, {asset.planes, 1, 1}, [&](rhi::ShaderCursor c) {
-                bindParams(c);
+                bindTables(c);
                 c["planes"].setBinding(planesIn->rhi());
                 c["histogram"].setBinding(histogram->rhi());
                 c["planesOut"].setBinding(planesOut->rhi());
                 c["freqs"].setBinding(freqs->rhi());
             });
             ATHENEA_TRY(batch.submit(true));
+        }
+        // ORDER 1, MEASURED (the census): each plane's residuals under two
+        // contexts, and order 0 the same way, at their entropies.
+        std::vector<uint32_t> order0Bytes, contextBytes;
+        if (settings.measureContexts) {
+            auto contexts = zeros(device, uint64_t{asset.planes} * 2 * 4 * 256, "athz.contexts");
+            auto bytes0 = zeros(device, asset.planes, "athz.bytes0");
+            auto bytes1 = zeros(device, uint64_t{asset.planes} * 8, "athz.bytes1");
+            for (auto* r : {&contexts, &bytes0, &bytes1}) {
+                if (!*r) return std::move(*r).error();
+            }
+            gpu::CommandBatch batch(device);
+            kernels->context.dispatch(batch, {pages * 256, asset.planes, 1}, [&](rhi::ShaderCursor c) {
+                bindTables(c);
+                c["params"]["transform"].setData(0xFFu);
+                c["pageList"].setBinding(fileList->rhi());
+                c["planes"].setBinding(planesIn->rhi());
+                c["histogram"].setBinding(contexts->rhi());
+            });
+            for (const auto& [hist, groups, into] : {std::tuple{&*histogram, asset.planes, &*bytes0},
+                                                     std::tuple{&*contexts, asset.planes * 8, &*bytes1}}) {
+                kernels->entropy.dispatch(batch, {groups, 1, 1}, [&](rhi::ShaderCursor c) {
+                    bindTables(c);
+                    c["params"]["groups"].setData(groups);
+                    c["histogram"].setBinding(hist->rhi());
+                    c["freqs"].setBinding(into->rhi());
+                });
+            }
+            ATHENEA_TRY(batch.submit(true));
+            auto r0 = bytes0->readAll<uint32_t>(device);
+            auto r1 = bytes1->readAll<uint32_t>(device);
+            if (!r0) return std::move(r0).error();
+            if (!r1) return std::move(r1).error();
+            order0Bytes = std::move(*r0);
+            contextBytes = std::move(*r1);
         }
         auto coded = planesOut->readAll<uint32_t>(device);
         if (!coded) return std::move(coded).error();
@@ -1084,7 +1292,7 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
         std::array<uint32_t, 4> rawWords{}, ransPlanes{};
         uint32_t hasRans = 0;
         for (uint32_t b = 0; b < asset.planes; ++b) {
-            PlaneEntry e{(*coded)[b * 4], kNone, 0, (*coded)[b * 4 + 3]};
+            PlaneEntry e{(*coded)[b * 4], kNone, 0, planeWords[b * 4 + 3]};
             if (settings.bytePlanes) {
                 e[0] = (layerOf[b] << 24) | (8u << 8);   // raw, 8 bits, from 0
             }
@@ -1110,6 +1318,17 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
             st.symbols = ks.elements;
             st.rawBytes = (ks.elements * width + 7) / 8;
             st.ransBytes = (*coded)[b * 4 + 3];
+            st.transform = planeWords[b * 4 + 3];
+            if (!order0Bytes.empty()) {
+                st.order0Bytes = order0Bytes[b];
+                uint64_t elem = 0, byte = 0;
+                for (uint32_t k = 0; k < 4; ++k) {
+                    elem += contextBytes[(b * 2 + 0) * 4 + k];
+                    byte += contextBytes[(b * 2 + 1) * 4 + k];
+                }
+                st.contextElementBytes = elem;
+                st.contextByteBytes = byte;
+            }
             stats.planes.push_back(st);
         }
         std::vector<uint32_t> planeTable;
@@ -1144,7 +1363,8 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
                 auto list = deviceBuffer(device, uint64_t{n} * 16, 16, "athz.list", ks.pageList.data() + uint64_t{p0} * 4);
                 if (!list) return std::move(list).error();
                 const auto bindParams = [&](rhi::ShaderCursor c) {
-                    setLayout(c["params"], f);
+                    bindTables(c);
+                    c["params"]["transform"].setData(0xFFu);
                     c["params"]["pages"].setData(n);
                     c["params"]["pageRuns"].setData(settings.pageRuns);
                     c["params"]["runGaussians"].setData(R);
@@ -1167,7 +1387,6 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
                 gpu::CommandBatch batch(device);
                 kernels->encodeRuns.dispatch(batch, {runs * kLanes, 1, 1}, [&](rhi::ShaderCursor c) {
                     bindParams(c);
-                    bindSources(c, ks.arrays, *dummy);
                 });
                 ATHENEA_TRY(kernels->prefix.apply(batch, *runBytes, *runOffsets, *total, runs));
                 ATHENEA_TRY(batch.submit(true));
@@ -1196,14 +1415,6 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
         }
 
         // THE PAGES' BOXES, ERRORS AND PARENTS.
-        std::vector<uint32_t> levelInfo;
-        {
-            uint32_t base = 0;
-            for (const LevelEntry& e : asset.levels) {
-                levelInfo.insert(levelInfo.end(), {base, e.groups, e.firstPage, e.level});
-                base += e.groups;
-            }
-        }
         auto levels = deviceBuffer(device, levelInfo.size() * 4, 16, "athz.levels", levelInfo.data());
         auto list = deviceBuffer(device, ks.pageList.size() * 4, 16, "athz.list", ks.pageList.data());
         auto info = zeros(device, uint64_t{pages} * 8, "athz.pageInfo");
@@ -1223,7 +1434,8 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
                 c["pageList"].setBinding(list->rhi());
                 c["levelInfo"].setBinding(levels->rhi());
                 c["pageInfo"].setBinding(info->rhi());
-                bindSources(c, ks.arrays, *dummy);
+                c["records"].setBinding(interleaved[kind].rhi());
+                c["params"]["tailWord"].setData(tailWord);
             });
             ATHENEA_TRY(batch.submit(true));
         }
@@ -1281,7 +1493,11 @@ Result<AthzStats> writeAthz(gpu::ShaderLibrary& library, const LodCloud& cloud, 
     const std::vector<uint8_t> assetTable = encodeAsset(asset);
     Header h;
     h.flags = ((layerMask & kAthzTransfer) != 0 ? kFlagTransfer : 0) | (f.restPerColour > 0 ? kFlagHarmonics : 0) |
-              (f.linear ? kFlagLinear : 0) | (f.emission ? kFlagEmission : 0);
+              (f.linear ? kFlagLinear : 0) | (f.emission ? kFlagEmission : 0) |
+              (std::any_of(asset.planeEntries.begin(), asset.planeEntries.end(),
+                           [](const PlaneEntry& e) { return e[3] >= 4; })
+                   ? kFlagPredicted
+                   : 0u);
     h.layerMask = layerMask;
     h.gaussians = cloud.count;
     h.pages = totalPages;
@@ -1360,7 +1576,8 @@ Result<LodCloud> readAthz(gpu::ShaderLibrary& library, const std::filesystem::pa
         lod->slots[c] = static_cast<int32_t>(c);
         resident[c] = 1;
     }
-    ATHENEA_TRY(decodePages(device, **decoder, p, 1, pages, where, arraysOf(lod->splats, lod->groups)));
+    ATHENEA_TRY(decodePages(device, **decoder, p, 1, pages, where, arraysOf(lod->splats, lod->groups),
+                            leafParents(lod->levels.back())));
     ATHENEA_TRY(lod->resident.write(device, 0, resident.size() * 4, resident.data()));
     lod->streamed = pages.size() < p.leafPages;
     return std::move(*lod);
@@ -1401,7 +1618,23 @@ Result<scene::GpuSplats> readAthzCut(gpu::ShaderLibrary& library, const std::fil
         pages.push_back(first + k);
         where.push_back(k * a.format.chunkSplats);
     }
-    ATHENEA_TRY(decodePages(device, **decoder, p, leaves ? 1 : 0, pages, where, arraysOf(*cloud, *tail)));
+    if (leaves) {
+        auto levels = decodeLevels(device, **decoder, p, static_cast<uint32_t>(a.levels.size() - 1));
+        if (!levels) return std::move(levels).error();
+        ATHENEA_TRY(decodePages(device, **decoder, p, 1, pages, where, arraysOf(*cloud, *tail),
+                                leafParents(levels->back())));
+    } else {
+        Parents parents;
+        std::vector<LodLevel> above;
+        if (chosen > 0) {
+            auto levels = decodeLevels(device, **decoder, p, chosen - 1);
+            if (!levels) return std::move(levels).error();
+            above = std::move(*levels);
+            parents.arrays = arraysOf(above.back().gaussians, above.back().cells);
+            parents.count = above.back().gaussians.count;
+        }
+        ATHENEA_TRY(decodePages(device, **decoder, p, 0, pages, where, arraysOf(*cloud, *tail), parents));
+    }
     if (band != nullptr) {
         *band = chosen;
     }
@@ -1496,6 +1729,13 @@ Result<std::vector<AthzDecodeTiming>> timeAthzDecode(gpu::ShaderLibrary& library
     auto tail = deviceBuffer(device, uint64_t{present} * a.format.chunkSplats * 4, 4, "athz.tail");
     if (!tail) return std::move(tail).error();
     const Arrays dst = arraysOf(*store, *tail);
+    // The parents first, untimed: the merged levels a pool holds from its open.
+    if (p.header.pages < p.leafFirstPage) {
+        return Error::make(ErrorCode::InvalidArgument, "{}: no splat pages to time", path.string());
+    }
+    auto levels = decodeLevels(device, **decoder, p, static_cast<uint32_t>(a.levels.size() - 1));
+    if (!levels) return std::move(levels).error();
+    const Parents parents = leafParents(levels->back());
     std::vector<AthzDecodeTiming> out;
     const auto timeOne = [&](const std::vector<uint32_t>& pages, bool single) -> Result<void> {
         std::vector<uint32_t> where;
@@ -1506,19 +1746,26 @@ Result<std::vector<AthzDecodeTiming>> timeAthzDecode(gpu::ShaderLibrary& library
         }
         auto upload = uploadPages(device, p, pages, where, (*decoder)->layers());
         if (!upload) return std::move(upload).error();
-        gpu::CommandBatch batch(device);
-        ATHENEA_TRY(batch.submit(true));
-        ATHENEA_TRY((*decoder)->record(batch, 1, upload->source, upload->list, dst, p.header.runGaussians,
-                                       p.header.pageRuns));
-        gpu::GpuTimer timer;
-        ATHENEA_TRY(timer.run(batch));
+        // Three times, the least kept: the machine is shared, and what is
+        // measured is what the decode costs, not what else ran beside it.
+        double least = 1.0e30;
+        bool onDevice = true;
+        for (int repeat = 0; repeat < 3; ++repeat) {
+            gpu::CommandBatch batch(device);
+            ATHENEA_TRY(batch.submit(true));
+            ATHENEA_TRY((*decoder)->record(batch, 1, upload->source, upload->list, dst, p.header.runGaussians,
+                                           p.header.pageRuns, parents));
+            gpu::GpuTimer timer;
+            ATHENEA_TRY(timer.run(batch));
+            least = std::min(least, timer.milliseconds());
+            onDevice = onDevice && timer.fromDevice();
+        }
         auto errors = (*decoder)->takeErrors();
         if (!errors) return std::move(errors).error();
         if (*errors != 0) {
             return Error::make(ErrorCode::IoFailure, "{}: {} corrupt lanes", path.string(), *errors);
         }
-        out.push_back({static_cast<uint32_t>(pages.size()), upload->bytes, decoded, timer.milliseconds(), single,
-                       timer.fromDevice()});
+        out.push_back({static_cast<uint32_t>(pages.size()), upload->bytes, decoded, least, single, onDevice});
         return ok();
     };
     // A first dispatch, not counted: the pipeline's first use.
@@ -1748,7 +1995,7 @@ Result<void> AthzSource::decode(gpu::CommandBatch& batch, const gpu::Buffer& sta
         list.push_back(0);
     }
     return s.decoder->record(batch, 1, staging, list, arraysOf(cloud.splats, cloud.groups), p.header.runGaussians,
-                             p.header.pageRuns);
+                             p.header.pageRuns, leafParents(cloud.levels.back()));
 }
 
 }   // namespace athenea::lod

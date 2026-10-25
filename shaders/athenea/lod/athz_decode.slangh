@@ -37,6 +37,9 @@ struct AthzDecodeParams {
     uint planes;
     uint layers;     ///< a bit a layer: those decoded (the rest left zero)
     uint hasRans;    ///< a bit a layer: whether it has a plane of encoding 1
+    uint tailWord;   ///< the tail word's index in an element
+    uint parentCount;   ///< merged groups: the level above's groups (0: none, the coarsest)
+    uint leaves;     ///< 1: the cloud's splats, whose parent is their finest group
     uint pad0;
 };
 ConstantBuffer<AthzDecodeParams> params;
@@ -62,7 +65,22 @@ RWByteAddressBuffer dstShadow;
 /// its words -- a corrupt run.
 RWStructuredBuffer<Atomic<uint>> errors;
 
+/// THE PARENTS (transforms 4 to 6): the finest merged level's arrays for
+/// splats, the level above's for merged groups; `parTail` its cells.
+ByteAddressBuffer parPositions;
+ByteAddressBuffer parShape;
+ByteAddressBuffer parSh;
+ByteAddressBuffer parTail;
+ByteAddressBuffer parNormals;
+ByteAddressBuffer parEmission;
+ByteAddressBuffer parPbr;
+ByteAddressBuffer parLobes;
+ByteAddressBuffer parTransfer;
+ByteAddressBuffer parShadow;
+
 groupshared uint gTable[kTableSize];
+/// A word's lane totals, a run's 32 at a time: the prefix along the run.
+groupshared uint gScan[kRunsPerGroup * kAthzLanes];
 groupshared Atomic<uint> gMask[kRunsPerGroup * 3];
 
 AthzLayout layout() {
@@ -92,6 +110,24 @@ void storeWord(uint e, uint w, uint value) {
     case kFieldLobes: dstLobes.Store(at, value); break;
     case kFieldTransfer: dstTransfer.Store(at, value); break;
     default: dstShadow.Store(at, value); break;
+    }
+}
+
+uint loadParent(uint e, uint w) {
+    const AthzLayout l = layout();
+    const uint2 f = athzField(l, w);
+    const uint at = athzAddress(l, f, e);
+    switch (f.x) {
+    case kFieldPositions: return parPositions.Load(at);
+    case kFieldShape: return parShape.Load(at);
+    case kFieldSh: return parSh.Load(at);
+    case kFieldTail: return parTail.Load(at);
+    case kFieldNormals: return parNormals.Load(at);
+    case kFieldEmission: return parEmission.Load(at);
+    case kFieldPbr: return parPbr.Load(at);
+    case kFieldLobes: return parLobes.Load(at);
+    case kFieldTransfer: return parTransfer.Load(at);
+    default: return parShadow.Load(at);
     }
 }
 
@@ -151,20 +187,26 @@ void athzDecode(uint3 group: SV_GroupID, uint3 local: SV_GroupThreadID) {
     GroupMemoryBarrierWithGroupSync();
 
     uint acc[kMaxSteps] = { 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
+    uint parent[kMaxSteps] = { 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu,
+                               0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu };
+    uint prevValue[kMaxSteps] = { 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };   // the word decoded last, each element
     uint step = 0u;
-    for (uint b = 0; b < params.planes; ++b) {
+    for (uint i = 0; i < params.planes; ++i) {
+        // The planes in their coding order (the tail word first); a lane's
+        // symbols of a plane are a block of the run, element lane * steps + k.
+        const uint b = athzPlaneAt(i, params.tailWord);
         const uint4 plane = planes[b];
         const uint L = athzLayer(plane);
         const bool wanted = ((params.layers >> L) & 1u) != 0u;
         const uint shift = (b & 3u) * 8u;
         if (wanted && athzEncoding(plane) == 1u) {
             const uint table = plane.y * (1u << n);
-            for (uint i = local.x; i < (1u << n); i += 256u) {
-                gTable[i] = tables[table + i];
+            for (uint t = local.x; t < (1u << n); t += 256u) {
+                gTable[t] = tables[table + t];
             }
             GroupMemoryBarrierWithGroupSync();
             for (uint k = 0; k < steps; ++k) {
-                const uint g = lane + k * kAthzLanes;
+                const uint g = lane * steps + k;
                 const bool live = active && g < here;
                 bool need = false;
                 uint sym = 0u;
@@ -202,7 +244,7 @@ void athzDecode(uint3 group: SV_GroupID, uint3 local: SV_GroupThreadID) {
             const uint width = athzWidth(plane);
             const uint base = athzBase(plane);
             for (uint k = 0; k < steps; ++k) {
-                const uint g = lane + k * kAthzLanes;
+                const uint g = lane * steps + k;
                 if (g >= here) {
                     continue;
                 }
@@ -220,14 +262,76 @@ void athzDecode(uint3 group: SV_GroupID, uint3 local: SV_GroupThreadID) {
                 acc[k] |= ((v + base) & 0xFFu) << shift;
             }
         }
-        if ((b & 3u) == 3u) {
+        if ((b & 3u) != 3u) {
+            continue;
+        }
+        // The word whole: its transform undone, then written.
+        const uint w = b >> 2;
+        const uint t = athzTransform(plane);
+        if (t >= kXfDelta && t <= kXfXor) {
+            // A prefix along the run: the lane's own block, then the lanes before it.
+            uint sum = 0u;
             for (uint k = 0; k < steps; ++k) {
-                const uint g = lane + k * kAthzLanes;
-                if (active && g < here) {
-                    storeWord(dst + first + g, b >> 2, acc[k]);
-                }
-                acc[k] = 0u;
+                sum = athzCombine(t, sum, athzStep(t, acc[k]));
+                acc[k] = sum;
             }
+            gScan[sub * kAthzLanes + lane] = sum;
+            GroupMemoryBarrierWithGroupSync();
+            uint carry = 0u;
+            for (uint j = 0; j < lane; ++j) {
+                carry = athzCombine(t, carry, gScan[sub * kAthzLanes + j]);
+            }
+            GroupMemoryBarrierWithGroupSync();
+            for (uint k = 0; k < steps; ++k) {
+                acc[k] = athzCombine(t, carry, acc[k]);
+            }
+        } else if ((t == kXfWithin || t == kXfParentWithin) && active) {
+            const uint pw = athzPreviousWord(w, params.tailWord);
+            for (uint k = 0; k < steps; ++k) {
+                const uint g = lane * steps + k;
+                if (g < here) {
+                    if (t == kXfWithin || parent[k] == 0xFFFFFFFFu) {
+                        acc[k] = athzUnwithin(acc[k], prevValue[k]);
+                    } else {
+                        const uint u = athzUnwithin(acc[k], sub16x2(prevValue[k], loadParent(parent[k], pw)));
+                        acc[k] = add16x2(u, loadParent(parent[k], w));
+                    }
+                }
+            }
+        } else if (t >= kXfParent && active) {
+            for (uint k = 0; k < steps; ++k) {
+                const uint g = lane * steps + k;
+                if (g < here) {
+                    const uint pv = parent[k] != 0xFFFFFFFFu ? loadParent(parent[k], w) : 0u;
+                    acc[k] = athzCombine(t, pv, athzStep(t, acc[k]));
+                }
+            }
+        }
+        for (uint k = 0; k < steps; ++k) {
+            const uint g = lane * steps + k;
+            if (active && g < here) {
+                storeWord(dst + first + g, w, acc[k]);
+                prevValue[k] = acc[k];
+                if (w == params.tailWord) {
+                    // Who its parent is, for the words after it.
+                    if (params.leaves != 0u) {
+                        parent[k] = params.parentCount > 0u ? min(acc[k], params.parentCount - 1u) : 0xFFFFFFFFu;
+                    } else if (params.parentCount > 0u) {
+                        const uint cell = acc[k] >> 3;
+                        uint lo = 0u, hi = params.parentCount;
+                        while (lo < hi) {
+                            const uint m = (lo + hi) / 2u;
+                            if (parTail.Load(m * 4u) < cell) {
+                                lo = m + 1u;
+                            } else {
+                                hi = m;
+                            }
+                        }
+                        parent[k] = min(lo, params.parentCount - 1u);
+                    }
+                }
+            }
+            acc[k] = 0u;
         }
     }
     if (active) {

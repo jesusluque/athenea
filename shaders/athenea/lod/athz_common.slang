@@ -109,3 +109,118 @@ public uint2 athzField(AthzLayout l, uint w) {
 public uint athzAddress(AthzLayout l, uint2 field, uint e) {
     return (e * athzFieldWords(l, field.x) + field.y) * 4u;
 }
+
+// --- transforms (E1b) ---------------------------------------------------------
+//
+// A WORD'S TRANSFORM, chosen per word of an element and per kind for the asset
+// (the plane entry's w), applied to the whole word before it is split into its
+// four byte planes. All integer, all exactly undone:
+//   0 none
+//   1 delta: the difference from the run's previous element, zigzagged (a run's
+//     first element from 0) -- undone by a prefix sum along the run
+//   2 delta16: the same on each 16-bit half alone (two f16, a packed pair)
+//   3 xor: the exclusive or with the previous element (bit masks)
+//   4 parent: the difference from the parent group's same word, zigzagged --
+//     a splat's finest merged group (its tail word), a merged group's group
+//     at the level above (its cell's parent); the coarsest level's from 0
+//   5 parent16: the same, half by half
+//   6 xorParent: the exclusive or with the parent's word
+//   7 within: each 16-bit half against the coefficient before it in the
+//     element -- the low half against the previous word's high half, the
+//     high half against its own low half (a transfer's r, g, b of a basis;
+//     a pair of scales) -- the previous word being the one coded before it
+//   8 parentWithin: the same on the differences from the parent's words
+// The tail word itself takes 0 to 3: it is what finds the parent.
+public static const uint kXfNone = 0;
+public static const uint kXfDelta = 1;
+public static const uint kXfDelta16 = 2;
+public static const uint kXfXor = 3;
+public static const uint kXfParent = 4;
+public static const uint kXfParent16 = 5;
+public static const uint kXfXorParent = 6;
+public static const uint kXfWithin = 7;
+public static const uint kXfParentWithin = 8;
+public static const uint kXfCount = 9;
+
+/// transform 7's residual of `v` after the word `prev`, and back.
+public uint athzWithin(uint v, uint prev) {
+    const uint lo = v & 0xFFFFu, hi = v >> 16;
+    return zigzag16((lo - (prev >> 16)) & 0xFFFFu) | (zigzag16((hi - lo) & 0xFFFFu) << 16);
+}
+public uint athzUnwithin(uint r, uint prev) {
+    const uint lo = (unzigzag16(r & 0xFFFFu) + (prev >> 16)) & 0xFFFFu;
+    const uint hi = (unzigzag16(r >> 16) + lo) & 0xFFFFu;
+    return lo | (hi << 16);
+}
+
+/// The word coded just before word `w` (athzPlaneAt's order); the tail word
+/// has none.
+public uint athzPreviousWord(uint w, uint tailWord) {
+    if (w == 0u) {
+        return tailWord;
+    }
+    if (w == tailWord + 1u) {
+        return tailWord > 0u ? tailWord - 1u : tailWord;
+    }
+    return w - 1u;
+}
+
+public uint athzTransform(uint4 plane) { return plane.w & 0xFFu; }
+
+public uint zigzag(uint d) { return (d << 1) ^ (0u - (d >> 31)); }
+public uint unzigzag(uint z) { return (z >> 1) ^ (0u - (z & 1u)); }
+uint zigzag16(uint d) { return ((d << 1) ^ (0u - ((d >> 15) & 1u))) & 0xFFFFu; }
+uint unzigzag16(uint z) { return ((z >> 1) ^ (0u - (z & 1u))) & 0xFFFFu; }
+public uint sub16x2(uint a, uint b) { return ((a - b) & 0xFFFFu) | ((((a >> 16) - (b >> 16)) & 0xFFFFu) << 16); }
+public uint add16x2(uint a, uint b) { return ((a + b) & 0xFFFFu) | ((((a >> 16) + (b >> 16)) & 0xFFFFu) << 16); }
+public uint zigzag16x2(uint d) { return zigzag16(d & 0xFFFFu) | (zigzag16(d >> 16) << 16); }
+public uint unzigzag16x2(uint z) { return unzigzag16(z & 0xFFFFu) | (unzigzag16(z >> 16) << 16); }
+
+/// The residual a word is coded as, against what predicts it (`p`: the
+/// previous element's word for 1 to 3, the parent's for 4 to 6).
+public uint athzForward(uint t, uint v, uint p) {
+    switch (t) {
+    case kXfDelta:
+    case kXfParent: return zigzag(v - p);
+    case kXfDelta16:
+    case kXfParent16: return zigzag16x2(sub16x2(v, p));
+    case kXfXor:
+    case kXfXorParent: return v ^ p;
+    default: return v;
+    }
+}
+
+/// A residual's step (what a run's prefix adds up, 1 to 3) or difference (4 to 6).
+public uint athzStep(uint t, uint r) {
+    switch (t) {
+    case kXfDelta:
+    case kXfParent: return unzigzag(r);
+    case kXfDelta16:
+    case kXfParent16: return unzigzag16x2(r);
+    default: return r;
+    }
+}
+
+/// How two steps combine (the prefix's operation; the parent's undoing).
+public uint athzCombine(uint t, uint a, uint b) {
+    switch (t) {
+    case kXfDelta:
+    case kXfParent: return a + b;
+    case kXfDelta16:
+    case kXfParent16: return add16x2(a, b);
+    default: return a ^ b;
+    }
+}
+
+/// THE ORDER PLANES ARE CODED IN: the tail word's four first (it finds the
+/// parent), then every other word's, in the element's order.
+public uint athzPlaneAt(uint i, uint tailWord) {
+    if (i < 4u) {
+        return tailWord * 4u + i;
+    }
+    uint w = (i - 4u) / 4u;
+    if (w >= tailWord) {
+        w += 1u;
+    }
+    return w * 4u + (i & 3u);
+}

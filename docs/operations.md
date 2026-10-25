@@ -242,8 +242,9 @@ athenea convert cloud.athz cloud.spz
 ### 2.4.2 `athenea athz-census` — what a cloud's byte planes cost
 
 Writes each input (`.athc`, `.athz`, a USD ParticleField, `.ply`, `.spz`,
-`.sog`) as a `.athc`, as byte planes, raw bit-packed and under rANS at every
-run size and table size asked, checks every rANS file decodes to the record
+`.sog`) as a `.athc`, as byte planes, raw bit-packed, under rANS of order 0,
+and with every word's transform chosen before rANS, at every run size and
+table size asked; measures order 1 over the transforms' residuals; checks every rANS file decodes to the record
 bit for bit (on the device), and decodes its splat pages on the device, timed.
 Prints markdown tables to standard output and writes a CSV a plane beside the
 files (`<stem>.census.planes.csv`).
@@ -258,10 +259,12 @@ files (`<stem>.census.planes.csv`).
 | `--single-pages` | integer | `32` | pages also timed one a dispatch |
 | `--degree` | 0..3 | `3` | harmonics kept |
 | `--keep` | flag | off | keep the measured files |
+| `--transfer-basis` | path | none | a clustered PCA basis (f32, 256 clusters, 8 axes a block): a TX cloud's transfer also measured as its 4-bit weights, as they are and as a residual from the parent group's |
 
 "gzip" is deflate at level 6 on the CPU, without gzip's 18 bytes of frame.
 Decode times are the GPU's own clock on Metal (the command buffer's start and
-end), the host's submit-to-done elsewhere; the table says which.
+end), the host's submit-to-done elsewhere, the least of three runs of each
+batch; the table says which clock.
 
 ### 2.4.1 `athenea decimate` — fewer gaussians, kept where they matter
 
@@ -2376,14 +2379,17 @@ running it; they are listed in [development.md §3](development.md#3-working-in-
 or a bare `meta.json` (PlayCanvas, needs libwebp), `.athc` (this engine's
 chunked container), `.athz` (the same, coded in pages a GPU decodes).
 
-**`.athz`.** `ATHZ`, version 1. A 64-byte header with its own CRC-32, skippable
+**`.athz`.** `ATHZ`, version 2 (version 1, without transforms, is read). A 64-byte header with its own CRC-32, skippable
 extensions, the asset table at 4096 (each byte plane's coding and the rANS
 tables' frequencies), a 64-byte entry a page (elements, band, level, parent
 page, f16 box, error, each layer's offset and bytes, CRC-32), then sections
 G, A and T in band order, coarsest first: the first bands of every section are
-a fixed cut by themselves. Every page's CRC is checked before it reaches the
-device; a flag bit this reader does not know, and bit 4 (planes coded from the
-parent page), are refused.
+a fixed cut by themselves. Each word is coded after a transform the writer
+chose for it (a difference from the previous element or from the parent group,
+by words or by halves, an exclusive or, or against the coefficient before it;
+`docs/decisions.md`); bit 4 says some word is coded against its parent. Every
+page's CRC is checked before it reaches the device; a flag bit this reader does
+not know is refused.
 
 An `.spz` (versions 2 to 4) is the engine's input contract for splats:
 - **Axes.** The file's coordinate-system extension says what its data is

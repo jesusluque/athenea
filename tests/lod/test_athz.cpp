@@ -272,7 +272,51 @@ TEST_CASE("an .athz decodes to the records it was coded from, bit for bit", "[lo
             auto geometry = lod::readAthz(*gpu->library, path, lod::kAthzGeometry);
             if (!geometry) FAIL(geometry.error().toString());
             CHECK(differing(*h, cloud.splats.positions, 0, geometry->splats.positions, 0, record) == 0);
+            CHECK(differing(*h, cloud.groups, 0, geometry->groups, 0, cloud.count) == 0);
+            if (normals) {
+                CHECK(differing(*h, cloud.splats.normals, 0, geometry->splats.normals, 0, cloud.count) == 0);
+            }
             CHECK(differing(*h, cloud.splats.sh, 0, geometry->splats.sh, 0, uint64_t{cloud.count} * cloud.splats.shWords) > 0);
+        }
+    }
+}
+
+TEST_CASE("every transform an .athz word takes decodes bit for bit", "[lod][gpu][athz]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    for (const bool normals : {false, true}) {
+        const lod::LodCloud cloud = cloudOf(*h, 30000, normals ? 141 : 140, normals);
+        uint64_t orderZero = 0;
+        // Each alone (a word that may not take it -- the tail and a parent --
+        // takes none), then all of them, the least chosen for each word.
+        for (const uint32_t transforms : {1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u, 256u, 0x1FFu}) {
+            for (const bool rans : {true, false}) {
+                lod::AthzSettings s;
+                s.runGaussians = rans ? 64 : 32;
+                s.pageRuns = rans ? 48 : 3;
+                s.rans = rans;
+                s.transforms = transforms;
+                const auto path = temp("athenea_test_transform.athz");
+                auto stats = lod::writeAthz(*gpu->library, cloud, path, s);
+                if (!stats) FAIL(stats.error().toString());
+                if (transforms == 1u && rans) orderZero = stats->fileBytes;
+                auto back = lod::readAthz(*gpu->library, path);
+                if (!back) FAIL(back.error().toString());
+                const uint64_t words = cloudDifference(*h, cloud, *back);
+                uint32_t used = 0;
+                for (const auto& p : stats->planes) used |= 1u << p.transform;
+                std::printf("  normals %d, transforms 0x%02x, %s: used 0x%02x, %.1f B a splat; %llu words differ\n",
+                            normals ? 1 : 0, transforms, rans ? "rANS" : "raw", used,
+                            static_cast<double>(stats->fileBytes) / cloud.count,
+                            static_cast<unsigned long long>(words));
+                CHECK(words == 0);
+                if (transforms != 1u && transforms != 0x1FFu) {
+                    CHECK((used & transforms) != 0);   // the transform was taken somewhere
+                }
+                if (transforms == 0x1FFu && rans) {
+                    CHECK(stats->fileBytes <= orderZero);
+                }
+            }
         }
     }
 }

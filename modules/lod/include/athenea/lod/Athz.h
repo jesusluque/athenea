@@ -23,6 +23,10 @@
 //            own splats last -- so the first bands of every section are a
 //            fixed cut by themselves (writeAthzPrefix)
 //
+// Each word of an element is coded after a transform the writer chose for it
+// (athz_common.slang: a difference from the run's previous element or from the
+// parent group, by words or by halves, an exclusive or, or against the
+// coefficient before it), then split into byte planes, each raw or rANS.
 // A page is `pageRuns` runs of `runGaussians` elements of one band; a layer
 // of it is the run ends (u32 each), then each run: where a layer has planes
 // coded by rANS, the stream's length in 16-bit words, the 32 lanes' states
@@ -72,6 +76,15 @@ struct AthzSettings {
     /// Every plane raw at 8 bits from 0: the record's bytes transposed into
     /// planes and nothing more (the census's byte planes). Implies !rans.
     bool bytePlanes = false;
+    /// THE TRANSFORMS a word may take before it is coded (athz_common.slang),
+    /// a bit each: 1 none, 2 delta, 4 delta by halves, 8 xor, 16 parent, 32
+    /// parent by halves, 64 xor with the parent, 128 each half against the
+    /// coefficient before it, 256 the same on the differences from the
+    /// parent. Each word takes the one whose planes measure least. 1: order 0
+    /// on the words as they are.
+    uint32_t transforms = 0x1FF;
+    /// The census: each plane's order-1 entropy under two contexts, measured.
+    bool measureContexts = false;
     /// Not 0: the pages' histograms are counted in an order shuffled by this
     /// seed (a check that the tables do not depend on it).
     uint64_t histogramShuffle = 0;
@@ -89,6 +102,13 @@ struct AthzPlaneStat {
     uint64_t symbols = 0;    ///< elements coded
     uint64_t rawBytes = 0;   ///< at `width`
     uint64_t ransBytes = 0;  ///< what its table's entropy says rANS takes (0: not tried)
+    uint32_t transform = 0;  ///< its word's (AthzSettings::transforms' bit index)
+    /// measureContexts: its residuals at their order-0 entropy, and under
+    /// order 1 with the top two bits of the run's previous element's symbol,
+    /// or of the element's previous byte, as context.
+    uint64_t order0Bytes = 0;
+    uint64_t contextElementBytes = 0;
+    uint64_t contextByteBytes = 0;
 };
 
 struct AthzStats {

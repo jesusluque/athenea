@@ -246,8 +246,10 @@ athenea convert cloud.athz cloud.spz
 ### 2.4.2 `athenea athz-census` — lo que cuestan los planos de bytes de una nube
 
 Escribe cada entrada (`.athc`, `.athz`, un ParticleField de USD, `.ply`,
-`.spz`, `.sog`) como `.athc`, como planos de bytes, en bit-packing crudo y con
-rANS para cada tamaño de run y de tabla pedido, comprueba que cada fichero rANS
+`.spz`, `.sog`) como `.athc`, como planos de bytes, en bit-packing crudo, con
+rANS de orden 0, y con la transformada de cada palabra elegida antes del rANS,
+para cada tamaño de run y de tabla pedido; mide el orden 1 sobre los residuos
+de las transformadas; comprueba que cada fichero rANS
 decodifica al registro bit a bit (en el dispositivo), y decodifica sus páginas
 de splats en el dispositivo, cronometrado. Imprime tablas en markdown por la
 salida estándar y escribe un CSV por plano junto a los ficheros
@@ -263,11 +265,12 @@ salida estándar y escribe un CSV por plano junto a los ficheros
 | `--single-pages` | entero | `32` | páginas cronometradas además de una en una por dispatch |
 | `--degree` | 0..3 | `3` | armónicos que se conservan |
 | `--keep` | flag | apagado | conservar los ficheros medidos |
+| `--transfer-basis` | ruta | ninguna | una base de PCA por clústeres (f32, 256 clústeres, 8 ejes por bloque): el transfer de una nube TX se mide también como sus pesos de 4 bits, tal cual y como residuo desde los del grupo padre |
 
 "gzip" es deflate a nivel 6 en la CPU, sin los 18 bytes de marco de gzip.
 Los tiempos de decodificación son el reloj de la propia GPU en Metal (el inicio
-y el fin del command buffer) y el del host, del submit al final, en los demás;
-la tabla dice cuál.
+y el fin del command buffer) y el del host, del submit al final, en los demás,
+el menor de tres pasadas de cada lote; la tabla dice qué reloj.
 
 ### 2.4.1 `athenea decimate` — menos gaussianas, conservadas donde importan
 
@@ -2447,15 +2450,18 @@ de quien lo ejecuta: están en
 zstd), `.sog` o un `meta.json` suelto (PlayCanvas, necesita libwebp), `.athc`
 (el contenedor por chunks de este motor), `.athz` (lo mismo, codificado en páginas que decodifica una GPU).
 
-**`.athz`.** `ATHZ`, versión 1. Una cabecera de 64 bytes con su propio CRC-32,
+**`.athz`.** `ATHZ`, versión 2 (la versión 1, sin transformadas, se lee). Una cabecera de 64 bytes con su propio CRC-32,
 extensiones que se pueden saltar, la tabla de asset en 4096 (la codificación
 de cada plano de bytes y las frecuencias de las tablas rANS), una entrada de
 64 bytes por página (elementos, banda, nivel, página padre, caja en f16,
 error, offset y bytes de cada capa, CRC-32), y luego las secciones G, A y T
 en orden de banda, la más gruesa primero: las primeras bandas de cada sección
-son por sí solas un corte fijo. El CRC de cada página se comprueba antes de
-que llegue al dispositivo; un bit de bandera que este lector no conoce, y el
-bit 4 (planos codificados desde la página padre), se rechazan.
+son por sí solas un corte fijo. Cada palabra se codifica tras una transformada
+que eligió el escritor para ella (una diferencia con el elemento anterior o con
+el grupo padre, por palabras o por mitades, un o exclusivo, o frente al
+coeficiente anterior; `docs/decisions.md`); el bit 4 dice que alguna palabra se
+codifica frente a su padre. El CRC de cada página se comprueba antes de que
+llegue al dispositivo; un bit de bandera que este lector no conoce se rechaza.
 
 Un `.spz` (versiones 2 a 4) es el contrato de entrada de splats del motor:
 - **Ejes.** La extensión de sistema de coordenadas del fichero dice en cuál

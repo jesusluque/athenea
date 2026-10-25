@@ -15856,8 +15856,8 @@ changed:
   plane is coded raw (encoding 0: `byte - base` in `width` bits, 0 to 8, the range over the asset; a constant
   plane costs nothing) or by rANS of order 0 (encoding 1) on its own frequencies, one table per plane and per
   kind (merged groups, splats) for the whole asset. The encoder chooses rANS where the table's entropy is under
-  0.97 of the raw width. Encoding 2 (a plane predicted from its parent page) is the next step, E1b; the header's
-  bit 4 for it is refused by this reader.
+  0.97 of the raw width. Before that, each word may be transformed (E1b, below): version 2 of the format keeps the
+  transform in the plane entries' last word, and the header's bit 4 says a word is coded against its parent.
 - **Layers.** G (position, rotation, scales, the tail word, normal, material), A (the base colour -- shape word
   2's high half and word 3 --, harmonics, emission), T (transfer and its open directions). K is reserved. Each
   layer of a page is its own stream with its own lane states, in its own section, so a reader that does not want
@@ -16008,8 +16008,121 @@ before the container's encoding 2 is fixed.
 
 ### Not done
 
-- Encoding 2 (E1b, above); layer K; per-layer CRCs, so a reader of G alone still reads every layer to check one.
+- Layer K; per-layer CRCs, so a reader of G alone still reads every layer to check one.
 - CUDA and WebGPU timings (the WGSL of `athz_decode11` compiles; nothing has run it), and the L4.
 - The player's web decoder (`athc_pages.rs`): this is the engine side only.
 - `decimate --athz`: a decimated stage is converted by `athenea convert` afterwards.
 - The page's box and error are written but nothing reads them yet: the engine's cut works from the levels.
+
+## .athz E1b: transforms before the entropy (25 Oct)
+
+E1 showed where order 0 lost: deflate on byte planes reached 0.84x of gzip, order-0 rANS 1.2 to 1.35x, so the
+gain was in what neighbours share, not in the coder. Each word of an element now takes a transform before it is
+split into its four byte planes, chosen per word and per kind for the asset by what its planes measure:
+
+| id | transform | residual coded | undone by |
+|---:|---|---|---|
+| 0 | none | the word | -- |
+| 1 | delta | zigzag(v - the run's previous element's v) | a prefix sum along the run |
+| 2 | delta16 | the same, each 16-bit half alone | a prefix sum by halves |
+| 3 | xor | v xor the previous element's | a prefix xor |
+| 4 | parent | zigzag(v - the parent group's v) | adding the parent's |
+| 5 | parent16 | the same by halves | the same by halves |
+| 6 | xorParent | v xor the parent's | xor with the parent's |
+| 7 | within | each half against the coefficient before it in the element: the low half against the previous word's high half, the high half against its own low half | in coding order, a half after another |
+| 8 | parentWithin | 7 on the differences from the parent's words | 7 undone, then the parent's added |
+
+- **The parent** of a splat is its finest merged group (the tail word); of a merged group, the group at the level
+  above whose cell holds its own (a binary search of that level's cells); the coarsest level has none and codes
+  against zero. Merged groups are the weighted means of what they stand for, so the parent is what predicts.
+- **Integer only, exactly undone.** Zigzag differences modulo 2^32 or 2^16, xor. The tail word is coded first (it
+  finds the parent), then every other word in the element's order, so 7 and 8 always have the previous word.
+- **The run's prefix in one dispatch.** A lane's symbols of a plane are now a block of the run (element lane x
+  steps + k) instead of every 32nd: the prefix of a delta is the lane's own block, then the lane totals before
+  it, read from a 32-word scratch a run in workgroup memory (one barrier each side). `athz_decode11` takes 9 312
+  bytes of workgroup memory in all (WGSL compiled). The encoder writes nothing new: it reads each residual from
+  the records and their parents as it codes.
+- **Choosing.** The writer counts every allowed transform's histograms (a pass each), and `athzChoose` keeps, per
+  word, the one whose four planes cost least, each at the lesser of its entropy and its raw width (one must earn
+  0.1 %). A word only takes a transform that keeps each byte decodable from its own layer and G -- a reader of G
+  alone still gets every G byte: 32-bit arithmetic only where no byte sits above one of another layer, by halves
+  only where each half is one layer, within-element only from G or the same layer.
+- **Encoder input.** Each kind's records interleaved (`athz_interleave`), so the encoder binds one buffer for
+  them and one for their parents: Metal gives a kernel 31 buffers, and twenty arrays did not fit.
+- **Order 1, measured not built.** `athzContext` counts each residual plane under two contexts the decoder would
+  have: the top two bits of the run's previous element's symbol, and of the element's previous byte. Four tables
+  a plane of 2^11 are 32 KiB, twice WebGPU's workgroup memory; the gain (below) does not pay for halving the
+  tables or loading them twice, so it is not coded.
+- **CPCA weights, measured** (`--transfer-basis`, the Q97 basis of 256 clusters and 8 axes a block, 4-bit
+  weights; `athz_cpca.slang`): each TX splat's id and 24 weights at order 0, and as a residual from its finest
+  group's (zigzag of the difference where the ids agree, the weights as they are where not). This is the lossy
+  codec, against the lossless transfer the file holds.
+
+### E1b, measured (Metal, M5 Pro)
+
+The same clouds and baseline as E1 (gzip of the whole `.athc` at level 6), every transform allowed:
+
+| cloud | gzip MB | rANS order 0 (256, 2^11) | transforms, 64, 2^11 | 64, 2^12 | 256, 2^11 | 256, 2^12 |
+|---|---:|---:|---:|---:|---:|---:|
+| pawn (TX) | 259.8 | 1.202 | 0.850 | 0.844 | 0.825 | 0.820 |
+| sparrow | 174.6 | 1.347 | 0.977 | 0.971 | 0.839 | 0.832 |
+| Corvette close 5120 (TX) | 119.6 | 1.234 | 0.689 | 0.685 | **0.665** | **0.662** |
+
+Every file decoded to its record bit for bit (the census compares every array on the device). **The 0.9x bar is
+met on all three at runs of 256; the 0.67x target on the Corvette's close-up level only.** Runs of 64 lose 2 to
+14 % to runs of 256 (each run's prefix and states start again); 2^12 tables gain under 1 %.
+
+By field, the splats (MB; columns: order 0 alone, with transforms at 2^11, order 1 measured over the transforms'
+residuals, each plane deflated alone):
+
+| field | pawn: order 0 / transforms / order 1 best / gzip | sparrow | Corvette |
+|---|---|---|---|
+| position | 14.24 / 8.91 / 7.64 / 8.43 | 65.61 / 39.72 / 36.54 / 40.08 | 3.53 / 1.89 / 1.76 / 2.29 |
+| shape | 13.00 / 7.98 / 7.62 / 8.71 | 58.88 / 35.59 / 34.53 / 40.48 | 2.99 / 2.63 / 2.55 / 2.59 |
+| tail | 2.93 / 0.18 / 0.12 / 0.21 | 15.52 / 1.06 / 0.82 / 1.33 | 0.89 / 0.08 / 0.06 / 0.12 |
+| shadow bits | 18.77 / 1.96 / 1.47 / 2.03 | -- | 1.93 / 0.34 / 0.32 / 0.67 |
+| transfer | 198.87 / 149.48 / 140.70 / 150.62 | -- | 76.00 / 37.05 / 36.06 / 73.98 |
+| all | 254.36 / 173.06 / 162.87 / 175.00 | 140.86 / 77.06 / 72.36 / 82.42 | 87.40 / 43.45 / 42.18 / 81.48 |
+
+What each word took: positions delta or parent; the shape's scale and colour pairs delta16; the tail word delta
+(sparrow) or delta16; the open directions xorParent; the transfer parentWithin (34 of 56 words on the pawn, 51 of
+56 on the Corvette), within or parent16 for the rest. The transfer is where the gain was: on the Corvette half
+its order-0 size, below deflate's by half; on the pawn level with deflate (149.5 against 150.6 MB).
+
+Order 1 over the transformed residuals would take 6 % more off the pawn and the sparrow and 3 % off the Corvette
+(previous-byte context best on positions, previous-element on the transfer): not worth tables that do not fit.
+
+The transfer as CPCA weights, the splats alone: on the pawn 11.66 MB at order 0 and 3.77 as a residual from the
+parent group (the ids agree with the parent's for 89.8 % of splats); on the Corvette 2.29 and 1.22 (86.8 %).
+Against 149.5 MB for the lossless transfer, the lossy codec is a 40x smaller layer T where its 67.9 dB is
+enough, and the parent residual takes two thirds off it again.
+
+**Decode**, GPU clock, each batch decoded three times and the least kept:
+
+| cloud | coding | ms a page (median) | ms an 8 MiB batch (median) | GB/s of record written |
+|---|---|---:|---:|---:|
+| pawn | order 0, 256, 2^11 | 1.35 | 2.60 | 11.9 |
+| pawn | transforms, 64 / 256, 2^11 | 0.79 / 1.58 | 2.73 / 2.72 | 9.6 / 10.5 |
+| sparrow | order 0, 256, 2^11 | 0.18 | 2.12 | 11.9 |
+| sparrow | transforms, 64 / 256, 2^11 | 0.12 / 0.22 | 2.27 / 1.90 | 9.8 / 14.5 |
+| Corvette | order 0, 256, 2^11 | 1.11 | 1.22 | 9.6 |
+| Corvette | transforms, 64 / 256, 2^11 | 0.80 / 1.67 | 2.52 / 3.40 | 9.2 / 7.1 |
+
+The transforms cost the decoder 0 to 2.2 ms an 8 MiB batch (the parent's reads, the run's prefix); 2 ms a batch
+is met or nearly (1.9 to 3.4 ms with transforms). The least of three still varies between rows that should
+match: the machine is shared.
+
+### How it is checked
+
+`athenea_lod_tests "[athz]"`, seven cases: the six of E1, now written with every transform allowed, and **every
+transform alone** -- each of the nine forced on every word that may take it, and all allowed, rANS and raw, with
+and without normals: 0 words differ in every array, each forced transform used. Read with layer G alone, the
+positions, the tail words and the normals equal the source's (the layer-safe choice). The whole lod suite (24
+cases) passes.
+
+### Not done
+
+- The 0.67x target on the pawn and the sparrow (0.825, 0.839): what is left is the transfer at about 1.1 B a
+  coefficient, the positions' low bytes and the scales.
+- Order 1 (measured above, not coded); CPCA as a lossy layer T in the file (measured, not written).
+- CUDA and WebGPU decodes of the transforms; the web player.
