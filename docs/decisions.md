@@ -15843,3 +15843,77 @@ states (none, 1 to 5) are seen, and the last is reached. The `.athc` Hydra test 
 - The live cloud's bounds are not known to the stage (`splats.bounds` is empty): framing and bounds queries do
   not see it.
 - Path tracing a live stream: the rasteriser alone draws it, as with any streamed asset.
+
+## Live streams under adversarial producers, and the sparrow as an animation over one (25 Oct)
+
+### What was tried, and what holds
+
+`tests/lod/test_stream_qa.cpp` and `tests/usd/test_live_qa.cpp` (`[qa]`; the soak `[.soak]`), Metal (M5 Pro),
+release and debug builds under ThreadSanitizer and AddressSanitizer with UBSan:
+
+| Case | Result |
+|---|---|
+| pages out of order, epochs interleaved | whole and in order |
+| pages a stream cannot hold (chunk past the stream, no splats, too many, epoch 0, no page count, odd size, a remove with bytes, page counts that disagree) | refused, nothing changes |
+| 8 streams x 4 producers x 300 epochs, polled while they push | every epoch whole, none dropped, late or refused; ThreadSanitizer finds no race in the source, the queue or the pool |
+| 3652 damaged SPZ files (truncated, bits flipped, version 4's header patched) read and fetched into an exactly-sized staging slot | no overrun (ASan), no stream past its bytes |
+| eight kinds of unreadable page (truncated, one byte, past a chunk, wrong magic, unknown version, a count of 2^31) | the epoch dropped as corrupt, the shown one kept whole, the next shown |
+| budgets 0, 1 and 2^64-1 gaussians | one slot, one slot, two epochs of every chunk |
+| forty pools closed with pages in flight; a producer stopping mid-epoch | nothing outlives its pool; the shown epoch stays |
+| 30 min soak: 30 epochs a second, the page count changing every epoch, a stage drawing | 206083 frames, 53996 epochs, every frame its epoch's image (p99 1, max 2), none dropped; process RSS flat (326 MB after load, 61 MB at the end, compressed by the system) |
+| leaks(1) at exit over the lod stream suite | 120 leaks, all in shader library and kernel creation (the test device lives for the process); none in a pool, source or queue |
+
+### Defects found (each a failing `[qa]` case)
+
+1. **A resent page completes an epoch.** `LiveSource::poll` counts every page towards `pages`; a page sent twice
+   for one chunk stands in for a chunk that never came, the epoch is handed over without it, and the missing page,
+   arriving after, is late and never shown.
+2. **The epoch being built changes how the shown one is drawn.** `placeSpz` sets `cloud.splats.antialiased` when
+   a page is placed, before the epoch is shown (max 232 against the shown epoch's own pages); one flag a cloud
+   cannot hold an epoch whose pages disagree.
+3. **A backlog is played a frame an epoch.** Complete epochs are built one at a time, one an update at most: 60
+   waiting take 61 updates; a producer at an epoch a millisecond against 4 ms frames leaves 297 to 375 waiting.
+   In the soak, a stall of the process left 5015 waiting, played back over 90 s.
+4. **Two prims naming one stream.** Both pools drain the one named queue: one prim takes every page and the
+   other draws nothing.
+5. **A stream no prim reads keeps its pages.** Pushed while the prim is removed (a variant switched off), they
+   stay in the named queue; named again, the stream replays them (39 frames to the latest).
+6. **An SPZ fixed point past 31 bits is read.** `spzEncoding` shifts by the header's fractional bits unchecked
+   (UBSan: shift exponent 76).
+7. **A page the pool cannot place wedges the stream.** `placeLoaded` failing (an unreadable staged header, an
+   allocation that fails) returns from `updateLive` with the epoch still being built, drops the other loaded
+   pages of that update with their staging slots, and no later update finishes or abandons it: no epoch is
+   shown again.
+
+And beside the stream: `athenea flatten` wrote its wrapper layer at USD's default 24 time codes a second, so a
+stage at 30 composed through it was posed at 30/24 of the time asked (the sparrow's flattened frame t was frame
+1.25 t); the wrapper now carries the source's rate.
+
+Not defects, measured: a live prim's defaults (64 chunks of 65536, degree 3) hold a store of two epochs, 8.4 M
+gaussians, about 1 GiB of device memory, whatever the stream sends; the engine's live pool has 2 loaders.
+
+### The sparrow as an animation over a live stream
+
+`athenea flatten --range` poses the skinned cloud at each time code, flattens it under the stage's light,
+orders the frame's gaussians along a Morton curve of its box (`flatten_chunks.slang`, the radix sort) and cuts
+them into pages; `athenea stream` pushes a frame's pages as one epoch at the sequence's rate and draws the stage
+that names the stream (§3.7 of the manual). SparrowBird.usda, `mesh2splat --skinned --transfer --resolution
+256` (300862 gaussians, 609 joints, bake 192 paths), frames 1 to 61, flattened `--baked` under the dome,
+pages of 32768: 10 pages, 9.55 MB an epoch (median; SPZ version 4, degree 3), 1.6 s a frame to flatten.
+
+- **Against the skinned cloud drawn directly**, every frame of the 61, 1024 x 1024, lockstep: p99 median 15
+  (worst 20), max median 51 (worst 66), 2.4 % of pixels past 2 code values (worst 3.2 %) -- the fit to degree
+  3 (feather highlights are softer) and SPZ's quantisation, through the stream and Hydra. The stream itself
+  adds nothing: frames are the epoch's pages drawn as they are (the `[live]` cases, max 2).
+- **Playback** (same run, `ATHENEA_STAGES=1` for the commit): a frame draws in 19 ms (median; p95 27), the
+  commit takes 0.7 ms (p95 2.5), but an epoch takes about four frames to be placed (lockstep: 89.5 ms from push
+  to shown), and one epoch is built at a time -- 13 epochs a second. 30 and 24 a second do not hold: 128 of 183
+  and 152 of 183 epochs shown, the rest skipped, shown 2.0 s and 1.7 s after they were due (median). The pool
+  needs the next epoch's pages decompressing while one is placed (and the backlog fix above), not a faster
+  frame.
+
+### Not done
+
+- The defects above are reported with their failing cases; none is fixed here.
+- Vulkan and CUDA on Windows, and CUDA under WSL: see the QA report of this branch.
+- Loaders beyond two for a live pool, and pages loaded ahead of the epoch being built.

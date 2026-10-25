@@ -461,6 +461,33 @@ Cada frame escrito lleva su timecode y su cadencia como atributos EXR, junto
 al instante TAI, el índice de frame, el tiempo USD y cuánto se retrasó el
 despertar.
 
+### 2.7.1 `athenea stream` — una secuencia de páginas a un stream en vivo
+
+Reproduce las páginas SPZ que escribió `athenea flatten --range` en el stream
+en vivo que nombra un stage (`AtheneaLiveSourceAPI`, §4.3) y dibuja el stage
+mientras suena, en el mismo proceso: un hilo productor empuja las páginas de
+cada frame como una época, con su tiempo PTP, y el frame dibuja la última
+época cuyas páginas están todas en el dispositivo.
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `stage` | ruta, obligatoria | — | un stage con un ParticleField bajo `AtheneaLiveSourceAPI`; sus `chunks` al menos las páginas por frame de la secuencia, su `chunkSplats` al menos `--chunk-splats`, `degree` 3 |
+| `pages` | directorio, obligatorio | — | contiene `stream.txt` y las páginas |
+| `--stream` | nombre | el que nombra el stage | |
+| `--camera` | ruta de prim | la primera del stage | |
+| `--size` | `ANCHOxALTO` | `960x540` | |
+| `--rate` | épocas por segundo | la de la secuencia (`stream.txt`, los time codes por segundo del stage) | |
+| `--loops` | entero | `1` | la secuencia otra vez, con las épocas siguiendo la cuenta |
+| `--lockstep` | flag | por el reloj | cada frame empuja su época y dibuja hasta que el stage la muestra: cada época dibujada una vez |
+| `--reference` | ruta de stage | ninguna | con `--lockstep`: se dibuja en el time code de cada frame y se compara con el frame en el dispositivo (p99, max, píxeles a más de 2 valores de código) |
+| `--splat-display-blend` | flag | blend lineal | la nube en vivo mezclada como la mezcla un visor estándar, que es para lo que se ajustan los colores de flatten |
+| `-o`, `--output` | directorio | ninguno | cada frame mostrado como `frame_NNNNN.exr` (y `reference_NNNNN.exr`), con `athenea:timecode`, `athenea:ptpTime` (segundos) y `athenea:epoch` |
+
+Por el reloj imprime los frames dibujados, las épocas mostradas y saltadas,
+con qué retraso se mostró una época respecto a cuándo tocaba, y si el ritmo
+se sostuvo (cada época dibujada). El productor está en este proceso: las colas
+con nombre son las del propio motor (`lod::PageQueue::named`).
+
 ### 2.8 `athenea mesh2splat` — un modelo en gaussianas
 
 La conversión, y el bake de luz que viene después. Qué hace cada etapa está en
@@ -602,6 +629,8 @@ apagadas (`<output>_flatten_stage.usda`, que se queda junto a los ficheros).
 | `--spz-version` | `3` \| `4` | `3` | 3 es gzip y lo que lee Spark; 4 es ZSTD y necesita ZSTD en la compilación |
 | `--spz-sh1-bits`, `--spz-sh-rest-bits` | 1..8 | `8`, `8` | bits que SPZ guarda de la banda 1, y de las bandas 2 y 3 |
 | `--time` | número | `0` | time code de USD |
+| `--range` | `INICIO:FIN[:PASO]` | sin fijar | una secuencia: cada time code aplanado y cortado en páginas SPZ, una época de un stream en vivo por frame (§3.7); fuerza `--format spz` y hace de `-o` un directorio |
+| `--chunk-splats` | entero | `65536` | con `--range`: las gaussianas que caben como mucho en una página; las de un frame se ordenan sobre una curva de Morton de su caja y se cortan en tramos de este tamaño, así que una página es una parte del modelo |
 | `--validate` | directorio | ninguno | medir un fichero escrito contra las mallas trazadas, material a material (§3.1, *Una conversión medida*) |
 | `--validate-stage` | ruta | la de entrada | la escena de mallas desde la que se traza el GT |
 | `--validate-format` | `ply` \| `spz` | `spz` | qué fichero se vuelve a leer y se mide |
@@ -1404,6 +1433,32 @@ es luz por unidad de radiancia del grupo: el material del grupo a
 `emission_luminance` 1 cuando se horneó. Encender una lámpara no sube nada.
 Las reglas y las curvas en el tiempo no se evalúan (un estado y niveles es lo
 que toma un frame), y sólo el rasterizador suma las capas.
+
+### 3.7 Una animación sobre un stream en vivo
+
+Una nube con esqueleto reproducida como un stream en vivo de páginas: cada
+frame posado, aplanado bajo la luz del stage y cortado en páginas que quedan
+juntas, y empujado una época por frame al stream que nombra un stage. Lo que
+recibe un visor es SPZ estándar, un frame cada vez; el stage solo muestra
+frames enteros.
+
+```sh
+athenea mesh2splat SparrowBird.usda --skinned --transfer --resolution 256 -o sparrow_tx.usdc
+# sparrow.usda: la nube, una cámara y un domo (la luz que flatten hornea)
+athenea flatten sparrow.usda --range 1:61 --chunk-splats 32768 --spz-version 4 -o pages
+# live.usda: un ParticleField bajo AtheneaLiveSourceAPI, stream "sparrow",
+# chunks = los del manifiesto, chunkSplats 32768, degree 3, girado 270 grados
+# sobre x en un stage Z arriba (las páginas son Y arriba, y los ejes de SPZ van girados)
+athenea stream live.usda pages --lockstep --reference sparrow.usda --splat-display-blend -o frames
+athenea stream live.usda pages --rate 30 --loops 3 --splat-display-blend
+```
+
+`pages/stream.txt` lista el ritmo, las páginas por frame como mucho
+(`chunks`), `chunkSplats` y una línea por frame: índice, time code, páginas,
+gaussianas, bytes; las páginas son `f<índice>_c<página>.spz`. Un frame con
+menos páginas que el máximo quita las demás. `--reference` mide el camino
+entero -- el ajuste a grado 3, la cuantización de SPZ, el stream e Hydra --
+contra la nube con esqueleto mientras se mueve.
 
 ## 4. Autorizar para este motor en USD
 
@@ -2431,6 +2486,9 @@ imagen de OpenUSD, así que lo que lea esa compilación.
 (versiones 3 y 4; la 4 necesita zstd; cada uno lleva la extensión de sistema de
 coordenadas diciendo right-up-back), `.glb` de glTF con
 `KHR_gaussian_splatting`, y USD (§2.8.1).
+
+**Páginas que se escriben.** `athenea flatten --range` escribe un directorio de
+páginas SPZ y su `stream.txt` (§3.7), que lee `athenea stream`.
 
 **Imágenes que se escriben.** OpenEXR, lineal premultiplicado, con la fila de
 abajo primero dentro del motor y escrito con la de arriba primero como quiere
