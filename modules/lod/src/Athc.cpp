@@ -1508,6 +1508,28 @@ void StreamingPool::Impl::publish(gpu::CommandBatch& batch) {
     cloud.slots = nextSlots;
     cloud.chunkCounts = nextCounts;
     shownBounds = nextBounds;
+    // The cloud's bounds, the union of its shown pages' (bookkeeping on what
+    // the producers said); a page that said none (all zero) is left out, and
+    // with none said the bounds stay as they were (the stream's declared ones).
+    {
+        bool any = false;
+        scene::Bounds all;
+        for (uint32_t c = 0; c < chunks; ++c) {
+            const scene::Bounds& b = shownBounds[c];
+            const bool said = b.min != std::array<float, 3>{0, 0, 0} || b.max != std::array<float, 3>{0, 0, 0};
+            if (cloud.slots[c] < 0 || !said) {
+                continue;
+            }
+            for (size_t k = 0; k < 3; ++k) {
+                all.min[k] = any ? std::min(all.min[k], b.min[k]) : b.min[k];
+                all.max[k] = any ? std::max(all.max[k], b.max[k]) : b.max[k];
+            }
+            any = true;
+        }
+        if (any) {
+            cloud.splats.bounds = all;
+        }
+    }
     counters.epoch = building->id;
     counters.ptpTime = building->ptpTime;
     ++counters.epochs;

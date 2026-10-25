@@ -78,6 +78,10 @@ struct StreamedAsset {
     uint32_t    liveChunks = 64;   ///< chunk ids 0 .. liveChunks - 1
     uint32_t    liveChunkSplats = 65536;
     uint32_t    liveDegree = 3;    ///< harmonics kept, 0..3
+    /// The prim's authored `extent` (min xyz, max xyz): the stream's bounds
+    /// until an epoch is shown, whose pages' bounds then say.
+    bool                 hasExtent = false;
+    std::array<float, 6> extent{};
 
     [[nodiscard]] bool any() const noexcept { return !path.empty() || !live.empty(); }
     /// The same pool, whatever the threshold.

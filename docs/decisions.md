@@ -15837,12 +15837,78 @@ states (none, 1 to 5) are seen, and the last is reached. The `.athc` Hydra test 
 
 ### Not done
 
-- A producer in another binary image: the named queues live in this engine's `lod` library, so a producer must
-  share the process image the delegate runs in (StageRenderer, or a host linking the same library). IPC and
-  network receivers come later.
-- The live cloud's bounds are not known to the stage (`splats.bounds` is empty): framing and bounds queries do
-  not see it.
+- A producer in another binary image reaches a stream only through the MCP server's tools (below); a host that
+  loads the plugin as its own library has its own named queues.
 - Path tracing a live stream: the rasteriser alone draws it, as with any streamed asset.
+
+## Live streams from another process, and their bounds (25 Oct)
+
+- **Bounds.** A live cloud's bounds are the union of its shown pages' (`PageUpdate::bounds`, what the producer
+  says; a page that says none, all zeros, is left out) -- CPU bookkeeping at each publish -- and, before an
+  epoch is shown, the prim's authored `extent`. Framing and `bounds` queries see them.
+- **Across processes.** The pages are compressed SPZ, decompressed by the pool's loader threads on the CPU, so
+  the page path needs no GPU interop. Three MCP tools: `stream_open {name, chunks, ringBytes}` makes a ring of
+  shared memory (`platform::SharedMemory`: POSIX `shm_open` on macOS and Linux, a named file mapping on
+  Windows, the only OS calls, in core's Platform) and answers its name; the producer writes SPZ files into it
+  and `stream_commit {name, epoch, epochPages, pages}` names where each lies; the server copies them out onto
+  `lod::PageQueue::named(name)` before it answers, so the ring is the producer's again at once. `stream_close`
+  removes it. The server's thread only enqueues; the render thread is still the one that reaches the device.
+- **Example.** `scripts/examples/live_producer.py`, the Python standard library alone (`subprocess`,
+  `json`, `multiprocessing.shared_memory`), drives `athenea-mcp`: a stage naming the stream, files committed
+  as chunks epoch after epoch, a PNG rendered after each.
+
+### How it is checked
+
+- `athenea_mcp_tests "a producer that speaks JSON-RPC and shared memory feeds a stage whole epochs"` (Metal,
+  M5 Pro): a producer thread with a server of its own, as another process would have, opens the ring by the
+  name `stream_open` answered, writes two SPZ pages an epoch into it and commits four epochs, 40 ms apart, while
+  `StageRenderer` draws the stage that names the stream: over 72 frames every frame is one whole epoch (p99 1,
+  max 2 or closer against the epoch drawn directly), the epochs never go back, the last is reached, no commit is
+  refused.
+- `"shared memory a name stands for is seen by whoever opens the name"`: what the creator writes the opener
+  reads; a name taken, or with a '/', is refused.
+- The Hydra live test now authors `extent` on the prim: before any epoch the stage's bounds are the extent
+  exactly; after the last, the union of its shown pages' bounds exactly (over 263 frames, every one a whole
+  epoch).
+- `scripts/examples/live_producer.py` against `athenea-mcp` (Python 3.9, two SPZ files, three epochs) writes
+  three frames. Its first run found that third_party/spz logged to standard output, which broke the server's
+  protocol on the first SPZ page decompressed; the vendored `SpzLog` writes to standard error now (marked
+  `athenea:` in load-spz.h).
+
+### Not done
+
+- A commit's pages are copied once on the server's thread (the ring to the queue); a ring the loaders read in
+  place would need the producer to know when a range is free again.
+- A frame after a commit may show the epoch before: the loaders decompress while the frame is drawn, and the
+  example renders twice.
+
+## PLY and .splat widened on the device (25 Oct)
+
+The last CPU loops over splats in the readers are gone. `io::readSplatPly` and `io::readDotSplat` keep the
+file's own records (`SplatEncoding::Record::PackedRecords`): `RawSplats::packed` is the vertex block (or the
+whole `.splat`) as bytes, and `RawSplats::fields` says, a float of the record each, at what byte of a record the
+value lies and of which type (f32, f64, u8, i8, u16, i16, u32, i32). `packed_records.slang` writes the float
+records validate and decode read, a slice at a time, as `spz_records.slang` does for SPZ's streams: values are
+converted, not decoded. A double is rounded to the nearest float, ties to even, from its bits (Metal has no
+doubles), as the C++ cast rounded it; a value below the floats' normal range is computed as a float. Before, an
+all-float32 PLY was one memcpy and any other a `readPlyValue` a value on the CPU (`tbb::parallel_for`); TBB is no
+longer used by the readers. `CloudLoader::records` widens and reads back for the host-side consumers.
+
+### How it is checked
+
+`athenea_scene_tests "[io]"` (Metal, M5 Pro): a PLY whose positions are doubles, opacity a short and an unused
+uchar between them -- every later value at an unaligned offset -- decodes as the values say: the doubles to the
+very floats the CPU cast gives (1e-3 and 2e-3 included), the short's logits to their opacities; its records read
+back draw the same. The float PLY and `.splat` decode tests, now through the device, pass unchanged and check
+the records stay packed. `athenea_render_tests "[spz],[flatten],[io]"` passes but for the flatten test's two
+known failures, and `athenea_usd_tests "[points]"` (Blender's points against the PLY they came from, the PLY
+exported through `CloudLoader::records`) passes.
+
+### Not done
+
+- The packed bytes are copied twice on the way (the file into `packed`, then into whole words with one past the
+  end for the upload); a reader that pads would let the mapping be uploaded as it is.
+- Packed records past 4 GiB are refused: the kernel's byte offsets are 32-bit.
 
 ## Live streams under adversarial producers, and the sparrow as an animation over one (25 Oct)
 

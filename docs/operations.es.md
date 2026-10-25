@@ -1914,6 +1914,7 @@ descarta con un aviso. Sólo la dibuja el rasterizador, sin niveles de detalle.
 | `primvars:athenea:live:chunkSplats` | int | `65536`; las gaussianas que como mucho tiene una página |
 | `primvars:athenea:live:degree` | int 0..3 | `3`; armónicos que se guardan |
 | `primvars:athenea:stream:budget` | int64 ‹gaussianas› | `0`: dos veces `chunks` × `chunkSplats` |
+| `extent` | float3[2] | —; los límites del stream hasta que se muestra una época, cuyos límites de página son entonces los suyos |
 
 **Niveles de detalle de un ParticleField** — la misma nube convertida con
 varias celdas (`athenea mesh2splat --lod-levels`).
@@ -2292,6 +2293,36 @@ La salida estándar lleva solo protocolo; el log va a la de error.
 | `convert` | una captura de splats a una escena USD |
 | `timings` | varios frames de la escena abierta, y su mediana |
 | `settings` | qué guarda la sesión: la escena, el último frame, qué se le puede pedir a un render |
+| `stream_open` | un stream en vivo que alimenta otro proceso; responde `{"ring", "bytes"}`, la memoria compartida donde escribir las páginas |
+| `stream_commit` | las páginas de una época, cada una nombrada por dónde está en el anillo |
+| `stream_close` | cierra el stream y quita su anillo |
+
+**Un stream en vivo desde otro proceso.** Una escena nombra el stream en un
+prim `AtheneaLiveSourceAPI` (§4.3); un productor que no está en el proceso del
+servidor -- un script de Python, una aplicación anfitriona -- lo alimenta con
+tres herramientas:
+- `stream_open` `{name, chunks, ringBytes}` crea un anillo de memoria
+  compartida (memoria compartida POSIX en macOS y Linux, un file mapping con
+  nombre en Windows; 64 MiB por defecto) y responde su nombre, que
+  `multiprocessing.shared_memory.SharedMemory(name=...)` de Python abre tal
+  cual.
+- El productor escribe ficheros SPZ en el anillo y luego `stream_commit`
+  `{name, epoch, epochPages, pages: [{chunk, op: add|replace|remove, offset, bytes, bounds, ptpTime}]}`:
+  `offset` y `bytes` dicen dónde está cada página; `epochPages` son las
+  páginas de la época en total (las de esta llamada por defecto), así que una
+  época puede llegar en varias llamadas. Las páginas se copian del anillo
+  antes de la respuesta: el anillo se puede sobrescribir en cuanto llega. Una
+  página más allá de `chunks` o fuera del anillo rechaza la llamada entera.
+- `bounds` (mín xyz, máx xyz) es lo que cubre la página; los límites del
+  stream son la unión de los de sus páginas mostradas -- y, antes de mostrar
+  ninguna época, el `extent` del prim.
+- Un frame dibuja la última época cuyas páginas están todas en el
+  dispositivo: el render que sigue a un commit puede mostrar aún la anterior.
+
+`scripts/examples/live_producer.py` lo hace todo con la biblioteca estándar:
+`live_producer.py --mcp <build>/bin/athenea-mcp --epochs 6 --out <dir> a.spz b.spz`
+escribe una escena que nombra el stream (o toma `--stage`), hace commit de los
+ficheros como chunks época tras época, y renderiza un PNG después de cada una.
 
 **El `output` de `render` escribe dos ficheros distintos.** Un nombre que
 acaba en `.exr` recibe los números del beauty, lineales. Cualquier otro nombre

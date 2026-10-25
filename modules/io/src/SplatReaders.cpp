@@ -1,9 +1,9 @@
 // Copyright (c) 2026 jesus luque.
 #include <algorithm>
 #include <cstring>
+#include <optional>
 #include <string>
 
-#include <tbb/parallel_for.h>
 
 #include "athenea/core/Log.h"
 #include "athenea/core/Platform.h"
@@ -19,7 +19,6 @@ namespace athenea::io {
 namespace {
 
 constexpr size_t kHeaderProbe = 1 << 16;
-constexpr size_t kGrain = 1 << 16;   // records per parallel block
 
 std::string lowerExtension(const std::filesystem::path& path) {
     std::string ext = path.extension().string();
@@ -98,17 +97,24 @@ Result<RawSplats> readSplatPly(const std::filesystem::path& path) {
         }
     }
 
-    // Every property becomes one float in the record, in the file's order.
-    // When the file is all float32 that is the file's own bytes, copied; when
-    // it is not (a double here, a uchar there) each value is converted to a
-    // float -- a type conversion, not a decode.
-    const bool allFloat32 = std::all_of(
-        vertex->properties.begin(), vertex->properties.end(),
-        [](const PlyProperty& p) { return p.type == "float" || p.type == "float32"; });
+    // Every property becomes one float in the record, in the file's order --
+    // widened on the device from the file's own bytes, whatever its types.
     const uint32_t floats = static_cast<uint32_t>(vertex->properties.size());
     const auto indexOf = [&](const char* name) -> uint32_t {
         const PlyProperty* p = vertex->find(name);
         return static_cast<uint32_t>(p - vertex->properties.data());
+    };
+    const auto typeOf = [](const std::string& t) -> std::optional<PackedFields::Type> {
+        using T = PackedFields::Type;
+        if (t == "float" || t == "float32") return T::F32;
+        if (t == "double" || t == "float64") return T::F64;
+        if (t == "uchar" || t == "uint8") return T::U8;
+        if (t == "char" || t == "int8") return T::I8;
+        if (t == "ushort" || t == "uint16") return T::U16;
+        if (t == "short" || t == "int16") return T::I16;
+        if (t == "uint" || t == "uint32") return T::U32;
+        if (t == "int" || t == "int32") return T::I32;
+        return std::nullopt;
     };
 
     RawSplats raw;
@@ -176,24 +182,21 @@ Result<RawSplats> readSplatPly(const std::filesystem::path& path) {
     enc.colour = SplatEncoding::Colour::ShDc;
     enc.rotation = SplatEncoding::Rotation::Float;
 
-    raw.records.resize(size_t{raw.count} * floats);
-    const char* const base = reinterpret_cast<const char*>(bytes.data()) + *start;
-    const size_t stride = vertex->stride;
-    tbb::parallel_for(tbb::blocked_range<size_t>(0, raw.count, kGrain),
-                      [&](const tbb::blocked_range<size_t>& range) {
-        if (allFloat32) {
-            std::memcpy(raw.records.data() + range.begin() * floats, base + range.begin() * stride,
-                        (range.end() - range.begin()) * stride);
-            return;
+    // The vertex block as the file has it: bytes copied, nothing read out
+    // of them here.
+    raw.encoding.record = SplatEncoding::Record::PackedRecords;
+    raw.fields.stride = static_cast<uint32_t>(vertex->stride);
+    for (const PlyProperty& p : vertex->properties) {
+        const auto type = typeOf(p.type);
+        if (!type) {
+            return Error::make(ErrorCode::Unsupported, "'{}': property '{}' of type '{}'", path.string(), p.name,
+                               p.type);
         }
-        for (size_t i = range.begin(); i < range.end(); ++i) {
-            const char* record = base + i * stride;
-            float* out = raw.records.data() + i * floats;
-            for (uint32_t k = 0; k < floats; ++k) {
-                out[k] = static_cast<float>(readPlyValue(record, vertex->properties[k]));
-            }
-        }
-    });
+        raw.fields.offsets.push_back(static_cast<uint32_t>(p.offset));
+        raw.fields.types.push_back(*type);
+    }
+    const auto* base = reinterpret_cast<const uint8_t*>(bytes.data()) + *start;
+    raw.packed.assign(base, base + vertex->stride * vertex->count);
     return raw;
 }
 
@@ -224,19 +227,16 @@ Result<RawSplats> readDotSplat(const std::filesystem::path& path) {
     enc.colour = SplatEncoding::Colour::Byte;
     enc.rotation = SplatEncoding::Rotation::Byte;
 
-    raw.records.resize(size_t{raw.count} * enc.floatsPerRecord);
-    const auto* data = reinterpret_cast<const unsigned char*>(bytes.data());
-    tbb::parallel_for(tbb::blocked_range<size_t>(0, raw.count, kGrain),
-                      [&](const tbb::blocked_range<size_t>& range) {
-        for (size_t i = range.begin(); i < range.end(); ++i) {
-            const unsigned char* record = data + i * kRecord;
-            float* out = raw.records.data() + i * enc.floatsPerRecord;
-            std::memcpy(out, record, 24);   // six float32, as stored
-            for (int k = 0; k < 8; ++k) {
-                out[6 + k] = static_cast<float>(record[24 + k]);   // bytes as values
-            }
-        }
-    });
+    // The records as the file has them, widened on the device: six floats,
+    // then eight bytes as values.
+    enc.record = SplatEncoding::Record::PackedRecords;
+    raw.fields.stride = kRecord;
+    for (uint32_t k = 0; k < 14; ++k) {
+        raw.fields.offsets.push_back(k < 6 ? 4 * k : 24 + (k - 6));
+        raw.fields.types.push_back(k < 6 ? PackedFields::Type::F32 : PackedFields::Type::U8);
+    }
+    const auto* data = reinterpret_cast<const uint8_t*>(bytes.data());
+    raw.packed.assign(data, data + bytes.size());
     return raw;
 }
 
