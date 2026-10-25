@@ -1804,6 +1804,7 @@ Drawn by the rasteriser only, without levels of detail.
 | `primvars:athenea:live:chunkSplats` | int | `65536`; the most gaussians a page holds |
 | `primvars:athenea:live:degree` | int 0..3 | `3`; harmonics kept |
 | `primvars:athenea:stream:budget` | int64 ‹gaussians› | `0`: twice `chunks` × `chunkSplats` |
+| `extent` | float3[2] | —; the stream's bounds until an epoch is shown, whose pages' bounds then are |
 
 **Levels of detail of a ParticleField** — the same cloud converted at several
 cells (`athenea mesh2splat --lod-levels`).
@@ -2176,6 +2177,34 @@ Standard output carries protocol only; logging goes to standard error.
 | `convert` | a splat capture into a USD stage |
 | `timings` | several frames of the open stage, and their median |
 | `settings` | what the session holds: the stage, the last frame, what a render can be asked for |
+| `stream_open` | a live stream another process feeds; answers `{"ring", "bytes"}`, the shared memory to write pages into |
+| `stream_commit` | one epoch's pages, each named by where it lies in the ring |
+| `stream_close` | closes the stream and removes its ring |
+
+**A live stream from another process.** A stage names the stream in an
+`AtheneaLiveSourceAPI` prim (§4.3); a producer that is not in the server's
+process -- a Python script, a host application -- feeds it through three tools:
+- `stream_open` `{name, chunks, ringBytes}` makes a ring of shared memory
+  (POSIX shared memory on macOS and Linux, a named file mapping on Windows;
+  64 MiB by default) and answers its name, which Python's
+  `multiprocessing.shared_memory.SharedMemory(name=...)` opens as it is.
+- The producer writes SPZ files into the ring, then `stream_commit`
+  `{name, epoch, epochPages, pages: [{chunk, op: add|replace|remove, offset, bytes, bounds, ptpTime}]}`:
+  `offset` and `bytes` say where each page lies; `epochPages` is the epoch's
+  pages in all (this call's by default), so an epoch may come over several
+  calls. The pages are copied out of the ring before the answer: the ring may
+  be written over as soon as it comes. A page past `chunks` or outside the
+  ring refuses the whole call.
+- `bounds` (min xyz, max xyz) is what the page covers; the stream's bounds are
+  the union of its shown pages' -- and, before any epoch is shown, the prim's
+  `extent`.
+- A frame draws the last epoch whose pages are all on the device: the render
+  that follows a commit may still show the epoch before.
+
+`scripts/examples/live_producer.py` does all of it with the standard library:
+`live_producer.py --mcp <build>/bin/athenea-mcp --epochs 6 --out <dir> a.spz b.spz`
+writes a stage naming the stream (or takes `--stage`), commits the files as
+chunks epoch after epoch, and renders a PNG after each.
 
 **`render`'s `output` writes two different files.** A name ending in `.exr`
 gets the beauty's own numbers, linear. Any other name gets the frame **as it

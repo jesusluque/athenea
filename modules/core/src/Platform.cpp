@@ -148,6 +148,137 @@ MappedFile::~MappedFile() {
     }
 }
 
+namespace {
+
+Result<void> sharedName(const std::string& name) {
+    if (name.empty() || name.size() > 30 || name.find('/') != std::string::npos ||
+        name.find('\\') != std::string::npos) {
+        return Error::make(ErrorCode::InvalidArgument,
+                           "shared memory '{}': a name of 1 to 30 characters without '/' or '\\'", name);
+    }
+    return ok();
+}
+
+}   // namespace
+
+Result<SharedMemory> SharedMemory::create(const std::string& name, size_t bytes) {
+    ATHENEA_TRY(sharedName(name));
+    if (bytes == 0) {
+        return Error::make(ErrorCode::InvalidArgument, "shared memory '{}' of no bytes", name);
+    }
+    SharedMemory region;
+    region.name_ = name;
+    region.size_ = bytes;
+    region.owner_ = true;
+#if defined(_WIN32)
+    const std::wstring wide = L"Local\\" + std::wstring(name.begin(), name.end());
+    const HANDLE mapping = ::CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+                                                static_cast<DWORD>(uint64_t{bytes} >> 32),
+                                                static_cast<DWORD>(bytes & 0xFFFFFFFFu), wide.c_str());
+    if (mapping == nullptr || ::GetLastError() == ERROR_ALREADY_EXISTS) {
+        if (mapping != nullptr) ::CloseHandle(mapping);
+        return Error::make(ErrorCode::IoFailure, "cannot create shared memory '{}'", name);
+    }
+    region.handle_ = mapping;
+    region.data_ = ::MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, bytes);
+    if (region.data_ == nullptr) {
+        return Error::make(ErrorCode::IoFailure, "cannot map shared memory '{}'", name);
+    }
+#else
+    const std::string posix = "/" + name;
+    const int fd = ::shm_open(posix.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+    if (fd < 0) {
+        return Error::make(ErrorCode::IoFailure, "cannot create shared memory '{}': {}", name, std::strerror(errno));
+    }
+    if (::ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
+        ::close(fd);
+        ::shm_unlink(posix.c_str());
+        return Error::make(ErrorCode::IoFailure, "cannot size shared memory '{}'", name);
+    }
+    void* mapped = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    ::close(fd);
+    if (mapped == MAP_FAILED) {
+        ::shm_unlink(posix.c_str());
+        return Error::make(ErrorCode::IoFailure, "cannot map shared memory '{}'", name);
+    }
+    region.data_ = mapped;
+#endif
+    return region;
+}
+
+Result<SharedMemory> SharedMemory::open(const std::string& name, size_t bytes) {
+    ATHENEA_TRY(sharedName(name));
+    SharedMemory region;
+    region.name_ = name;
+    region.size_ = bytes;
+#if defined(_WIN32)
+    const std::wstring wide = L"Local\\" + std::wstring(name.begin(), name.end());
+    const HANDLE mapping = ::OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, wide.c_str());
+    if (mapping == nullptr) {
+        return Error::make(ErrorCode::NotFound, "no shared memory '{}'", name);
+    }
+    region.handle_ = mapping;
+    region.data_ = ::MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, bytes);
+    if (region.data_ == nullptr) {
+        return Error::make(ErrorCode::IoFailure, "cannot map shared memory '{}'", name);
+    }
+#else
+    const std::string posix = "/" + name;
+    const int fd = ::shm_open(posix.c_str(), O_RDWR, 0600);
+    if (fd < 0) {
+        return Error::make(ErrorCode::NotFound, "no shared memory '{}': {}", name, std::strerror(errno));
+    }
+    void* mapped = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    ::close(fd);
+    if (mapped == MAP_FAILED) {
+        return Error::make(ErrorCode::IoFailure, "cannot map shared memory '{}'", name);
+    }
+    region.data_ = mapped;
+#endif
+    return region;
+}
+
+void SharedMemory::release() noexcept {
+    if (data_ != nullptr) {
+        unmapFile(data_, size_);
+        data_ = nullptr;
+    }
+#if defined(_WIN32)
+    if (handle_ != nullptr) {
+        ::CloseHandle(static_cast<HANDLE>(handle_));
+        handle_ = nullptr;
+    }
+#else
+    if (owner_ && !name_.empty()) {
+        ::shm_unlink(("/" + name_).c_str());
+    }
+#endif
+    owner_ = false;
+}
+
+SharedMemory::SharedMemory(SharedMemory&& other) noexcept
+    : data_(std::exchange(other.data_, nullptr)),
+      size_(std::exchange(other.size_, 0)),
+      name_(std::move(other.name_)),
+      owner_(std::exchange(other.owner_, false)),
+      handle_(std::exchange(other.handle_, nullptr)) {}
+
+SharedMemory& SharedMemory::operator=(SharedMemory&& other) noexcept {
+    if (this != &other) {
+        release();
+        data_ = std::exchange(other.data_, nullptr);
+        size_ = std::exchange(other.size_, 0);
+        name_ = std::move(other.name_);
+        owner_ = std::exchange(other.owner_, false);
+        handle_ = std::exchange(other.handle_, nullptr);
+    }
+    return *this;
+}
+
+SharedMemory::~SharedMemory() {
+    release();
+}
+
 void sleepPrecisely(std::chrono::nanoseconds duration) {
     if (duration.count() <= 0) {
         return;

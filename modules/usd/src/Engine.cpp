@@ -1384,6 +1384,10 @@ Result<size_t> Engine::commit() {
                     live.stream = 0;
                     live.chunks = std::max(asset.liveChunks, 1u);
                     live.name = asset.live;
+                    if (asset.hasExtent) {
+                        std::copy(asset.extent.begin(), asset.extent.begin() + 3, live.bounds.min.begin());
+                        std::copy(asset.extent.begin() + 3, asset.extent.end(), live.bounds.max.begin());
+                    }
                     live.format.payload = lod::ChunkFormat::Payload::Spz;
                     live.format.chunkSplats = std::max(asset.liveChunkSplats, 1u);
                     static constexpr uint32_t kPerDegree[] = {0, 3, 8, 15};

@@ -6,9 +6,11 @@
 # changed how the streams were packed. The define is PUBLIC because it changes
 # PackedGaussians' layout, which every includer must agree on.
 #
-# One change to the shipped code, marked "athenea:" in load-spz.cc: membuf can
+# Two changes to the shipped code, marked "athenea:": membuf (load-spz.cc) can
 # seek, without which a legacy (gzip) file read from memory loses its
-# extensions (tryParseExtension measures what remains with tellg/seekg).
+# extensions (tryParseExtension measures what remains with tellg/seekg); and
+# SpzLog (load-spz.h) writes to standard error, not standard output, which
+# athenea-mcp keeps for its protocol.
 #
 # Used only to decompress: loadSpzPacked hands back the quantised bytes, and
 # the dequantising happens on the GPU (shaders/athenea/scene/splat_encoding.slang).

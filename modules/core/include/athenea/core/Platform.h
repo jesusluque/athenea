@@ -48,6 +48,36 @@ private:
     int64_t mtimeNs_ = 0;
 };
 
+/// MEMORY ANOTHER PROCESS SEES: a named region both map, read and write.
+/// POSIX shared memory on macOS and Linux (`shm_open`; a name of at most 30
+/// characters, no '/', which the POSIX name gets in front -- what Python's
+/// `multiprocessing.shared_memory` takes too), a named file mapping on Windows
+/// (`Local\<name>`). The creator owns the name and removes it when it goes;
+/// one that opens it only maps it. Any thread.
+class SharedMemory {
+public:
+    [[nodiscard]] static Result<SharedMemory> create(const std::string& name, size_t bytes);
+    [[nodiscard]] static Result<SharedMemory> open(const std::string& name, size_t bytes);
+
+    SharedMemory() = default;
+    SharedMemory(SharedMemory&&) noexcept;
+    SharedMemory& operator=(SharedMemory&&) noexcept;
+    SharedMemory(const SharedMemory&) = delete;
+    SharedMemory& operator=(const SharedMemory&) = delete;
+    ~SharedMemory();
+
+    [[nodiscard]] std::span<std::byte> bytes() const noexcept { return {static_cast<std::byte*>(data_), size_}; }
+    [[nodiscard]] const std::string& name() const noexcept { return name_; }
+
+private:
+    void release() noexcept;
+    void*       data_ = nullptr;
+    size_t      size_ = 0;
+    std::string name_;
+    bool        owner_ = false;
+    void*       handle_ = nullptr;   // Windows: the mapping
+};
+
 /// Sleeps for `duration` and wakes on time, to tens of microseconds.
 ///
 /// A plain sleep may overrun by the timer slack the OS allows itself: on macOS

@@ -646,6 +646,100 @@ json settingsTool(Session& session, const json& args) {
 
 }   // namespace
 
+// --- live streams from another process ----------------------------------------
+//
+// A producer -- a Python script, a host application -- asks for a ring of
+// shared memory, writes SPZ pages into it, and commits an epoch by naming
+// where each page lies. The pages are copied out of the ring onto the stream's
+// queue before the answer, so the producer may write over them as soon as it
+// has it. This thread only enqueues; the stage's render thread decodes.
+
+json streamOpen(Session& session, const json& args) {
+    const std::string name = args.value("name", "");
+    if (name.empty()) {
+        return textAnswer("stream_open wants 'name': the stream an AtheneaLiveSourceAPI prim names.", true);
+    }
+    if (session.streams.count(name) != 0) {
+        return textAnswer("stream '" + name + "' is open already; stream_close it first.", true);
+    }
+    const uint64_t bytes = args.value("ringBytes", uint64_t{64} << 20);
+    static uint32_t serial = 0;
+    char ring[32];
+    std::snprintf(ring, sizeof ring, "athlive-%08x-%u", core::murmurHash3x86_32(name), ++serial);
+    auto memory = platform::SharedMemory::create(ring, static_cast<size_t>(bytes));
+    if (!memory) return textAnswer(errorText(memory.error()), true);
+    LiveStream stream;
+    stream.ring = std::move(*memory);
+    stream.queue = lod::PageQueue::named(name);
+    stream.chunks = args.value("chunks", 64u);
+    session.streams.emplace(name, std::move(stream));
+    const json answer{{"ring", ring}, {"bytes", bytes}};
+    return textAnswer(answer.dump());
+}
+
+json streamCommit(Session& session, const json& args) {
+    const std::string name = args.value("name", "");
+    const auto found = session.streams.find(name);
+    if (found == session.streams.end()) {
+        return textAnswer("no stream '" + name + "': stream_open it first.", true);
+    }
+    LiveStream& stream = found->second;
+    const uint64_t epoch = args.value("epoch", uint64_t{0});
+    const json& pages = args.contains("pages") ? args["pages"] : json::array();
+    const uint32_t epochPages = args.value("epochPages", static_cast<uint32_t>(pages.size()));
+    if (epoch == 0 || !pages.is_array() || pages.empty() || epochPages == 0) {
+        return textAnswer("stream_commit wants an 'epoch' from 1 and 'pages'.", true);
+    }
+    const std::span<std::byte> ring = stream.ring.bytes();
+    std::vector<lod::PageUpdate> updates;
+    for (const json& page : pages) {
+        lod::PageUpdate u;
+        u.stream = 0;
+        u.epoch = epoch;
+        u.pages = epochPages;
+        u.chunk = page.value("chunk", 0u);
+        u.ptpTime = page.value("ptpTime", uint64_t{0});
+        const std::string op = page.value("op", "replace");
+        u.op = op == "remove" ? lod::PageUpdate::Op::Remove : op == "add" ? lod::PageUpdate::Op::Add
+                                                                           : lod::PageUpdate::Op::Replace;
+        if (u.chunk >= stream.chunks) {
+            return textAnswer("chunk " + std::to_string(u.chunk) + " is past the stream's " +
+                                  std::to_string(stream.chunks) + "; nothing of the epoch was queued.",
+                              true);
+        }
+        if (page.contains("bounds") && page["bounds"].is_array() && page["bounds"].size() == 6) {
+            for (size_t k = 0; k < 3; ++k) {
+                u.bounds.min[k] = page["bounds"][k].get<float>();
+                u.bounds.max[k] = page["bounds"][k + 3].get<float>();
+            }
+        }
+        if (u.op != lod::PageUpdate::Op::Remove) {
+            const uint64_t offset = page.value("offset", uint64_t{0});
+            const uint64_t size = page.value("bytes", uint64_t{0});
+            if (size == 0 || offset > ring.size() || size > ring.size() - offset) {
+                return textAnswer("a page of chunk " + std::to_string(u.chunk) +
+                                      " lies outside the ring; nothing of the epoch was queued.",
+                                  true);
+            }
+            u.bytes.assign(ring.begin() + static_cast<std::ptrdiff_t>(offset),
+                           ring.begin() + static_cast<std::ptrdiff_t>(offset + size));
+        }
+        updates.push_back(std::move(u));
+    }
+    for (lod::PageUpdate& u : updates) {
+        stream.queue->push(std::move(u));
+    }
+    return textAnswer("queued " + std::to_string(updates.size()) + " pages of epoch " + std::to_string(epoch));
+}
+
+json streamClose(Session& session, const json& args) {
+    const std::string name = args.value("name", "");
+    if (session.streams.erase(name) == 0) {
+        return textAnswer("no stream '" + name + "'.", true);
+    }
+    return textAnswer("closed '" + name + "'");
+}
+
 json textAnswer(std::string text, bool isError) {
     json answer{{"content", json::array({json{{"type", "text"}, {"text", std::move(text)}}})}};
     if (isError) {
@@ -789,6 +883,29 @@ const std::vector<ToolEntry>& toolTable() {
         tools.push_back({"settings",
                          "What this session holds: the stage, the last frame, and what a render can be asked for.",
                          object({}), settingsTool});
+        tools.push_back({"stream_open",
+                         "Open a live stream another process feeds: answers with the shared-memory ring "
+                         "({\"ring\", \"bytes\"}) to write SPZ pages into. The stage's AtheneaLiveSourceAPI prim "
+                         "names the same stream.",
+                         object({{"name", field("string", "the stream's name, as primvars:athenea:live:stream says")},
+                                 {"chunks", field("integer", "chunk ids a page may name, 64 by default")},
+                                 {"ringBytes", field("integer", "the ring's size in bytes, 64 MiB by default")}},
+                                {"name"}),
+                         streamOpen});
+        tools.push_back({"stream_commit",
+                         "Queue one epoch's pages, each an SPZ file the producer wrote into the ring. The bytes "
+                         "are copied before the answer: the ring may be written over once it comes.",
+                         object({{"name", field("string", "the stream")},
+                                 {"epoch", field("integer", "from 1, increasing")},
+                                 {"epochPages", field("integer", "pages the epoch has in all (this call's, by default)")},
+                                 {"pages", json{{"type", "array"},
+                                                {"description", "{chunk, op: add|replace|remove, offset, bytes, "
+                                                                "bounds: [minx, miny, minz, maxx, maxy, maxz], ptpTime}"},
+                                                {"items", {{"type", "object"}}}}}},
+                                {"name", "epoch", "pages"}),
+                         streamCommit});
+        tools.push_back({"stream_close", "Close a stream this session opened and remove its ring.",
+                         object({{"name", field("string", "the stream")}}, {"name"}), streamClose});
         return tools;
     }();
     return table;

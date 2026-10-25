@@ -154,8 +154,11 @@ set_target_properties(athenea_storm_oracle_tests PROPERTIES CXX_VISIBILITY_PRESE
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
 athenea_test(athenea_mcp_tests
-    SOURCES mcp/test_mcp.cpp
+    SOURCES mcp/test_mcp.cpp $<$<BOOL:${ATHENEA_HAVE_SPZ}>:mcp/test_mcp_live.cpp>
     LIBS athenea::mcp nlohmann_json::nlohmann_json)
+if(ATHENEA_HAVE_SPZ)
+    target_link_libraries(athenea_mcp_tests PRIVATE athenea_spz)
+endif()
 target_compile_options(athenea_mcp_tests PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion;-Wno-cast-align>")
 set_target_properties(athenea_mcp_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")

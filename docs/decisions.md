@@ -15837,9 +15837,47 @@ states (none, 1 to 5) are seen, and the last is reached. The `.athc` Hydra test 
 
 ### Not done
 
-- A producer in another binary image: the named queues live in this engine's `lod` library, so a producer must
-  share the process image the delegate runs in (StageRenderer, or a host linking the same library). IPC and
-  network receivers come later.
-- The live cloud's bounds are not known to the stage (`splats.bounds` is empty): framing and bounds queries do
-  not see it.
+- A producer in another binary image reaches a stream only through the MCP server's tools (below); a host that
+  loads the plugin as its own library has its own named queues.
 - Path tracing a live stream: the rasteriser alone draws it, as with any streamed asset.
+
+## Live streams from another process, and their bounds (25 Oct)
+
+- **Bounds.** A live cloud's bounds are the union of its shown pages' (`PageUpdate::bounds`, what the producer
+  says; a page that says none, all zeros, is left out) -- CPU bookkeeping at each publish -- and, before an
+  epoch is shown, the prim's authored `extent`. Framing and `bounds` queries see them.
+- **Across processes.** The pages are compressed SPZ, decompressed by the pool's loader threads on the CPU, so
+  the page path needs no GPU interop. Three MCP tools: `stream_open {name, chunks, ringBytes}` makes a ring of
+  shared memory (`platform::SharedMemory`: POSIX `shm_open` on macOS and Linux, a named file mapping on
+  Windows, the only OS calls, in core's Platform) and answers its name; the producer writes SPZ files into it
+  and `stream_commit {name, epoch, epochPages, pages}` names where each lies; the server copies them out onto
+  `lod::PageQueue::named(name)` before it answers, so the ring is the producer's again at once. `stream_close`
+  removes it. The server's thread only enqueues; the render thread is still the one that reaches the device.
+- **Example.** `scripts/examples/live_producer.py`, the Python standard library alone (`subprocess`,
+  `json`, `multiprocessing.shared_memory`), drives `athenea-mcp`: a stage naming the stream, files committed
+  as chunks epoch after epoch, a PNG rendered after each.
+
+### How it is checked
+
+- `athenea_mcp_tests "a producer that speaks JSON-RPC and shared memory feeds a stage whole epochs"` (Metal,
+  M5 Pro): a producer thread with a server of its own, as another process would have, opens the ring by the
+  name `stream_open` answered, writes two SPZ pages an epoch into it and commits four epochs, 40 ms apart, while
+  `StageRenderer` draws the stage that names the stream: over 72 frames every frame is one whole epoch (p99 1,
+  max 2 or closer against the epoch drawn directly), the epochs never go back, the last is reached, no commit is
+  refused.
+- `"shared memory a name stands for is seen by whoever opens the name"`: what the creator writes the opener
+  reads; a name taken, or with a '/', is refused.
+- The Hydra live test now authors `extent` on the prim: before any epoch the stage's bounds are the extent
+  exactly; after the last, the union of its shown pages' bounds exactly (over 263 frames, every one a whole
+  epoch).
+- `scripts/examples/live_producer.py` against `athenea-mcp` (Python 3.9, two SPZ files, three epochs) writes
+  three frames. Its first run found that third_party/spz logged to standard output, which broke the server's
+  protocol on the first SPZ page decompressed; the vendored `SpzLog` writes to standard error now (marked
+  `athenea:` in load-spz.h).
+
+### Not done
+
+- A commit's pages are copied once on the server's thread (the ring to the queue); a ring the loaders read in
+  place would need the producer to know when a range is free again.
+- A frame after a commit may show the epoch before: the loaders decompress while the frame is drawn, and the
+  example renders twice.

@@ -186,6 +186,15 @@ athenea::usd::StreamedAsset assetOf(HdSceneDelegate* delegate, SdfPath const& id
         return fallback;
     };
     if (!asset.live.empty()) {
+        // The bounds until an epoch is shown: the prim's extent, where authored.
+        const GfRange3d extent = delegate->GetExtent(id);
+        if (!extent.IsEmpty()) {
+            asset.hasExtent = true;
+            for (size_t k = 0; k < 3; ++k) {
+                asset.extent[k] = static_cast<float>(extent.GetMin()[k]);
+                asset.extent[k + 3] = static_cast<float>(extent.GetMax()[k]);
+            }
+        }
         asset.liveChunks = count(_assetTokens->liveChunks, asset.liveChunks);
         asset.liveChunkSplats = count(_assetTokens->liveChunkSplats, asset.liveChunkSplats);
         asset.liveDegree = std::min(count(_assetTokens->liveDegree, asset.liveDegree), 3u);

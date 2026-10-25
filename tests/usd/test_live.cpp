@@ -7,6 +7,7 @@
 #include "../gpu/GpuTest.h"
 #include "../render/SplatFixtures.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -72,6 +73,7 @@ TEST_CASE("a live stream a stage names is drawn through Hydra a whole epoch at a
                "        int primvars:athenea:live:chunks = " << kChunks << " ( interpolation = \"constant\" )\n"
                "        int primvars:athenea:live:chunkSplats = 600 ( interpolation = \"constant\" )\n"
                "        int primvars:athenea:live:degree = 0 ( interpolation = \"constant\" )\n"
+               "        float3[] extent = [(-5, -4, -3), (5, 4, 3)]\n"
                "    }\n"
                "    def Camera \"Shot\"\n    {\n"
                "        float2 clippingRange = (0.1, 1000)\n        float focalLength = 30\n"
@@ -117,6 +119,23 @@ TEST_CASE("a live stream a stage names is drawn through Hydra a whole epoch at a
 
     auto renderer = usd::StageRenderer::open(shot);
     if (!renderer) FAIL(renderer.error().toString());
+    // Before any epoch: the prim's authored extent is the stream's bounds.
+    {
+        auto image = (*renderer)->render("/World/Shot", 0.0, settings.width, settings.height);
+        REQUIRE(image);
+        auto bounds = (*renderer)->bounds();
+        REQUIRE(bounds);
+        REQUIRE(bounds->has_value());
+        CHECK((*bounds)->min == std::array<float, 3>{-5, -4, -3});
+        CHECK((*bounds)->max == std::array<float, 3>{5, 4, 3});
+    }
+    // What each page says it covers: chunk c from (c, 0, 0) to (c + 1, 1, 1).
+    const auto pageBounds = [](uint32_t c) {
+        scene::Bounds b;
+        b.min = {static_cast<float>(c), 0.0F, 0.0F};
+        b.max = {static_cast<float>(c) + 1.0F, 1.0F, 1.0F};
+        return b;
+    };
 
     auto queue = lod::PageQueue::named(stream);
     std::atomic<bool> produced{false};
@@ -132,6 +151,7 @@ TEST_CASE("a live stream a stage names is drawn through Hydra a whole epoch at a
                     u.op = lod::PageUpdate::Op::Remove;
                 } else {
                     u.op = lod::PageUpdate::Op::Replace;
+                    u.bounds = pageBounds(c);
                     u.bytes.resize(pages[e][c].size());
                     std::memcpy(u.bytes.data(), pages[e][c].data(), pages[e][c].size());
                 }
@@ -184,4 +204,11 @@ TEST_CASE("a live stream a stage names is drawn through Hydra a whole epoch at a
     CHECK(ordered);
     CHECK(last == kEpochs);
     CHECK(__builtin_popcount(seen) >= 3);
+    // Once an epoch is shown, its pages' bounds: the last leaves chunk
+    // kEpochs % 3 = 2 out, so chunks 0 and 1, from (0, 0, 0) to (2, 1, 1).
+    auto bounds = (*renderer)->bounds();
+    REQUIRE(bounds);
+    REQUIRE(bounds->has_value());
+    CHECK((*bounds)->min == std::array<float, 3>{0, 0, 0});
+    CHECK((*bounds)->max == std::array<float, 3>{2, 1, 1});
 }
