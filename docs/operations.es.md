@@ -519,6 +519,7 @@ exacta, la baja por el códec. La croma se queda en gris medio, así que el
 | `--columns` | teselas por fila | el mosaico más cuadrado | |
 | `--rate` | frames por segundo | el de la secuencia, o 30 | se guarda en el fichero; `athenea stream` lo reproduce a ese ritmo |
 | `--hevc` | ruta | ninguna | el vídeo solo como Annex B, para `ffprobe`; sus imágenes son planos, no una imagen |
+| `--check` | flag | no | cada imagen se decodifica otra vez con el decodificador hardware, vuelve a gaussianas en el dispositivo y se mide contra su fuente |
 
 **Tamaños.** Una imagen tiene como mucho 8192 x 8192 de área y 16384 de lado
 (el codificador hardware rechazó 10240 x 9600). Un frame cuyos planos
@@ -530,10 +531,28 @@ por atributo: 59 en grado 3 (62 con `--hi video`).
 
 **Qué imprime.** El mosaico y las porciones; MB por frame (el vídeo y los
 datos laterales aparte) y Mbit/s a 24 y 30 por segundo; el tamaño de una
-imagen clave frente al de una predicha.
+imagen clave frente al de una predicha. Con `--check`, por cada grupo de
+atributos (posición, opacidad, escala logarítmica, rotación, color base,
+resto) el error mayor y el medio en pasos de su propia cuantización (los de
+una posición, de la de 16 o 20 bits), si todas las partes altas de la
+posición volvieron exactas, y la decodificación hardware y el kernel de
+planos -> gaussianas en ms (medianas, el kernel enviado y esperado).
 
 Por ahora solo macOS (VideoToolbox); en otras plataformas el codificador se
 rechaza (`Unsupported`).
+
+### 2.7.3 `athenea video-decode` — los frames de un vídeo, decodificados y cronometrados
+
+Cada imagen de un `.athv` por el decodificador hardware y el kernel de planos
+-> gaussianas (`video_planes_decode.slang`), a una nube en el dispositivo, sin
+dibujar nada. Imprime, por imagen, las medianas de la lectura del registro, la
+decodificación hardware (y su p95) y el kernel, enviado y esperado como
+cronometra un kernel `ATHENEA_STAGES`.
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `input` | `.athv`, obligatorio | — | |
+| `--frames` | imágenes | todas | |
 
 ### 2.8 `athenea mesh2splat` — un modelo en gaussianas
 
@@ -2630,6 +2649,7 @@ solo se escribe como la vista previa de MCP.
 | `athenea view` | nada, o un EXR con `--snapshot` |
 | `athenea live` | un EXR por frame, numerado, cada uno con su timecode |
 | `athenea video-encode` | un `.athv`, y con `--hevc` el vídeo solo como Annex B |
+| `athenea video-decode` | nada; los tiempos por la salida estándar |
 | `athenea mesh2splat` | una escena USD con la nube |
 | `athenea flatten` | ficheros `.ply`, `.spz`, `.glb` y USD de las nubes aplanadas, la escena compuesta junto a ellos, y con `--validate` lo que escribe `mesh2splat --validate` |
 | `athenea lightmap` | `lightmap_<atlas>.exr` (half, lineal, la fila de abajo primero) y `lightmapped.usda`, que pone el original como sublayer; sus materiales van bajo el prim raíz que comparten todas las mallas horneadas (`/<raíz>/AtheneaLightmaps`), así que referenciar ese prim los conserva |

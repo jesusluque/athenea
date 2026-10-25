@@ -1,20 +1,26 @@
 // Copyright (c) 2026 jesus luque.
 //
-// The Apple side of Codec.h: VideoToolbox's HEVC encoder, required to run on
-// the hardware block, fed full-range bi-planar 4:2:0 ('420f', or 'xf20' at
-// 10 bits), so it converts no sample. The CPU copies samples into the
-// encoder's buffer and fills chroma with mid grey; nothing else touches a
-// value.
+// The Apple side of Codec.h: VideoToolbox's HEVC encoder and decoder, both
+// required to run on the hardware block, and CVMetalTextureCache for the
+// decoded frame's luma plane as a Metal texture over the same IOSurface,
+// adopted by slang-rhi (createTextureFromNativeHandle). Full-range
+// bi-planar 4:2:0 both ways ('420f', or 'xf20' at 10 bits), so neither side
+// converts a sample. The CPU copies samples into the encoder's buffer and
+// fills chroma with mid grey; nothing else touches a value.
 #include "athenea/video/Codec.h"
 
 #include <algorithm>
+#include <condition_variable>
 #include <cstring>
 #include <mutex>
 
 #import <CoreFoundation/CoreFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
+#import <Metal/Metal.h>
 #import <VideoToolbox/VideoToolbox.h>
+
+#include "athenea/gpu/Device.h"
 
 namespace athenea::video {
 namespace {
@@ -240,10 +246,216 @@ private:
     OSStatus                 failed_ = noErr;
 };
 
+// --- decoder -------------------------------------------------------------------
+
+class VtFrame final : public DecodedFrame {
+public:
+    VtFrame(CVPixelBufferRef pb, uint32_t bits) : pb_(pb), bits_(bits) {}
+    ~VtFrame() override { CVPixelBufferRelease(pb_); }
+    uint32_t width() const noexcept override { return static_cast<uint32_t>(CVPixelBufferGetWidthOfPlane(pb_, 0)); }
+    uint32_t height() const noexcept override { return static_cast<uint32_t>(CVPixelBufferGetHeightOfPlane(pb_, 0)); }
+    uint32_t bits() const noexcept override { return bits_; }
+    CVPixelBufferRef buffer() const noexcept { return pb_; }
+
+private:
+    CVPixelBufferRef pb_;
+    uint32_t         bits_;
+};
+
+class VtDecoder final : public VideoDecoder {
+public:
+    explicit VtDecoder(uint32_t bits) : bits_(bits) {}
+    ~VtDecoder() override { reset(); }
+
+    Result<std::shared_ptr<DecodedFrame>> decode(std::span<const uint8_t> unit,
+                                                 const std::vector<std::vector<uint8_t>>& sets,
+                                                 bool keyframe) override {
+        if (keyframe && !sets.empty() && sets != sets_) {
+            ATHENEA_TRY(open(sets));
+        }
+        if (session_ == nullptr) {
+            return Error(ErrorCode::InvalidArgument, "video: a frame before any key frame with parameter sets");
+        }
+        CMBlockBufferRef block = nullptr;
+        if (CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault, const_cast<uint8_t*>(unit.data()), unit.size(),
+                                               kCFAllocatorNull, nullptr, 0, unit.size(), 0, &block) != noErr) {
+            return Error(ErrorCode::DeviceFailure, "video: no block for an access unit");
+        }
+        CMSampleBufferRef sample = nullptr;
+        const size_t size = unit.size();
+        const OSStatus made = CMSampleBufferCreateReady(kCFAllocatorDefault, block, format_, 1, 0, nullptr, 1, &size,
+                                                        &sample);
+        CFRelease(block);
+        if (made != noErr) {
+            return Error::make(ErrorCode::DeviceFailure, "video: no sample for an access unit ({})",
+                               static_cast<int>(made));
+        }
+        __block CVImageBufferRef image = nullptr;
+        __block OSStatus result = noErr;
+        VTDecodeInfoFlags info = 0;
+        const OSStatus st = VTDecompressionSessionDecodeFrameWithOutputHandler(
+            session_, sample, 0, &info,
+            ^(OSStatus status, VTDecodeInfoFlags, CVImageBufferRef buffer, CMTime, CMTime) {
+              result = status;
+              if (status == noErr && buffer != nullptr) {
+                  image = CVPixelBufferRetain(buffer);
+              }
+            });
+        VTDecompressionSessionWaitForAsynchronousFrames(session_);
+        CFRelease(sample);
+        if (st != noErr || result != noErr || image == nullptr) {
+            if (image != nullptr) CVPixelBufferRelease(image);
+            return Error::make(ErrorCode::DeviceFailure, "video: the decoder refused an access unit ({}, {})",
+                               static_cast<int>(st), static_cast<int>(result));
+        }
+        return std::shared_ptr<DecodedFrame>(std::make_shared<VtFrame>(image, bits_));
+    }
+
+    bool hardware() const noexcept override { return hardware_; }
+
+private:
+    void reset() {
+        if (session_ != nullptr) {
+            VTDecompressionSessionInvalidate(session_);
+            CFRelease(session_);
+            session_ = nullptr;
+        }
+        if (format_ != nullptr) {
+            CFRelease(format_);
+            format_ = nullptr;
+        }
+    }
+
+    Result<void> open(const std::vector<std::vector<uint8_t>>& sets) {
+        reset();
+        std::vector<const uint8_t*> ptrs;
+        std::vector<size_t> sizes;
+        for (const auto& s : sets) {
+            ptrs.push_back(s.data());
+            sizes.push_back(s.size());
+        }
+        OSStatus st = CMVideoFormatDescriptionCreateFromHEVCParameterSets(kCFAllocatorDefault, ptrs.size(), ptrs.data(),
+                                                                          sizes.data(), 4, nullptr, &format_);
+        if (st != noErr) {
+            return Error::make(ErrorCode::InvalidArgument, "video: parameter sets the decoder cannot read ({})",
+                               static_cast<int>(st));
+        }
+        CFMutableDictionaryRef spec = newDictionary();
+        CFDictionarySetValue(spec, kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
+                             kCFBooleanTrue);
+        CFMutableDictionaryRef out = newBufferAttributes(bits_, 0, 0);
+        st = VTDecompressionSessionCreate(kCFAllocatorDefault, format_, spec, out, nullptr, &session_);
+        CFRelease(spec);
+        CFRelease(out);
+        if (st != noErr || session_ == nullptr) {
+            session_ = nullptr;
+            return Error::make(ErrorCode::Unsupported, "video: no hardware HEVC decoder for this stream ({})",
+                               static_cast<int>(st));
+        }
+        CFBooleanRef hw = nullptr;
+        if (VTSessionCopyProperty(session_, kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder,
+                                  kCFAllocatorDefault, &hw) == noErr && hw != nullptr) {
+            hardware_ = CFBooleanGetValue(hw);
+            CFRelease(hw);
+        }
+        sets_ = sets;
+        return ok();
+    }
+
+    uint32_t                          bits_;
+    VTDecompressionSessionRef         session_ = nullptr;
+    CMVideoFormatDescriptionRef       format_ = nullptr;
+    std::vector<std::vector<uint8_t>> sets_;
+    bool                              hardware_ = false;
+};
+
+// --- the luma plane as a Metal texture -------------------------------------------
+
+class VtLumaTextures final : public LumaTextures {
+public:
+    ~VtLumaTextures() override {
+        if (cache_ != nullptr) CFRelease(cache_);
+    }
+
+    static Result<std::unique_ptr<LumaTextures>> create(gpu::Device& device) {
+        rhi::DeviceNativeHandles handles;
+        if (SLANG_FAILED(device.rhi()->getNativeDeviceHandles(&handles)) ||
+            handles.handles[0].type != rhi::NativeHandleType::MTLDevice) {
+            return Error(ErrorCode::Unsupported, "video: decoded frames are read as textures by a Metal device only");
+        }
+        std::unique_ptr<VtLumaTextures> t(new VtLumaTextures());
+        t->device_ = &device;
+        id<MTLDevice> mtl = (__bridge id<MTLDevice>)reinterpret_cast<void*>(handles.handles[0].value);
+        if (CVMetalTextureCacheCreate(kCFAllocatorDefault, nullptr, mtl, nullptr, &t->cache_) != kCVReturnSuccess) {
+            return Error(ErrorCode::DeviceFailure, "video: no Metal texture cache");
+        }
+        return std::unique_ptr<LumaTextures>(std::move(t));
+    }
+
+    Result<LumaTexture> wrap(const DecodedFrame& frame) override {
+        const auto* f = dynamic_cast<const VtFrame*>(&frame);
+        if (f == nullptr) {
+            return Error(ErrorCode::InvalidArgument, "video: a frame VideoToolbox did not decode");
+        }
+        const bool wide = f->bits() > 8;
+        CVMetalTextureRef cv = nullptr;
+        const size_t w = f->width(), h = f->height();
+        if (CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault, cache_, f->buffer(), nullptr,
+                                                      wide ? MTLPixelFormatR16Unorm : MTLPixelFormatR8Unorm, w, h, 0,
+                                                      &cv) != kCVReturnSuccess ||
+            cv == nullptr) {
+            return Error(ErrorCode::DeviceFailure, "video: the decoded luma plane is not a Metal texture");
+        }
+        id<MTLTexture> mtl = CVMetalTextureGetTexture(cv);
+        rhi::TextureDesc desc;
+        desc.type = rhi::TextureType::Texture2D;
+        desc.size = {static_cast<uint32_t>(w), static_cast<uint32_t>(h), 1};
+        desc.mipCount = 1;
+        desc.arrayLength = 1;
+        desc.format = wide ? rhi::Format::R16Unorm : rhi::Format::R8Unorm;
+        desc.usage = rhi::TextureUsage::ShaderResource;
+        desc.label = "video.luma";
+        rhi::NativeHandle handle;
+        handle.type = rhi::NativeHandleType::MTLTexture;
+        handle.value = reinterpret_cast<uint64_t>((__bridge void*)mtl);
+        LumaTexture out;
+        if (SLANG_FAILED(device_->rhi()->createTextureFromNativeHandle(handle, desc, out.texture.writeRef()))) {
+            CFRelease(cv);
+            return Error(ErrorCode::DeviceFailure, "video: slang-rhi did not adopt the luma texture");
+        }
+        // The CVMetalTexture holds the IOSurface the texture reads; the frame
+        // holds the pixel buffer. Both live as long as the texture is used.
+        auto pixels = std::shared_ptr<const void>(CVPixelBufferRetain(f->buffer()),
+                                                  [](const void* p) { CVPixelBufferRelease(static_cast<CVPixelBufferRef>(const_cast<void*>(p))); });
+        out.keep = std::shared_ptr<void>(cv, [pixels](void* p) { CFRelease(static_cast<CFTypeRef>(p)); });
+        if (++wrapped_ % 64 == 0) {
+            CVMetalTextureCacheFlush(cache_, 0);
+        }
+        return out;
+    }
+
+private:
+    VtLumaTextures() = default;
+    gpu::Device*           device_ = nullptr;
+    CVMetalTextureCacheRef cache_ = nullptr;
+    uint64_t               wrapped_ = 0;
+};
+
 }   // namespace
 
 Result<std::unique_ptr<VideoEncoder>> createHardwareEncoder(const EncoderSettings& settings) {
     return VtEncoder::create(settings);
+}
+
+Result<std::unique_ptr<VideoDecoder>> createHardwareDecoder(uint32_t codec, uint32_t bits) {
+    if (codec != 0x31637668) {   // 'hvc1'
+        return Error::make(ErrorCode::Unsupported, "video: codec {:#x} is not HEVC", codec);
+    }
+    return std::unique_ptr<VideoDecoder>(std::make_unique<VtDecoder>(bits));
+}
+
+Result<std::unique_ptr<LumaTextures>> createLumaTextures(gpu::Device& device) {
+    return VtLumaTextures::create(device);
 }
 
 }   // namespace athenea::video

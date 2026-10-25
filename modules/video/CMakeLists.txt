@@ -1,6 +1,6 @@
 # Copyright (c) 2026 jesus luque.
 # Gaussian splats as video planes: the plane kernels' host side, the .athv
-# container and the platform's hardware encoder.
+# container and the platform's hardware codec.
 set(_video_codec src/CodecNone.cpp)
 if(APPLE)
     set(_video_codec src/VideoToolbox.mm)
@@ -16,7 +16,7 @@ athenea_add_module(video
         athenea::scene)
 if(APPLE)
     target_link_libraries(athenea_video PRIVATE z "-framework VideoToolbox" "-framework CoreMedia"
-                          "-framework CoreVideo" "-framework CoreFoundation")
+                          "-framework CoreVideo" "-framework Metal" "-framework CoreFoundation")
 else()
     target_link_libraries(athenea_video PRIVATE ZLIB::ZLIB)
 endif()

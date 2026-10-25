@@ -508,6 +508,7 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 | `--columns` | tiles a row | the squarest mosaic | |
 | `--rate` | frames a second | the sequence's, or 30 | stored in the file; `athenea stream` plays at it |
 | `--hevc` | path | none | the video alone as Annex B, for `ffprobe`; its pictures are planes, not an image |
+| `--check` | flag | off | each picture decoded again by the hardware decoder, turned back into splats on the device and measured against its source |
 
 **Sizes.** A picture is at most 8192 x 8192 in area and 16384 a side (the
 hardware encoder refused 10240 x 9600). A frame whose planes need more is cut
@@ -518,10 +519,28 @@ and a plane for each attribute: 59 at degree 3 (62 with `--hi video`).
 
 **What it prints.** The mosaic and the slices; MB a frame (the video and the
 side data apart) and Mbit/s at 24 and 30 a second; a key picture's size
-against a predicted one's.
+against a predicted one's. With `--check`, for each group of attributes
+(position, opacity, log scale, rotation, base colour, rest) the largest and
+the mean error in steps of its own quantisation (a position's of the 16 or 20
+bit one), whether every position high part came back exact, and the hardware
+decode and the planes -> gaussians kernel in ms (medians, the kernel
+submitted and waited for).
 
 macOS (VideoToolbox) only for now; elsewhere the encoder is refused
 (`Unsupported`).
+
+### 2.7.3 `athenea video-decode` — a video's frames decoded and timed
+
+Every picture of a `.athv` through the hardware decoder and the planes ->
+gaussians kernel (`video_planes_decode.slang`), into a cloud on the device,
+nothing drawn. Prints, per picture, the medians of the record's read, the
+hardware decode (and its p95) and the kernel, submitted and waited for as
+`ATHENEA_STAGES` times a kernel.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `input` | `.athv`, required | — | |
+| `--frames` | pictures | all | |
 
 ### 2.8 `athenea mesh2splat` — a model into gaussians
 
@@ -2550,6 +2569,7 @@ Cryptomatte layer is always float. PNG is written only as the MCP preview.
 | `athenea view` | nothing, or one EXR with `--snapshot` |
 | `athenea live` | one EXR a frame, numbered, each with its timecode |
 | `athenea video-encode` | a `.athv`, and with `--hevc` the video alone as Annex B |
+| `athenea video-decode` | nothing; timings on standard output |
 | `athenea mesh2splat` | a USD stage holding the cloud |
 | `athenea flatten` | `.ply`, `.spz`, `.glb` and USD files of the flattened clouds, the composed stage beside them, and with `--validate` what `mesh2splat --validate` writes |
 | `athenea lightmap` | `lightmap_<atlas>.exr` (half, linear, bottom row first) and `lightmapped.usda`, which sublayers the source; its materials are under the one root prim every baked mesh shares (`/<root>/AtheneaLightmaps`), so referencing that prim keeps them |

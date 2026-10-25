@@ -14,6 +14,7 @@ namespace athenea::video {
 namespace {
 
 constexpr uint32_t kRun = 1024;          // video_planes_encode.slang's
+constexpr uint32_t kCompareRun = 64;     // video_planes_decode.slang's
 
 Result<gpu::Buffer> deviceBuffer(gpu::Device& device, uint64_t bytes, uint32_t element, const char* label) {
     gpu::BufferDesc desc;
@@ -156,12 +157,15 @@ Result<PlanesCodec> PlanesCodec::create(gpu::ShaderLibrary& library) {
         return ok();
     };
     const char* enc = "athenea/scene/video_planes_encode";
+    const char* dec = "athenea/scene/video_planes_decode";
     ATHENEA_TRY(make(c.partial_, enc, "videoPlanesRangePartial"));
     ATHENEA_TRY(make(c.finish_, enc, "videoPlanesRangeFinish"));
     ATHENEA_TRY(make(c.widen_, enc, "videoPlanesRangeWiden"));
     ATHENEA_TRY(make(c.morton_, enc, "videoPlanesMorton"));
     ATHENEA_TRY(make(c.encode_, enc, "videoPlanesEncode"));
     ATHENEA_TRY(make(c.high_, enc, "videoPlanesHigh"));
+    ATHENEA_TRY(make(c.decode_, dec, "videoPlanesDecode"));
+    ATHENEA_TRY(make(c.compare_, dec, "videoPlanesCompare"));
     return c;
 }
 
@@ -281,6 +285,80 @@ Result<EncodedPlanes> PlanesCodec::encode(const scene::GpuSplats& cloud, const P
     if (!layout.hiInVideo) {
         out.high.resize(highEntries * layout.sampleBytes());
         ATHENEA_TRY(highBuffer_.read(device, 0, out.high.size(), out.high.data()));
+    }
+    return out;
+}
+
+Result<void> PlanesCodec::decode(gpu::CommandBatch& batch, const PlaneLayout& layout, rhi::ITexture* luma,
+                                 rhi::IBuffer* page, uint64_t rangesOffset, uint64_t highOffset, uint32_t first,
+                                 uint32_t count, scene::GpuSplats& store, uint64_t at, uint32_t keep) {
+    if (luma == nullptr || page == nullptr || count == 0) {
+        return Error(ErrorCode::InvalidArgument, "video planes: a decode with no frame, no side data or no splats");
+    }
+    if (rangesOffset % 4 != 0 || highOffset % 4 != 0 || first % layout.chunkSplats != 0 ||
+        uint64_t{first} + count > layout.splats || rangesOffset > UINT32_MAX || highOffset > UINT32_MAX) {
+        return Error::make(ErrorCode::InvalidArgument, "video planes: splats {} + {} of a frame of {} at offsets {} {}",
+                           first, count, layout.splats, rangesOffset, highOffset);
+    }
+    keep = std::min(keep, store.restPerColour);
+    decode_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["luma"].setBinding(luma);
+        cursor["page"].setBinding(page);
+        cursor["outPositions"].setBinding(store.positions.rhi());
+        cursor["outShape"].setBinding(store.shape.rhi());
+        cursor["outSh"].setBinding(store.sh.rhi());
+        rhi::ShaderCursor p = cursor["params"];
+        setLayout(p, layout);
+        p["first"].setData(first);
+        p["pageCount"].setData(count);
+        p["at"].setData(static_cast<uint32_t>(at));
+        p["keep"].setData(keep);
+        p["shWords"].setData(store.shWords);
+        p["rangesOffset"].setData(static_cast<uint32_t>(rangesOffset));
+        p["hiOffset"].setData(static_cast<uint32_t>(highOffset));
+    });
+    batch.markDirty();
+    return ok();
+}
+
+Result<std::vector<AttributeError>> PlanesCodec::compare(const PlaneLayout& layout, const scene::GpuSplats& decoded,
+                                                         const scene::GpuSplats& source, const gpu::Buffer& order,
+                                                         uint32_t first, const gpu::Buffer& ranges) {
+    gpu::Device& device = *device_;
+    const uint32_t a = layout.attributes();
+    ATHENEA_TRY(ensure(device, errors_, uint64_t{a} * 16, 4, "video.errors"));
+    const uint32_t runs = (layout.splats + kCompareRun - 1) / kCompareRun;
+    {
+        gpu::CommandBatch batch(device);
+        batch.encoder()->clearBuffer(errors_.rhi(), 0, uint64_t{a} * 16);
+        compare_.dispatch(batch, {runs * a, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["decodedPositions"].setBinding(decoded.positions.rhi());
+            cursor["decodedShape"].setBinding(decoded.shape.rhi());
+            cursor["decodedSh"].setBinding(decoded.sh.rhi());
+            cursor["sourcePositions"].setBinding(source.positions.rhi());
+            cursor["sourceShape"].setBinding(source.shape.rhi());
+            cursor["sourceSh"].setBinding(source.sh.rhi());
+            cursor["order"].setBinding(order.rhi());
+            cursor["frameRanges"].setBinding(ranges.rhi());
+            cursor["errors"].setBinding(errors_.rhi());
+            rhi::ShaderCursor p = cursor["params"];
+            setLayout(p, layout);
+            p["first"].setData(first);
+            p["shWords"].setData(decoded.shWords);
+            p["sourceShWords"].setData(source.shWords);
+            p["sourceRest"].setData(source.restPerColour);
+        });
+        ATHENEA_TRY(batch.submit(true));
+    }
+    std::vector<uint32_t> words(size_t{a} * 4);
+    ATHENEA_TRY(errors_.read(device, 0, words.size() * 4, words.data()));
+    std::vector<AttributeError> out(a);
+    for (uint32_t k = 0; k < a; ++k) {
+        // Counters into the report's units: 1/16 steps, the sum's carries.
+        out[k].maxSteps = words[k * 4] / 16.0;
+        const double sum = static_cast<double>(words[k * 4 + 1]) + 4294967296.0 * words[k * 4 + 2];
+        out[k].meanSteps = sum / 16.0 / layout.splats;
+        out[k].far = words[k * 4 + 3];
     }
     return out;
 }

@@ -16169,3 +16169,27 @@ the splats in Morton order; 4:4:4 is not used. Module `video` (after `lod`), `.a
   timecode label, ranges, deflated high parts, parameter sets on a key picture, the access unit as
   length-prefixed NAL units. Written under a partial name and renamed. `--hevc` writes the same pictures as Annex
   B, which `ffprobe` reads as HEVC Main / Main 10, `yuvj420p` full range.
+
+### The decoder
+
+- VideoToolbox's HEVC decoder (hardware required) writes the picture into an IOSurface-backed CVPixelBuffer;
+  CVMetalTextureCache makes its luma plane an R8Unorm (R16Unorm at 10 bits) Metal texture over the same memory,
+  and slang-rhi adopts it (`createTextureFromNativeHandle`): no copy. `video_planes_decode.slang` reads each
+  splat's samples there (`Load`, never a sampler), the ranges and high parts from a buffer, dequantises,
+  renormalises the rotation and writes the store's packed layout (positions, smallest-three rotation, f16 log
+  scale and colour, f16 rest), a thread a splat; rest coefficients past the planes' degree are written zero.
+- `video_planes_decode.slang`'s `videoPlanesCompare` measures a decoded slice against its source through the
+  Morton order, attribute by attribute, in steps of its own quantisation (largest, mean in 1/16 steps), and
+  counts the splats whose position high part differs from the source's: what `video-encode --check` prints.
+- **Hooks.** `createHardwareDecoder` / `createLumaTextures` are the platform's: elsewhere they answer
+  `Unsupported` (`src/CodecNone.cpp`). NVDEC goes there (the frame mapped in device memory, its luma adopted as a
+  CUDA texture), and WebCodecs (`VideoFrame.copyTo` plane by plane: `GPUExternalTexture` converts to RGB).
+
+### How it is checked
+
+`athenea_video_tests` (Metal, M5 Pro): a random 70000-splat degree-1 cloud through the mosaic with no codec
+between, uploaded as the texture the decoder would leave, at 8 and 10 bits, high parts beside and as planes:
+every attribute back within half a step plus what packing adds (0.75 steps at 8 bits, 1.25 at 10, rotations 2.5
+and 4 after renormalising), no high part wrong. The same cloud through the hardware encoder and decoder at
+quality 0.9: no high part wrong, every attribute's mean error under 8 steps. `.athv` written and read back,
+slices and Annex B included.

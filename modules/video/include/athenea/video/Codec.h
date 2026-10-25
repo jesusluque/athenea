@@ -7,10 +7,18 @@
 // every decoder takes -- loses nothing.
 //
 //   VideoEncoder   luma samples in, access units out (the producer's side)
+//   VideoDecoder   access units in, frames out where the device can read
+//                  them: a DecodedFrame is the decoder's own buffer
+//   LumaTextures   a decoded frame's luma plane as a texture of the engine's
+//                  device, without a copy (frame thread)
 //
-// WHERE EACH PLATFORM STANDS. macOS and iOS: VideoToolbox
+// WHERE EACH PLATFORM STANDS. macOS and iOS: VideoToolbox, the frame an
+// IOSurface the Metal device reads through CVMetalTextureCache
 // (src/VideoToolbox.mm, the only file here that calls a framework). Others
-// get Unsupported from the factory.
+// get Unsupported from the factories: NVDEC (CUDA: the frame in device
+// memory, wrapped the way gpu_host wraps buffers) and WebCodecs (a
+// VideoFrame copied plane by plane -- GPUExternalTexture converts to RGB,
+// which would alter the values) are where they go.
 #pragma once
 
 #include <cstddef>
@@ -19,7 +27,13 @@
 #include <span>
 #include <vector>
 
+#include <slang-rhi.h>
+
 #include "athenea/core/Result.h"
+
+namespace athenea::gpu {
+class Device;
+}
 
 namespace athenea::video {
 
@@ -60,5 +74,44 @@ public:
 };
 
 [[nodiscard]] Result<std::unique_ptr<VideoEncoder>> createHardwareEncoder(const EncoderSettings& settings);
+
+/// A frame the decoder wrote, in its own memory: held as long as this is.
+class DecodedFrame {
+public:
+    virtual ~DecodedFrame() = default;
+    [[nodiscard]] virtual uint32_t width() const noexcept = 0;
+    [[nodiscard]] virtual uint32_t height() const noexcept = 0;
+    [[nodiscard]] virtual uint32_t bits() const noexcept = 0;
+};
+
+class VideoDecoder {
+public:
+    virtual ~VideoDecoder() = default;
+    /// One access unit; `parameterSets` with a key frame (a decoder starts
+    /// at one). The frame decoded, in the decoder's memory. Any one thread.
+    [[nodiscard]] virtual Result<std::shared_ptr<DecodedFrame>> decode(
+        std::span<const uint8_t> unit, const std::vector<std::vector<uint8_t>>& parameterSets, bool keyframe) = 0;
+    [[nodiscard]] virtual bool hardware() const noexcept = 0;
+};
+
+/// `codec` the stream's FourCC ('hvc1'); `bits` 8 or 10.
+[[nodiscard]] Result<std::unique_ptr<VideoDecoder>> createHardwareDecoder(uint32_t codec, uint32_t bits);
+
+/// A decoded frame's luma plane as a texture of `device` (R8Unorm, R16Unorm
+/// at 10 bits), sharing the decoder's memory; `keep` holds what the texture
+/// reads alive.
+struct LumaTexture {
+    rhi::ComPtr<rhi::ITexture> texture;
+    std::shared_ptr<void>      keep;
+};
+
+class LumaTextures {
+public:
+    virtual ~LumaTextures() = default;
+    /// FRAME THREAD (it makes a texture of the device).
+    [[nodiscard]] virtual Result<LumaTexture> wrap(const DecodedFrame& frame) = 0;
+};
+
+[[nodiscard]] Result<std::unique_ptr<LumaTextures>> createLumaTextures(gpu::Device& device);
 
 }   // namespace athenea::video

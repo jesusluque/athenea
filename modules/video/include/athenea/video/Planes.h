@@ -8,6 +8,9 @@
 //
 //   PlaneLayout   how many planes, how the tiles lie, how big the mosaic is
 //   PlanesCodec   the kernels: a cloud into a mosaic and its side data
+//                 (encode), a decoded luma texture and that side data back
+//                 into a store's splats (decode), and the two clouds measured
+//                 against each other (compare)
 //
 // THE SIDE DATA of a frame: its ranges (two floats an attribute) and, unless
 // they are planes (`hiInVideo`), the high parts of its positions -- a
@@ -19,12 +22,15 @@
 #include <vector>
 #include <cstddef>
 
+#include <slang-rhi.h>
+
 #include "athenea/core/Result.h"
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/gpu/algo/RadixSort.h"
 
 namespace athenea::gpu {
+class CommandBatch;
 class Device;
 class ShaderLibrary;
 }   // namespace athenea::gpu
@@ -92,6 +98,14 @@ struct EncodedPlanes {
     std::vector<std::byte> high;     ///< chunks x highChunkBytes (empty when hiInVideo)
 };
 
+/// How far a decoded cloud is from its source, an attribute: steps of its
+/// own quantisation (positions: of the 2 x bits one).
+struct AttributeError {
+    double   maxSteps = 0.0;
+    double   meanSteps = 0.0;
+    uint64_t far = 0;   ///< positions: splats whose high part is not the source's
+};
+
 class PlanesCodec {
 public:
     [[nodiscard]] static Result<PlanesCodec> create(gpu::ShaderLibrary& library);
@@ -114,6 +128,23 @@ public:
     [[nodiscard]] Result<EncodedPlanes> encode(const scene::GpuSplats& cloud, const PlaneLayout& layout,
                                                const gpu::Buffer& order, uint32_t first, const gpu::Buffer& ranges);
 
+    /// Frame splats `first` .. `first + count` into `store` from splat `at`:
+    /// `luma` the decoded frame's luma plane (R8Unorm, or R16Unorm for 10
+    /// bit), `page` the side data (ranges at `rangesOffset`, high parts at
+    /// `highOffset`, both bytes on a 4-byte boundary). `keep` rest
+    /// coefficients a colour are written, zero past the planes' own.
+    [[nodiscard]] Result<void> decode(gpu::CommandBatch& batch, const PlaneLayout& layout, rhi::ITexture* luma,
+                                      rhi::IBuffer* page, uint64_t rangesOffset, uint64_t highOffset, uint32_t first,
+                                      uint32_t count, scene::GpuSplats& store, uint64_t at, uint32_t keep);
+
+    /// A slice decoded from the planes (`decoded`, in Morton order from rank
+    /// `first`) against its source through `order`, attribute by attribute.
+    [[nodiscard]] Result<std::vector<AttributeError>> compare(const PlaneLayout& layout,
+                                                              const scene::GpuSplats& decoded,
+                                                              const scene::GpuSplats& source,
+                                                              const gpu::Buffer& order, uint32_t first,
+                                                              const gpu::Buffer& ranges);
+
     /// A store of `count` packed splats with `restPerColour` rest
     /// coefficients a colour (positions, shape, harmonics only).
     [[nodiscard]] static Result<scene::GpuSplats> allocate(gpu::Device& device, uint32_t count,
@@ -121,11 +152,11 @@ public:
 
 private:
     gpu::Device*       device_ = nullptr;
-    gpu::ComputeKernel partial_, finish_, widen_, morton_, encode_, high_;
+    gpu::ComputeKernel partial_, finish_, widen_, morton_, encode_, high_, decode_, compare_;
     gpu::RadixSort     sort_;
     gpu::SortBuffers   sorting_;
     uint32_t           sortingFor_ = 0;
-    gpu::Buffer        partialBuffer_, mosaic_, highBuffer_;
+    gpu::Buffer        partialBuffer_, mosaic_, highBuffer_, errors_;
 };
 
 }   // namespace athenea::video

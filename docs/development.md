@@ -221,8 +221,9 @@ boundary and turned into an `Error`.
 makes outside its dependencies is behind one header, so the Windows port has
 one file to start from rather than a search. The one other place a framework is called
 is the hardware video codec (`modules/video/src/VideoToolbox.mm` on Apple):
-the encoder is fixed-function output, like a file write; nothing there
-computes on a value. A file a command writes for
+the encoder and the decoder are fixed-function input and output, like a file
+read, and the decoded picture is handed to the device as a texture where the
+decoder left it; nothing there computes on a value. A file a command writes for
 another step to read is written through `platform::writeAtomically`: under a
 partial name beside it, renamed when complete, so a failure leaves no half
 file under the name asked for.
@@ -520,7 +521,7 @@ Nineteen binaries, one per area, all under `tests/`.
 | `athenea_material_tests` | the texture store, the lobes, the MaterialX compiler |
 | `athenea_technique_tests` | visibility, display, materials, lights, splat shadows and visibility |
 | `athenea_lod_tests` | building levels, cut selection, `.athc` |
-| `athenea_video_tests` | `.athv` |
+| `athenea_video_tests` | video planes through a mosaic and through the hardware codec (skipped where there is none), `.athv` |
 | `athenea_volume_tests` | volumes |
 | `athenea_usd_tests` | the delegate end to end |
 | `athenea_storm_oracle_tests` | Storm as the geometry oracle; its own process and device, and `HDX_MSAA_SAMPLE_COUNT=1` |

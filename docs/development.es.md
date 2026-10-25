@@ -228,8 +228,10 @@ captura en el borde de ese módulo y se convierte en un `Error`.
 hace el motor fuera de sus dependencias está detrás de una cabecera, así que
 el port a Windows tiene un fichero por el que empezar y no una búsqueda. El otro sitio
 donde se llama a un framework es el códec de vídeo hardware
-(`modules/video/src/VideoToolbox.mm` en Apple): el codificador es salida de
-función fija, como escribir un fichero; nada ahí calcula sobre un valor. Un
+(`modules/video/src/VideoToolbox.mm` en Apple): el codificador y el
+decodificador son entrada y salida de función fija, como leer un fichero, y
+la imagen decodificada se pasa al dispositivo como una textura donde la dejó
+el decodificador; nada ahí calcula sobre un valor. Un
 fichero que un comando escribe para que otro paso lo lea se escribe con
 `platform::writeAtomically`: con un nombre parcial a su lado, renombrado al
 completarse, así que un fallo no deja medio fichero con el nombre pedido.
@@ -537,7 +539,7 @@ Diecinueve binarios, uno por área, todos bajo `tests/`.
 | `athenea_material_tests` | el texture store, los lobes, el compilador de MaterialX |
 | `athenea_technique_tests` | visibilidad, display, materiales, luces, sombras y visibilidad de splats |
 | `athenea_lod_tests` | construir niveles, elegir el corte, `.athc` |
-| `athenea_video_tests` | `.athv` |
+| `athenea_video_tests` | planos de vídeo por un mosaico y por el códec hardware (se salta donde no hay), `.athv` |
 | `athenea_volume_tests` | volúmenes |
 | `athenea_usd_tests` | el delegate de punta a punta |
 | `athenea_storm_oracle_tests` | Storm como oráculo de geometría; su propio proceso y dispositivo, y `HDX_MSAA_SAMPLE_COUNT=1` |
