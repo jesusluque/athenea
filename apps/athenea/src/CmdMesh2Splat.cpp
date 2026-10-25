@@ -352,6 +352,8 @@ public:
         ATHENEA_TRY(make("athenea/usd/mesh2splat_edges", "m2sEdgeRuns", edgeRuns_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_edges", "m2sEdgeWrite", edgeWrite_));
         ATHENEA_TRY(make("athenea/usd/mesh2splat_edges", "m2sEdgeCopy", edgeCopy_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_order", "m2sSourceKey", sourceKey_));
+        ATHENEA_TRY(make("athenea/usd/mesh2splat_order", "m2sPermute", permute_));
         auto sort = gpu::RadixSort::create(*library_);
         if (!sort) return std::move(sort).error();
         sort_ = std::move(*sort);
@@ -1250,6 +1252,21 @@ public:
         // device over the boxes it folded (`mesh2splat_cells`), with the
         // cell each piece walks -- from a camera, where one is given.
         perMesh_ = options_->density == "per-mesh";
+        // EACH MESH'S RANK AMONG THE STAGE'S BY PRIM PATH: what the cloud's
+        // order and its `sourceMesh` say, the same whatever order the stage
+        // was traversed in (bookkeeping over names).
+        {
+            std::vector<size_t> byPath(meshes.size());
+            for (size_t m = 0; m < meshes.size(); ++m) byPath[m] = m;
+            std::stable_sort(byPath.begin(), byPath.end(),
+                             [&](size_t a, size_t b) { return meshes[a].path < meshes[b].path; });
+            meshRank_.assign(meshes.size(), 0);
+            sourceMeshes_.clear();
+            for (size_t r = 0; r < byPath.size(); ++r) {
+                meshRank_[byPath[r]] = static_cast<uint32_t>(r);
+                sourceMeshes_.push_back(meshes[byPath[r]].path);
+            }
+        }
         const size_t pieces = pieces_.size();
         wantedBy_.assign(pieces, 0);
         shareOf_.assign(pieces, 0);
@@ -1487,7 +1504,7 @@ public:
                 // Into the cloud's own buffers, after everything before it,
                 // on the device: the records, where the bake starts from,
                 // and the joints.
-                ATHENEA_TRY(keep(*out, written - out->written, material));
+                ATHENEA_TRY(keep(*out, written - out->written, material, piece, owner));
                 displaced_ = displaced_ || (out->written > 0 && displaces(material));
                 // WHICH PRIM THESE GAUSSIANS CAME FROM. The conversion knows
                 // it -- this run is one mesh -- so the ancestry a matte needs
@@ -1596,6 +1613,9 @@ public:
                         "were left thinner (--displace-refine)\n",
                         static_cast<unsigned long long>(capped), options_->displaceRefine);
         }
+        // THE ORDER OF THE SURFACE: every buffer a gaussian long laid out by
+        // where on its source each gaussian stands (mesh2splat_order).
+        ATHENEA_TRY(orderBySource(static_cast<uint32_t>(written)));
         raw.count = static_cast<uint32_t>(written);
         raw.records = records_;
         count_ = raw.count;
@@ -1705,8 +1725,9 @@ private:
         const uint32_t ownEntries = kRecordEntries;
         // AND ONE FOR WHAT IT GIVES OFF, the last, where the stage emits.
         // AND FOUR FOR WHAT THE MATERIAL LAYERS OVER ITS BASE, after it.
-        const uint32_t recordEntries =
-            kRecordEntries + (displaced ? 3U : 0U) + (emits_ ? 1U : 0U) + (layered_ ? 4U : 0U) + (curved_ ? 1U : 0U);
+        // AND ONE FOR WHERE ON THE MESH IT STANDS, the very last (`sourceOrder`).
+        const uint32_t recordEntries = kRecordEntries + (displaced ? 3U : 0U) + (emits_ ? 1U : 0U) +
+                                       (layered_ ? 4U : 0U) + (curved_ ? 1U : 0U) + 1U;
         const image::PixelRect bounds = pictureFor(budget * recordEntries);
 
         // The box the density is measured over: the model's, or this mesh's
@@ -1857,6 +1878,7 @@ private:
         }
 
         number("writeCurvature", curved_ ? 1.0 : 0.0);
+        number("writeSource", 1.0);
         if (layered_) {
             // Every piece writes them once one does, so the records stay one
             // layout; a material that names none writes the plain ones.
@@ -1953,6 +1975,8 @@ private:
         if (curved_) {
             ATHENEA_TRY(grown(curvatures_, 12, 4, "mesh2splat.curvatures"));
         }
+        ATHENEA_TRY(grown(sources_, 16, 16, "mesh2splat.sources"));
+        ATHENEA_TRY(grown(sourceUv_, 8, 8, "mesh2splat.sourceUv"));
         if (options_->skinned) {
             ATHENEA_TRY(grown(influences_, 32, 16, "mesh2splat.influences"));
             ATHENEA_TRY(grown(gradients_, 12, 4, "mesh2splat.weightGradients"));
@@ -1963,7 +1987,8 @@ private:
 
     /// One run's gaussians into the cloud's buffers, from `destFirst` on: the
     /// records, where each one's bake starts, and the joints that carry it.
-    [[nodiscard]] Result<void> keep(const OneMesh& run, uint64_t destFirst, const usd::StageMaterial& material) {
+    [[nodiscard]] Result<void> keep(const OneMesh& run, uint64_t destFirst, const usd::StageMaterial& material,
+                                    const Piece& piece, const usd::StageMesh& mesh) {
         if (run.written == 0) {
             return ok();
         }
@@ -2001,6 +2026,15 @@ private:
             cursor["gather"]["baseWeight"].setData(material.baseWeight);
             cursor["gather"]["roughness"].setData(material.roughness);
             cursor["gather"]["coatRoughness"].setData(material.coatRoughness);
+            // Where on its source each gaussian stands: the mesh's rank, the
+            // subset's triangles in the mesh's numbering, and whether it has st.
+            cursor["gather"]["sourced"].setData(1u);
+            cursor["gather"]["meshRank"].setData(piece.mesh < meshRank_.size() ? meshRank_[piece.mesh] : 0u);
+            cursor["gather"]["listed"].setData(piece.list.valid() ? 1u : 0u);
+            cursor["gather"]["hasUv"].setData(mesh.mesh.primvar("st") != nullptr ? 1u : 0u);
+            cursor["pieceTriangles"].setBinding(piece.list.valid() ? piece.list.rhi() : samplings_.rhi());
+            cursor["sources"].setBinding(sources_.rhi());
+            cursor["sourceUv"].setBinding(sourceUv_.rhi());
         };
         const uint32_t threads = static_cast<uint32_t>(run.written);
         gather_.dispatch(batch, {threads, 1, 1}, bind);
@@ -2015,6 +2049,113 @@ private:
         }
         ATHENEA_TRY(batch.submit(true));
         used_ = std::max<uint64_t>(used_, destFirst + run.written);
+        return ok();
+    }
+
+    /// THE CLOUD IN THE ORDER OF ITS SURFACE (common/source_order.slang):
+    /// each gaussian keyed by its mesh's rank and its st on a Hilbert curve
+    /// (or, without st, its triangle and the Morton index of its cell), the
+    /// keys sorted stably on the device, and every buffer a gaussian long --
+    /// the records, the rays, the joints, the samplings, the source
+    /// coordinates, and the per-gaussian lists the host keeps -- laid out in
+    /// that order. Index i is then the same point of the surface in every
+    /// run, and a coarser conversion's order is the finer's restricted to it.
+    [[nodiscard]] Result<void> orderBySource(uint32_t n) {
+        if (n == 0) {
+            return ok();
+        }
+        gpu::Device& device = library_->device();
+        const auto words = [&](uint64_t count, const char* label, const void* data = nullptr) {
+            gpu::BufferDesc desc;
+            desc.bytes = std::max<uint64_t>(count, 1) * 4;
+            desc.elementBytes = 4;
+            desc.label = label;
+            return gpu::Buffer::create(device, desc, data);
+        };
+        // The meshes' paths hashed, by rank: names, the host's.
+        std::vector<uint32_t> hashes;
+        for (const std::string& path : sourceMeshes_) {
+            hashes.push_back(core::murmurHash3x86_32(path, 0));
+            hashes.push_back(core::murmurHash3x86_32(path, 0x9747B28Cu));
+        }
+        auto meshHashes = words(hashes.size(), "mesh2splat.meshHashes", hashes.data());
+        if (!meshHashes) return std::move(meshHashes).error();
+        gpu::SortBuffers sorting;
+        for (gpu::Buffer* b : {&sorting.keysLo, &sorting.keysHi, &sorting.values, &sorting.scratchKeysLo,
+                               &sorting.scratchKeysHi, &sorting.scratchValues}) {
+            auto made = words(n, "mesh2splat.order");
+            if (!made) return std::move(made).error();
+            *b = std::move(*made);
+        }
+        {
+            gpu::BufferDesc desc;
+            desc.bytes = uint64_t{n} * 8;
+            desc.elementBytes = 8;
+            desc.label = "mesh2splat.sourceIds";
+            auto made = gpu::Buffer::create(device, desc);
+            if (!made) return std::move(made).error();
+            sourceIds_ = std::move(*made);
+        }
+        gpu::CommandBatch batch(device);
+        sourceKey_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["records"].setBinding(records_.rhi());
+            cursor["sources"].setBinding(sources_.rhi());
+            cursor["sourceUv"].setBinding(sourceUv_.rhi());
+            cursor["meshHashes"].setBinding(meshHashes->rhi());
+            cursor["keysLo"].setBinding(sorting.keysLo.rhi());
+            cursor["keysHi"].setBinding(sorting.keysHi.rhi());
+            cursor["values"].setBinding(sorting.values.rhi());
+            cursor["ids"].setBinding(sourceIds_.rhi());
+            cursor["order"]["count"].setData(n);
+            cursor["order"]["perRecord"].setData(recordFloats());
+        });
+        ATHENEA_TRY(sort_.sort(batch, sorting, n, 64));
+        ATHENEA_TRY(batch.submit(true));
+        // Each buffer through a scratch of its size and back.
+        const auto permuted = [&](gpu::Buffer& held, uint32_t perGaussian) -> Result<void> {
+            auto scratch = words(uint64_t{n} * perGaussian, "mesh2splat.permute");
+            if (!scratch) return std::move(scratch).error();
+            gpu::CommandBatch pass(device);
+            permute_.dispatch(pass, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["from"].setBinding(held.rhi());
+                cursor["to"].setBinding(scratch->rhi());
+                cursor["sorted"].setBinding(sorting.values.rhi());
+                cursor["order"]["count"].setData(n);
+                cursor["order"]["words"].setData(perGaussian);
+            });
+            pass.encoder()->copyBuffer(held.rhi(), 0, scratch->rhi(), 0, uint64_t{n} * perGaussian * 4);
+            pass.markDirty();
+            return pass.submit(true);
+        };
+        ATHENEA_TRY(permuted(records_, recordFloats()));
+        ATHENEA_TRY(permuted(rays_, 12));
+        ATHENEA_TRY(permuted(samplings_, 4));
+        ATHENEA_TRY(permuted(sources_, 4));
+        ATHENEA_TRY(permuted(sourceUv_, 2));
+        ATHENEA_TRY(permuted(sourceIds_, 2));
+        if (curved_ && curvatures_.valid()) {
+            ATHENEA_TRY(permuted(curvatures_, 3));
+        }
+        if (influences_.valid()) {
+            ATHENEA_TRY(permuted(influences_, 8));
+            ATHENEA_TRY(permuted(gradients_, 3));
+        }
+        // The lists the host keeps a gaussian long: through the device, as
+        // words, and back.
+        const auto listed = [&](auto& list) -> Result<void> {
+            if (list.size() != n) {
+                return Error::make(ErrorCode::InternalError, "mesh2splat: a list of {} for {} gaussians", list.size(), n);
+            }
+            auto held = words(n, "mesh2splat.list", list.data());
+            if (!held) return std::move(held).error();
+            ATHENEA_TRY(permuted(*held, 1));
+            return held->read(device, 0, uint64_t{n} * 4, list.data());
+        };
+        ATHENEA_TRY(listed(cryptoIds_));
+        ATHENEA_TRY(listed(thinWalled_));
+        ATHENEA_TRY(listed(closedOf_));
+        ATHENEA_TRY(listed(schlickMetal_));
+        ATHENEA_TRY(listed(materialRoughness_));
         return ok();
     }
 
@@ -2144,6 +2285,16 @@ private:
     /// the conversion was handed (mesh2splat_gather's `samplings`).
     gpu::Buffer                              samplings_;
     gpu::Buffer                              curvatures_;
+    /// WHERE ON ITS SOURCE EACH GAUSSIAN STANDS (mesh2splat_gather): (mesh
+    /// rank, triangle, cell i | j << 16, rank in its triangle), its st (NaN
+    /// without), and its 64-bit id (mesh2splat_order).
+    gpu::Buffer                              sources_;
+    gpu::Buffer                              sourceUv_;
+    gpu::Buffer                              sourceIds_;
+    /// Each mesh's rank among the stage's by prim path, by its index; and the
+    /// paths in rank order.
+    std::vector<uint32_t>                    meshRank_;
+    std::vector<std::string>                 sourceMeshes_;
     /// The Cryptomatte id of the prim each splat came from, in the same order,
     /// and what those ids are called.
     std::vector<uint32_t>                    cryptoIds_;
@@ -2199,6 +2350,32 @@ public:
         return out;
     }
     [[nodiscard]] float glassIor() const noexcept { return glassIor_; }
+    /// The source coordinates, read back for the file (usd::SplatSources).
+    [[nodiscard]] Result<usd::SplatSources> sources() const {
+        usd::SplatSources out;
+        if (count_ == 0 || !sources_.valid()) {
+            return out;
+        }
+        gpu::Device& device = library_->device();
+        std::vector<uint32_t> four(size_t{count_} * 4);
+        ATHENEA_TRY(sources_.read(device, 0, four.size() * 4, four.data()));
+        out.uv.resize(size_t{count_} * 2);
+        ATHENEA_TRY(sourceUv_.read(device, 0, out.uv.size() * 4, out.uv.data()));
+        out.id.resize(size_t{count_} * 2);
+        ATHENEA_TRY(sourceIds_.read(device, 0, out.id.size() * 4, out.id.data()));
+        out.mesh.resize(count_);
+        out.triangle.resize(count_);
+        out.cell.resize(size_t{count_} * 2);
+        for (uint32_t i = 0; i < count_; ++i) {
+            // Unpacked, not computed: the words as the device wrote them.
+            out.mesh[i] = static_cast<int32_t>(four[size_t{i} * 4]);
+            out.triangle[i] = static_cast<int32_t>(four[size_t{i} * 4 + 1]);
+            out.cell[size_t{i} * 2] = static_cast<int32_t>(static_cast<int16_t>(four[size_t{i} * 4 + 2] & 0xFFFFu));
+            out.cell[size_t{i} * 2 + 1] = static_cast<int32_t>(static_cast<int16_t>(four[size_t{i} * 4 + 2] >> 16));
+        }
+        out.meshes = sourceMeshes_;
+        return out;
+    }
     [[nodiscard]] const std::map<std::string, uint32_t>& cryptoManifest() const noexcept {
         return cryptoManifest_;
     }
@@ -2231,6 +2408,7 @@ private:
     gpu::ComputeKernel                       gather_, noInfluence_, recordChunks_, raySpan_, bakeInto_,
                                              transferInto_, subsetFlags_, subsetScatter_;
     gpu::ComputeKernel                       zonalPoseRays_, zonalPack_, zonalUnpack_;
+    gpu::ComputeKernel                       sourceKey_, permute_;
     gpu::PrefixSum                           prefix_;
     gpu::RadixSort                           sort_;
     gpu::ComputeKernel                       sheetEdges_, sheetRuns_, sheetSum_;
@@ -3529,6 +3707,11 @@ void addMesh2Splat(CLI::App& app) {
                 // inherited it from the prims it read.
                 options.cryptoObject = converter.cryptoIds();
                 options.cryptoManifest = converter.cryptoManifest();
+                // Where on its source each gaussian stands, which is the order
+                // the cloud is in.
+                auto sources = converter.sources();
+                if (!sources) return std::move(sources).error();
+                options.sources = &*sources;
                 options.thinWalled = converter.thinWalled();
                 options.closed = converter.closed();
                 options.schlickMetal = converter.schlickMetal();

@@ -315,6 +315,12 @@ decimate: carries primvars:athenea:splat:cryptoObject (1 a gaussian)
 decimate: carries primvars:skel:jointIndices (4 a gaussian)
 ```
 
+Where on its source each gaussian stands (`primvars:athenea:splat:source*`,
+§4.3) is not merged: a merge takes the coordinates and the id of the member
+that weighs most in it, and the result is laid out in the order of the
+surface again, as `athenea mesh2splat` lays a cloud out (a merge tree written
+with `--tree` keeps the tree's order).
+
 How each merges is what it is: `skel:jointIndices` with `skel:jointWeights`
 as a rig (each joint's weight summed, the four heaviest kept); an array whose
 name ends in `shadowBits` bit by bit; any other int -- an id, a part, a sheet
@@ -681,6 +687,20 @@ A mesh whose GeomSubsets (`materialBind` family) bind materials of their own
 is converted a subset at a time, each with its material, and the faces no
 subset claims with the mesh's; the log names each subset's prim. Their
 gaussians keep the mesh's Cryptomatte id.
+
+**The order is the surface's.** Every gaussian carries where on its source it
+stands -- its mesh's rank among the stage's meshes by prim path, the mesh's
+triangle, the cell of that triangle's walk, the `st` of its point where the
+mesh has one, and a 64-bit id (§4.3) -- and the cloud is written in the order
+those give: by mesh, then along a Hilbert curve over `st` at 2^16 steps a
+unit (a mesh without `st`: by triangle, then the Morton index of the cell),
+the slots that hold no gaussian last. Index i is the same point of the surface
+in every run, in every frame of a skinned cloud and of `flatten --range
+--keep-order`, and a coarser conversion (a lower `--resolution`, a level of
+`--lod-levels`) is ordered as the finer one restricted to it. The id is the
+same in every run at one resolution; across resolutions the cells differ, and
+what relates a coarse gaussian to the fine ones is its `st` (or its triangle).
+There is no option: the order is not a choice.
 
 A material input that a constant or a plain map cannot carry -- one a graph
 computes (a mix, a noise, a hexagonal tiling), a `tiledimage` tiled or
@@ -1934,6 +1954,19 @@ device). The levels of detail and a `.athc` carry them with the material
 |---|---|---|
 | `primvars:athenea:splat:cryptoObject` | int[] | one id a gaussian |
 | `primvars:athenea:splat:cryptoManifest` | string | `{"<path>":"<eight hex digits>", ...}` |
+
+**Source coordinates** — where on its source each gaussian stands, written by
+`athenea mesh2splat` (no schema: primvars of the field, vertex but the last two).
+
+| Attribute | Type | Note |
+|---|---|---|
+| `primvars:athenea:splat:sourceMesh` | int[] | its mesh's index in `sourceMeshes` |
+| `primvars:athenea:splat:sourceTriangle` | int[] | the mesh's own triangle (`HdMeshUtil`'s triangulation; a GeomSubset's in the mesh's numbering) |
+| `primvars:athenea:splat:sourceCell` | int2[] | the cell (i, j) its point falls in, counted from the first cell of the triangle's walk in the triangle's projection plane |
+| `primvars:athenea:splat:sourceUv` | texCoord2f[] | the mesh's `st` (or `st0`, `uv`, `UVMap`) at its point; NaN for a mesh without; absent where no mesh has one |
+| `primvars:athenea:splat:sourceId` | int2[] | 64 bits, low word first: the mesh's path hashed with the triangle, the cell and its rank among the triangle's gaussians; the same in every run at one resolution |
+| `primvars:athenea:splat:sourceMeshes` | string[] | the meshes' prim paths, sorted |
+| `primvars:athenea:splat:sourceOrder` | token | `meshRank-stHilbert`: the cloud's order is the source key's (`shaders/athenea/common/source_order.slang`) |
 
 **`AtheneaSplatEditAPI`** — a non-destructive edit over the clouds at and below a
 prim: keep what is inside a volume, remove it, or grade it.

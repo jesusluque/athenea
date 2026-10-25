@@ -201,7 +201,11 @@ struct Mesh2SplatUniforms {
     /// edge of its triangle.
     uint32_t hasEdges = 0;
     float    edgeReach = 1.5F;
-    uint32_t edgePad[2] = {0, 0};
+    /// 0: not written. Otherwise the entry, after all the others, of where on
+    /// its source the gaussian stands (m2sWrite): its triangle, its cell in
+    /// that triangle's grid and its rank among the triangle's gaussians.
+    uint32_t sourceEntry = 0;
+    uint32_t edgePad = 0;
 };
 static_assert(sizeof(Mesh2SplatUniforms) == 560, "must match M2sParams exactly");
 
@@ -469,6 +473,17 @@ public:
         curved.type = aofx::ParamType::Boolean;
         curved.defaults = {0.0};
         into.params.push_back(curved);
+
+        aofx::ParamDesc sourced;
+        sourced.name = "writeSource";
+        sourced.label = "Write source";
+        sourced.hint =
+            "One entry more a record, the very last: where on the mesh the gaussian stands -- its triangle, "
+            "its cell (i, j) in that triangle's walk and its rank among the triangle's gaussians, as the bits "
+            "of four unsigned integers -- so a host can relate it to the surface and order the cloud by it.";
+        sourced.type = aofx::ParamType::Boolean;
+        sourced.defaults = {0.0};
+        into.params.push_back(sourced);
 
         aofx::ParamDesc metallic;
         metallic.name = "metallic";
@@ -877,6 +892,11 @@ public:
         // And how the surface turns under each gaussian, last of all.
         if (request.number("writeCurvature", 0.0) >= 0.5) {
             uniforms.curvatureEntry = uniforms.recordPixels;
+            uniforms.recordPixels += 1U;
+        }
+        // And where on the mesh it stands, the very last.
+        if (request.number("writeSource", 0.0) >= 0.5) {
+            uniforms.sourceEntry = uniforms.recordPixels;
             uniforms.recordPixels += 1U;
         }
         uniforms.dstWidth = static_cast<uint32_t>(target->buffer.width);

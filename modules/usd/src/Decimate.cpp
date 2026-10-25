@@ -39,6 +39,109 @@
 
 namespace athenea::usd {
 
+namespace {
+
+/// A decimated cloud laid out by its source coordinates (common/source_order.slang):
+/// the key of each kept gaussian from its arrays, a stable sort, and the
+/// records and every array of `arrays` through the same permutation, on the
+/// device. Nothing where the arrays carry no `sourceMesh`.
+Result<void> orderBySource(gpu::ShaderLibrary& library, io::RawSplats& kept, std::vector<GaussianArray>& arrays) {
+    const auto find = [&](const char* tail) -> const GaussianArray* {
+        const std::string t(tail);
+        for (const GaussianArray& a : arrays) {
+            if (a.name.size() >= t.size() && a.name.compare(a.name.size() - t.size(), t.size(), t) == 0) return &a;
+        }
+        return nullptr;
+    };
+    const GaussianArray* mesh = find("athenea:splat:sourceMesh");
+    const GaussianArray* triangle = find("athenea:splat:sourceTriangle");
+    const GaussianArray* cell = find("athenea:splat:sourceCell");
+    const GaussianArray* uv = find("athenea:splat:sourceUv");
+    const uint32_t n = kept.count;
+    if (mesh == nullptr || triangle == nullptr || cell == nullptr || n == 0 || mesh->values.empty() ||
+        mesh->values[0].size() < n) {
+        return ok();
+    }
+    gpu::Device& device = library.device();
+    const auto words = [&](std::span<const uint32_t> data, uint64_t count, const char* label) {
+        gpu::BufferDesc desc;
+        desc.bytes = std::max<uint64_t>(count, 1) * 4;
+        desc.elementBytes = 4;
+        desc.label = label;
+        return gpu::Buffer::create(device, desc, data.empty() ? nullptr : data.data());
+    };
+    std::vector<uint32_t> noUv;
+    if (uv == nullptr) {
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        uint32_t bits;
+        std::memcpy(&bits, &nan, 4);
+        noUv.assign(size_t{n} * 2, bits);
+    }
+    auto meshes = words(mesh->values[0], n, "decimate.order.mesh");
+    auto triangles = words(triangle->values[0], n, "decimate.order.triangle");
+    auto cells = words(cell->values[0], uint64_t{n} * 2, "decimate.order.cell");
+    auto uvs = words(uv != nullptr ? std::span<const uint32_t>(uv->values[0]) : std::span<const uint32_t>(noUv),
+                     uint64_t{n} * 2, "decimate.order.uv");
+    if (!meshes || !triangles || !cells || !uvs) return Error(ErrorCode::OutOfMemory, "decimate: the source order");
+    gpu::SortBuffers sorting;
+    for (gpu::Buffer* b : {&sorting.keysLo, &sorting.keysHi, &sorting.values, &sorting.scratchKeysLo,
+                           &sorting.scratchKeysHi, &sorting.scratchValues}) {
+        auto made = words({}, n, "decimate.order.sort");
+        if (!made) return std::move(made).error();
+        *b = std::move(*made);
+    }
+    auto key = gpu::ComputeKernel::create(library, "athenea/usd/mesh2splat_order", "m2sSourceKeyOf");
+    if (!key) return std::move(key).error();
+    auto permute = gpu::ComputeKernel::create(library, "athenea/usd/mesh2splat_order", "m2sPermute");
+    if (!permute) return std::move(permute).error();
+    auto sort = gpu::RadixSort::create(library);
+    if (!sort) return std::move(sort).error();
+    {
+        gpu::CommandBatch batch(device);
+        key->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) {
+            c["fileMesh"].setBinding(meshes->rhi());
+            c["fileTriangle"].setBinding(triangles->rhi());
+            c["fileCell"].setBinding(cells->rhi());
+            c["fileUv"].setBinding(uvs->rhi());
+            c["keysLo"].setBinding(sorting.keysLo.rhi());
+            c["keysHi"].setBinding(sorting.keysHi.rhi());
+            c["values"].setBinding(sorting.values.rhi());
+            c["order"]["count"].setData(n);
+        });
+        ATHENEA_TRY(sort->sort(batch, sorting, n, 64));
+        ATHENEA_TRY(batch.submit(true));
+    }
+    // Words a gaussian through the permutation and back to the host.
+    const auto permuted = [&](std::vector<uint32_t>& values, uint32_t width) -> Result<void> {
+        if (values.size() < size_t{n} * width) return ok();
+        auto from = words(values, uint64_t{n} * width, "decimate.order.from");
+        auto to = words({}, uint64_t{n} * width, "decimate.order.to");
+        if (!from || !to) return Error(ErrorCode::OutOfMemory, "decimate: the source order");
+        gpu::CommandBatch batch(device);
+        permute->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) {
+            c["from"].setBinding(from->rhi());
+            c["to"].setBinding(to->rhi());
+            c["sorted"].setBinding(sorting.values.rhi());
+            c["order"]["count"].setData(n);
+            c["order"]["words"].setData(width);
+        });
+        ATHENEA_TRY(batch.submit(true));
+        return to->read(device, 0, uint64_t{n} * width * 4, values.data());
+    };
+    for (GaussianArray& a : arrays) {
+        for (std::vector<uint32_t>& v : a.values) {
+            ATHENEA_TRY(permuted(v, a.width));
+        }
+    }
+    std::vector<uint32_t> records(kept.records.size());
+    std::memcpy(records.data(), kept.records.data(), records.size() * 4);
+    ATHENEA_TRY(permuted(records, kept.encoding.floatsPerRecord));
+    std::memcpy(kept.records.data(), records.data(), records.size() * 4);
+    return ok();
+}
+
+}   // namespace
+
 Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std::filesystem::path& input,
                                      const std::filesystem::path& output, const DecimateStageOptions& o) {
     gpu::Device& device = library.device();
@@ -460,7 +563,10 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
     for (size_t k = 0; k < arrays.size(); ++k) {
         plans[k].array = k;
         const GaussianArray& a = arrays[k];
-        if (ends(a.name, "skel:jointIndices")) {
+        if (a.name.find("athenea:splat:source") != std::string::npos) {
+            // WHERE ON ITS SOURCE IT STANDS: the heaviest member's, not a key.
+            plans[k].how = lod::AttributeMerge::Representative;
+        } else if (ends(a.name, "skel:jointIndices")) {
             for (size_t w = 0; w < arrays.size(); ++w) {
                 if (ends(arrays[w].name, "skel:jointWeights") && arrays[w].width == a.width) {
                     plans[k].how = lod::AttributeMerge::Rig;
@@ -1640,6 +1746,13 @@ Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std:
         for (GaussianArray& a : added) {
             std::erase_if(merged, [&](const GaussianArray& m) { return m.name == a.name; });
             merged.push_back(std::move(a));
+        }
+        // IN THE ORDER OF ITS SURFACE AGAIN, where the cloud says where on its
+        // source each gaussian stands: the merges' representatives keyed as
+        // mesh2splat keys them, and the records and every array laid out by it
+        // (a merge tree's arrays are indices, and keep the tree's order).
+        if (!lodTree) {
+            ATHENEA_TRY(orderBySource(library, *kept, merged));
         }
         ExportOptions options;
         options.surfel = surfel;

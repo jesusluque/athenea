@@ -315,6 +315,11 @@ enum class AttributeMerge : uint32_t {
     /// what a lamp lights is not merged with what it lights four times less
     /// -- a merge would spread one member's light over the rest at night.
     LightBand = 7,
+    /// The heaviest member's words, as they are: where on its source a
+    /// gaussian stands (`athenea:splat:source*`) -- a merge is said to stand
+    /// where the member that weighs most in it stands. Not a key: merges
+    /// across triangles and cells are what a merge is.
+    Representative = 8,
 };
 
 struct DecimateStats {

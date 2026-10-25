@@ -181,8 +181,9 @@ struct M2sParams {
     // how many of its sizes a gaussian may reach across a hard edge.
     uint  hasEdges;
     float edgeReach;
+    // WHERE ON THE MESH IT STANDS (m2sWrite): 0 not written; else the entry.
+    uint  sourceEntry;
     uint  edgePad0;
-    uint  edgePad1;
 };
 
 StructuredBuffer<float4>   mesh;        // per triangle: (position, u) and (normal, v), three corners
@@ -1330,7 +1331,7 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
     // The entries before the relief's three and the emission's one: 4, 6 or 9.
     const uint own = params.recordPixels - (params.displaceRefine != 0 ? 3u : 0u) -
                      (params.emissionEntry != 0 ? 1u : 0u) - (params.lobesEntry != 0 ? 4u : 0u) -
-                     (params.curvatureEntry != 0 ? 1u : 0u);
+                     (params.curvatureEntry != 0 ? 1u : 0u) - (params.sourceEntry != 0 ? 1u : 0u);
     if (own >= 6) {
         records[recordAt(slot, 4)] = float4(shading, metallic);
         records[recordAt(slot, 5)] = float4(roughness, params.transmission, uv.x, uv.y);
@@ -1382,6 +1383,19 @@ bool m2sWrite(uint triangle, const M2sTriangle t, uint slot, float3 bary, float3
     }
     if (params.curvatureEntry != 0) {
         records[recordAt(slot, params.curvatureEntry)] = float4(m2sShape(t, alongU, alongV), 0.0);
+    }
+    if (params.sourceEntry != 0) {
+        // WHERE ON THE MESH IT STANDS, as bits: the triangle (of this run's
+        // picture), the cell its point falls in, counted from the first cell
+        // of the triangle's walk -- a block's or a split cell's is the cell
+        // its centre is in -- and its rank among the triangle's gaussians,
+        // which tells apart the gaussians a split cell made. The host turns
+        // it into the cloud's source coordinates and its order.
+        const float2 at = t.oa + t.edge1 * bary.y + t.edge2 * bary.z;
+        const int2 cell = int2(floor(at / t.cell)) - t.first;
+        const uint rank = slot - cellCounts[countAt(triangle)];
+        records[recordAt(slot, params.sourceEntry)] =
+            float4(asfloat(triangle), asfloat(uint(cell.x)), asfloat(uint(cell.y)), asfloat(rank));
     }
     return true;
 }

@@ -632,8 +632,10 @@ business by definition.
 13. The record is written, and the slot moves on.
 14. Afterwards, unless `--no-bake`, a ray is traced from the gaussian along
     its shading normal and the light that comes back is fitted to harmonics.
-15. The whole cloud is written to a USD stage, with the primvars and schemas
-    that say what it carries.
+15. The whole cloud is laid out in the order of its surface -- by mesh, then
+    along a Hilbert curve over st -- and written to a USD stage, with the
+    primvars and schemas that say what it carries and where on its source
+    each gaussian stands.
 
 ### 6.3 Reading the stage, without Hydra
 
@@ -792,6 +794,33 @@ its surround: it is where a block most often fails. Otherwise its four
 children are pushed, and a single cell is what it always was. A triangle the
 walk finds nothing in falls through to the one gaussian at its middle.
 
+**Where it stands, and the order that follows.** With `writeSource` the
+effect writes one entry more a record, the last: the triangle (of the run's
+picture), the cell its point falls in counted from the first cell of the
+triangle's walk (a block's or a split cell's is the cell its centre is in),
+and its rank among the triangle's gaussians -- bits, not numbers. The gather
+(`mesh2splat_gather`) turns it into the cloud's source coordinates: the mesh's
+rank among the stage's meshes by prim path, the mesh's own triangle (a
+subset's listed triangle taken back to the mesh's numbering), the cell, the
+rank, and the `st` of the point, which the record already carried (NaN where
+the mesh has none). When every run is in, `mesh2splat_order` keys each
+gaussian (`shaders/athenea/common/source_order.slang`): the mesh's rank, then
+the `st`'s unit tile and its Hilbert index at 2^16 a unit, or without `st` the
+triangle and the Morton index of its cell; a gaussian a reader would drop
+(no finite position, no valid size, an opacity under one step of eight bits)
+takes the largest key. A stable radix sort of the keys is the permutation every
+buffer a gaussian long goes through on the device -- the records, the rays,
+the joints and their gradients, the samplings, the shape operators, the source
+coordinates -- and the lists the host keeps a gaussian long (the Cryptomatte
+ids, thin walls, closed shells, Schlick metals, the material's roughness) go
+through it as words. So the order is a function of the surface alone: index i
+is the same point in every run, every frame a skinned cloud is posed or
+flattened in, and a coarser conversion's order is the finer one's restricted
+to it (`docs/decisions.md`, "A gaussian's place on its source"). It is also
+where a 64-bit id comes from, the mesh's path hashed with the triangle, the
+cell and the rank: the same in every run at one density, a check on the
+order rather than the order itself.
+
 ### 6.5 What a gaussian carries
 
 **Position** is the barycentric blend of the triangle's corners at the cell's
@@ -880,6 +909,11 @@ not written with a conductor, whatever its reflectivity.
 from the triangle's corners, so the cloud deforms with the skeleton that
 carried the mesh; and how those weights change across the gaussian, so it
 stretches across a bend as its triangle does (§6.7).
+
+**Where on its source it stands**: its mesh's rank, its triangle, its cell,
+its `st` and its id (§6.4), written as `primvars:athenea:splat:source*`. It
+is what the cloud's order is made of, and what lays its video planes out as a
+texture (`athenea video-encode --layout uv`).
 
 **The Cryptomatte id** is the hash of the source prim's path, inherited by
 every gaussian the conversion makes from that prim's triangles. It is what
@@ -1250,7 +1284,10 @@ declare them: `AtheneaSplatLightingAPI` (`relight`, `litBody`, `linear` --
 every conversion's colours are linear light -- and metallic, roughness,
 transmission, the shading normal and the emission a gaussian), `AtheneaSplatSkinningAPI` where the cloud
 is skinned, `AtheneaSplatCryptomatteAPI` with an id a gaussian and the manifest
-that names them, and `AtheneaSplatVisibilityAPI` once `athenea visibility` has run.
+that names them, the source coordinates (`sourceMesh`, `sourceTriangle`,
+`sourceCell`, `sourceUv` where any mesh has `st`, `sourceId`, and the
+constant `sourceMeshes` and `sourceOrder`), and `AtheneaSplatVisibilityAPI`
+once `athenea visibility` has run.
 A shadow catcher says `catcher`, a light catcher `lightCatcher`; `athenea
 lights merge` adds a `lightLayer:<group>` a group of lamps to a copy.
 [`operations.md §4.3`](operations.md#43-the-api-schemas) is the attribute
@@ -1258,7 +1295,8 @@ reference.
 
 Every slot is written, whether or not a gaussian survived in it: an empty one
 holds an opacity of zero and does not stretch the cloud's extent to wherever
-it stands. Keeping the slots means the per-gaussian arrays stay index for
+it stands. The order puts every empty slot last, so a reader that drops them
+keeps every other gaussian at its index. Keeping the slots means the per-gaussian arrays stay index for
 index alike, which is what lets the skinning influences, the ids and the
 harmonics all be read by the same index.
 
@@ -1268,7 +1306,8 @@ of detail there (`lod::LodBuilder`), and out as the file's bytes
 (`lod::writeAthc`). A `.athc` keeps positions, shape, harmonics and the
 shading normals; it has no room for the material a relit cloud reflects with,
 the Cryptomatte ids, a glass's index, the up axis and unit, a rig or a
-transfer -- the last two are refused, the rest said.
+transfer -- the last two are refused, the rest said. Its levels are in Morton
+order, not in the order of the surface, and it carries no source coordinates.
 
 ### 6.10 How each phase is checked, and what it measured
 
@@ -1377,6 +1416,12 @@ the frame's prepared sky, which a bundle cannot reach. Adding a format is a
 kernel in `flatten_pack.slang`, a method on `FlattenPack`, a writer in
 `io/SplatWriters.h`, and a line in `CmdFlatten.cpp`; the round trip through
 this engine's reader is what `athenea_render_tests "[flatten]"` checks.
+
+A sequence (`--range`) is cut into SPZ pages a frame; with `--keep-order` each
+frame's gaussians go into the pages in the stage's own order, which for a
+mesh2splat cloud is the order of its surface: page gaussian i of every frame
+is the cloud's gaussian i, whose source coordinates the cloud's file holds
+(`athenea_mesh2splat_tests "[source]"`).
 
 ## 7. Dependencies and toolchain
 

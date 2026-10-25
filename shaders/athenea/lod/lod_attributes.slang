@@ -145,6 +145,8 @@ static const uint kMostJoints = 16;
 ///      `width` heaviest kept and made whole again
 ///   4  a direction: the mean of mode 0, made a unit vector again -- a
 ///      shading normal (`primvars:athenea:splat:normal`)
+///   8  the heaviest record's words as they are, the first on a tie -- where
+///      on its source a gaussian stands (`athenea:splat:source*`)
 ///
 /// A gaussian kept as it was takes its record's words as they are, in every
 /// mode.
@@ -165,6 +167,22 @@ void lodMergeAttribute(uint3 tid: SV_DispatchThreadID) {
             if (params.mode == 3) {
                 mergedWeights[out + k] = weights[r * width + k];
             }
+        }
+        return;
+    }
+    if (params.mode == 8) {
+        uint best = run.x;
+        float most = -1.0;
+        for (uint s = run.x; s < run.y; ++s) {
+            const float w = weightOf(s);
+            if (w > most) {
+                most = w;
+                best = s;
+            }
+        }
+        const uint r = recordOf[best];
+        for (uint k = 0; k < width; ++k) {
+            merged[out + k] = values[r * width + k];
         }
         return;
     }

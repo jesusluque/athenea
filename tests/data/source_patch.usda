@@ -1,0 +1,49 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+# Where on its source a gaussian stands (tests/mesh2splat, "[source]"): a
+# patch of nine quads whose st is turned a quarter -- so the order of st is
+# not the order the triangles are walked in -- and a bare quad with no st,
+# which sorts first by its path and falls back to triangle and cell.
+def Xform "World"
+{
+    def Mesh "Patch" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [0, 1, 5, 4, 1, 2, 6, 5, 2, 3, 7, 6, 4, 5, 9, 8, 5, 6, 10, 9, 6, 7, 11, 10, 8, 9, 13, 12, 9, 10, 14, 13, 10, 11, 15, 14]
+        point3f[] points = [(0, 0, 0), (0.333333, 0, 0), (0.666667, 0, 0), (1, 0, 0), (0, 0.333333, 0), (0.333333, 0.333333, 0), (0.666667, 0.333333, 0), (1, 0.333333, 0), (0, 0.666667, 0), (0.333333, 0.666667, 0), (0.666667, 0.666667, 0), (1, 0.666667, 0), (0, 1, 0), (0.333333, 1, 0), (0.666667, 1, 0), (1, 1, 0)]
+        texCoord2f[] primvars:st = [(0, 1), (0, 0.666667), (0, 0.333333), (0, 0), (0.333333, 1), (0.333333, 0.666667), (0.333333, 0.333333), (0.333333, 0), (0.666667, 1), (0.666667, 0.666667), (0.666667, 0.333333), (0.666667, 0), (1, 1), (1, 0.666667), (1, 0.333333), (1, 0)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </World/Looks/Grey>
+    }
+    def Mesh "Bare" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(1.5, 0, 0), (2, 0, 0), (2, 0.5, 0), (1.5, 0.5, 0)]
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </World/Looks/Grey>
+    }
+    def Scope "Looks"
+    {
+        def Material "Grey"
+        {
+            token outputs:surface.connect = </World/Looks/Grey/Surface.outputs:surface>
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.5, 0.5, 0.5)
+                token outputs:surface
+            }
+        }
+    }
+}

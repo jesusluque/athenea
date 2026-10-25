@@ -302,8 +302,37 @@ athenea_m2s_output(still_transfer_zonal ${CMAKE_CURRENT_SOURCE_DIR}/data/skinned
     -o ${ATHENEA_M2S_OUTPUTS}/still_transfer_zonal.usda)
 set_tests_properties(mesh2splat_output_still_transfer_zonal PROPERTIES
     PASS_REGULAR_EXPRESSION "relative error against the nine harmonics: median")
+# WHERE ON ITS SOURCE A GAUSSIAN STANDS (tests/mesh2splat/test_source.cpp): a
+# patch whose st is turned a quarter and a bare quad, converted twice at one
+# density and once at half of it; its TX conversion flattened over three
+# frames with the stage's order kept; the first decimated by pairs.
+athenea_m2s_output(source_a ${CMAKE_CURRENT_SOURCE_DIR}/data/source_patch.usda --no-bake --no-camera
+    --resolution 32 -o ${ATHENEA_M2S_OUTPUTS}/source_a.usda)
+athenea_m2s_output(source_b ${CMAKE_CURRENT_SOURCE_DIR}/data/source_patch.usda --no-bake --no-camera
+    --resolution 32 -o ${ATHENEA_M2S_OUTPUTS}/source_b.usda)
+athenea_m2s_output(source_coarse ${CMAKE_CURRENT_SOURCE_DIR}/data/source_patch.usda --no-bake --no-camera
+    --resolution 16 -o ${ATHENEA_M2S_OUTPUTS}/source_coarse.usda)
+athenea_m2s_output(source_tx ${CMAKE_CURRENT_SOURCE_DIR}/data/source_patch.usda --transfer --bake-samples 16
+    --bake-extra 0 --bake-bounces 1 --no-camera --resolution 32 -o ${ATHENEA_M2S_OUTPUTS}/source_tx.usdc)
+set_tests_properties(mesh2splat_output_source_a mesh2splat_output_source_tx PROPERTIES
+    FIXTURES_SETUP "mesh2splat_outputs;source_clouds")
+foreach(step flatten decimate)
+    if(step STREQUAL "flatten")
+        set(command athenea flatten ${ATHENEA_M2S_OUTPUTS}/source_tx.usdc --sky white --range 0:2 --keep-order
+            --chunk-splats 4096 -o ${ATHENEA_M2S_OUTPUTS}/source_pages)
+    else()
+        set(command athenea decimate ${ATHENEA_M2S_OUTPUTS}/source_a.usda ${ATHENEA_M2S_OUTPUTS}/source_decimated.usda
+            --ratio 4 --no-camera)
+    endif()
+    add_test(NAME mesh2splat_output_source_${step} COMMAND ${command})
+    set_tests_properties(mesh2splat_output_source_${step} PROPERTIES
+        ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+        FIXTURES_REQUIRED source_clouds
+        FIXTURES_SETUP mesh2splat_outputs
+        LABELS gpe)
+endforeach()
 athenea_test(athenea_mesh2splat_tests
-    SOURCES mesh2splat/test_outputs.cpp
+    SOURCES mesh2splat/test_outputs.cpp mesh2splat/test_source.cpp
     LIBS athenea::usd athenea::lod athenea::render athenea::scene
     LABELS gpe
     FIXTURES mesh2splat_outputs)

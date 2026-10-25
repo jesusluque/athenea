@@ -5,6 +5,7 @@
 #include "athenea/scene/GpuClouds.h"
 
 #include <algorithm>
+#include <limits>
 #include <functional>
 #include <cstring>
 #include <set>
@@ -312,6 +313,53 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
                                UsdGeomTokens->constant)
             .Set(VtValue(core::cryptomatteManifest(options.cryptoManifest)));
         splats.GetPrim().ApplyAPI(TfToken("AtheneaSplatCryptomatteAPI"));
+    }
+
+    // WHERE ON ITS SOURCE EACH GAUSSIAN STANDS, and that the cloud's order is
+    // that of those coordinates (docs/decisions.md, "A gaussian's place on its
+    // source"): the mesh's rank among `sourceMeshes`, the triangle, the cell
+    // of its walk, the st where the mesh has one, and a 64-bit id as a check.
+    if (options.sources != nullptr && count > 0 && options.sources->mesh.size() >= count &&
+        options.sources->triangle.size() >= count && options.sources->cell.size() >= size_t{count} * 2 &&
+        options.sources->uv.size() >= size_t{count} * 2 && options.sources->id.size() >= size_t{count} * 2) {
+        const SplatSources& from = *options.sources;
+        UsdGeomPrimvarsAPI primvars(splats.GetPrim());
+        VtIntArray mesh(from.mesh.begin(), from.mesh.begin() + count);
+        VtIntArray triangle(from.triangle.begin(), from.triangle.begin() + count);
+        VtVec2iArray cell(count);
+        VtVec2fArray uv(count);
+        VtVec2iArray id(count);
+        bool anyUv = false;
+        for (uint32_t i = 0; i < count; ++i) {
+            cell[i] = GfVec2i(from.cell[size_t{i} * 2], from.cell[size_t{i} * 2 + 1]);
+            uv[i] = GfVec2f(from.uv[size_t{i} * 2], from.uv[size_t{i} * 2 + 1]);
+            anyUv = anyUv || std::isfinite(from.uv[size_t{i} * 2]);
+            id[i] = GfVec2i(static_cast<int>(from.id[size_t{i} * 2]), static_cast<int>(from.id[size_t{i} * 2 + 1]));
+        }
+        primvars.CreatePrimvar(TfToken("primvars:athenea:splat:sourceMesh"), SdfValueTypeNames->IntArray,
+                               UsdGeomTokens->vertex)
+            .Set(VtValue(mesh));
+        primvars.CreatePrimvar(TfToken("primvars:athenea:splat:sourceTriangle"), SdfValueTypeNames->IntArray,
+                               UsdGeomTokens->vertex)
+            .Set(VtValue(triangle));
+        primvars.CreatePrimvar(TfToken("primvars:athenea:splat:sourceCell"), SdfValueTypeNames->Int2Array,
+                               UsdGeomTokens->vertex)
+            .Set(VtValue(cell));
+        if (anyUv) {
+            primvars.CreatePrimvar(TfToken("primvars:athenea:splat:sourceUv"), SdfValueTypeNames->TexCoord2fArray,
+                                   UsdGeomTokens->vertex)
+                .Set(VtValue(uv));
+        }
+        primvars.CreatePrimvar(TfToken("primvars:athenea:splat:sourceId"), SdfValueTypeNames->Int2Array,
+                               UsdGeomTokens->vertex)
+            .Set(VtValue(id));
+        VtStringArray meshes(from.meshes.begin(), from.meshes.end());
+        primvars.CreatePrimvar(TfToken("primvars:athenea:splat:sourceMeshes"), SdfValueTypeNames->StringArray,
+                               UsdGeomTokens->constant)
+            .Set(VtValue(meshes));
+        primvars.CreatePrimvar(TfToken("primvars:athenea:splat:sourceOrder"), SdfValueTypeNames->Token,
+                               UsdGeomTokens->constant)
+            .Set(VtValue(TfToken("meshRank-stHilbert")));
     }
 
     // WHICH GAUSSIANS ARE THIN WALLS: a glass sheet whose transmission is its
@@ -1052,6 +1100,55 @@ bool isSchemaArray(const TfToken& name) {
 }
 
 }   // namespace
+
+Result<SplatSources> readSplatSources(const std::filesystem::path& path, const std::string& prim) {
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    if (!stage) {
+        return Error::make(ErrorCode::IoFailure, "cannot open '{}'", path.string());
+    }
+    const UsdVolParticleField3DGaussianSplat field = fieldOn(stage, prim);
+    if (!field) {
+        return Error::make(ErrorCode::NotFound, "'{}' has no gaussian ParticleField", path.string());
+    }
+    const UsdGeomPrimvarsAPI primvars(field.GetPrim());
+    SplatSources out;
+    VtIntArray mesh, triangle;
+    VtVec2iArray cell, id;
+    VtVec2fArray uv;
+    VtStringArray meshes;
+    if (!primvars.GetPrimvar(TfToken("athenea:splat:sourceMesh")).Get(&mesh) || mesh.empty()) {
+        return Error::make(ErrorCode::NotFound, "'{}' carries no source coordinates (primvars:athenea:splat:sourceMesh)",
+                           path.string());
+    }
+    primvars.GetPrimvar(TfToken("athenea:splat:sourceTriangle")).Get(&triangle);
+    primvars.GetPrimvar(TfToken("athenea:splat:sourceCell")).Get(&cell);
+    primvars.GetPrimvar(TfToken("athenea:splat:sourceUv")).Get(&uv);
+    primvars.GetPrimvar(TfToken("athenea:splat:sourceId")).Get(&id);
+    primvars.GetPrimvar(TfToken("athenea:splat:sourceMeshes")).Get(&meshes);
+    const size_t n = mesh.size();
+    out.mesh.assign(mesh.begin(), mesh.end());
+    out.triangle.assign(n, 0);
+    out.cell.assign(n * 2, 0);
+    out.uv.assign(n * 2, std::numeric_limits<float>::quiet_NaN());
+    out.id.assign(n * 2, 0u);
+    for (size_t i = 0; i < n; ++i) {
+        if (triangle.size() == n) out.triangle[i] = triangle[i];
+        if (cell.size() == n) {
+            out.cell[i * 2] = cell[i][0];
+            out.cell[i * 2 + 1] = cell[i][1];
+        }
+        if (uv.size() == n) {
+            out.uv[i * 2] = uv[i][0];
+            out.uv[i * 2 + 1] = uv[i][1];
+        }
+        if (id.size() == n) {
+            out.id[i * 2] = static_cast<uint32_t>(id[i][0]);
+            out.id[i * 2 + 1] = static_cast<uint32_t>(id[i][1]);
+        }
+    }
+    out.meshes.assign(meshes.begin(), meshes.end());
+    return out;
+}
 
 Result<std::vector<GaussianArray>> readGaussianArrays(const std::filesystem::path& path, const std::string& prim,
                                                      uint32_t count) {

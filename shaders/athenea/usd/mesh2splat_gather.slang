@@ -38,6 +38,12 @@
 //               sampled colour is multiplied by, and the roughness and coat
 //               roughness the conversion was handed, as float bits
 //               (m2sTransferInto)
+//   sources     where on its source each gaussian stands, from the picture's
+//               very last entry (the effect's `writeSource`): (the mesh's
+//               rank, the mesh's own triangle -- a subset's listed triangle
+//               taken back to its mesh's numbering -- the cell i | j << 16,
+//               its rank among the triangle's gaussians)
+//   sourceUv    the st of its point, NaN where the mesh has none
 //
 // It used to be done a splat at a time on the processor, out of a picture
 // read back for the purpose; nothing here computes, it only moves.
@@ -67,6 +73,12 @@ struct GatherParams {
     float baseWeight;
     float roughness;
     float coatRoughness;
+    /// The picture's very last entry a gaussian is where on its source it
+    /// stands (Mesh2Splat's `writeSource`), which goes to `sources`.
+    uint  sourced;
+    uint  meshRank;       ///< the run's mesh, by its rank among the stage's prim paths
+    uint  listed;         ///< the run is a subset's: its triangle i is `pieceTriangles[i]` of the mesh
+    uint  hasUv;          ///< the mesh has st (else `sourceUv` is NaN)
 };
 
 StructuredBuffer<float4>     picture;
@@ -76,6 +88,9 @@ RWStructuredBuffer<float4>   influences;
 RWStructuredBuffer<uint>     gradients;
 RWStructuredBuffer<float>    curvatures;   // three a gaussian, where `curved`
 RWStructuredBuffer<uint4>    samplings;    // one a gaussian
+StructuredBuffer<uint>       pieceTriangles;   // a subset's triangles, in its mesh's numbering, where `listed`
+RWStructuredBuffer<uint4>    sources;      // one a gaussian, where `sourced`
+RWStructuredBuffer<float2>   sourceUv;     // one a gaussian, where `sourced`
 ConstantBuffer<GatherParams> gather;
 
 float4 entryOf(uint splat, uint component) {
@@ -122,10 +137,12 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
     records[at + 18] = shading.y;
     records[at + 19] = shading.z;
     // What it gives off: the record's last entry, where the stage emits.
-    const uint curveEntries = gather.curved != 0 ? 1u : 0u;
+    const uint sourceEntries = gather.sourced != 0 ? 1u : 0u;
+    // The entries after the layers: the shape operator, then the source.
+    const uint tailEntries = (gather.curved != 0 ? 1u : 0u) + sourceEntries;
     const uint layerEntries = gather.lobes != 0 ? 4u : 0u;
     const float4 emitted =
-        gather.emits != 0 ? entryOf(splat, gather.recordEntries - 1 - layerEntries - curveEntries) : float4(0.0);
+        gather.emits != 0 ? entryOf(splat, gather.recordEntries - 1 - layerEntries - tailEntries) : float4(0.0);
     records[at + 20] = emitted.x;
     records[at + 21] = emitted.y;
     records[at + 22] = emitted.z;
@@ -137,7 +154,7 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
     // WHAT THE MATERIAL LAYERS OVER ITS BASE: the record's last thirteen
     // floats, after the harmonics, in packing.slang's record order.
     if (gather.lobes != 0) {
-        const uint last = gather.recordEntries - curveEntries;
+        const uint last = gather.recordEntries - tailEntries;
         const float4 specular = entryOf(splat, last - 4);   // colour, weight
         const float4 coat = entryOf(splat, last - 3);       // weight, roughness, index, specular's index
         const float4 sheen = entryOf(splat, last - 2);      // colour, roughness
@@ -157,8 +174,16 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
         records[l + 11] = sheen.w;
         records[l + 12] = darkening.x;
     }
+    if (gather.sourced != 0) {
+        const float4 at = entryOf(splat, gather.recordEntries - 1);
+        const uint triangle = asuint(at.x);
+        const uint meshTriangle = gather.listed != 0 ? pieceTriangles[triangle] : triangle;
+        sources[out] = uint4(gather.meshRank, meshTriangle, (asuint(at.y) & 0xFFFFu) | (asuint(at.z) << 16),
+                             asuint(at.w));
+        sourceUv[out] = gather.hasUv != 0 ? surface.zw : float2(asfloat(0x7FC00000u));
+    }
     if (gather.curved != 0) {
-        const float4 shape = entryOf(splat, gather.recordEntries - 1);
+        const float4 shape = entryOf(splat, gather.recordEntries - 1 - sourceEntries);
         curvatures[out * 3 + 0] = shape.x;
         curvatures[out * 3 + 1] = shape.y;
         curvatures[out * 3 + 2] = shape.z;

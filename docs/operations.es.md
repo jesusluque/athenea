@@ -320,6 +320,12 @@ decimate: carries primvars:athenea:splat:cryptoObject (1 a gaussian)
 decimate: carries primvars:skel:jointIndices (4 a gaussian)
 ```
 
+En qué punto de su origen está cada gaussiana (`primvars:athenea:splat:source*`,
+§4.3) no se funde: una fusión toma las coordenadas y el id del miembro que más
+pesa en ella, y el resultado se ordena otra vez según la superficie, como
+ordena una nube `athenea mesh2splat` (un árbol de fusiones escrito con `--tree`
+conserva el orden del árbol).
+
 Cómo se funde cada uno depende de lo que es: `skel:jointIndices` con
 `skel:jointWeights` como un rig (el peso de cada articulación sumado, las cuatro
 más pesadas conservadas); un array cuyo nombre acaba en `shadowBits` bit a bit;
@@ -695,6 +701,21 @@ Una malla cuyos GeomSubsets (familia `materialBind`) enlazan materiales
 propios se convierte un subset cada vez, cada uno con su material, y las caras
 que no reclama ningún subset con el de la malla; el log nombra el prim de cada
 subset. Sus gaussianas conservan el id Cryptomatte de la malla.
+
+**El orden es el de la superficie.** Cada gaussiana lleva en qué punto de su
+origen está -- el rango de su malla entre las de la escena por ruta de prim, el
+triángulo de la malla, la celda del recorrido de ese triángulo, el `st` de su
+punto donde la malla tiene, y un id de 64 bits (§4.3) -- y la nube se escribe en
+el orden que dan: por malla, y luego a lo largo de una curva de Hilbert sobre
+`st` a 2^16 pasos por unidad (una malla sin `st`: por triángulo, y luego el
+índice de Morton de la celda), con los slots que no tienen gaussiana al final.
+El índice i es el mismo punto de la superficie en cada ejecución, en cada frame
+de una nube con esqueleto y de `flatten --range --keep-order`, y una
+conversión más gruesa (un `--resolution` más bajo, un nivel de `--lod-levels`)
+se ordena como la más fina restringida a ella. El id es el mismo en cada
+ejecución a una resolución; entre resoluciones las celdas cambian, y lo que
+relaciona una gaussiana gruesa con las finas es su `st` (o su triángulo). No
+hay opción: el orden no es una elección.
 
 Una entrada del material que no cabe en una constante ni en un mapa simple --
 una que calcula un grafo (un mix, un ruido, un teselado hexagonal), un
@@ -1995,6 +2016,20 @@ por partes.
 |---|---|---|
 | `primvars:athenea:splat:cryptoObject` | int[] | un id por gaussiana |
 | `primvars:athenea:splat:cryptoManifest` | string | `{"<ruta>":"<ocho dígitos hex>", ...}` |
+
+**Coordenadas de origen** — en qué punto de su origen está cada gaussiana, las
+escribe `athenea mesh2splat` (sin schema: primvars del campo, vertex salvo los
+dos últimos).
+
+| Atributo | Tipo | Nota |
+|---|---|---|
+| `primvars:athenea:splat:sourceMesh` | int[] | el índice de su malla en `sourceMeshes` |
+| `primvars:athenea:splat:sourceTriangle` | int[] | el triángulo de la propia malla (la triangulación de `HdMeshUtil`; el de un GeomSubset en la numeración de la malla) |
+| `primvars:athenea:splat:sourceCell` | int2[] | la celda (i, j) en la que cae su punto, contada desde la primera celda del recorrido del triángulo en su plano de proyección |
+| `primvars:athenea:splat:sourceUv` | texCoord2f[] | el `st` de la malla (o `st0`, `uv`, `UVMap`) en su punto; NaN para una malla sin él; ausente donde ninguna malla lo tiene |
+| `primvars:athenea:splat:sourceId` | int2[] | 64 bits, la palabra baja primero: el hash de la ruta de la malla con el triángulo, la celda y su rango entre las gaussianas del triángulo; el mismo en cada ejecución a una resolución |
+| `primvars:athenea:splat:sourceMeshes` | string[] | las rutas de prim de las mallas, ordenadas |
+| `primvars:athenea:splat:sourceOrder` | token | `meshRank-stHilbert`: el orden de la nube es el de la clave de origen (`shaders/athenea/common/source_order.slang`) |
 
 **`AtheneaSplatEditAPI`** — una edición no destructiva sobre las nubes que cuelgan
 de un prim: conservar lo que está dentro de un volumen, quitarlo, o graduarlo.

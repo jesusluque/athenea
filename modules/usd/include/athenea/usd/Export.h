@@ -58,6 +58,18 @@ struct SplatSkinning {
     }
 };
 
+/// WHERE ON ITS SOURCE EACH GAUSSIAN STANDS, as `athenea mesh2splat` made
+/// it (shaders/athenea/common/source_order.slang): one entry a record, in the
+/// cloud's order -- which is the order of these coordinates.
+struct SplatSources {
+    std::vector<int32_t>     mesh;       ///< its mesh's rank in `meshes`
+    std::vector<int32_t>     triangle;   ///< the mesh's own triangle
+    std::vector<int32_t>     cell;       ///< two a gaussian: the cell (i, j) of the triangle's walk
+    std::vector<float>       uv;         ///< two a gaussian: the st of its point, NaN where the mesh has none
+    std::vector<uint32_t>    id;         ///< two a gaussian: the 64-bit id, low word first
+    std::vector<std::string> meshes;     ///< the meshes' prim paths, in rank order
+};
+
 struct ExportOptions {
     uint32_t maxDegree = 3;
     /// Adds /World/Camera framing the cloud, so the stage renders as it is.
@@ -118,6 +130,9 @@ struct ExportOptions {
     /// written and the schema is not applied.
     std::span<const uint32_t>       cryptoObject;
     std::map<std::string, uint32_t> cryptoManifest;
+    /// Where on its source each gaussian stands (`primvars:athenea:splat:source*`);
+    /// nothing is written where it is null or does not hold every record.
+    const SplatSources*             sources = nullptr;
     /// HOW MUCH OF AN ENVIRONMENT REACHES EACH GAUSSIAN: nine floats a record
     /// of the direct half (visibility times the cosine, the surface's own
     /// albedo taken as one), and twenty-seven more of the indirect one where
@@ -240,6 +255,12 @@ struct GaussianArray {
     /// The default's words (or the earliest sample's), then a sample's each.
     std::vector<std::vector<uint32_t>> values;
 };
+
+/// The source coordinates a cloud carries (`primvars:athenea:splat:source*`,
+/// what `athenea mesh2splat` writes), from the field at `prim` (the first
+/// ParticleField where empty); `uv` NaN where the cloud has no `sourceUv`.
+/// NotFound where the field carries none.
+[[nodiscard]] Result<SplatSources> readSplatSources(const std::filesystem::path& path, const std::string& prim = {});
 
 /// Every array a gaussian long on the field at `prim` (the first
 /// ParticleField where empty), of `count` gaussians, besides the schema's

@@ -653,8 +653,10 @@ del procesador por definición.
 13. Se escribe el registro, y el slot avanza.
 14. Después, salvo `--no-bake`, se traza un rayo desde la gaussiana a lo largo
     de su normal de sombreado y la luz que vuelve se ajusta a armónicos.
-15. La nube entera se escribe en una escena USD, con los primvars y los
-    schemas que dicen qué lleva.
+15. La nube entera se ordena según su superficie -- por malla, y luego a lo
+    largo de una curva de Hilbert sobre st -- y se escribe en una escena USD,
+    con los primvars y los schemas que dicen qué lleva y en qué punto de su
+    origen está cada gaussiana.
 
 ### 6.3 Leer la escena, sin Hydra
 
@@ -825,6 +827,36 @@ que su entorno: es donde más a menudo falla. Si no, se apilan sus cuatro
 hijos, y una celda sola es lo que siempre fue. Un triángulo en el que el
 recorrido no encuentra nada cae en la única gaussiana de su centro.
 
+**Dónde está, y el orden que se sigue de ello.** Con `writeSource` el efecto
+escribe una entrada más por registro, la última: el triángulo (de la imagen de
+la pasada), la celda en la que cae su punto contada desde la primera celda del
+recorrido del triángulo (la de un bloque o una celda partida es la celda en la
+que está su centro), y su rango entre las gaussianas del triángulo -- bits, no
+números. El gather (`mesh2splat_gather`) lo convierte en las coordenadas de
+origen de la nube: el rango de la malla entre las de la escena por ruta de
+prim, el triángulo de la propia malla (el triángulo listado de un subset
+devuelto a la numeración de la malla), la celda, el rango, y el `st` del punto,
+que el registro ya llevaba (NaN donde la malla no tiene). Cuando han entrado
+todas las pasadas, `mesh2splat_order` da a cada gaussiana su clave
+(`shaders/athenea/common/source_order.slang`): el rango de la malla, después la
+tesela unidad del `st` y su índice de Hilbert a 2^16 por unidad, o sin `st` el
+triángulo y el índice de Morton de su celda; una gaussiana que un lector
+descartaría (sin posición finita, sin tamaño válido, con una opacidad por debajo
+de un paso de ocho bits) toma la clave más alta. Un radix sort estable de las
+claves es la permutación por la que pasa en el dispositivo cada buffer de una
+gaussiana de largo -- los registros, los rayos, las articulaciones y sus
+gradientes, los samplings, los operadores de forma, las coordenadas de origen
+-- y las listas que el host guarda de una gaussiana de largo (los ids
+Cryptomatte, las paredes finas, las cáscaras cerradas, los metales Schlick, la
+roughness del material) pasan por ella como palabras. Así el orden es función
+solo de la superficie: el índice i es el mismo punto en cada ejecución, en
+cada frame en que se posa o se aplana una nube con esqueleto, y el orden de una
+conversión más gruesa es el de la más fina restringido a ella
+(`docs/decisions.md`, "A gaussian's place on its source"). De ahí sale también
+un id de 64 bits, el hash de la ruta de la malla con el triángulo, la celda y
+el rango: el mismo en cada ejecución a una densidad, una comprobación del orden
+y no el orden mismo.
+
 ### 6.5 Qué lleva una gaussiana
 
 **La posición** es la mezcla baricéntrica de las esquinas del triángulo en el
@@ -917,6 +949,11 @@ sea cual sea su reflectividad.
 desde las esquinas del triángulo, para que la nube se deforme con el esqueleto
 que llevaba la malla; y cómo cambian esos pesos a lo largo de la gaussiana,
 para que se estire a través de un pliegue como su triángulo (§6.7).
+
+**En qué punto de su origen está**: el rango de su malla, su triángulo, su
+celda, su `st` y su id (§6.4), escritos como `primvars:athenea:splat:source*`.
+Es de lo que está hecho el orden de la nube, y lo que dispone sus planos de
+vídeo como una textura (`athenea video-encode --layout uv`).
 
 **El id Cryptomatte** es el hash de la ruta del prim origen, heredado por cada
 gaussiana que la conversión hace de los triángulos de ese prim. Es lo que
@@ -1309,14 +1346,18 @@ los declaran: `AtheneaSplatLightingAPI` (`relight`, `litBody`, `linear` --
 los colores de toda conversión son luz lineal -- y metallic, roughness,
 transmission, la normal de sombreado y la emisión por gaussiana), `AtheneaSplatSkinningAPI` donde la nube
 tiene esqueleto, `AtheneaSplatCryptomatteAPI` con un id por gaussiana y el
-manifest que los nombra, y `AtheneaSplatVisibilityAPI` una vez que ha corrido `athenea
-visibility`. Un shadow catcher dice `catcher`, un light catcher
+manifest que los nombra, las coordenadas de origen (`sourceMesh`,
+`sourceTriangle`, `sourceCell`, `sourceUv` donde alguna malla tiene `st`,
+`sourceId`, y las constantes `sourceMeshes` y `sourceOrder`), y
+`AtheneaSplatVisibilityAPI` una vez que ha corrido `athenea visibility`. Un shadow catcher dice `catcher`, un light catcher
 `lightCatcher`; `athenea lights merge` añade a una copia un
 `lightLayer:<grupo>` por grupo de lámparas. La referencia de atributos es
 [`operations.es.md §4.3`](operations.es.md#43-los-schemas-de-api).
 
 Cada slot se escribe, sobreviviera o no una gaussiana en él: uno vacío lleva
-opacidad cero y no estira el extent de la nube hasta donde esté. Conservar los
+opacidad cero y no estira el extent de la nube hasta donde esté. El orden pone
+cada slot vacío al final, así que un lector que los descarta deja cada otra
+gaussiana en su índice. Conservar los
 slots es lo que mantiene los arrays por gaussiana índice a índice, que es lo
 que permite leer las influencias del esqueleto, los ids y los armónicos con el
 mismo índice.
@@ -1328,7 +1369,8 @@ fichero (`lod::writeAthc`). Un `.athc` guarda posiciones, forma, armónicos y
 las normales de sombreado; no tiene sitio para el material con que refleja
 una nube reiluminada, los ids Cryptomatte, el índice de un vidrio, el eje
 vertical y la unidad, un esqueleto o un transfer -- los dos últimos se
-rechazan, el resto se dice.
+rechazan, el resto se dice. Sus niveles están en orden de Morton, no en el
+orden de la superficie, y no lleva coordenadas de origen.
 
 ### 6.10 Cómo se comprueba cada fase, y qué midió
 
@@ -1443,6 +1485,13 @@ un kernel en `flatten_pack.slang`, un método en `FlattenPack`, un escritor en
 `io/SplatWriters.h` y una línea en `CmdFlatten.cpp`; el viaje de ida y vuelta
 por el lector de este motor es lo que comprueba
 `athenea_render_tests "[flatten]"`.
+
+Una secuencia (`--range`) se corta en páginas SPZ por frame; con
+`--keep-order` las gaussianas de cada frame van a las páginas en el orden
+propio de la escena, que para una nube de mesh2splat es el orden de su
+superficie: la gaussiana i de la página de cada frame es la gaussiana i de la
+nube, cuyas coordenadas de origen guarda el fichero de la nube
+(`athenea_mesh2splat_tests "[source]"`).
 
 ## 7. Dependencias y toolchain
 
