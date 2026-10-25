@@ -15529,3 +15529,27 @@ tree stood. The bundle now carries them in `Contents/Resources/shaders` (the che
 out), copied after the build of `athenea_ofx`. Checked with the build tree's shaders moved aside: the bundle as it was,
 copied out of the tree, failed in `athenea_ofx_host` (`cannot open file 'athenea/algo/prefix_chunk_totals.slang'`);
 the new one rendered the frame (320 x 180, alpha mean 0.84).
+
+**#42, "the viewport's readback costs seconds a frame on CUDA".** It does not; what costs seconds is what
+`viewport_readback.py` times. Each F12 is a render of its own: Blender makes a new render delegate, and with it a new
+engine, its environment (the sky analysed again every render) and its kernels from the shader cache, before the frame
+is drawn and mapped. That fixed cost does not change with the size: 2.7 to 3.1 s an F12 at 1280 x 720 and 1920 x 1080,
+float or half (a run that overlapped another job's GPU test, so approximate). What the map itself costs was measured
+with `athenea stage` on the same scene and device (two_balls, 1920 x 1080, raster, `--frames 40`): the first frame
+1.85 to 2.5 s, then 67.4 ms a frame with `--no-readback` and 78.9 to 92.6 ms reading the frame back, 11 to 25 ms for
+the readback of a float frame. A viewport keeps its delegate and pays the frame and that copy, not the first frame.
+
+What is Windows' own among these: #41's first cause showed on Windows (the order in which a process's statics and
+the CUDA driver end), and its fix holds everywhere. The rest are not: the flatten's unset index is any CUDA device's
+(Metal's thread memory happened to hold zero), the integer settings are any platform's under Blender (macOS's
+denoiser hid them), the bundle's shaders any platform's, and the F12's first-frame cost any CUDA device's.
+
+### Not done
+
+- The F12's first frame on CUDA (about two seconds) is not taken apart: the environment's preparation, the kernels'
+  loading and the device's own start are each a share of it, and a Blender that kept one engine between renders would
+  pay it once.
+- `viewport_readback.py` still times whole F12 renders; the map alone is not timed from inside Blender.
+- One of three full `tx_module` runs ended its Esc step with code 1 rather than 4 or 0; the run before and the run
+  after it ended 4, and a script running that step alone four times ended 0 and then 4 each time. Not reproduced.
+- Not run under Linux: the Blender add-on on Linux (WSL2) was not rebuilt for these.
