@@ -144,7 +144,10 @@ TEST_CASE("a live stream of SPZ pages shows, epoch by epoch, what its SPZ files 
     REQUIRE((*pool)->update(true));
     CHECK((*pool)->status().epoch == 1);
     const auto first = compare(reference({&cloudsA[0], &cloudsA[1], &cloudsA[2]}), shown((*pool)->cloud()));
-    REQUIRE((*pool)->cloud().splats.antialiased.has_value());
+    // Each chunk drawn as its page says (the pages say antialiased).
+    for (uint32_t c = 0; c < kChunks; ++c) {
+        CHECK((*pool)->cloud().chunkAntialiased[c] == 1);
+    }
 
     push(2, {{1, &pagesB[1]}, {2, nullptr}});
     REQUIRE((*pool)->update(true));

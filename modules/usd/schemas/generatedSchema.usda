@@ -118,8 +118,12 @@ properties are constant primvars; author them on the ParticleField itself."""
         doc = "Harmonics kept of the pages', 0 to 3."
         interpolation = "constant"
     )
+    int primvars:athenea:live:loaders = 4 (
+        doc = "Threads that read and decompress the pages."
+        interpolation = "constant"
+    )
     int64 primvars:athenea:stream:budget = 0 (
-        doc = "Gaussians the device holds for the stream (0: two epochs of every chunk full, the one shown and the one being built)."
+        doc = "Gaussians the device holds for the stream (0: as the epochs sent need -- room for the one shown and two more -- up to three epochs of every chunk full)."
         interpolation = "constant"
     )
 }

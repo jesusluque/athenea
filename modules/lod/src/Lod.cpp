@@ -428,6 +428,9 @@ struct CutSelector::Frame {
     gpu::Buffer      state;       ///< the finest level's per-group state
     gpu::Buffer      needs;       ///< per chunk
     gpu::Buffer      readback;    ///< every part's count, then the needs: one read
+    /// A live cloud whose chunks disagree on antialiasing: one cloud a run of
+    /// chunks that agree, in chunk order, each its own instance.
+    std::vector<std::unique_ptr<Frame>> groups;
 };
 
 CutSelector::CutSelector() = default;
@@ -510,39 +513,78 @@ Result<void> CutSelector::ensureCloud(const LodCloud& lod, Frame& frame, uint32_
     return ok();
 }
 
-Result<uint32_t> CutSelector::copyChunks(const LodCloud& lod, Frame& frame) {
-    const std::vector<Run> runs = runsOf(lod);
+Result<uint32_t> CutSelector::copyChunks(const LodCloud& lod, Frame& frame,
+                                         std::vector<const scene::GpuSplats*>& clouds) {
+    // Runs of consecutive slots, cut where a chunk's antialiasing differs from
+    // the one before it (a live epoch whose pages disagree), in chunk order.
+    struct Group {
+        int8_t           flag = -1;
+        std::vector<Run> runs;
+        uint32_t         count = 0;
+    };
+    std::vector<Group> groups;
+    int32_t previous = -2;
+    for (uint32_t c = 0; c < lod.chunks(); ++c) {
+        const int32_t slot = lod.slots[c];
+        if (slot < 0) {
+            previous = -2;
+            continue;
+        }
+        const int8_t flag = c < lod.chunkAntialiased.size() ? lod.chunkAntialiased[c] : int8_t{-1};
+        if (groups.empty() || groups.back().flag != flag) {
+            groups.push_back({flag, {}, 0});
+            previous = -2;
+        }
+        Group& g = groups.back();
+        if (slot == previous + 1 && !g.runs.empty()) {
+            g.runs.back().count += lod.chunkCount(c);
+        } else {
+            g.runs.push_back({static_cast<uint32_t>(slot) * lod.chunkSplats, lod.chunkCount(c)});
+        }
+        g.count += lod.chunkCount(c);
+        previous = lod.chunkCount(c) == lod.chunkSplats ? slot : -2;
+    }
     uint32_t drawn = 0;
-    for (const Run& run : runs) {
-        drawn += run.count;
+    while (frame.groups.size() < groups.size()) {
+        frame.groups.push_back(std::make_unique<Frame>());
     }
-    if (drawn == 0) {
-        return drawn;
-    }
-    ATHENEA_TRY(ensureCloud(lod, frame, drawn));
     gpu::CommandBatch batch(*device_);
     rhi::ICommandEncoder* e = batch.encoder();
-    const auto copy = [&](const gpu::Buffer& from, const gpu::Buffer& to, uint64_t perSplat) {
-        uint64_t at = 0;
-        for (const Run& run : runs) {
-            e->copyBuffer(to.rhi(), at * perSplat, from.rhi(), uint64_t{run.offset} * perSplat, run.count * perSplat);
-            at += run.count;
+    for (size_t k = 0; k < groups.size(); ++k) {
+        const Group& g = groups[k];
+        if (g.count == 0) {
+            continue;
         }
-    };
-    copy(lod.splats.positions, frame.cloud.positions, 16);
-    copy(lod.splats.shape, frame.cloud.shape, 16);
-    copy(lod.splats.sh, frame.cloud.sh, 4 * uint64_t{lod.splats.shWords});
-    if (lod.splats.hasNormals()) {
-        copy(lod.splats.normals, frame.cloud.normals, 4);
+        Frame& part = *frame.groups[k];
+        ATHENEA_TRY(ensureCloud(lod, part, g.count));
+        part.cloud.antialiased = g.flag < 0 ? lod.splats.antialiased : std::optional<bool>(g.flag != 0);
+        const auto copy = [&](const gpu::Buffer& from, const gpu::Buffer& to, uint64_t perSplat) {
+            uint64_t at = 0;
+            for (const Run& run : g.runs) {
+                e->copyBuffer(to.rhi(), at * perSplat, from.rhi(), uint64_t{run.offset} * perSplat,
+                              run.count * perSplat);
+                at += run.count;
+            }
+        };
+        copy(lod.splats.positions, part.cloud.positions, 16);
+        copy(lod.splats.shape, part.cloud.shape, 16);
+        copy(lod.splats.sh, part.cloud.sh, 4 * uint64_t{lod.splats.shWords});
+        if (lod.splats.hasNormals()) {
+            copy(lod.splats.normals, part.cloud.normals, 4);
+        }
+        if (lod.splats.hasEmission()) {
+            copy(lod.splats.emission, part.cloud.emission, 4);
+        }
+        for (const Extra& x : extrasOf(lod.splats)) {
+            copy(lod.splats.*x.member, part.cloud.*x.member, 4 * uint64_t{x.words});
+        }
+        clouds.push_back(&part.cloud);
+        drawn += g.count;
     }
-    if (lod.splats.hasEmission()) {
-        copy(lod.splats.emission, frame.cloud.emission, 4);
+    if (drawn > 0) {
+        batch.markDirty();
+        ATHENEA_TRY(batch.submit());
     }
-    for (const Extra& x : extrasOf(lod.splats)) {
-        copy(lod.splats.*x.member, frame.cloud.*x.member, 4 * uint64_t{x.words});
-    }
-    batch.markDirty();
-    ATHENEA_TRY(batch.submit());
     return drawn;
 }
 
@@ -574,7 +616,8 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
             }
             // A live stream's: nothing to cut to, its chunks on the device
             // copied as they are into the frame's cloud.
-            auto drawn = copyChunks(lod, frame);
+            std::vector<const scene::GpuSplats*> clouds;
+            auto drawn = copyChunks(lod, frame, clouds);
             if (!drawn) return std::move(drawn).error();
             if (stats != nullptr) {
                 CutStats s;
@@ -582,8 +625,8 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                 s.available = *drawn;
                 stats->push_back(std::move(s));
             }
-            if (*drawn > 0) {
-                out.push_back({&frame.cloud, instance.objectToWorld, instance.edit});
+            for (const scene::GpuSplats* cloud : clouds) {
+                out.push_back({cloud, instance.objectToWorld, instance.edit});
             }
             continue;
         }

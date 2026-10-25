@@ -28,6 +28,7 @@ struct LiveStream {
     platform::SharedMemory          ring;
     std::shared_ptr<lod::PageQueue> queue;
     uint32_t                        chunks = 0;
+    std::shared_ptr<void>           claim;   ///< the queue held for this session; let go with the last copy
 };
 
 struct Session {

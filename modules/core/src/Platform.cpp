@@ -25,6 +25,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <signal.h>
 #include <unistd.h>
 #endif
 
@@ -277,6 +278,35 @@ SharedMemory& SharedMemory::operator=(SharedMemory&& other) noexcept {
 
 SharedMemory::~SharedMemory() {
     release();
+}
+
+uint32_t processId() noexcept {
+#if defined(_WIN32)
+    return static_cast<uint32_t>(::_getpid());
+#else
+    return static_cast<uint32_t>(::getpid());
+#endif
+}
+
+size_t removeStaleSharedMemory(const std::string& prefix) noexcept {
+#if defined(__linux__)
+    size_t removed = 0;
+    std::error_code failed;
+    for (const auto& entry : std::filesystem::directory_iterator("/dev/shm", failed)) {
+        const std::string name = entry.path().filename().string();
+        if (name.rfind(prefix, 0) != 0) {
+            continue;
+        }
+        const unsigned long pid = std::strtoul(name.c_str() + prefix.size(), nullptr, 16);
+        if (pid != 0 && ::kill(static_cast<pid_t>(pid), 0) != 0 && errno == ESRCH) {
+            removed += ::shm_unlink(("/" + name).c_str()) == 0 ? 1 : 0;
+        }
+    }
+    return removed;
+#else
+    (void)prefix;
+    return 0;
+#endif
 }
 
 void sleepPrecisely(std::chrono::nanoseconds duration) {

@@ -72,6 +72,10 @@ struct LodCloud {
     /// `chunkSplats` (a live stream's pages); empty where each holds
     /// `chunkSplats` but the last.
     std::vector<uint32_t> chunkCounts;
+    /// Per chunk, what its page said of antialiasing (a live stream's SPZ
+    /// pages): -1 nothing (the cloud's own `splats.antialiased`), 0 not, 1
+    /// trained with it. Empty for every other cloud.
+    std::vector<int8_t>   chunkAntialiased;
 
     [[nodiscard]] uint32_t chunks() const noexcept { return static_cast<uint32_t>(slots.size()); }
     [[nodiscard]] uint32_t chunkCount(uint32_t chunk) const noexcept {
@@ -154,7 +158,8 @@ private:
     [[nodiscard]] Result<void> ensureCloud(const LodCloud& lod, Frame& frame, uint32_t drawn);
     /// A cloud without merged levels: its chunks on the device copied into
     /// the frame's cloud, in chunk order. Returns the splats copied.
-    [[nodiscard]] Result<uint32_t> copyChunks(const LodCloud& lod, Frame& frame);
+    [[nodiscard]] Result<uint32_t> copyChunks(const LodCloud& lod, Frame& frame,
+                                              std::vector<const scene::GpuSplats*>& clouds);
     gpu::Device*                        device_ = nullptr;
     gpu::PrefixSum                      prefix_;
     gpu::ComputeKernel                  cutGroups_, cutFinest_, cutSplats_, chunkNeeds_, gather_, extrasGather_;

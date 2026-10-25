@@ -1905,7 +1905,14 @@ páginas SPZ que productores del mismo proceso empujan, una época cada vez, al
 stream de este nombre (`lod::PageQueue::named`). Un frame dibuja la última
 época cuyas páginas están todas en el dispositivo, nunca media; una época sin
 sitio junto a la que se muestra, o con una página que no se descomprime, se
-descarta con un aviso. Sólo la dibuja el rasterizador, sin niveles de detalle.
+descarta con un aviso. Sólo la dibuja el rasterizador, sin niveles de detalle. Los prims que nombran
+un mismo stream lo comparten y muestran la misma época. Con `latest`, las
+épocas que esperan se juntan en la más nueva (la última página de cada chunk)
+y la siguiente se carga mientras se coloca una. Un stream que nadie lee guarda
+solo su época completa más nueva: una escena que lo nombra después empieza
+desde ahí. Una época está completa cuando tiene una página para tantos chunks
+distintos como dice; cada página se dibuja con el antialiasing que dice su
+propio SPZ.
 
 Con `sync = clock` un frame muestra la época completa más nueva cuyo `ptpTime`
 (nanosegundos) ha llegado en el instante del frame -- el reloj con genlock del
@@ -1928,7 +1935,8 @@ a tiempo se muestra en cuanto lo está, y se cuenta como tardía.
 | `primvars:athenea:live:chunkSplats` | int | `65536`; las gaussianas que como mucho tiene una página |
 | `primvars:athenea:live:degree` | int 0..3 | `3`; armónicos que se guardan |
 | `primvars:athenea:live:sync` | token `latest` \| `clock` | sin autorar: lo que pidió `stream_open`, si no `latest` |
-| `primvars:athenea:stream:budget` | int64 ‹gaussianas› | `0`: dos veces `chunks` × `chunkSplats` |
+| `primvars:athenea:live:loaders` | int 1..64 | `4`; hilos que leen y descomprimen las páginas |
+| `primvars:athenea:stream:budget` | int64 ‹gaussianas› | `0`: el almacén crece con lo que se envía (sitio para la época mostrada y dos más), hasta tres veces `chunks` × `chunkSplats` |
 | `extent` | float3[2] | —; los límites del stream hasta que se muestra una época, cuyos límites de página son entonces los suyos |
 
 **Niveles de detalle de un ParticleField** — la misma nube convertida con
@@ -2327,8 +2335,16 @@ tres herramientas:
   `offset` y `bytes` dicen dónde está cada página; `epochPages` son las
   páginas de la época en total (las de esta llamada por defecto), así que una
   época puede llegar en varias llamadas. Las páginas se copian del anillo
-  antes de la respuesta: el anillo se puede sobrescribir en cuanto llega. Una
-  página más allá de `chunks` o fuera del anillo rechaza la llamada entera.
+  antes de la respuesta: el anillo se puede sobrescribir en cuanto llega. Se
+  rechaza la llamada entera por una página más allá de `chunks` o fuera del
+  anillo, un `epoch` que no sea un entero desde 1 (como mucho 2^62), una op
+  que no sea add, replace o remove, un chunk dos veces, o un `epochPages`
+  menor que las páginas enviadas.
+- Una sola sesión alimenta un stream: un segundo `stream_open` de un nombre
+  abierto en otro sitio del proceso del servidor se rechaza. Un anillo se
+  llama `al-<hash>-<pid>-<aleatorio>`, así que el anillo de un servidor caído
+  nunca bloquea uno nuevo; en Linux los anillos de procesos que ya no existen
+  se borran al abrir un stream.
 - `bounds` (mín xyz, máx xyz) es lo que cubre la página; los límites del
   stream son la unión de los de sus páginas mostradas -- y, antes de mostrar
   ninguna época, el `extent` del prim.

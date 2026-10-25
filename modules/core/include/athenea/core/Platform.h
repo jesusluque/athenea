@@ -78,6 +78,16 @@ private:
     void*       handle_ = nullptr;   // Windows: the mapping
 };
 
+/// This process's id. Any thread.
+[[nodiscard]] uint32_t processId() noexcept;
+
+/// Removes the shared memory regions named `<prefix><pid>-...` whose process
+/// is gone -- what a server that crashed with a region open left. Where the
+/// system lists its regions (Linux, /dev/shm); macOS lists none, and a
+/// Windows mapping goes with its last process: nothing to do there. Returns
+/// how many it removed. Any thread.
+size_t removeStaleSharedMemory(const std::string& prefix) noexcept;
+
 /// Sleeps for `duration` and wakes on time, to tens of microseconds.
 ///
 /// A plain sleep may overrun by the timer slack the OS allows itself: on macOS

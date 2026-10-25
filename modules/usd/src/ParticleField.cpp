@@ -58,6 +58,7 @@ TF_DEFINE_PRIVATE_TOKENS(_assetTokens,
     ((liveChunkSplats, "athenea:live:chunkSplats"))
     ((liveDegree, "athenea:live:degree"))
     ((liveSync, "athenea:live:sync"))
+    ((liveLoaders, "athenea:live:loaders"))
 );
 
 float floatOf(VtValue const& value, float fallback) {
@@ -205,6 +206,7 @@ athenea::usd::StreamedAsset assetOf(HdSceneDelegate* delegate, SdfPath const& id
         asset.liveChunks = count(_assetTokens->liveChunks, asset.liveChunks);
         asset.liveChunkSplats = count(_assetTokens->liveChunkSplats, asset.liveChunkSplats);
         asset.liveDegree = std::min(count(_assetTokens->liveDegree, asset.liveDegree), 3u);
+        asset.liveLoaders = std::clamp(count(_assetTokens->liveLoaders, asset.liveLoaders), 1u, 64u);
     }
     if (asset.path.empty() && asset.live.empty()) {
         return asset;

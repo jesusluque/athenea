@@ -1849,7 +1849,13 @@ producers in the same process push, an epoch at a time, onto the stream of
 this name (`lod::PageQueue::named`). A frame draws the last epoch whose every
 page is on the device, never half of one; an epoch without room beside the
 one shown, or with a page that does not decompress, is dropped with a warning.
-Drawn by the rasteriser only, without levels of detail.
+Drawn by the rasteriser only, without levels of detail. Prims that name one
+stream share it and show the same epoch. By the latest, epochs waiting are
+collapsed into the newest (each chunk's last page) and the next loads while
+one is placed. A stream nobody reads keeps only its newest complete epoch: a
+stage that names it later starts from there. An epoch is whole when it has a
+page for as many distinct chunks as it says; each page is drawn with the
+antialiasing its own SPZ says.
 
 With `sync = clock` a frame shows the newest complete epoch whose `ptpTime`
 (nanoseconds) has come by the frame's instant -- the host's genlocked clock
@@ -1871,7 +1877,8 @@ late.
 | `primvars:athenea:live:chunkSplats` | int | `65536`; the most gaussians a page holds |
 | `primvars:athenea:live:degree` | int 0..3 | `3`; harmonics kept |
 | `primvars:athenea:live:sync` | token `latest` \| `clock` | unauthored: what `stream_open` asked, else `latest` |
-| `primvars:athenea:stream:budget` | int64 ‹gaussians› | `0`: twice `chunks` × `chunkSplats` |
+| `primvars:athenea:live:loaders` | int 1..64 | `4`; threads that read and decompress pages |
+| `primvars:athenea:stream:budget` | int64 ‹gaussians› | `0`: the store grows with what is sent (room for the shown epoch and two more), up to three times `chunks` × `chunkSplats` |
 | `extent` | float3[2] | —; the stream's bounds until an epoch is shown, whose pages' bounds then are |
 
 **Levels of detail of a ParticleField** — the same cloud converted at several
@@ -2262,8 +2269,15 @@ process -- a Python script, a host application -- feeds it through three tools:
   `offset` and `bytes` say where each page lies; `epochPages` is the epoch's
   pages in all (this call's by default), so an epoch may come over several
   calls. The pages are copied out of the ring before the answer: the ring may
-  be written over as soon as it comes. A page past `chunks` or outside the
-  ring refuses the whole call.
+  be written over as soon as it comes. A call is refused whole for a page past
+  `chunks` or outside the ring, an `epoch` that is not an integer from 1 (at
+  most 2^62), an op other than add, replace or remove, one chunk twice, or an
+  `epochPages` below the pages sent.
+- One session at a time feeds a stream: a second `stream_open` of a name open
+  elsewhere in the server's process is refused. A ring is named
+  `al-<hash>-<pid>-<random>`, so a crashed server's ring never blocks a new
+  one; on Linux the rings of processes that are gone are removed when a stream
+  opens.
 - `bounds` (min xyz, max xyz) is what the page covers; the stream's bounds are
   the union of its shown pages' -- and, before any epoch is shown, the prim's
   `extent`.

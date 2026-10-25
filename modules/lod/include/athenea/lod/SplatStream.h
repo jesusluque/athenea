@@ -56,10 +56,18 @@ struct PageUpdate {
 
 class PageQueue {
 public:
-    /// Any thread: a producer's one call.
+    /// Any thread: a producer's one call. Every reader of the stream gets the
+    /// page (two prims naming one stream both draw it). A stream no reader
+    /// reads keeps only its newest complete epoch and what came after it.
     void push(PageUpdate page);
-    /// The consumer of `stream` (its LiveSource, on the frame thread): every
-    /// page of it pushed so far, in push order, appended to `out`.
+
+    /// A reader of `stream` (a LiveSource): it is handed what the stream kept
+    /// unread, and from now on every page pushed. Any thread.
+    [[nodiscard]] uint64_t subscribe(uint32_t stream);
+    void unsubscribe(uint64_t reader);
+    /// The reader's pages pushed since its last call, in push order. Any thread.
+    void read(uint64_t reader, std::vector<PageUpdate>& out);
+    /// What `stream` kept unread, taken. Any thread.
     void drain(uint32_t stream, std::vector<PageUpdate>& out);
 
     /// THE QUEUE A NAME STANDS FOR, made on first use and shared by every
@@ -68,6 +76,12 @@ public:
     /// knowing each other. Any thread.
     [[nodiscard]] static std::shared_ptr<PageQueue> named(const std::string& name);
 
+    /// One producer at a time may feed a named stream from outside the
+    /// process (stream_open): true when `owner` now holds it -- or held it
+    /// already. Any thread.
+    [[nodiscard]] bool claim(uint64_t owner);
+    void release(uint64_t owner);
+
     /// What the producer asked a frame to show (stream_open's `sync`), for a
     /// stage that does not say: 0 unsaid, 1 the latest epoch, 2 by the clock.
     /// Any thread.
@@ -75,9 +89,16 @@ public:
     [[nodiscard]] uint8_t syncHint() const noexcept { return syncHint_.load(); }
 
 private:
+    struct Reader {
+        uint32_t                stream = 0;
+        std::vector<PageUpdate> pages;
+    };
     std::atomic<uint8_t>                                  syncHint_{0};
     std::mutex                                            mutex_;
-    std::unordered_map<uint32_t, std::vector<PageUpdate>> pending_;
+    std::unordered_map<uint64_t, Reader>                  readers_;
+    uint64_t                                              nextReader_ = 1;
+    std::unordered_map<uint32_t, std::vector<PageUpdate>> unread_;
+    uint64_t                                              owner_ = 0;
 };
 
 struct LiveSettings {

@@ -16067,3 +16067,45 @@ pages of 32768: 10 pages, 9.55 MB an epoch (median; SPZ version 4, degree 3), 1.
 - The defects above are reported with their failing cases; none is fixed here.
 - SPZ pages on Windows: the native build there has no zstd.
 - Loaders beyond two for a live pool, and pages loaded ahead of the epoch being built.
+
+## The live-stream QA defects, fixed (25 Oct)
+
+Each of the ten defects of the QA section above has its `[qa]` case passing (`athenea_lod_tests`,
+`athenea_mcp_tests`, `athenea_usd_tests "[qa],[live]"`, Metal, M5 Pro):
+
+1. **Distinct chunks complete an epoch.** `LiveSource::poll` counts an epoch whole when it holds a page for as
+   many distinct chunks as it says; a resent page replaces and is not counted twice.
+2. **A page's antialiasing is its own, shown with its epoch.** The flag is kept a chunk (`LodCloud::
+   chunkAntialiased`), set in the epoch's table when its page is placed and made the shown one by the swap; the
+   cut copies runs of chunks that agree into a cloud each, in chunk order, each its own instance -- so an epoch
+   whose pages disagree draws each as its page says (max 0 against its pages drawn alone), and the epoch being
+   built changes nothing shown (max 232 for the flag alone; 0 frames off).
+3. **A backlog jumps; the next epoch loads while one is placed.** By the latest, the epochs waiting are collapsed
+   into one, the newest -- each chunk's last change; the pages it replaces are never fetched (60 waiting: shown
+   after 2 updates, where it took 61) -- and, as by the clock, every epoch starts as soon as the store has room,
+   so its pages load while the one before is placed. A producer an epoch a millisecond against 4 ms frames: 1 to
+   3 epochs waiting at most, where it was 297 to 375. `Status::epochs` counts the epochs a collapse stood for.
+4. **Prims that name one stream share its pool.** The engine keeps a pool a stream name (`livePools_`); every
+   prim naming it cuts the same cloud and shows the same epoch every frame (0 frames drawn by one prim alone).
+   The queue fans out besides: every reader of a stream (`PageQueue::subscribe`) gets every page.
+5. **A stream nobody reads keeps its newest complete epoch.** Pushed with no reader, pages are kept but only
+   those of the newest complete epoch and later; a reader that subscribes takes them (named again: the latest in
+   2 frames, where it replayed 39). A clock-synced stage that should see earlier epochs must read the stream
+   before they are pushed.
+6. **An SPZ fixed point of 32 bits or more is refused** (`readSpz`), and the shift is never past 31.
+7. **A page the pool cannot place drops its epoch.** `placeLoaded` failing is a page that cannot be read: its
+   epoch and those started on it are dropped (`droppedCorrupt`), its staging slot goes back by the fence, and the
+   other pages of the update are placed; the next epoch is shown.
+8. **`stream_commit` checks what it takes**: an `epoch` an integer from 1 to 2^62, an op of add, replace or
+   remove, no chunk twice, `epochPages` at least the pages sent, numbers where numbers are meant (0 of 21 bad
+   commits queue anything; 31 malformed calls answered).
+9. **One producer a stream.** `PageQueue::claim`: a second session (or server) opening a stream another holds is
+   refused; the claim goes with the stream's close or the session.
+10. **Rings that never collide.** `al-<hash>-<pid>-<random>`; on Linux, rings of processes that are gone are
+    removed when a stream opens (`platform::removeStaleSharedMemory`, /dev/shm); macOS lists no regions, and a
+    Windows mapping goes with its last process.
+
+And the findings: **a live prim's store follows what is sent** (`StreamingSettings::growStore`, the engine's
+default when `stream:budget` is 0): it starts at one chunk and grows -- room for the shown epoch and two more,
+copied on the device -- up to three epochs of every chunk; **the loaders are a prim's** (`athenea:live:loaders`,
+4 by default).

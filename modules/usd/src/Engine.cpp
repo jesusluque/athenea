@@ -1384,6 +1384,7 @@ Result<size_t> Engine::commit() {
         entry.pendingEnd = pxr::VtValue();
         ++uploaded;
     }
+    std::set<const lod::StreamingPool*> updatedLive;   // a pool two prims share is updated once a frame
     for (auto& [id, entry] : splats_) {
         if (entry.assetPending.has_value()) {
             StreamedAsset asset = std::move(*entry.assetPending);
@@ -1392,7 +1393,11 @@ Result<size_t> Engine::commit() {
                 entry.lodCloud.reset();
                 entry.pool.reset();
                 entry.liveEpoch = 0;
-                if (!asset.live.empty()) {
+                if (!asset.live.empty() && livePools_[asset.live].lock() != nullptr) {
+                    // Another prim names this stream: the same pool, so both
+                    // draw the same epoch in every frame.
+                    entry.pool = livePools_[asset.live].lock();
+                } else if (!asset.live.empty()) {
                     // A LIVE STREAM: the queue its name stands for, a
                     // LiveSource over it, and a pool this thread -- the only
                     // one that calls the device -- updates every frame.
@@ -1411,8 +1416,13 @@ Result<size_t> Engine::commit() {
                     live.format.shWords = live.format.restPerColour == 0 ? 1 : (live.format.restPerColour * 3 + 1) / 2;
                     auto source = lod::LiveSource::create(lod::PageQueue::named(asset.live), live);
                     lod::StreamingSettings settings;
+                    // Unbudgeted, the store follows what is sent (one chunk to
+                    // start, grown as epochs need room) up to three epochs of
+                    // every chunk; budgeted, it is its budget from the start.
+                    settings.growStore = asset.budget == 0;
                     settings.budgetSplats = asset.budget != 0 ? asset.budget
-                                                              : uint64_t{2} * live.chunks * live.format.chunkSplats;
+                                                              : uint64_t{3} * live.chunks * live.format.chunkSplats;
+                    settings.loaders = std::max(asset.liveLoaders, 1u);
                     settings.library = library_.get();
                     // The stage's word, else the producer's (stream_open), else the latest.
                     const uint8_t hint = lod::PageQueue::named(asset.live)->syncHint();
@@ -1423,7 +1433,8 @@ Result<size_t> Engine::commit() {
                                              *device_, std::unique_ptr<lod::ChunkSource>(std::move(*source)), settings)
                                        : Result<std::unique_ptr<lod::StreamingPool>>(source.error());
                     if (pool) {
-                        entry.pool = std::move(*pool);
+                        entry.pool = std::shared_ptr<lod::StreamingPool>(std::move(*pool));
+                        livePools_[asset.live] = entry.pool;
                     } else {
                         log::warn("hdAthenea: {}: {}", id.GetString(), pool.error().toString());
                     }
@@ -1450,7 +1461,7 @@ Result<size_t> Engine::commit() {
             }
             entry.asset = std::move(asset);
         }
-        if (entry.pool != nullptr && !entry.asset.live.empty()) {
+        if (entry.pool != nullptr && !entry.asset.live.empty() && updatedLive.insert(entry.pool.get()).second) {
             // The epochs placed since the last frame, before this frame's
             // cut: it draws the last one whole. A new one is a change any
             // accumulation must start again from.
@@ -1466,6 +1477,8 @@ Result<size_t> Engine::commit() {
                 revision_.fetch_add(1);
                 ++uploaded;
             }
+        } else if (entry.pool != nullptr && !entry.asset.live.empty()) {
+            entry.liveEpoch = entry.pool->status().epoch;   // the prim before it updated the pool they share
         }
         if (entry.asset.any()) {
             // The asset stands in for the prim's own arrays.

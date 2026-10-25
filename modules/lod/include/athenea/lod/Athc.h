@@ -105,6 +105,11 @@ struct StreamingSettings {
     /// epochs wait for their instant at most (LiveSync::Clock).
     LiveSync sync = LiveSync::Latest;
     uint32_t heldEpochs = 8;
+    /// A live source: the store starts at one chunk and grows as the epochs
+    /// sent need it -- room for the shown one and two more -- up to
+    /// `budgetSplats` (then up to three epochs of every chunk). Off, the store
+    /// is its budget from the start.
+    bool     growStore = false;
 };
 
 class StreamingPool {

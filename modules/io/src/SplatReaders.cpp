@@ -259,7 +259,7 @@ SplatEncoding spzEncoding(uint32_t shDim, uint32_t fractionalBits, bool smallest
     enc.colour = SplatEncoding::Colour::SpzByte;
     enc.rotation = smallestThree ? SplatEncoding::Rotation::SmallestThree : SplatEncoding::Rotation::FirstThree;
     enc.rest = SplatEncoding::Rest::Byte;
-    enc.positionScale = 1.0F / static_cast<float>(1u << fractionalBits);
+    enc.positionScale = 1.0F / static_cast<float>(uint64_t{1} << std::min(fractionalBits, 31u));
     enc.flipYZ = flipYZ;
     return enc;
 }
@@ -284,6 +284,12 @@ Result<RawSplats> readSpz(std::span<const uint8_t> bytes, const std::string& sou
     if (packed.usesFloat16()) {
         return Error::make(ErrorCode::Unsupported, "'{}': SPZ float16 positions (a format never released)",
                            source);
+    }
+    // A fixed point past 31 bits is no fixed point a word holds (SPZ stores
+    // 24-bit positions; trainers write 12): the file is broken.
+    if (packed.fractionalBits < 0 || packed.fractionalBits >= 32) {
+        return Error::make(ErrorCode::IoFailure, "'{}': SPZ fixed point of {} fractional bits", source,
+                           packed.fractionalBits);
     }
     // The axes the data is stored in: the coordinate-system extension's, and
     // the format's right-up-back without one. The engine reads right-down-

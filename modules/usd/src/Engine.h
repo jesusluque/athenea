@@ -80,6 +80,7 @@ struct StreamedAsset {
     uint32_t    liveChunkSplats = 65536;
     uint32_t    liveDegree = 3;    ///< harmonics kept, 0..3
     std::string liveSync;          ///< "latest", "clock", or empty: what the producer asked (stream_open)
+    uint32_t    liveLoaders = 4;   ///< threads that read and decompress the pages
     /// The prim's authored `extent` (min xyz, max xyz): the stream's bounds
     /// until an epoch is shown, whose pages' bounds then say.
     bool                 hasExtent = false;
@@ -89,7 +90,8 @@ struct StreamedAsset {
     /// The same pool, whatever the threshold.
     [[nodiscard]] bool sameSource(const StreamedAsset& o) const noexcept {
         return path == o.path && budget == o.budget && live == o.live && liveChunks == o.liveChunks &&
-               liveChunkSplats == o.liveChunkSplats && liveDegree == o.liveDegree && liveSync == o.liveSync;
+               liveChunkSplats == o.liveChunkSplats && liveDegree == o.liveDegree && liveSync == o.liveSync &&
+               liveLoaders == o.liveLoaders;
     }
     bool operator==(const StreamedAsset&) const = default;
 };
@@ -162,7 +164,7 @@ struct SplatEntry {
     std::optional<StreamedAsset>        assetPending;
     StreamedAsset                       asset;
     std::unique_ptr<lod::LodCloud>      lodCloud;   ///< the asset read whole
-    std::unique_ptr<lod::StreamingPool> pool;       ///< or streamed, or live
+    std::shared_ptr<lod::StreamingPool> pool;       ///< or streamed, or live (shared by the prims naming one stream)
     uint64_t                            liveEpoch = 0;   ///< the live pool's epoch last drawn
     /// AtheneaSplatSkinningAPI. The cloud on the device is the bind pose; `posed`
     /// is the same cloud with the skeleton's transforms in it, and is what a
@@ -928,6 +930,9 @@ private:
     };
     PathState                                 pathState_;
     std::function<uint64_t()>                 liveClock_;   ///< under guard_
+    /// The live pool each stream name has: prims that name one stream share
+    /// it, so they show the same epoch in every frame.
+    std::map<std::string, std::weak_ptr<lod::StreamingPool>> livePools_;
     std::atomic<uint64_t>                     revision_{1};   ///< raised by anything a path would see
     /// Frames still to draw before what is gathered is the shutter's: a
     /// shutter changed after the prims synced is answered by dirtying them

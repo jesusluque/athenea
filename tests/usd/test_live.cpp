@@ -274,7 +274,14 @@ TEST_CASE("a clock-synced live stream a stage names shows the epoch of the frame
     std::atomic<uint64_t> instant{0};
     (*renderer)->setLiveClock([&] { return instant.load(); });
 
-    // Every epoch pushed at once, each stamped ahead of the clock.
+    // A frame first, so the stage reads the stream (a stream nobody reads
+    // keeps only its newest complete epoch); then every epoch pushed at
+    // once, each stamped ahead of the clock.
+    {
+        instant = kStep / 2;
+        auto image = (*renderer)->render("/World/Shot", 0.0, settings.width, settings.height);
+        REQUIRE(image);
+    }
     auto queue = lod::PageQueue::named(stream);
     for (uint32_t e = 1; e <= kEpochs; ++e) {
         lod::PageUpdate u;

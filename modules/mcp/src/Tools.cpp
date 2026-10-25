@@ -18,6 +18,8 @@
 #include <fstream>
 #include <optional>
 #include <sstream>
+#include <set>
+#include <random>
 
 #include "athenea/core/Hash.h"
 #include "athenea/core/Platform.h"
@@ -654,91 +656,174 @@ json settingsTool(Session& session, const json& args) {
 // queue before the answer, so the producer may write over them as soon as it
 // has it. This thread only enqueues; the stage's render thread decodes.
 
+namespace {
+
+/// An unsigned integer argument within [least, most], or nothing.
+std::optional<uint64_t> unsignedArg(const json& value, uint64_t least, uint64_t most) {
+    if (!value.is_number_unsigned() && !(value.is_number_integer() && value.get<int64_t>() >= 0)) {
+        return std::nullopt;
+    }
+    const uint64_t v = value.get<uint64_t>();
+    if (v < least || v > most) {
+        return std::nullopt;
+    }
+    return v;
+}
+
+}   // namespace
+
 json streamOpen(Session& session, const json& args) {
-    const std::string name = args.value("name", "");
-    if (name.empty()) {
+    if (!args.contains("name") || !args["name"].is_string() || args["name"].get<std::string>().empty()) {
         return textAnswer("stream_open wants 'name': the stream an AtheneaLiveSourceAPI prim names.", true);
     }
+    const std::string name = args["name"].get<std::string>();
     if (session.streams.count(name) != 0) {
         return textAnswer("stream '" + name + "' is open already; stream_close it first.", true);
     }
-    const uint64_t bytes = args.value("ringBytes", uint64_t{64} << 20);
-    static uint32_t serial = 0;
+    uint64_t bytes = uint64_t{64} << 20;
+    if (args.contains("ringBytes")) {
+        const auto given = unsignedArg(args["ringBytes"], 1, uint64_t{1} << 34);
+        if (!given) return textAnswer("stream_open: 'ringBytes' is a size in bytes, 1 to 16 GiB.", true);
+        bytes = *given;
+    }
+    uint32_t chunks = 64;
+    if (args.contains("chunks")) {
+        const auto given = unsignedArg(args["chunks"], 1, uint64_t{1} << 20);
+        if (!given) return textAnswer("stream_open: 'chunks' is a count from 1.", true);
+        chunks = static_cast<uint32_t>(*given);
+    }
+    std::string sync;
+    if (args.contains("sync")) {
+        sync = args["sync"].is_string() ? args["sync"].get<std::string>() : "?";
+        if (sync != "latest" && sync != "clock") {
+            return textAnswer("stream_open: 'sync' is latest or clock.", true);
+        }
+    }
+    // ONE PRODUCER A STREAM: a second session (or a second server in this
+    // process) that opens a stream another has open is refused.
+    auto queue = lod::PageQueue::named(name);
+    const uint64_t owner = reinterpret_cast<uintptr_t>(&session);
+    if (!queue->claim(owner)) {
+        return textAnswer("stream '" + name + "' is open in another session; it has one producer at a time.", true);
+    }
+    std::shared_ptr<void> claim(nullptr, [queue, owner](void*) { queue->release(owner); });
+    // The ring's name: the stream's hash, this process and a random word, so
+    // no two processes' rings meet -- and a crashed one's (Linux lists them)
+    // is removed.
+    const uint32_t hash = core::murmurHash3x86_32(name);
+    char prefix[24];
+    std::snprintf(prefix, sizeof prefix, "al-%08x-", hash);
+    (void)platform::removeStaleSharedMemory(prefix);
+    static std::mt19937 random{std::random_device{}()};
     char ring[32];
-    std::snprintf(ring, sizeof ring, "athlive-%08x-%u", core::murmurHash3x86_32(name), ++serial);
+    std::snprintf(ring, sizeof ring, "%s%x-%08x", prefix, platform::processId(), static_cast<uint32_t>(random()));
     auto memory = platform::SharedMemory::create(ring, static_cast<size_t>(bytes));
     if (!memory) return textAnswer(errorText(memory.error()), true);
     LiveStream stream;
     stream.ring = std::move(*memory);
-    stream.queue = lod::PageQueue::named(name);
-    const std::string sync = args.value("sync", "");
-    if (!sync.empty() && sync != "latest" && sync != "clock") {
-        return textAnswer("stream_open: 'sync' is latest or clock, not '" + sync + "'.", true);
-    }
-    stream.queue->setSyncHint(sync == "clock" ? 2 : sync == "latest" ? 1 : 0);
-    stream.chunks = args.value("chunks", 64u);
+    stream.queue = queue;
+    stream.chunks = chunks;
+    stream.claim = std::move(claim);
+    queue->setSyncHint(sync == "clock" ? 2 : sync == "latest" ? 1 : 0);
     session.streams.emplace(name, std::move(stream));
     const json answer{{"ring", ring}, {"bytes", bytes}};
     return textAnswer(answer.dump());
 }
 
 json streamCommit(Session& session, const json& args) {
-    const std::string name = args.value("name", "");
+    if (!args.contains("name") || !args["name"].is_string()) {
+        return textAnswer("stream_commit wants 'name'.", true);
+    }
+    const std::string name = args["name"].get<std::string>();
     const auto found = session.streams.find(name);
     if (found == session.streams.end()) {
         return textAnswer("no stream '" + name + "': stream_open it first.", true);
     }
     LiveStream& stream = found->second;
-    const uint64_t epoch = args.value("epoch", uint64_t{0});
-    const json& pages = args.contains("pages") ? args["pages"] : json::array();
-    const uint32_t epochPages = args.value("epochPages", static_cast<uint32_t>(pages.size()));
-    if (epoch == 0 || !pages.is_array() || pages.empty() || epochPages == 0) {
-        return textAnswer("stream_commit wants an 'epoch' from 1 and 'pages'.", true);
+    // An epoch from 1, as an integer and not past 2^62: an epoch of 2^64 - 1
+    // (a -1 read as unsigned) would leave every later one late for good.
+    const auto epoch = args.contains("epoch") ? unsignedArg(args["epoch"], 1, uint64_t{1} << 62) : std::nullopt;
+    if (!epoch) {
+        return textAnswer("stream_commit wants an 'epoch', an integer from 1.", true);
+    }
+    if (!args.contains("pages") || !args["pages"].is_array() || args["pages"].empty()) {
+        return textAnswer("stream_commit wants 'pages', a list of at least one.", true);
+    }
+    const json& pages = args["pages"];
+    uint32_t epochPages = static_cast<uint32_t>(pages.size());
+    if (args.contains("epochPages")) {
+        const auto given = unsignedArg(args["epochPages"], pages.size(), uint64_t{1} << 20);
+        if (!given) {
+            return textAnswer("stream_commit: 'epochPages' is the epoch's pages in all, at least the pages sent.",
+                              true);
+        }
+        epochPages = static_cast<uint32_t>(*given);
     }
     const std::span<std::byte> ring = stream.ring.bytes();
     std::vector<lod::PageUpdate> updates;
+    std::set<uint32_t> chunks;
+    const auto refuse = [](const std::string& why) {
+        return textAnswer(why + "; nothing of the epoch was queued.", true);
+    };
     for (const json& page : pages) {
+        if (!page.is_object()) {
+            return refuse("a page is an object {chunk, op, offset, bytes, bounds, ptpTime}");
+        }
         lod::PageUpdate u;
         u.stream = 0;
-        u.epoch = epoch;
+        u.epoch = *epoch;
         u.pages = epochPages;
-        u.chunk = page.value("chunk", 0u);
-        u.ptpTime = page.value("ptpTime", uint64_t{0});
-        const std::string op = page.value("op", "replace");
+        const auto chunk = page.contains("chunk") ? unsignedArg(page["chunk"], 0, stream.chunks - 1) : std::nullopt;
+        if (!chunk) {
+            return refuse("a page's chunk is an integer below the stream's " + std::to_string(stream.chunks));
+        }
+        u.chunk = static_cast<uint32_t>(*chunk);
+        if (!chunks.insert(u.chunk).second) {
+            return refuse("chunk " + std::to_string(u.chunk) + " twice in one commit");
+        }
+        if (page.contains("ptpTime")) {
+            const auto ptp = unsignedArg(page["ptpTime"], 0, ~uint64_t{0});
+            if (!ptp) return refuse("a page's ptpTime is nanoseconds, an integer from 0");
+            u.ptpTime = *ptp;
+        }
+        const std::string op = page.contains("op") && page["op"].is_string() ? page["op"].get<std::string>()
+                               : page.contains("op")                         ? "?"
+                                                                             : "replace";
+        if (op != "add" && op != "replace" && op != "remove") {
+            return refuse("a page's op is add, replace or remove");
+        }
         u.op = op == "remove" ? lod::PageUpdate::Op::Remove : op == "add" ? lod::PageUpdate::Op::Add
                                                                            : lod::PageUpdate::Op::Replace;
-        if (u.chunk >= stream.chunks) {
-            return textAnswer("chunk " + std::to_string(u.chunk) + " is past the stream's " +
-                                  std::to_string(stream.chunks) + "; nothing of the epoch was queued.",
-                              true);
-        }
-        if (page.contains("bounds") && page["bounds"].is_array() && page["bounds"].size() == 6) {
+        if (page.contains("bounds")) {
+            const json& b = page["bounds"];
+            if (!b.is_array() || b.size() != 6 ||
+                !std::all_of(b.begin(), b.end(), [](const json& v) { return v.is_number(); })) {
+                return refuse("a page's bounds are six numbers");
+            }
             for (size_t k = 0; k < 3; ++k) {
-                u.bounds.min[k] = page["bounds"][k].get<float>();
-                u.bounds.max[k] = page["bounds"][k + 3].get<float>();
+                u.bounds.min[k] = b[k].get<float>();
+                u.bounds.max[k] = b[k + 3].get<float>();
             }
         }
         if (u.op != lod::PageUpdate::Op::Remove) {
-            const uint64_t offset = page.value("offset", uint64_t{0});
-            const uint64_t size = page.value("bytes", uint64_t{0});
-            if (size == 0 || offset > ring.size() || size > ring.size() - offset) {
-                return textAnswer("a page of chunk " + std::to_string(u.chunk) +
-                                      " lies outside the ring; nothing of the epoch was queued.",
-                                  true);
+            const auto offset = page.contains("offset") ? unsignedArg(page["offset"], 0, ring.size()) : std::nullopt;
+            const auto size = page.contains("bytes") ? unsignedArg(page["bytes"], 1, ring.size()) : std::nullopt;
+            if (!offset || !size || *size > ring.size() - *offset) {
+                return refuse("a page of chunk " + std::to_string(u.chunk) + " lies outside the ring");
             }
-            u.bytes.assign(ring.begin() + static_cast<std::ptrdiff_t>(offset),
-                           ring.begin() + static_cast<std::ptrdiff_t>(offset + size));
+            u.bytes.assign(ring.begin() + static_cast<std::ptrdiff_t>(*offset),
+                           ring.begin() + static_cast<std::ptrdiff_t>(*offset + *size));
         }
         updates.push_back(std::move(u));
     }
     for (lod::PageUpdate& u : updates) {
         stream.queue->push(std::move(u));
     }
-    return textAnswer("queued " + std::to_string(updates.size()) + " pages of epoch " + std::to_string(epoch));
+    return textAnswer("queued " + std::to_string(updates.size()) + " pages of epoch " + std::to_string(*epoch));
 }
 
 json streamClose(Session& session, const json& args) {
-    const std::string name = args.value("name", "");
+    const std::string name = args.contains("name") && args["name"].is_string() ? args["name"].get<std::string>() : "";
     if (session.streams.erase(name) == 0) {
         return textAnswer("no stream '" + name + "'.", true);
     }

@@ -853,6 +853,7 @@ struct Epoch {
     uint64_t                 ptpTime = 0;
     std::vector<ChunkChange> changes;
     bool                     late = false;   // counted in lateEpochs already
+    uint64_t                 merged = 1;     // epochs this one stands for (a backlog collapsed by the latest)
 };
 
 /// An epoch started: its pages loading or placed into slots no table in use
@@ -862,6 +863,7 @@ struct Built {
     Epoch                                  e;
     std::vector<int32_t>                   slots;    // per chunk
     std::vector<uint32_t>                  counts;
+    std::vector<int8_t>                    flags;    // per chunk: its page's antialiasing (LodCloud::chunkAntialiased)
     std::vector<scene::Bounds>             bounds;
     std::unordered_map<uint64_t, uint32_t> targets;  // pages not placed: ticket -> slot
     [[nodiscard]] bool placed() const noexcept { return targets.empty(); }
@@ -885,6 +887,8 @@ struct StreamingPool::Impl {
     uint64_t                     frame = 1;
     uint64_t                     budgetBytes = 0;   // StreamingSettings::bytesPerFrame
     LiveSync                     sync = LiveSync::Latest;
+    bool                         grow = false;      // StreamingSettings::growStore
+    uint32_t                     maxSlots = 0;      // what the store may grow to
     uint32_t                     heldEpochs = 8;
     uint64_t                     now = 0;           // the instant a clock-synced frame shows (setClock)
     Status                       counters;
@@ -1030,9 +1034,12 @@ struct StreamingPool::Impl {
 
     /// Frame thread: copies `l` into `slot` -- or, an SPZ page, expands and
     /// decodes it there. Returns the splats the slot now holds.
+    int8_t lastFlag = -1;   // the antialiasing of the page placeLoaded last placed (-1: said nothing)
+
     Result<uint32_t> placeLoaded(gpu::CommandBatch& batch, const Loaded& l, uint32_t slot) {
         const uint64_t from = uint64_t{l.staging} * stride;
         uint32_t splats = l.request.splats;
+        lastFlag = -1;
         if (format.payload == ChunkFormat::Payload::Spz) {
             auto placed = placeSpz(batch, l, slot, from);
             if (!placed) return std::move(placed).error();
@@ -1087,7 +1094,7 @@ struct StreamingPool::Impl {
         ATHENEA_TRY(spzLoader->decodeInto(batch, scratch.records, e, h.count, static_cast<uint32_t>(at), keep,
                                           cloud.splats, scratch.decode));
         batch.markDirty();
-        cloud.splats.antialiased = h.antialiased != 0;
+        lastFlag = h.antialiased != 0 ? int8_t{1} : int8_t{0};   // the page's own, shown with its epoch
         return h.count;
     }
 
@@ -1101,6 +1108,7 @@ struct StreamingPool::Impl {
     Result<uint32_t> updateLive(bool wait, uint64_t budget);
     enum class Start { Started, Wait, Dropped };
     [[nodiscard]] std::vector<uint32_t> freeSlots() const;
+    Result<void>     growStore(uint32_t slots);
     Result<Start>    startEpoch();
     void             abandonFrom(size_t index, const Error& why);
     void             flip(gpu::CommandBatch& batch, size_t index);
@@ -1138,6 +1146,7 @@ Result<std::unique_ptr<StreamingPool>> StreamingPool::open(gpu::Device& device, 
     Impl& p = *pool->impl_;
     p.frameThread.bind();
     p.device = &device;
+    p.grow = settings.growStore && source->live();
     p.source = std::move(source);
     p.format = p.source->format();
     p.extra = extraOf(p.format);
@@ -1149,16 +1158,20 @@ Result<std::unique_ptr<StreamingPool>> StreamingPool::open(gpu::Device& device, 
     auto cloud = p.source->openCloud(device);
     if (!cloud) return std::move(cloud).error();
     p.cloud = std::move(*cloud);
-    // A live store holds the epoch shown and the one being built beside it.
-    const uint64_t most = p.live ? uint64_t{2} * chunks : chunks;
-    const uint32_t slots =
+    // A live store holds the epoch shown and the one being built beside it --
+    // and, grown as epochs need it, a third so the next loads meanwhile.
+    const uint64_t most = p.live ? uint64_t{p.grow ? 3u : 2u} * chunks : chunks;
+    const uint32_t budgeted =
         static_cast<uint32_t>(std::clamp<uint64_t>(settings.budgetSplats / p.format.chunkSplats, 1, most));
+    p.maxSlots = budgeted;
+    const uint32_t slots = p.grow ? 1u : budgeted;
     ATHENEA_TRY(makeStore(device, p.cloud, p.format, p.cloud.count, chunks, slots,
                           p.live ? p.cloud.splats.bounds : p.source->bounds(0), p.source->name()));
     p.cloud.streamed = true;
     if (p.live) {
         // Nothing shown yet: every chunk empty until an epoch says otherwise.
         p.cloud.chunkCounts.assign(chunks, 0);
+        p.cloud.chunkAntialiased.assign(chunks, -1);
         p.cloud.splats.count = static_cast<uint32_t>(uint64_t{slots} * p.format.chunkSplats);
     }
     p.owner.assign(slots, -1);
@@ -1449,6 +1462,50 @@ std::vector<uint32_t> StreamingPool::Impl::freeSlots() const {
     return free;
 }
 
+Result<void> StreamingPool::Impl::growStore(uint32_t slots) {
+    // New buffers of `slots` chunks, what the old held copied to their start
+    // on the device (the queue orders it before anything placed after), and
+    // the old let go: a frame already recorded keeps them while it runs.
+    const uint32_t old = static_cast<uint32_t>(owner.size());
+    LodCloud grown;
+    grown.chunkSplats = cloud.chunkSplats;
+    ATHENEA_TRY(makeStore(*device, grown, format, cloud.count, cloud.chunks(), slots, cloud.splats.bounds,
+                          source->name()));
+    const uint64_t n = uint64_t{old} * format.chunkSplats;
+    gpu::CommandBatch batch(*device);
+    rhi::ICommandEncoder* e = batch.encoder();
+    const auto copy = [&](const gpu::Buffer& from, const gpu::Buffer& to, uint64_t perSplat) {
+        if (from.valid() && to.valid()) {
+            e->copyBuffer(to.rhi(), 0, from.rhi(), 0, n * perSplat);
+        }
+    };
+    copy(cloud.splats.positions, grown.splats.positions, 16);
+    copy(cloud.splats.shape, grown.splats.shape, 16);
+    copy(cloud.splats.sh, grown.splats.sh, 4 * uint64_t{format.shWords});
+    copy(cloud.groups, grown.groups, 4);
+    copy(cloud.splats.normals, grown.splats.normals, 4);
+    copy(cloud.splats.emission, grown.splats.emission, 4);
+    for (const auto& [member, words] : extrasOf(extra)) {
+        copy(cloud.splats.*member, grown.splats.*member, 4 * uint64_t{words});
+    }
+    if (cloud.splats.origin.valid()) {
+        auto origin = deviceBuffer(*device, uint64_t{slots} * format.chunkSplats, 4, "stream.origin");
+        if (!origin) return std::move(origin).error();
+        grown.splats.origin = std::move(*origin);
+    }
+    batch.markDirty();
+    ATHENEA_TRY(batch.submit());
+    const std::optional<bool> antialiased = cloud.splats.antialiased;
+    cloud.splats = std::move(grown.splats);
+    cloud.splats.antialiased = antialiased;
+    cloud.splats.count = static_cast<uint32_t>(uint64_t{slots} * format.chunkSplats);
+    cloud.groups = std::move(grown.groups);
+    owner.resize(slots, -1);
+    counters.slots = slots;
+    log::info("{}: live store grown from {} to {} slots", source->name(), old, slots);
+    return ok();
+}
+
 Result<StreamingPool::Impl::Start> StreamingPool::Impl::startEpoch() {
     const Epoch& e = incoming.front();
     const uint32_t chunks = cloud.chunks();
@@ -1465,6 +1522,15 @@ Result<StreamingPool::Impl::Start> StreamingPool::Impl::startEpoch() {
         }
     }
     std::vector<uint32_t> free = freeSlots();
+    if (needed > free.size() && grow && owner.size() < maxSlots) {
+        // Room for this epoch and as much again beside what is in use: the
+        // store follows what the stream sends, up to its budget.
+        const size_t used = owner.size() - free.size();
+        const auto want = static_cast<uint32_t>(
+            std::min<uint64_t>(maxSlots, std::max<uint64_t>(owner.size() * 2, used + 2 * needed)));
+        ATHENEA_TRY(growStore(want));
+        free = freeSlots();
+    }
     if (needed > free.size()) {
         if (!built.empty()) {
             return Start::Wait;   // room comes when an epoch ahead of it is shown
@@ -1487,6 +1553,7 @@ Result<StreamingPool::Impl::Start> StreamingPool::Impl::startEpoch() {
     b.slots = built.empty() ? cloud.slots : built.back().slots;
     b.counts = built.empty() ? cloud.chunkCounts : built.back().counts;
     b.bounds = built.empty() ? shownBounds : built.back().bounds;
+    b.flags = built.empty() ? cloud.chunkAntialiased : built.back().flags;
     {
         std::lock_guard lock(mutex);
         for (const ChunkChange& c : e.changes) {
@@ -1494,8 +1561,10 @@ Result<StreamingPool::Impl::Start> StreamingPool::Impl::startEpoch() {
             if (c.op == ChunkChange::Op::Remove) {
                 b.slots[chunk] = -1;
                 b.counts[chunk] = 0;
+                b.flags[chunk] = -1;
                 continue;
             }
+            b.flags[chunk] = -1;   // until its page is placed and says
             const uint32_t slot = free.back();
             free.pop_back();
             b.slots[chunk] = static_cast<int32_t>(slot);
@@ -1556,6 +1625,7 @@ void StreamingPool::Impl::flip(gpu::CommandBatch& batch, size_t index) {
     }
     cloud.slots = b.slots;
     cloud.chunkCounts = b.counts;
+    cloud.chunkAntialiased = b.flags;
     shownBounds = b.bounds;
     // The cloud's bounds, the union of its shown pages' (bookkeeping on what
     // the producers said); a page that said none (all zero) is left out, and
@@ -1581,7 +1651,9 @@ void StreamingPool::Impl::flip(gpu::CommandBatch& batch, size_t index) {
     }
     counters.epoch = b.e.id;
     counters.ptpTime = b.e.ptpTime;
-    counters.epochs += index + 1;
+    for (size_t k = 0; k <= index; ++k) {
+        counters.epochs += built[k].e.merged;
+    }
     built.erase(built.begin(), built.begin() + static_cast<std::ptrdiff_t>(index) + 1);
 }
 
@@ -1609,16 +1681,41 @@ Result<uint32_t> StreamingPool::Impl::updateLive(bool wait, uint64_t budget) {
             ++counters.droppedHeld;
         }
     }
+    if (sync == LiveSync::Latest && incoming.size() > 1) {
+        // A BACKLOG BY THE LATEST: the epochs waiting are one change on the
+        // shown, each chunk's last -- so they are collapsed into one, the
+        // newest, and the pages it replaces are never fetched.
+        Epoch all;
+        std::map<uint32_t, ChunkChange> last;
+        all.merged = 0;
+        for (Epoch& e : incoming) {
+            for (ChunkChange& c : e.changes) {
+                auto it = last.find(c.request.chunk);
+                if (it != last.end() && it->second.op != ChunkChange::Op::Remove) {
+                    source->discard(it->second.request);
+                }
+                last[c.request.chunk] = std::move(c);
+            }
+            all.id = e.id;
+            all.ptpTime = e.ptpTime;
+            all.merged += e.merged;
+        }
+        for (auto& [chunk, c] : last) {
+            all.changes.push_back(std::move(c));
+        }
+        incoming.clear();
+        incoming.push_back(std::move(all));
+    }
     uint32_t placed = 0;
     uint64_t placedBytes = 0;
     uint32_t deferred = 0;
     gpu::CommandBatch batch(*device);
     for (;;) {
-        // START what may start: by the latest one at a time, as before; by
-        // the clock every epoch in order, ahead of its instant, while the
-        // store has room for it beside the tables in use.
+        // START what may start: every epoch in order -- by the clock ahead of
+        // its instant -- while the store has room for it beside the tables in
+        // use, so the next one loads while one is placed.
         bool progress = false;
-        while (!incoming.empty() && (sync == LiveSync::Clock || built.empty())) {
+        while (!incoming.empty()) {
             auto started = startEpoch();
             if (!started) return std::move(started).error();
             if (*started == Start::Wait) {
@@ -1657,11 +1754,24 @@ Result<uint32_t> StreamingPool::Impl::updateLive(bool wait, uint64_t budget) {
             Built& b = built[owner];
             const uint32_t slot = b.targets[l.request.ticket];
             auto splats = placeLoaded(batch, l, slot);
-            if (!splats) return std::move(splats).error();
+            if (!splats) {
+                // A page the pool cannot place (an unreadable staged header,
+                // an allocation refused): its epoch is dropped as one with a
+                // page that cannot be read, its staging slot given back, and
+                // the other pages of this update placed as they come. The
+                // slot goes back when the fence passes: a copy may have been
+                // recorded out of it before the refusal.
+                retiring.emplace_back(l.staging, fenceValue + 1);
+                recorded = true;
+                std::lock_guard lock(mutex);
+                failedPages.emplace_back(l.request.ticket, std::move(splats).error());
+                continue;
+            }
             // Its count, in its table and in every later one that kept it.
             for (size_t k = owner; k < built.size(); ++k) {
                 if (built[k].slots[l.request.chunk] == static_cast<int32_t>(slot)) {
                     built[k].counts[l.request.chunk] = *splats;
+                    built[k].flags[l.request.chunk] = lastFlag;
                 }
             }
             b.targets.erase(l.request.ticket);

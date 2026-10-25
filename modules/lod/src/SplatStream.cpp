@@ -5,6 +5,7 @@
 #include <cstring>
 #include <string>
 #include <map>
+#include <set>
 
 #include "athenea/core/Log.h"
 #include "athenea/io/Readers.h"
@@ -14,21 +15,105 @@ namespace athenea::lod {
 
 void PageQueue::push(PageUpdate page) {
     std::lock_guard lock(mutex_);
-    pending_[page.stream].push_back(std::move(page));
+    Reader* last = nullptr;
+    for (auto& [id, reader] : readers_) {
+        if (reader.stream != page.stream) {
+            continue;
+        }
+        if (last != nullptr) {
+            last->pages.push_back(page);   // a copy for each reader but the last
+        }
+        last = &reader;
+    }
+    if (last != nullptr) {
+        last->pages.push_back(std::move(page));
+        return;
+    }
+    // NOBODY READS IT: kept, but only the newest complete epoch (a page for
+    // as many distinct chunks as it says) and what came after it. A reader
+    // that comes wants the latest, not what was pushed while it was away.
+    std::vector<PageUpdate>& kept = unread_[page.stream];
+    kept.push_back(std::move(page));
+    std::map<uint64_t, std::pair<uint32_t, std::set<uint32_t>>> epochs;   // epoch: pages said, chunks
+    for (const PageUpdate& p : kept) {
+        auto& e = epochs[p.epoch];
+        e.first = p.pages;
+        e.second.insert(p.chunk);
+    }
+    uint64_t newestComplete = 0;
+    for (const auto& [epoch, e] : epochs) {
+        if (e.second.size() >= e.first) {
+            newestComplete = epoch;
+        }
+    }
+    if (newestComplete != 0) {
+        kept.erase(std::remove_if(kept.begin(), kept.end(),
+                                  [&](const PageUpdate& p) { return p.epoch < newestComplete; }),
+                   kept.end());
+    }
+}
+
+uint64_t PageQueue::subscribe(uint32_t stream) {
+    std::lock_guard lock(mutex_);
+    const uint64_t id = nextReader_++;
+    Reader& reader = readers_[id];
+    reader.stream = stream;
+    if (auto it = unread_.find(stream); it != unread_.end()) {
+        reader.pages = std::move(it->second);
+        unread_.erase(it);
+    }
+    return id;
+}
+
+void PageQueue::unsubscribe(uint64_t reader) {
+    std::lock_guard lock(mutex_);
+    readers_.erase(reader);
+}
+
+void PageQueue::read(uint64_t reader, std::vector<PageUpdate>& out) {
+    std::vector<PageUpdate> taken;
+    {
+        std::lock_guard lock(mutex_);
+        const auto it = readers_.find(reader);
+        if (it == readers_.end()) {
+            return;
+        }
+        taken.swap(it->second.pages);
+    }
+    for (PageUpdate& p : taken) {
+        out.push_back(std::move(p));
+    }
 }
 
 void PageQueue::drain(uint32_t stream, std::vector<PageUpdate>& out) {
     std::vector<PageUpdate> taken;
     {
         std::lock_guard lock(mutex_);
-        const auto it = pending_.find(stream);
-        if (it == pending_.end()) {
+        const auto it = unread_.find(stream);
+        if (it == unread_.end()) {
             return;
         }
         taken.swap(it->second);
+        unread_.erase(it);
     }
     for (PageUpdate& p : taken) {
         out.push_back(std::move(p));
+    }
+}
+
+bool PageQueue::claim(uint64_t owner) {
+    std::lock_guard lock(mutex_);
+    if (owner_ != 0 && owner_ != owner) {
+        return false;
+    }
+    owner_ = owner;
+    return true;
+}
+
+void PageQueue::release(uint64_t owner) {
+    std::lock_guard lock(mutex_);
+    if (owner_ == owner) {
+        owner_ = 0;
     }
 }
 
@@ -58,6 +143,7 @@ struct Gathering {
 
 struct LiveSource::Impl {
     std::shared_ptr<PageQueue> queue;
+    uint64_t                   reader = 0;   // this source's subscription to the queue
     LiveSettings               settings;
 
     // Frame thread (poll).
@@ -73,7 +159,11 @@ struct LiveSource::Impl {
 };
 
 LiveSource::LiveSource() : impl_(std::make_unique<Impl>()) {}
-LiveSource::~LiveSource() = default;
+LiveSource::~LiveSource() {
+    if (impl_ && impl_->queue) {
+        impl_->queue->unsubscribe(impl_->reader);
+    }
+}
 
 Result<std::unique_ptr<LiveSource>> LiveSource::create(std::shared_ptr<PageQueue> queue,
                                                        const LiveSettings& settings) {
@@ -89,6 +179,7 @@ Result<std::unique_ptr<LiveSource>> LiveSource::create(std::shared_ptr<PageQueue
     }
     std::unique_ptr<LiveSource> source(new LiveSource());
     source->impl_->queue = std::move(queue);
+    source->impl_->reader = source->impl_->queue->subscribe(settings.stream);
     source->impl_->settings = settings;
     source->impl_->bounds.assign(settings.chunks, settings.bounds);
     return source;
@@ -214,7 +305,7 @@ void LiveSource::discard(const ChunkRequest& request) {
 void LiveSource::poll(std::vector<ChunkChange>& out) {
     Impl& s = *impl_;
     std::vector<PageUpdate> pages;
-    s.queue->drain(s.settings.stream, pages);
+    s.queue->read(s.reader, pages);
     uint64_t accepted = 0, refused = 0, late = 0, dropped = 0, epochs = 0;
     for (PageUpdate& page : pages) {
         if (const auto checked = check(page, s.settings); !checked) {
@@ -244,7 +335,9 @@ void LiveSource::poll(std::vector<ChunkChange>& out) {
     // when complete, and dropped when not.
     uint64_t complete = 0;
     for (const auto& [epoch, g] : s.gathering) {
-        if (g.received >= g.pages) {
+        // Whole when it has a page for as many distinct chunks as it said:
+        // a page sent twice for one chunk replaces, and is not counted twice.
+        if (g.byChunk.size() >= g.pages) {
             complete = epoch;
         }
     }
@@ -253,9 +346,9 @@ void LiveSource::poll(std::vector<ChunkChange>& out) {
     const uint64_t per = s.settings.format.elementBytes();
     for (auto it = s.gathering.begin(); it != s.gathering.end() && it->first <= complete;) {
         Gathering& g = it->second;
-        if (g.received < g.pages) {
+        if (g.byChunk.size() < g.pages) {
             log::warn("{}: epoch {} dropped with {} of its {} pages: epoch {} came whole first", s.settings.name,
-                      it->first, g.received, g.pages, complete);
+                      it->first, g.byChunk.size(), g.pages, complete);
             ++dropped;
         } else {
             for (auto& [chunk, page] : g.byChunk) {
