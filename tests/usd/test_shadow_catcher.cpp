@@ -17,6 +17,7 @@
 #include <numbers>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <pxr/base/plug/registry.h>
@@ -282,24 +283,30 @@ TEST_CASE("a shadow catcher takes a distant light through its bits, with or with
 }
 
 // A FAINT SHADOW IS DRAWN SMOOTH. A 15 degree cone leaves 0.93 of the dome,
-// an opacity of about 0.015 a gaussian: drawn whole (two pixels a sigma),
-// none of them is near what the blend drops, so none is thinned to a lot --
-// which drew them as a grain of three-per-cent dots. The frame with the
-// catcher is the frame without it scaled by what it leaves, pixel by pixel.
+// a 5 degree one 0.992: opacities of about 0.015 and 0.0012 a gaussian, the
+// second under the 1/255 every other splat is cut at. Drawn whole (two pixels
+// a sigma), neither is dropped and neither is thinned to a lot of dots at a
+// floor -- which drew them as grain. The frame with the catcher is the frame
+// without it scaled by what it leaves, pixel by pixel, as radiance.
 TEST_CASE("a faint shadow catcher whose gaussians are drawn whole darkens smoothly, not as grain",
           "[usd][gpu][splat][catcher]") {
     ATHENEA_REQUIRE_GPU(gpu);
-    const Pair pair = shots(*gpu, "faint_cone", 15.0, kDome);
-    const double under = middle(*gpu, pair.without);
-    REQUIRE(under > 0.05);
-    const double ratio = middle(*gpu, pair.with) / under;
-    const double expected = 1.0 - coneShare(15.0);
-    INFO("a 15 degree cone closed: " << ratio << " against " << expected);
-    CHECK(std::abs(ratio - expected) < 0.02);
-    const gpu::Buffer even = scaled(*gpu, pair.without, static_cast<float>(ratio));
-    auto diff = render::compareImages(*gpu->library, pair.with, even, kWidth, kHeight);
-    REQUIRE(diff);
-    INFO("against the backdrop scaled by it: p99 " << diff->p99 << ", max " << diff->max << ", over 2 "
-                                                  << diff->over2);
-    CHECK(diff->p99 <= 2);
+    for (const auto& [degrees, within] : {std::pair{15.0, 0.01}, std::pair{5.0, 0.002}}) {
+        const Pair pair = shots(*gpu, "faint_cone_" + std::to_string(static_cast<int>(degrees)), degrees, kDome);
+        const double under = middle(*gpu, pair.without);
+        REQUIRE(under > 0.05);
+        const double ratio = middle(*gpu, pair.with) / under;
+        const double expected = 1.0 - coneShare(degrees);
+        INFO("a " << degrees << " degree cone closed: " << ratio << " against " << expected);
+        CHECK(std::abs(ratio - expected) < within);
+        const gpu::Buffer even = scaled(*gpu, pair.without, static_cast<float>(ratio));
+        auto codes = render::compareImages(*gpu->library, pair.with, even, kWidth, kHeight);
+        REQUIRE(codes);
+        auto hdr = render::compareHdr(*gpu->library, pair.with, even, kWidth, kHeight);
+        REQUIRE(hdr);
+        INFO("against the backdrop scaled by it: p99 " << codes->p99 << ", max " << codes->max << ", relMSE "
+                                                      << hdr->relMse);
+        CHECK(codes->p99 <= 1);
+        CHECK(hdr->relMse < 2.0e-6);
+    }
 }

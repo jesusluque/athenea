@@ -380,6 +380,8 @@ private:
     /// A transfer cloud's view-independent terms, a splat each, kept while
     /// the lights, the sky, the cloud and its place stand (`txCaches_`).
     gpu::ComputeKernel viewless_;
+    /// A shadow catcher's share, a gaussian each, kept the same way.
+    gpu::ComputeKernel catcherViewless_;
     gpu::ComputeKernel flatten_;
     gpu::ComputeKernel flattenCatcher_;
     gpu::Buffer        emptyFlat_;   ///< bound where a frame flattens nothing

@@ -80,6 +80,7 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(r.projectCatcher_, "athenea/splat/splat_project", "splatProjectCatcher"));
     ATHENEA_TRY(make(r.projectLightCatcher_, "athenea/splat/splat_project", "splatProjectLightCatcher"));
     ATHENEA_TRY(make(r.viewless_, "athenea/splat/splat_project", "splatTransferViewless"));
+    ATHENEA_TRY(make(r.catcherViewless_, "athenea/splat/splat_project", "splatCatcherViewless"));
     ATHENEA_TRY(make(r.compact_, "athenea/splat/splat_compact", "splatCompact"));
     ATHENEA_TRY(make(r.pointsProject_, "athenea/splat/points_project", "pointsProject"));
     auto placeholderColour = buffer(*r.device_, 1, 16, "blend.noUnderColour");
@@ -440,8 +441,10 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         // they depend on moved -- the lights, the sky, the cloud, its place.
         TxCache* kept = nullptr;
         bool keep = false;
-        if (txCells && !instance.catcher && !instance.lightCatcher && instance.relight && lights != nullptr && lights->revision != 0 &&
-            lights->environment()) {
+        // A shadow catcher keeps its share the same way (splatCatcherViewless),
+        // under any lights: a distant light alone shadows it.
+        if (txCells && !instance.lightCatcher && instance.relight && lights != nullptr && lights->revision != 0 &&
+            (instance.catcher || lights->environment())) {
             uint64_t key = lights->revision * 0x9E3779B97F4A7C15ULL;
             const auto mix = [&key](uint64_t v) { key = (key ^ v) * 0x100000001B3ULL; };
             mix(cloud->revision);
@@ -449,6 +452,8 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             mix(reinterpret_cast<uintptr_t>(cloud->transfer.rhi()));
             mix(reinterpret_cast<uintptr_t>(cloud->positions.rhi()));
             mix(instance.transferIndirect ? 1u : 0u);
+            mix(instance.categories);   // which lights reach it
+            mix(instance.catcher ? 1u : 0u);
             for (float v : instance.objectToWorld.rows3x4()) {
                 uint32_t bits = 0;
                 std::memcpy(&bits, &v, 4);
@@ -649,7 +654,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             // shaded from every direction by the projection's own shading.
             if (kept != nullptr && keep) {
                 viewless = true;
-                viewless_.dispatch(batch, {cloud->count, 1, 1}, bindProject);
+                (instance.catcher ? catcherViewless_ : viewless_).dispatch(batch, {cloud->count, 1, 1}, bindProject);
                 viewless = false;
                 ATHENEA_TRY(batch.submit(true));
             }
@@ -678,7 +683,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         }
         if (kept != nullptr && keep) {
             viewless = true;
-            viewless_.dispatch(batch, {cloud->count, 1, 1}, bindProject);
+            (instance.catcher ? catcherViewless_ : viewless_).dispatch(batch, {cloud->count, 1, 1}, bindProject);
             viewless = false;
         }
         project.dispatch(batch, {cloud->count, 1, 1}, bindProject);

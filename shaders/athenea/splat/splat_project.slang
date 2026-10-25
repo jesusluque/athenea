@@ -149,23 +149,24 @@ float3 lampLight(uint i) {
     return sum;
 }
 
-/// A catcher gaussian drawn under kCatcherThin -- one the blend would drop,
-/// or keep only the middle of -- is thinned: drawn at kCatcherFloor by a lot,
-/// or not at all (projectSplat).
-static const float kCatcherThin = 2.0 / 255.0;
-static const float kCatcherFloor = 4.0 / 255.0;
+/// The least opacity a catcher's gaussian is drawn at. A catcher is not held
+/// to the 1/255 every other splat is cut at, in the projection or in the
+/// blend (kCatcherMark): a shadow of a few tenths of a per cent over a whole
+/// patch is a gaussian of that opacity at every cell, and it is drawn whole,
+/// out to three sigmas.
+static const float kCatcherLeast = 1.0e-5;
 
 /// THE OPACITY THAT LEAVES `ratio` OF WHAT IS BEHIND THE LAYER, measured
 /// rather than modelled: over a square lattice of gaussians sigma = 1 cell
-/// wide, each of opacity a, composited as the blend composites -- the
-/// product of (1 - a g), each term dropped below 1/255 -- the mean
-/// transmission over a cell, inverted at eight ratios (scratch lattice.py,
-/// task PLAY-G) and read here between them in ln(ratio). -ln(ratio) / 2 pi,
-/// the exponential's own, is a product of exp(-a g): the darker the shadow
-/// the further 1 - a g falls below that, 8% dark at a ratio of 0.2.
+/// wide, each of opacity a, composited as the blend composites a catcher --
+/// the product of (1 - a g) out to three sigmas, nothing dropped -- the mean
+/// transmission over a cell, inverted at eight ratios (task PLAY-G) and read
+/// here between them in ln(ratio). Faint, it is the exponential's own,
+/// -ln(ratio) / 2 pi; the darker the shadow the further 1 - a g falls below
+/// exp(-a g), 8% dark at a ratio of 0.2.
 float catcherAlphaFor(float ratio) {
     static const float kLn[8] = { -0.0513, -0.2231, -0.5108, -0.9163, -1.6094, -2.3026, -2.9957, -3.9120 };
-    static const float kA[8]  = { 0.0121, 0.0390, 0.0835, 0.1443, 0.2434, 0.3368, 0.4244, 0.5315 };
+    static const float kA[8]  = { 0.00824, 0.03558, 0.08051, 0.14203, 0.24233, 0.33663, 0.42501, 0.53292 };
     const float l = log(max(ratio, 1.0e-4));
     if (l >= kLn[0]) {
         return kA[0] * l / kLn[0];
@@ -177,6 +178,28 @@ float catcherAlphaFor(float ratio) {
         }
     }
     return saturate(kA[7] + (l - kLn[7]) * (kA[7] - kA[6]) / (kLn[7] - kLn[6]));
+}
+
+/// HOW OPEN A CATCHER GAUSSIAN IS AT A POINT `uv` OF THE OCTAHEDRAL SQUARE:
+/// the four cells about it, weighed bilinearly, those whose centre lies
+/// behind the surface `n` left out (splatCellsOpen); one where none is left.
+float catcherOpenAt(uint base, uint side, float2 uv, float3 n) {
+    const float2 at = uv * float(side) - 0.5;
+    const float2 lo = floor(at);
+    const float2 f = at - lo;
+    float open = 0.0;
+    float weight = 0.0;
+    [unroll] for (uint k = 0; k < 4; ++k) {
+        const int2 c = clamp(int2(lo) + int2(k & 1, k >> 1), int2(0), int2(int(side) - 1));
+        const float wk = ((k & 1) != 0 ? f.x : 1.0 - f.x) * ((k >> 1) != 0 ? f.y : 1.0 - f.y);
+        if (wk <= 0.0 || dot(octDecode((float2(c) + 0.5) / float(side)), n) <= 0.0) {
+            continue;
+        }
+        const uint index = uint(c.y) * side + uint(c.x);
+        open += wk * float((shadowBits[base + (index >> 5u)] >> (index & 31u)) & 1u);
+        weight += wk;
+    }
+    return weight > 0.0 ? open / weight : 1.0;
 }
 
 /// WHAT THE OBJECT TOOK OF THE LIGHT REACHING A CATCHER GAUSSIAN, as the
@@ -254,7 +277,8 @@ float catcherOpacity(uint i, float3 position, float3x3 r, float3 scale, float op
                     radiance += sky[k] * envBasisValue(k, d);
                 }
             } else {
-                radiance = dot(envRadiance(environment.texels, dome, transferBack(inCloud, d), cellRoughness, params.envBaseSide), luma);
+                radiance = dot(envRadiance(environment.texels, dome, transferBack(inCloud, d), cellRoughness,
+                                           params.envBaseSide), luma);
             }
             const float l1 = abs(d.x) + abs(d.y) + abs(d.z);
             const float worth = max(radiance, 0.0) * cosine * (4.0 / float(side * side)) * l1 * l1 * l1;
@@ -267,23 +291,8 @@ float catcherOpacity(uint i, float3 position, float3x3 r, float3 scale, float op
             const float facing = max(dot(n, disc.xyz), 0.0);
             const float sun = dot(environment.sun[dome * 2 + 1].rgb, luma) * facing;   // irradiance, as `worth` is
             // The sun's open share: its four cells about its direction, weighed
-            // bilinearly, those behind the surface left out (splatCellsOpen).
-            const float2 at = octEncode(disc.xyz) * float(side) - 0.5;
-            const float2 lo = floor(at);
-            const float2 f = at - lo;
-            float open = 0.0;
-            float weight = 0.0;
-            [unroll] for (uint k = 0; k < 4; ++k) {
-                const int2 c = clamp(int2(lo) + int2(k & 1, k >> 1), int2(0), int2(int(side) - 1));
-                const float wk = ((k & 1) != 0 ? f.x : 1.0 - f.x) * ((k >> 1) != 0 ? f.y : 1.0 - f.y);
-                if (wk <= 0.0 || dot(octDecode((float2(c) + 0.5) / float(side)), n) <= 0.0) {
-                    continue;
-                }
-                const uint index = uint(c.y) * side + uint(c.x);
-                open += wk * float((shadowBits[base + (index >> 5u)] >> (index & 31u)) & 1u);
-                weight += wk;
-            }
-            with += sun * (weight > 0.0 ? open / weight : 1.0);
+            // bilinearly, those behind the surface left out.
+            with += sun * catcherOpenAt(base, side, octEncode(disc.xyz), n);
             without += sun;
         }
     }
@@ -616,7 +625,10 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     const bool surfel = params.surfels != 0 && isSurfel(scale) && params.motion == 0 &&
                         !(params.lensRadius > 0.0 && !ortho);
     if (kTransfer == kProjectCatcher) {
-        posOpacity.w = catcherOpacity(i, posOpacity.xyz, r, scale, posOpacity.w);
+        // What the object takes depends on the lights and not on the eye:
+        // kept a gaussian each while they stand (splatCatcherViewless).
+        posOpacity.w = params.txCache != 0 ? posOpacity.w * asfloat(txCache[i].x)
+                                           : catcherOpacity(i, posOpacity.xyz, r, scale, posOpacity.w);
     }
     // A THIN SHEET OF GLASS IS DRAWN AS A LAYER. Its gaussians cover what the
     // sheet reflects head on -- 0.0055 for a windshield at 1.16 -- and carry
@@ -667,37 +679,30 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     }
     // An opacity over 1 is Spark's harder kernel (frame's falloffAlpha), drawn
     // as it is: no mip filter pays it back.
-    const float alphaOwn = sheet   ? paid * max(posOpacity.w - 1.0 / 255.0, 0.0)
+    // A catcher, cut at three sigmas and not at 1/255, keeps its energy at
+    // `paid * alpha` with nothing to pay back.
+    const float alphaOwn = kTransfer == kProjectCatcher ? paid * posOpacity.w
+                           : sheet   ? paid * max(posOpacity.w - 1.0 / 255.0, 0.0)
                            : posOpacity.w > 1.0 ? posOpacity.w
                            : surfel ? posOpacity.w * surfelPaid
                                     : paidOpacity(posOpacity.w, paid);
     float alpha = sheet ? max(alphaOwn, kSheetAlpha) : alphaOwn;
-    // A FAINT CATCHER IS THINNED, NOT CULLED. Far from the object the
-    // shadow is a few per cent -- the Corvette's open ground loses 5% of its
-    // sky to the car's flank -- and at a grazing view the antialias's payment
-    // takes such a gaussian under the 1/255 the cull and the blend drop: the
-    // whole faint shadow went. Black has no colour to scale up, as a sheet's
-    // has, so a catcher gaussian drawn under kCatcherThin is drawn at
-    // kCatcherFloor by a lot (a hash of its index) with probability its
-    // opacity over that: the same coverage in the mean, where a faint layer's
-    // coverages add. Only those: a gaussian drawn whole at a faint opacity
-    // the blend keeps is drawn as it is. Thinned from 0.03 down, a pawn's
-    // faint halo, two pixels a gaussian, came out a grain of dots a few per
-    // cent dark.
-    if (kTransfer == kProjectCatcher && alpha > 0.0 && alpha < kCatcherThin) {
-        uint h = i * 747796405u + 2891336453u;
-        h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
-        h = (h >> 22u) ^ h;
-        alpha = float(h >> 8) * (1.0 / 16777216.0) < alpha / kCatcherFloor ? kCatcherFloor : 0.0;
-    }
-    if (!(alpha >= 1.0 / 255.0)) {
+    // A FAINT CATCHER IS DRAWN, NOT CULLED. Far from the object the shadow
+    // is a few per cent or less -- the Corvette's open ground loses 5% of its
+    // sky to the car's flank, a pawn's lamps' shadows a few tenths of one --
+    // and the 1/255 every other splat is cut at took it whole, or, at a
+    // grazing view, after the antialias's payment. Thinned to a lot of
+    // fainter ones drawn at a floor, it was a grain of dots across the patch.
+    // A catcher is kept down to kCatcherLeast, out to three sigmas, and the
+    // blend does not cut it either (kCatcherMark).
+    if (!(alpha >= (kTransfer == kProjectCatcher ? kCatcherLeast : 1.0 / 255.0))) {
         cull(slot, kCullFaint);
         return;
     }
     const float3 bound = surfel ? float3(a * 2.25 + 0.5, b * 2.25, c * 2.25 + 0.5) : float3(a, b, c);
     const float boundDet = bound.x * bound.z - bound.y * bound.y;
     const float3 conic = float3(bound.z / boundDet, -bound.y / boundDet, bound.x / boundDet);
-    const float cutoff = alpha > 1.0 ? falloffCutoff(alpha) : cutoffPower(alpha);
+    const float cutoff = kTransfer == kProjectCatcher ? 9.0 : alpha > 1.0 ? falloffCutoff(alpha) : cutoffPower(alpha);
     const float2 extent = footprintExtent(conic, cutoff);
     uint4 rect;
     tileRect(params, centre, extent, rect);
@@ -1108,6 +1113,25 @@ void splatProjectFirst(uint3 tid: SV_DispatchThreadID) {
 [numthreads(256, 1, 1)]
 void splatProjectPlain(uint3 tid: SV_DispatchThreadID) {
     projectSplat<0>(tid);
+}
+
+/// A SHADOW CATCHER'S SHARE, A GAUSSIAN EACH: catcherOpacity at an opacity
+/// of one, which the projection multiplies its own by. It depends on the
+/// lights, the sky, the cloud and its place, not on the eye: run when they
+/// change (the rasteriser's key, as for splatTransferViewless), read back
+/// every frame in between. The 1024 cells a gaussian, each reading the
+/// prefiltered sky, were half of a catcher frame's projection.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void splatCatcherViewless(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    const uint row = i * 4;
+    const float3 scale = exp(float3(lowHalf(shape[row + 1]), highHalf(shape[row + 1]), lowHalf(shape[row + 2])));
+    const float3x3 r = splatRotation(decodeQuaternion(shape[row]));
+    txCache[i] = uint4(asuint(catcherOpacity(i, positions[i].xyz, r, scale, 1.0)), 0u, 0u, 0u);
 }
 
 /// A TX TRANSFER'S VIEW-INDEPENDENT TERMS, A SPLAT EACH (transferViewless):

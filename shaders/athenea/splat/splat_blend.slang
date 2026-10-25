@@ -242,7 +242,8 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             // went black when every catcher gaussian was drawn).
             // A light catcher lies on it the same way (kLightCatcherMark).
             const bool adds = abs(record.colour.w - kLightCatcherMark) < 0.01;
-            const bool lying = (abs(record.colour.w - kCatcherMark) < 0.01 || adds) && screen.z <= underZ * 1.015;
+            const bool catcher = abs(record.colour.w - kCatcherMark) < 0.01;
+            const bool lying = (catcher || adds) && screen.z <= underZ * 1.015;
             if (underHit && screen.z >= underZ && !lying) {
                 done = true;
                 break;
@@ -268,7 +269,9 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
                 break;
             }
             const float alpha = min(0.99, falloffAlpha(abs(conic.w), exp(-0.5 * power)));
-            if (alpha < 1.0 / 255.0) {
+            // A shadow catcher is not cut at 1/255: its faint gaussians are
+            // a faint shadow (splat_project, kCatcherLeast).
+            if (alpha < 1.0 / 255.0 && !catcher) {
                 continue;
             }
             const float weight = transmittance * alpha;
