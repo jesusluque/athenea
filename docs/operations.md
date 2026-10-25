@@ -519,6 +519,10 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 | `--geometry` | flag | off | position, scale and rotation exact beside the video (16-bit positions, 10-bit log scales over the sequence's ranges, the store's rotation word), the planes only opacity and colour |
 | `--geometry-key` | frames | `0`: every frame absolute | with `--geometry`: frames from one geometry key to the next; the frames between send each gaussian's difference from the frame before (needs `--order stable` and `--range-group` of the whole sequence) |
 | `--geometry-stagger` | flag | off | with `--geometry-key`: no whole key frames; blocks of 256 gaussians refreshed in turn, each once an interval |
+| `--geometry-position-bits` | 10 to 16 | `16` | with `--geometry`: a position axis over the sequence's range (the sparrow's 0.23 m: 12 bits are 56 um) |
+| `--geometry-scale-bits` | 6 to 10 | `10` | with `--geometry`: a log scale over its range |
+| `--geometry-rotation-bits` | 8 to 10 | `10` | with `--geometry`: each component of the store's smallest-three rotation, rounded (the word keeps 10 bits, the low ones zero) |
+| `--geometry-predict` | 1 or 2 | `1` | with `--geometry-key`: the residual from the frame before, or from its motion carried on (2 b - c) |
 | `--ranges` | `group` or `frame` | `group` | each attribute's range over a group of pictures (from one key frame to the next), or each frame's own |
 | `--sh-degree` | 0 to 3 | `3` | at most the source's |
 | `--columns` | tiles a row | the squarest mosaic | |

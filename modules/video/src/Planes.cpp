@@ -386,6 +386,7 @@ Result<std::vector<std::byte>> PlanesCodec::geometryEncode(const scene::GpuSplat
         p["stagger"].setData(uint32_t{at.stagger ? 1u : 0u});
         p["positionBits"].setData(layout.geometryPositionBits);
         p["scaleBits"].setData(layout.geometryScaleBits);
+        p["rotationBits"].setData(layout.geometryRotationBits);
         p["order"].setData(before2 != nullptr ? at.order : std::min(at.order, 1u));
     };
     geometryQuantise_.dispatch(batch, {n, 1, 1}, bind);
@@ -429,6 +430,7 @@ Result<void> PlanesCodec::geometryApply(gpu::CommandBatch& batch, const PlaneLay
         p["pageFirst"].setData(pageFirst);
         p["positionBits"].setData(layout.geometryPositionBits);
         p["scaleBits"].setData(layout.geometryScaleBits);
+        p["rotationBits"].setData(layout.geometryRotationBits);
         p["order"].setData(at.order);
         p["state2At"].setData(static_cast<uint32_t>(state.bytes() / 8));   // words: the second half
     });

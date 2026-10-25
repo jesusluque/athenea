@@ -63,6 +63,7 @@ struct AthvHeader {
     uint32_t geometryInterval = 0;
     uint32_t geometryPositionBits = 16;
     uint32_t geometryScaleBits = 10;
+    uint32_t geometryRotationBits = 10;
     uint32_t geometryOrder = 1;   ///< the prediction between keys: 1 the frame before, 2 its motion carried on
     double   rate = 30.0;
     /// The rate as a fraction (30/1, 30000/1001): what a segmenter takes.

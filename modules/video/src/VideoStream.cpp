@@ -102,6 +102,7 @@ Result<void> VideoStream::push(lod::PageQueue& queue, uint32_t stream, uint32_t 
         layout->positionHighBits = h.positionHighBits;
         layout->geometryPositionBits = h.geometryPositionBits;
         layout->geometryScaleBits = h.geometryScaleBits;
+        layout->geometryRotationBits = h.geometryRotationBits;
         layout->positionTarget = h.positionTarget;
         if ((*decoded)->width() != layout->width || (*decoded)->height() != layout->height ||
             frame->ranges.size() != size_t{layout->attributes()} * 2 ||

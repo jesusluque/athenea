@@ -196,7 +196,8 @@ Result<void> AthvWriter::writeHeader() {
     o.u32(header_.positionHighBits);
     o.f32(header_.positionTarget);
     o.u32(header_.geometryInterval);
-    o.u32(header_.geometryPositionBits | (header_.geometryScaleBits << 8u) | (header_.geometryOrder << 16u));
+    o.u32(header_.geometryPositionBits | (header_.geometryScaleBits << 8u) | (header_.geometryOrder << 16u) |
+          (header_.geometryRotationBits << 24u));
     o.bytes.resize(kHeaderBytes, 0);
     const auto end = file_.tellp();
     file_.seekp(0);
@@ -276,6 +277,7 @@ Result<std::unique_ptr<AthvReader>> AthvReader::open(const std::filesystem::path
             hd.geometryPositionBits = geometryBits & 0xFFu;
             hd.geometryScaleBits = (geometryBits >> 8u) & 0xFFu;
             hd.geometryOrder = (geometryBits >> 16u) & 0xFFu;
+            hd.geometryRotationBits = (geometryBits >> 24u) != 0 ? geometryBits >> 24u : 10u;
         }
     } else {
         hd.positionHighBits = hd.bits;

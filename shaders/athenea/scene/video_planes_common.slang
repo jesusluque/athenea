@@ -353,6 +353,33 @@ public uint rotationFrom(uint residual, uint predicted) {
     }
     return w;
 }
+/// The same with components of `bits` (8-10) in the word's top bits: the
+/// residuals in steps of those bits, so a coarser rotation costs less.
+public uint zigzagBits(uint d, uint n) {
+    const int s = int(d << (32u - n)) >> (32u - n);   // the low n bits as signed
+    return uint((s << 1) ^ (s >> 31)) & ((1u << n) - 1u);
+}
+public uint unzigzagBits(uint z, uint n) { return ((z >> 1) ^ (0u - (z & 1u))) & ((1u << n) - 1u); }
+public uint rotationResidualBits(uint now, uint predicted, uint bits) {
+    const uint n = min(bits, 10u), drop = 10u - n;
+    uint r = ((now ^ predicted) & 3u) << 30u;
+    for (uint c = 0; c < 3; ++c) {
+        const uint shift = 22u - 10u * c + drop;
+        r |= zigzagBits((now >> shift) - (predicted >> shift), n) << (10u * c);
+    }
+    return r;
+}
+public uint rotationFromBits(uint residual, uint predicted, uint bits) {
+    const uint n = min(bits, 10u), drop = 10u - n;
+    const uint mask = (1u << n) - 1u;
+    uint w = (predicted ^ (residual >> 30u)) & 3u;
+    for (uint c = 0; c < 3; ++c) {
+        const uint shift = 22u - 10u * c + drop;
+        w |= (((predicted >> shift) + unzigzagBits((residual >> (10u * c)) & mask, n)) & mask) << shift;
+    }
+    return w;
+}
+
 /// The prediction of a 10-bit component, or a 16-bit field, by order.
 public uint predictField(uint b, uint c, uint order, uint mask) {
     return order >= 2 ? (2u * b - c) & mask : b;

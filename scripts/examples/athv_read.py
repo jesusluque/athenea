@@ -61,7 +61,8 @@ def parse_header(b):
                 sourceFrames=frames, quality=round(quality, 4), positionBlock=block, positionHighBits=high_bits,
                 positionTarget=round(target, 6), geometry=bool(flags & 16), geometryStagger=bool(flags & 32),
                 geometryInterval=geometry_interval, geometryPositionBits=(geometry_bits & 255) or 16,
-                geometryScaleBits=((geometry_bits >> 8) & 255) or 10, geometryOrder=((geometry_bits >> 16) & 255) or 1)
+                geometryScaleBits=((geometry_bits >> 8) & 255) or 10, geometryOrder=((geometry_bits >> 16) & 255) or 1,
+                geometryRotationBits=(geometry_bits >> 24) or 10)
 
 
 def layout(h):
@@ -264,7 +265,8 @@ def describe(data):
                positionHighBits=h["positionHighBits"], chromaPlanes=h["chroma"], stableOrder=h["stableOrder"],
                geometryLossless=h["geometry"], geometryKeyInterval=h["geometryInterval"],
                geometryStagger=h["geometryStagger"], geometryPositionBits=h["geometryPositionBits"],
-               geometryScaleBits=h["geometryScaleBits"], geometryOrder=h["geometryOrder"], picturesPerFrame=first["slices"],
+               geometryScaleBits=h["geometryScaleBits"], geometryOrder=h["geometryOrder"],
+               geometryRotationBits=h["geometryRotationBits"], picturesPerFrame=first["slices"],
                pictureWidth=lay["width"], pictureHeight=lay["height"], meanBytesPerFrame=round(total / frames),
                meanMbps=round(total / frames * 8 * h["rate"] / 1e6, 2), fullRange=True)
     if len(first["sets"]) == 3:

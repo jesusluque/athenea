@@ -29,7 +29,7 @@ struct GeometryParams {
     uint scaleBits;     // 6-10
     uint order;         // the prediction: 1 the frame before, 2 its motion carried on
     uint state2At;      // decode: the word where the frame before's state starts in `state` (its second half)
-    uint pad0;
+    uint rotationBits;  // 8-10: a rotation component's bits (the word keeps 10, the low ones zero)
     uint pad1;
     uint pad2;
 };
@@ -71,7 +71,20 @@ void videoGeometryQuantise(uint3 tid: SV_DispatchThreadID) {
     now[j * 4 + 0] = q[0] | (q[1] << 16u);
     now[j * 4 + 1] = q[2] | (q[3] << 16u);
     now[j * 4 + 2] = q[4] | (q[5] << 16u);
-    now[j * 4 + 3] = shape[s * 4];   // the store's own rotation word, exact
+    // The store's own rotation word, its three components rounded to
+    // `rotationBits` (the low bits zero): what the layer sends exactly.
+    uint w = shape[s * 4];
+    const uint drop = 10u - min(params.rotationBits, 10u);
+    if (drop != 0) {
+        uint rounded = w & 3u;
+        for (uint c = 0; c < 3; ++c) {
+            const uint shift = 22u - 10u * c;
+            const uint v = min((((w >> shift) & 0x3FFu) + (1u << (drop - 1u))) >> drop, (1u << (10u - drop)) - 1u);
+            rounded |= (v << drop) << shift;
+        }
+        w = rounded;
+    }
+    now[j * 4 + 3] = w;
 }
 
 /// Byte `plane` of gaussian j's value: its field absolute, or zigzagged from its prediction.
@@ -83,7 +96,7 @@ uint geometryByte(uint j, uint plane) {
     if (order != 0) {
         const uint4 b = uint4(before[j * 4], before[j * 4 + 1], before[j * 4 + 2], before[j * 4 + 3]);
         const uint4 c = uint4(before2[j * 4], before2[j * 4 + 1], before2[j * 4 + 2], before2[j * 4 + 3]);
-        v = f == 6 ? rotationResidual(v, predictRotation(b.w, c.w, order))
+        v = f == 6 ? rotationResidualBits(v, predictRotation(b.w, c.w, order), params.rotationBits)
                    : zigzag16(v - predictField(geometryField(b, f), geometryField(c, f), order, 0xFFFFu));
     }
     const uint shift = plane < 12 ? (plane & 1u) * 8u : (plane - 12u) * 8u;
@@ -138,7 +151,7 @@ void videoGeometryApply(uint3 tid: SV_DispatchThreadID) {
         for (uint f = 0; f < 6; ++f) {
             v[f] = (predictField(geometryField(b, f), geometryField(c, f), order, 0xFFFFu) + unzigzag16(v[f])) & 0xFFFFu;
         }
-        v[6] = rotationFrom(v[6], predictRotation(b.w, c.w, order));
+        v[6] = rotationFromBits(v[6], predictRotation(b.w, c.w, order), params.rotationBits);
     }
     // The frame before moves down a place: what the next frame's order 2 takes.
     state[params.state2At + j * 4 + 0] = b.x;

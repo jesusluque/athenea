@@ -531,6 +531,10 @@ exacta, la baja por el códec. La croma se queda en gris medio, así que el
 | `--geometry` | flag | no | posición, escala y rotación exactas junto al vídeo (posiciones de 16 bits, escalas logarítmicas de 10 bits sobre los rangos de la secuencia, la palabra de rotación del almacén), y los planos solo opacidad y color |
 | `--geometry-key` | frames | `0`: todos los frames absolutos | con `--geometry`: frames de una clave de geometría a la siguiente; los frames intermedios envían la diferencia de cada gaussiana respecto al frame anterior (necesita `--order stable` y un `--range-group` de toda la secuencia) |
 | `--geometry-stagger` | flag | no | con `--geometry-key`: sin frames clave completos; bloques de 256 gaussianas refrescados por turnos, cada uno una vez por intervalo |
+| `--geometry-position-bits` | 10 a 16 | `16` | con `--geometry`: un eje de posición sobre el rango de la secuencia (los 0,23 m del gorrión: 12 bits son 56 um) |
+| `--geometry-scale-bits` | 6 a 10 | `10` | con `--geometry`: una escala logarítmica sobre su rango |
+| `--geometry-rotation-bits` | 8 a 10 | `10` | con `--geometry`: cada componente de la rotación en tres menores del almacén, redondeada (la palabra conserva 10 bits, los bajos a cero) |
+| `--geometry-predict` | 1 o 2 | `1` | con `--geometry-key`: el residuo respecto al frame anterior, o respecto a su movimiento prolongado (2 b - c) |
 | `--ranges` | `group` o `frame` | `group` | el rango de cada atributo sobre un grupo de imágenes (de un fotograma clave al siguiente), o el de cada frame |
 | `--sh-degree` | 0 a 3 | `3` | como mucho el de la fuente |
 | `--columns` | teselas por fila | el mosaico más cuadrado | |

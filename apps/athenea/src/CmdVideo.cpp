@@ -466,6 +466,7 @@ void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::Planes
             layout->positionHighBits = h.positionHighBits;
             layout->geometryPositionBits = h.geometryPositionBits;
             layout->geometryScaleBits = h.geometryScaleBits;
+            layout->geometryRotationBits = h.geometryRotationBits;
             auto side = sidePage(device, f->ranges, f->high, f->geometry);
             if (!side) cli::fail(side.error());
             gpu::CommandBatch batch(device);
@@ -496,6 +497,7 @@ void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::Planes
         layout->positionHighBits = h.positionHighBits;
             layout->geometryPositionBits = h.geometryPositionBits;
             layout->geometryScaleBits = h.geometryScaleBits;
+            layout->geometryRotationBits = h.geometryRotationBits;
             layout->positionTarget = h.positionTarget;
         auto side = sidePage(device, f->ranges, f->high, f->geometry);
         if (!side) cli::fail(side.error());
@@ -615,6 +617,7 @@ void addVideo(CLI::App& app) {
         double quality = 0.5, megabits = 0.0, rate = 0.0;
         bool check = false, intra = false, chroma = false, holdBoxes = false, geometry = false, geometryStagger = false;
         uint32_t geometryKey = 0, geometryPositionBits = 16, geometryScaleBits = 10, geometryPredict = 1;
+        uint32_t geometryRotationBits = 10;
         std::string chromaWeight = "mean";
     };
     auto o = std::make_shared<Options>();
@@ -648,6 +651,9 @@ void addVideo(CLI::App& app) {
         ->check(CLI::Range(10u, 16u));
     enc->add_option("--geometry-scale-bits", o->geometryScaleBits, "with --geometry: bits a log scale")
         ->check(CLI::Range(6u, 10u));
+    enc->add_option("--geometry-rotation-bits", o->geometryRotationBits,
+                    "with --geometry: bits a rotation component (of the store's smallest three)")
+        ->check(CLI::Range(8u, 10u));
     enc->add_option("--geometry-predict", o->geometryPredict,
                     "with --geometry-key: what a frame between keys is a residual from -- 1 the frame before, 2 the "
                     "frame before's motion carried on (2 b - c)")
@@ -868,6 +874,7 @@ void addVideo(CLI::App& app) {
                 layout.positionHighBits = 0;   // nothing beside the video but the layer
                 layout.geometryPositionBits = o->geometryPositionBits;
                 layout.geometryScaleBits = o->geometryScaleBits;
+                layout.geometryRotationBits = o->geometryRotationBits;
             }
             layout.chromaWeight = o->chromaWeight == "area" ? 1u : 0u;
             // A frame cut into slices: each picture holds other splats than
@@ -914,6 +921,7 @@ void addVideo(CLI::App& app) {
             header.geometryStagger = o->geometryStagger;
             header.geometryPositionBits = o->geometryPositionBits;
             header.geometryScaleBits = o->geometryScaleBits;
+            header.geometryRotationBits = o->geometryRotationBits;
             header.geometryOrder = o->geometryPredict;
             header.chroma = layout.chroma;
             header.stableOrder = stable;
@@ -1037,6 +1045,7 @@ void addVideo(CLI::App& app) {
                     sliced->positionTarget = layout.positionTarget;
                     sliced->geometryPositionBits = layout.geometryPositionBits;
                     sliced->geometryScaleBits = layout.geometryScaleBits;
+                    sliced->geometryRotationBits = layout.geometryRotationBits;
                     sliced->chromaWeight = layout.chromaWeight;
                     if (sliced->width != layout.width || sliced->height != layout.height) {
                         cli::err("video-encode: frame %zu needs a %u x %u mosaic, not the stream's %u x %u\n", k,
@@ -1357,6 +1366,7 @@ void addVideo(CLI::App& app) {
             layout->positionHighBits = h.positionHighBits;
             layout->geometryPositionBits = h.geometryPositionBits;
             layout->geometryScaleBits = h.geometryScaleBits;
+            layout->geometryRotationBits = h.geometryRotationBits;
             layout->positionTarget = h.positionTarget;
             if (store.count < f->splats) {
                 auto s = video::PlanesCodec::allocate(**device, f->splats, h.restPerColour, "video.decoded");
