@@ -209,7 +209,8 @@ sort por profundidad, las cuentas, el emit, el sort por tile y el blend.
 
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
-| `input` | ruta, obligatoria | — | `.ply`, `.splat`, `.spz`, `.sog`, `meta.json` |
+| `input` | ruta, obligatoria | — | `.ply`, `.splat`, `.spz`, `.sog`, `meta.json`; o un ParticleField de USD (`.usd`, `.usda`, `.usdc`) a un `.athc` |
+| `--prim` | ruta de prim | el primero de la escena | una entrada USD: el ParticleField que se lee |
 | `output` | ruta, obligatoria | — | `.usda`, `.usdc`, `.usd` o `.athc` |
 | `--chunk-splats` | entero | `65536` | `.athc`: splats por chunk |
 | `--max-group-fraction` | número | `0.5` | `.athc`: grupos por splat que puede tener el nivel fundido más fino |
@@ -220,6 +221,14 @@ sort por profundidad, las cuentas, el emit, el sort por tile y el blend.
 Un `.athc` de salida rechaza un `--rotate-x` distinto de cero: el contenedor
 guarda la nube como está, y el giro pertenece al prim que lo referencia.
 
+Un ParticleField de USD pasa a un `.athc` con todo lo que lleva -- su material
+y sus capas, su transfer y sus direcciones abiertas, su curvatura (empaquetada,
+bit 6), sus normales de sombreado, su emisión y sus ids de Cryptomatte -- en su
+propio espacio, en el tiempo por defecto. No se convierte nada otra vez: es la
+misma nube con sus niveles de detalle. Uno que lleva un esqueleto se rechaza.
+Lo que queda en el prim (`relight`, `ior`) se escribe en el prim que nombra el
+asset.
+
 Una escena escrita aquí dice `metersPerUnit = 1`: ninguno de los formatos de
 entrada registra una unidad, y la escala de una captura se toma como metros.
 Una nube en otra unidad se escala donde se referencia, o se edita el
@@ -228,6 +237,7 @@ Una nube en otra unidad se escala donde se referencia, o se edita el
 ```sh
 athenea convert capture.ply scene.usda
 athenea convert capture.ply capture.athc --chunk-splats 131072
+athenea convert car_tx.usdc car_tx.athc
 ```
 
 ### 2.4.1 `athenea decimate` — menos gaussianas, conservadas donde importan
@@ -1313,9 +1323,17 @@ valores como pares f16 y sus direcciones abiertas detrás -- los números en una
 cabecera de treinta y dos bytes tras la primera, y en los niveles fundidos el
 transfer de un grupo promediado por opacidad (uno zonal, cuyos ejes no se
 promedian, el de una gaussiana), sus bits puestos donde los tiene la mitad del
-peso, su material el de una gaussiana. El bit 3 se guarda para la propuesta
+peso, su material el de una gaussiana. Una con curvatura
+(`primvars:athenea:splat:curvature`, lo que gira los lóbulos nítidos de un
+transfer TX) la guarda bajo el bit 6, una palabra por elemento tras las
+direcciones abiertas: los bytes 0 a 2 son uu, uv y vv del operador de forma,
+cada uno con su signo en el bit 7 y en los bits 0 a 6 un paso q de 16/127 de
+octava sobre las 16 octavas por debajo del byte 3, que guarda el log2 del
+mayor redondeado hacia arriba como byte con signo (el tamaño 2^(top - 16 +
+q 16/127); q 0 es plano); la quinta palabra de la cabecera extra es 1, y un
+grupo fundido de más de una es plano (cero). El bit 3 se guarda para la propuesta
 009. Un bit de los `flags` que esta compilación no conoce (el bit 3, o pasado
-el bit 5) se rechaza, nombrando el fichero: un bit posterior puede añadir un bloque, y un lector que lo saltara
+el bit 6) se rechaza, nombrando el fichero: un bit posterior puede añadir un bloque, y un lector que lo saltara
 leería cada bloque detrás de él desde el sitio equivocado.
 
 Cómo se ve un presupuesto corto: los grupos cuyos chunks no han llegado

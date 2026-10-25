@@ -12,6 +12,7 @@
 #include "athenea/gpu/Buffer.h"
 #include "athenea/io/RawSplats.h"
 #include "athenea/lod/Lod.h"
+#include "athenea/scene/GpuClouds.h"
 
 namespace athenea::gpu {
 class ShaderLibrary;
@@ -210,6 +211,16 @@ struct DeviceSplatRecords {
                                                    const DeviceSplatRecords& records,
                                                    const std::filesystem::path& path,
                                                    const ExportOptions& options = {});
+
+/// A ParticleField onto the device with everything it carries -- material,
+/// layers, transfer and open directions, shading normal, curvature, emission,
+/// Cryptomatte ids, the lamps' layers -- as a frame draws it: the first
+/// UsdVolParticleField3DGaussianSplat of the stage at `path`, or `prim`. Read
+/// at the default time, its own space (no transform applied). Refused for a
+/// cloud a skeleton carries, which levels of detail cannot merge.
+[[nodiscard]] Result<scene::GpuSplats> uploadParticleField(scene::CloudLoader& loader,
+                                                           const std::filesystem::path& path,
+                                                           const std::string& prim = {});
 
 /// A ParticleField read back as records: the first
 /// UsdVolParticleField3DGaussianSplat of the stage at `path`, or `prim`

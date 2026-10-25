@@ -45,7 +45,14 @@ constexpr uint32_t kHasMaterial = 16;
 /// Bit 5: and a transfer (task TX): its words an element, then its open
 /// directions' -- the counts in the extra header. Bit 3 is proposal 009's.
 constexpr uint32_t kHasTransfer = 32;
-constexpr uint32_t kKnownFlags = kHasNormals | kLinear | kHasEmission | kHasMaterial | kHasTransfer;
+/// Bit 6: and the shape operator (a TX transfer's sharp lobes turn by it):
+/// one word an element after the open directions, three bytes of a sign and
+/// 7 bits of log2 of the size below the fourth's top octave
+/// (common/packing.slang's packCurvature); the extra header's
+/// `curvatureWords` is 1. A merged group of more than one is flat (zero).
+constexpr uint32_t kHasCurvature = 64;
+constexpr uint32_t kExtraFlags = kHasMaterial | kHasTransfer | kHasCurvature;
+constexpr uint32_t kKnownFlags = kHasNormals | kLinear | kHasEmission | kHasMaterial | kHasTransfer | kHasCurvature;
 constexpr char     kMagic[4] = {'A', 'T', 'H', 'C'};
 /// Uploads staged before a submit: the staging heap holds them until then.
 constexpr uint64_t kStageBytes = uint64_t{256} << 20;
@@ -88,7 +95,8 @@ struct ExtraHeader {
     uint32_t transferCount;   // the transfer's values (its layout: 9, 36, 84, 16, 64, 112 or 10)
     uint32_t transferWords;   // f16 pairs of them
     uint32_t shadowWords;     // its open directions: 2, 8 or 32
-    uint32_t pad[3];
+    uint32_t curvatureWords;  // 1 with bit 6, else 0
+    uint32_t pad[2];
 };
 static_assert(sizeof(ExtraHeader) == 32);
 constexpr uint64_t kExtraHeaderAt = sizeof(FileHeader);
@@ -105,11 +113,12 @@ std::vector<std::pair<CloudMember, uint32_t>> extrasOf(const ExtraHeader& x) {
     if (x.lobesWords) out.emplace_back(&scene::GpuSplats::lobes, x.lobesWords);
     if (x.transferWords) out.emplace_back(&scene::GpuSplats::transfer, x.transferWords);
     if (x.shadowWords) out.emplace_back(&scene::GpuSplats::shadowBits, x.shadowWords);
+    if (x.curvatureWords) out.emplace_back(&scene::GpuSplats::curvature, x.curvatureWords);
     return out;
 }
 
 uint32_t extraWords(const ExtraHeader& x) {
-    return x.pbrWords + x.lobesWords + x.transferWords + x.shadowWords;
+    return x.pbrWords + x.lobesWords + x.transferWords + x.shadowWords + x.curvatureWords;
 }
 
 /// Bytes an element of a block takes, the extras included.
@@ -169,13 +178,14 @@ Result<Layout> parse(const platform::MappedFile& file, const std::filesystem::pa
     if (h.version < 2) {
         h.flags = 0;
     }
-    if ((h.flags & (kHasMaterial | kHasTransfer)) != 0) {
+    if ((h.flags & kExtraFlags) != 0) {
         std::memcpy(&layout.extra, bytes.data() + kExtraHeaderAt, sizeof layout.extra);
         const ExtraHeader& x = layout.extra;
         if (((h.flags & kHasMaterial) != 0) != (x.pbrWords == 1) || (x.lobesWords != 0 && x.lobesWords != 3) ||
             ((h.flags & kHasTransfer) != 0) != (x.transferWords != 0) || x.transferWords > 64 ||
             (x.shadowWords != 0 && x.shadowWords != 2 && x.shadowWords != 8 && x.shadowWords != 32) ||
-            x.transferWords != (x.transferCount + 1) / 2) {
+            x.transferWords != (x.transferCount + 1) / 2 ||
+            ((h.flags & kHasCurvature) != 0) != (x.curvatureWords == 1) || x.curvatureWords > 1) {
             return bad(path, "inconsistent extra header");
         }
     }
@@ -187,7 +197,8 @@ Result<Layout> parse(const platform::MappedFile& file, const std::filesystem::pa
             }
         }
         return bad(path, "unknown flag bits " + bits +
-                             "; this reads bits 0 (normals), 1 (linear), 2 (emission), 4 (material) and 5 (transfer)");
+                             "; this reads bits 0 (normals), 1 (linear), 2 (emission), 4 (material), 5 (transfer) and "
+                             "6 (curvature)");
     }
     const auto within = [&](uint64_t offset, uint64_t size) {
         return offset <= bytes.size() && size <= bytes.size() - offset;
@@ -265,6 +276,7 @@ void countsOf(const ExtraHeader& x, scene::GpuSplats& s) {
     s.transferCount = x.transferCount;
     s.transferWords = x.transferWords;
     s.shadowWords = x.shadowWords;
+    s.curvaturePacked = x.curvatureWords != 0;
 }
 
 scene::GpuSplats splatsLike(const FileHeader& h, const std::filesystem::path& path) {
@@ -449,12 +461,17 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
         x.transferWords = cloud.splats.transferWords;
         x.shadowWords = everywhere(&scene::GpuSplats::shadowBits) ? cloud.splats.shadowWords : 0;
     }
+    // The shape operator, packed, where every level carries it (bit 6).
+    if (cloud.splats.curvaturePacked && everywhere(&scene::GpuSplats::curvature)) {
+        x.curvatureWords = 1;
+    }
     const uint64_t per = elementBytes(shWords, normals, emission) + 4 * uint64_t{extraWords(x)};
     FileHeader h{};
     std::memcpy(h.magic, kMagic, 4);
     h.version = kVersion;
     h.flags = (normals ? kHasNormals : 0u) | (cloud.splats.linear ? kLinear : 0u) |
-              (emission ? kHasEmission : 0u) | (x.pbrWords ? kHasMaterial : 0u) | (x.transferWords ? kHasTransfer : 0u);
+              (emission ? kHasEmission : 0u) | (x.pbrWords ? kHasMaterial : 0u) | (x.transferWords ? kHasTransfer : 0u) |
+              (x.curvatureWords ? kHasCurvature : 0u);
     h.count = cloud.count;
     h.restPerColour = cloud.splats.restPerColour;
     h.shWords = shWords;
@@ -510,7 +527,7 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
         return ok();
     };
     put(&h, sizeof h);
-    if ((h.flags & (kHasMaterial | kHasTransfer)) != 0) {
+    if ((h.flags & kExtraFlags) != 0) {
         put(&x, sizeof x);
     }
     padTo(h.levelTable);

@@ -14038,6 +14038,64 @@ keeps no curvature, so its sharp lobes would be drawn flat. The `.athz` pages
 hold the same record as a pool slot, transfer included (layer T), so the two
 lines meet in that record.
 
+### The TX car's levels of detail: a `.athc` from its USD, measured
+
+**A USD ParticleField into a `.athc`** (`athenea convert cloud.usdc out.athc`,
+`usd::uploadParticleField`): the field read with every array hdAthenea's
+ParticleField reads, uploaded as a frame uploads it, its levels built and
+written. It repacks, it converts nothing. The car: 3.0 GB of `.usdc` into
+2.6 GB of `.athc` in 11 minutes, most of it reading and writing the file.
+
+**Curvature in the levels and the file** (bit 6): one word a gaussian,
+`packCurvature` -- three bytes of a sign and 7 bits of log2 over the 16
+octaves under the fourth byte's top octave, half a step 4.5% -- what
+`.athz`'s geometry layer can carry the same way. A merged group of more than
+one is flat: a member's shape operator is in that member's axes. Checked by
+`athenea_lod_tests "[athc]"`: 196 608 components from 1e-3 to 1e4, both signs,
+all back within half a step or flat; a curvature through the levels and a
+`.athc` and back.
+
+**A streamed cloud is drawn as its prim asks.** The cut's instances carried
+the clouds and nothing of the prim: a streamed TX car drew its albedo, unlit.
+They now take the prim's relight, lit body, light categories, index and
+catcher flags, and the frame's transfer and reflection settings. And a cut
+gathered anew counts its cloud's revision up, so terms kept for the last
+cut's gaussians (a TX cloud's view-independent ones) are not read for this
+one's.
+
+**Measured** (1920 x 1080, medians of 11 frames, against the full cloud from
+its USD, `athenea compare`):
+
+| view | threshold | gaussians drawn | frame | 8-bit p99 / max | relMSE |
+|---|---|---|---|---|---|
+| scene camera | full | 5.38 M | 80.6 ms | | |
+| | 1 px | 5.38 M | 114.0 | 1 / 41 | 9e-6 |
+| | 2 px | 2.02 M | 61.9 | 45 / 239 | 0.35 |
+| | 4 px | 0.86 M | 40.4 | 102 / 248 | 2.6 |
+| rear | full | 5.38 M | 85.7 | | |
+| | 1 px | 5.38 M | 118.0 | 1 / 21 | 7e-6 |
+| | 2 px | 2.49 M | 70.5 | 39 / 238 | 0.12 |
+| | 4 px | 0.92 M | 46.5 | 63 / 245 | 0.22 |
+| front | full | 5.38 M | 72.3 | | |
+| | 1 px | 5.38 M | 104.4 | 1 / 38 | 9e-6 |
+| | 2 px | 2.97 M | 69.8 | 14 / 236 | 0.02 |
+| | 4 px | 1.06 M | 41.2 | 123 / 254 | 1.8 |
+
+At 1 px the cut is the whole cloud (no group spans a pixel at 1920 x 1080):
+the image is the full one but for the packed curvature (p99 1), and the frame
+a third slower -- every frame gathers every drawn gaussian's 330 bytes into
+the cut's own cloud, two thirds of it the transfer. At 2 px the merged groups
+show: rings across the doors and the bonnet where a sharp lobe reads a
+group's averaged normal, white patches at the headlamps and the sills; at 4 px
+the glass is a lattice (`car/lod_*_thresholds.png`). What is next:
+
+- the cut gathered again only where it changed, and the payload read from the
+  store through the cut's indices rather than copied;
+- a merged group of a TX cloud that does not mix what faces apart (the
+  normals averaged across a panel's two faces), and glass and sheets kept
+  out of merges or merged as sheets;
+- then the threshold the car can play at, against the path trace.
+
 ## The sun is the texels that are it
 
 env_sun found a dome's sun on a grid of 1.8 degree cells, measured its

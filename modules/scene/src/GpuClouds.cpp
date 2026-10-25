@@ -9,6 +9,7 @@
 
 #include "athenea/core/Log.h"
 #include "athenea/gpu/CommandBatch.h"
+#include "athenea/gpu/ComputeKernel.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
 
@@ -1176,6 +1177,30 @@ Result<GpuPoints> CloudLoader::upload(const PointStreams& in, float detail) {
 
 bool isSog(const std::filesystem::path& path) {
     return path.extension() == ".sog" || path.filename() == "meta.json";
+}
+
+Result<void> packCurvature(gpu::ShaderLibrary& library, GpuSplats& splats) {
+    if (!splats.hasCurvature() || splats.curvaturePacked || splats.count == 0) {
+        return ok();
+    }
+    auto kernel = gpu::ComputeKernel::create(library, "athenea/scene/curvature_pack", "curvaturePack");
+    if (!kernel) return std::move(kernel).error();
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{splats.count} * 4;
+    desc.elementBytes = 4;
+    desc.label = "splats.curvature.packed";
+    auto packed = gpu::Buffer::create(library.device(), desc);
+    if (!packed) return std::move(packed).error();
+    gpu::CommandBatch batch(library.device());
+    kernel->dispatch(batch, {splats.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["curvatureIn"].setBinding(splats.curvature.rhi());
+        cursor["curvatureOut"].setBinding(packed->rhi());
+        cursor["params"]["count"].setData(splats.count);
+    });
+    ATHENEA_TRY(batch.submit(true));
+    splats.curvature = std::move(*packed);
+    splats.curvaturePacked = true;
+    return ok();
 }
 
 Result<GpuSplats> loadSplatFile(CloudLoader& loader, const std::filesystem::path& path, uint32_t maxDegree) {

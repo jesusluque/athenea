@@ -28,7 +28,7 @@ namespace athenea::cli {
 
 void addConvert(CLI::App& app) {
     struct Options {
-        std::string input, output;
+        std::string input, output, prim;
         unsigned degree = 3;
         double rotateX = 0.0;
         bool noCamera = false;
@@ -38,7 +38,11 @@ void addConvert(CLI::App& app) {
     auto o = std::make_shared<Options>();
     auto* cmd = app.add_subcommand("convert",
                                    "a splat file into a USD ParticleField stage, or into a .athc with levels of detail");
-    cmd->add_option("input", o->input, ".ply / .splat / .spz / .sog / meta.json")->required();
+    cmd->add_option("input", o->input,
+                    ".ply / .splat / .spz / .sog / meta.json, or a USD ParticleField (.usd / .usda / .usdc) "
+                    "into a .athc")
+        ->required();
+    cmd->add_option("--prim", o->prim, "a USD input: the ParticleField (the stage's first by default)");
     cmd->add_option("output", o->output, ".usda / .usdc / .usd / .athc")->required();
     cmd->add_option("--chunk-splats", o->chunkSplats, ".athc: splats per streamed chunk");
     cmd->add_option("--max-group-fraction", o->maxGroupFraction,
@@ -61,7 +65,17 @@ void addConvert(CLI::App& app) {
                 std::fprintf(stderr, "a .athc keeps the cloud as it is: turn it where it is used\n");
                 throw CLI::RuntimeError(1);
             }
-            auto splats = scene::loadSplatFile(*loader, o->input, o->degree);
+            // A USD ParticleField is repacked with everything it carries --
+            // material, transfer, open directions, curvature (packed, bit 6).
+            const std::string ext = std::filesystem::path(o->input).extension().string();
+            const bool fromUsd = ext == ".usd" || ext == ".usda" || ext == ".usdc";
+            auto splats = fromUsd ? usd::uploadParticleField(*loader, o->input, o->prim)
+                                  : scene::loadSplatFile(*loader, o->input, o->degree);
+            if (splats) {
+                if (auto packed = scene::packCurvature(library, *splats); !packed) {
+                    cli::fail(packed.error());
+                }
+            }
             auto builder = splats ? lod::LodBuilder::create(library) : Result<lod::LodBuilder>(splats.error());
             if (!builder) {
                 cli::fail(builder.error());

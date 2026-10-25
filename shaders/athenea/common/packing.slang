@@ -166,6 +166,50 @@ public float3 unpackRgb9e5(uint word) {
     return float3(float(word & 511u), float((word >> 9) & 511u), float((word >> 18) & 511u)) * step;
 }
 
+/// A SHAPE OPERATOR IN ONE WORD (a `.athc`'s curvature, its flag bit 6; the
+/// same word in `.athz`'s geometry layer): the three components (uu, uv, vv,
+/// per unit of length) as `geometry_quantize` keeps them -- a sign and 7 bits
+/// of log2 of the size -- each over the 16 octaves below the largest's log2,
+/// which the fourth byte holds, rounded up, as a signed byte:
+///   bits 0-7, 8-15, 16-23   uu, uv, vv: bit 7 the sign, bits 0-6 q, the size
+///                           2^(top - 16 + q 16/127); q = 0 is flat
+///   bits 24-31              top, two's complement, -64..63
+/// A component under 16 octaves below the largest, or under 1e-6, is flat.
+public static const float kCurvatureOctaves = 16.0;
+
+public uint packCurvature(float3 k) {
+    const float largest = max(abs(k.x), max(abs(k.y), abs(k.z)));
+    if (!(largest > 1.0e-6)) {
+        return 0u;
+    }
+    const int top = clamp(int(ceil(log2(largest))), -64, 63);
+    const float floorLog = float(top) - kCurvatureOctaves;
+    uint word = (uint(top) & 0xFFu) << 24;
+    [unroll] for (uint c = 0; c < 3; ++c) {
+        const float a = abs(k[c]);
+        if (a > 1.0e-6 && log2(a) > floorLog) {
+            const uint q = uint(clamp(round((log2(a) - floorLog) * (127.0 / kCurvatureOctaves)), 1.0, 127.0));
+            word |= (q | (k[c] < 0.0 ? 0x80u : 0u)) << (8u * c);
+        }
+    }
+    return word;
+}
+
+public float3 unpackCurvature(uint word) {
+    const int top = int(word << 0u) >> 24;
+    const float floorLog = float(top) - kCurvatureOctaves;
+    float3 k = float3(0.0);
+    [unroll] for (uint c = 0; c < 3; ++c) {
+        const uint b = (word >> (8u * c)) & 0xFFu;
+        const uint q = b & 127u;
+        if (q != 0u) {
+            const float size = exp2(floorLog + float(q) * (kCurvatureOctaves / 127.0));
+            k[c] = (b & 0x80u) != 0u ? -size : size;
+        }
+    }
+    return k;
+}
+
 /// WHAT A MATERIAL LAYERS OVER ITS BASE, PER GAUSSIAN (`GpuSplats::lobes`).
 ///
 /// The base -- colour, metallic, roughness, transmission -- is `pbr`'s word.

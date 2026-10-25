@@ -571,8 +571,9 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             // And what its material layered over the base: specular, coat,
             // sheen, where the conversion met any.
             cursor["params"]["hasLobes"].setData(uint32_t{cloud->hasLobes() ? 1u : 0u});
+            // 1: three floats a gaussian; 2: one packed word (a `.athc`'s).
             cursor["params"]["hasCurvature"].setData(
-                uint32_t{cloud->hasCurvature() && txCells ? 1u : 0u});
+                uint32_t{cloud->hasCurvature() && txCells ? (cloud->curvaturePacked ? 2u : 1u) : 0u});
             cursor["lobes"].setBinding(cloud->hasLobes() ? cloud->lobes.rhi() : cloud->shape.rhi());
             // The lamps' layers and this frame's weight of each, where the
             // cloud carries them and the frame weighs them. Bound either way,

@@ -1,5 +1,6 @@
 // Copyright (c) 2026 jesus luque.
 #include "athenea/usd/Export.h"
+#include "athenea/usd/PrimData.h"
 
 #include "athenea/scene/DecodeParams.h"
 
@@ -708,6 +709,106 @@ Result<void> writeVisibility(const std::filesystem::path& path, const std::strin
         return Error::make(ErrorCode::IoFailure, "cannot save '{}'", path.string());
     }
     return ok();
+}
+
+Result<scene::GpuSplats> uploadParticleField(scene::CloudLoader& loader, const std::filesystem::path& path,
+                                             const std::string& prim) {
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    if (!stage) {
+        return Error::make(ErrorCode::IoFailure, "cannot open '{}'", path.string());
+    }
+    UsdPrim field;
+    if (!prim.empty()) {
+        field = stage->GetPrimAtPath(SdfPath(prim));
+    } else {
+        for (const UsdPrim& candidate : stage->Traverse()) {
+            if (candidate.IsA<UsdVolParticleField3DGaussianSplat>()) {
+                field = candidate;
+                break;
+            }
+        }
+    }
+    if (!field || !field.IsA<UsdVolParticleField3DGaussianSplat>()) {
+        return Error::make(ErrorCode::NotFound, "'{}' has no gaussian ParticleField{}", path.string(),
+                           prim.empty() ? std::string() : " at " + prim);
+    }
+    // Each array as the file keeps it, float or half: the names hdAthenea's
+    // ParticleField reads (ParticleField.cpp), here with their namespace.
+    const auto get = [&](const char* name) {
+        VtValue value;
+        if (const UsdAttribute attribute = field.GetAttribute(TfToken(name))) {
+            attribute.Get(&value);
+        }
+        return value;
+    };
+    const auto either = [&](const char* full, const char* half) {
+        VtValue value = get(full);
+        return streamOf(value).empty() ? get(half) : value;
+    };
+    const auto splat = [&](const char* name) { return get((std::string("primvars:athenea:splat:") + name).c_str()); };
+    if (!splat("jointIndices").IsEmpty() || !get("primvars:skel:jointIndices").IsEmpty()) {
+        return Error::make(ErrorCode::InvalidArgument,
+                           "{}: a skeleton carries this cloud, and levels of detail cannot merge what it moves",
+                           field.GetPath().GetString());
+    }
+    ParticleFieldArrays a;
+    a.positions = either("positions", "positionsh");
+    a.orientations = either("orientations", "orientationsh");
+    a.scales = either("scales", "scalesh");
+    a.opacities = either("opacities", "opacitiesh");
+    const VtValue degree = get("radiance:sphericalHarmonicsDegree");
+    a.shDegree = degree.IsHolding<int>() ? degree.UncheckedGet<int>() : 0;
+    a.shCoefficients = either("radiance:sphericalHarmonicsCoefficients", "radiance:sphericalHarmonicsCoefficientsh");
+    a.metallic = splat("metallic");
+    a.roughness = splat("roughness");
+    a.transmission = splat("transmission");
+    a.cryptoObject = splat("cryptoObject");
+    a.transferDirect = splat("transferDirect");
+    a.transferIndirect = splat("transferIndirect");
+    a.transferReflected = splat("transferReflected");
+    a.transferZonal = splat("transferZonal");
+    a.thinWalled = splat("thinWalled");
+    a.schlickMetal = splat("schlickMetal");
+    a.materialRoughness = splat("materialRoughness");
+    a.curvature = splat("curvature");
+    a.shadowBits = splat("shadowBits");
+    a.normals = splat("normal");
+    const VtValue linear = splat("linear");
+    a.linear = linear.IsHolding<bool>() && linear.UncheckedGet<bool>();
+    a.emission = splat("emission");
+    a.hardness = splat("hardness");
+    a.specularWeight = splat("specularWeight");
+    a.specularColour = splat("specularColor");
+    a.specularIor = splat("specularIor");
+    a.coatWeight = splat("coatWeight");
+    a.coatRoughness = splat("coatRoughness");
+    a.coatIor = splat("coatIor");
+    a.sheenColour = splat("sheenColor");
+    a.sheenRoughness = splat("sheenRoughness");
+    a.coatDarkening = splat("coatDarkening");
+    static const std::string kLayer = "primvars:athenea:splat:lightLayer:";
+    for (const UsdAttribute& attribute : field.GetAttributes()) {
+        const std::string& name = attribute.GetName().GetString();
+        if (name.size() > kLayer.size() && name.compare(0, kLayer.size(), kLayer) == 0) {
+            VtValue value;
+            attribute.Get(&value);
+            a.lightLayers.emplace_back(name.substr(kLayer.size()), value);
+        }
+    }
+    const VtValue manifest = splat("cryptoManifest");
+    if (manifest.IsHolding<std::string>()) {
+        a.cryptoManifest = manifest.UncheckedGet<std::string>();
+    }
+    const scene::SplatStreams streams = splatStreams(a, field.GetPath().GetString());
+    if (streams.count == 0) {
+        return Error::make(ErrorCode::InvalidArgument, "{}: no gaussians", field.GetPath().GetString());
+    }
+    auto splats = loader.upload(streams);
+    if (!splats) return std::move(splats).error();
+    if (!streams.lightLayers.empty()) {
+        ATHENEA_TRY(loader.uploadLightLayers(*splats, streams.lightLayers));
+    }
+    return splats;
 }
 
 Result<io::RawSplats> readParticleFieldRecords(const std::filesystem::path& path, const std::string& prim,

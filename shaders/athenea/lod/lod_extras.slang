@@ -19,7 +19,7 @@ module lod_extras;
 struct ExtrasParams {
     uint count;    ///< gaussians (reorder), groups (merge), candidates (gather)
     uint words;    ///< words a gaussian
-    uint mode;     ///< merge: 0 first, 1 f16 mean, 2 bits by weight
+    uint mode;     ///< merge: 0 first, 1 f16 mean, 2 bits by weight, 3 zero (a group of more than one)
     uint splats;   ///< merge: the store's gaussians, where the last run ends
 
     uint base;     ///< gather: the first slot of this part in the cut
@@ -60,7 +60,13 @@ void lodExtrasMerge(uint3 tid: SV_DispatchThreadID) {
     const uint first = starts[g];
     const uint end = g + 1 < params.count ? starts[g + 1] : params.splats;
     const uint out = g * params.words;
-    if (params.mode == 0 || end <= first + 1) {
+    if (params.mode == 3 && end > first + 1) {
+        for (uint w = 0; w < params.words; ++w) {
+            target[out + w] = 0u;
+        }
+        return;
+    }
+    if (params.mode == 0 || params.mode == 3 || end <= first + 1) {
         for (uint w = 0; w < params.words; ++w) {
             target[out + w] = source[first * params.words + w];
         }

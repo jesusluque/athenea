@@ -92,8 +92,11 @@ struct GpuSplats {
     /// shape operator in the splat's own first two axes (uu, uv, vv;
     /// `primvars:athenea:splat:curvature`). A frame turns a TX transfer's
     /// reflection across the splat's footprint by it. Empty where the file
-    /// carries none, and on a cloud the levels of detail made.
+    /// carries none. Or, where `curvaturePacked`, one word a splat
+    /// (common/packing.slang's packCurvature): what a `.athc` and the levels
+    /// of detail carry (`packCurvature` below).
     gpu::Buffer curvature;
+    bool        curvaturePacked = false;
     /// THE LIGHT THE SURFACE GAVE OFF BY ITSELF: one uint a splat, linear
     /// radiance in RGB9E5 (packing.slang's `packRgb9e5`). A relit gaussian
     /// adds it, unshadowed, to what it reflects -- a converted lamp shade, a
@@ -407,6 +410,11 @@ private:
 
 /// Whether `path` names a SOG: a .sog bundle or an unbundled meta.json.
 [[nodiscard]] bool isSog(const std::filesystem::path& path);
+
+/// A cloud's shape operators packed into one word a splat, in place
+/// (scene/curvature_pack.slang): nothing where it carries none or has packed
+/// them already.
+[[nodiscard]] Result<void> packCurvature(gpu::ShaderLibrary& library, GpuSplats& splats);
 
 /// Any splat file onto the device: .ply, .splat, .spz through io::readSplats,
 /// SOG through io::readSog and the device decode.

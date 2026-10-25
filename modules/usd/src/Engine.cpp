@@ -2262,6 +2262,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
     ++frameSerial_;
     std::vector<std::string> instancePrims;
     std::vector<std::string> cutPrims;
+    std::vector<const SplatEntry*> cutEntries;   // per cut: what its prim says of how it is drawn
     std::vector<lod::CutStats> cutStats;
     std::set<const SplatEntry*> drawnLevels;
     const uint32_t motionBuckets = technique == Technique::RayTraced ? motionBuckets_.load() : 1u;
@@ -2481,6 +2482,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                             entry.asset.threshold * static_cast<float>(1u << lodBias_)});
             poolOf.push_back(entry.pool.get());
             cutPrims.push_back(id.GetString());
+            cutEntries.push_back(&entry);
         }
         for (const auto& [id, entry] : meshes_) {
             if (!entry.visible || entry.gpu == nullptr) {
@@ -2611,7 +2613,23 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         const bool streamed = std::any_of(poolOf.begin(), poolOf.end(), [](auto* p) { return p != nullptr; });
         std::vector<lod::CutStats>& stats = cutStats;
         const auto placeCuts = [&](const std::vector<render::SplatInstance>& selected) {
+            const size_t first = splats.size();
             splats.insert(splats.end(), selected.begin(), selected.end());
+            // A CUT IS DRAWN AS ITS PRIM ASKS, as a whole cloud is: relit,
+            // its body lit, its light links, its index, the frame's transfer
+            // and reflection settings. A streamed TX cloud drew its albedo.
+            for (size_t k = 0; k < selected.size() && k < cutEntries.size(); ++k) {
+                render::SplatInstance& instance = splats[first + k];
+                const SplatEntry& from = *cutEntries[k];
+                instance.relight = from.relight;
+                instance.litBody = from.litBody;
+                instance.categories = categoryMask(from.categories);
+                instance.transferIndirect = transferIndirect_.load();
+                instance.reflectCloud = splatReflections_.load();
+                instance.ior = from.ior;
+                instance.catcher = from.catcher;
+                instance.lightCatcher = from.lightCatcher;
+            }
             for (size_t k = 0; k < selected.size(); ++k) {
                 instancePrims.push_back(k < cutPrims.size() ? cutPrims[k] : std::string());
             }

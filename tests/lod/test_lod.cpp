@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -386,7 +387,8 @@ TEST_CASE("a .athc header with a flag bit this reader does not know is refused, 
 // same for every gaussian, so every merged level holds them unchanged -- the
 // mean of a transfer is that transfer, the bits set everywhere stay set --
 // and a .athc written and read back holds them in its store and its levels.
-TEST_CASE("a transfer and a material go through the levels of detail and a .athc", "[lod][gpu][athc][transfer]") {
+TEST_CASE("a transfer, a material and a curvature go through the levels of detail and a .athc",
+          "[lod][gpu][athc][transfer]") {
     ATHENEA_REQUIRE_GPU(gpu);
     auto h = harness(gpu);
     CloudBuilder built = randomCloud(20000, 53, 0.003F, 0.05F);
@@ -409,6 +411,25 @@ TEST_CASE("a transfer and a material go through the levels of detail and a .athc
     cloud->shadowBits = filled(uint64_t{n} * kShadowWords, kOpen, "test.bits");
     cloud->shadowWords = kShadowWords;
     cloud->pbr = filled(n, kMaterial, "test.pbr");
+    // And a shape operator, the same everywhere, packed (bit 6): the splats
+    // hold the word it packs to, which a buffer of it packed alone says, and a
+    // merged group zero (flat) or a lone member's word.
+    const auto shapes = [&](uint32_t count) {
+        std::vector<float> v;
+        for (uint32_t i = 0; i < count; ++i) {
+            v.insert(v.end(), {2.0F, -0.5F, 0.25F});
+        }
+        auto made = gpu::Buffer::fromSpan<float>(*gpu->device, v, "test.curvature");
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    cloud->curvature = shapes(n);
+    REQUIRE(scene::packCurvature(*gpu->library, *cloud));
+    REQUIRE(cloud->curvaturePacked);
+    scene::GpuSplats reference;
+    reference.count = n;
+    reference.curvature = shapes(n);
+    REQUIRE(scene::packCurvature(*gpu->library, reference));
     lod::LodBuildSettings chunked;
     chunked.chunkSplats = 1000;
     auto lod = h->builder.build(*cloud, chunked);
@@ -436,7 +457,38 @@ TEST_CASE("a transfer and a material go through the levels of detail and a .athc
         off += wrongIn(l.splats.transfer, uint64_t{l.count} * kTransferWords, kOne);
         off += wrongIn(l.splats.shadowBits, uint64_t{l.count} * kShadowWords, kOpen);
         off += wrongIn(l.splats.pbr, l.count, kMaterial);
+        REQUIRE(l.splats.curvaturePacked);
+        const auto curvatureOff = [&](const gpu::Buffer& words, uint32_t count, bool merged) {
+            if (!merged) {
+                auto different = render::countDifferent(*gpu->library, words, reference.curvature, count);
+                REQUIRE(different);
+                return static_cast<uint32_t>(*different);
+            }
+            // A merged group is flat: its word is zero, or a lone member's.
+            static gpu::ComputeKernel kCheck = [&] {
+                auto made = gpu::ComputeKernel::create(*gpu->library, "athenea/test/curvature_check",
+                                                       "curvatureWordsCheck");
+                REQUIRE(made);
+                return std::move(*made);
+            }();
+            gpu::Buffer counts = test::uintBuffer(*gpu->device, 4, "test.curvatureWrong");
+            gpu::CommandBatch batch(*gpu->device);
+            kCheck.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) {
+                c["words"].setBinding(words.rhi());
+                c["reference"].setBinding(reference.curvature.rhi());
+                c["wrong"].setBinding(counts.rhi());
+                c["params"]["count"].setData(count);
+            });
+            REQUIRE(batch.submit(true));
+            std::array<uint32_t, 4> got{};
+            REQUIRE(counts.read(*gpu->device, 0, sizeof(got), got.data()));
+            REQUIRE(got[3] == count);
+            return got[0];
+        };
+        off += curvatureOff(l.splats.curvature, l.count, false);
         for (const lod::LodLevel& level : l.levels) {
+            REQUIRE(level.gaussians.curvaturePacked);
+            off += curvatureOff(level.gaussians.curvature, level.gaussians.count, true);
             REQUIRE(level.gaussians.transfer.valid());
             off += wrongIn(level.gaussians.transfer, uint64_t{level.gaussians.count} * kTransferWords, kOne);
             off += wrongIn(level.gaussians.shadowBits, uint64_t{level.gaussians.count} * kShadowWords, kOpen);
@@ -1059,4 +1111,45 @@ TEST_CASE("merged shading normals stay unit vectors between the ones they merge"
     CHECK(notUnit == 0);
     // What the test tells apart: averaged as floats, they are not.
     CHECK(shortened > 0);
+}
+
+// A SHAPE OPERATOR IN ONE WORD (common/packing.slang's packCurvature, what a
+// .athc's bit 6 carries): sizes from a panel's 1e-3 to a lip's 1e4 per unit,
+// both signs, and components far under the largest, packed and unpacked on
+// the device. Every component within 16 octaves of the largest comes back
+// within half a step of 16/127 of an octave (4.5%) with its sign; one under
+// them comes back flat.
+TEST_CASE("a shape operator packed into one word comes back within half a step", "[lod][gpu][athc]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    std::vector<float> shapes;
+    uint64_t state = 2026;
+    const auto next = [&] {
+        state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+        return static_cast<float>((state >> 40) & 0xFFFFFF) / 16777216.0F;
+    };
+    constexpr uint32_t kCount = 65536;
+    for (uint32_t i = 0; i < kCount; ++i) {
+        for (int c = 0; c < 3; ++c) {
+            const float size = std::exp2(-10.0F + 24.0F * next());
+            shapes.push_back(next() < 0.5F ? -size : size);
+        }
+    }
+    auto buffer = gpu::Buffer::fromSpan<float>(*gpu->device, shapes, "test.shapes");
+    REQUIRE(buffer);
+    gpu::Buffer wrong = test::uintBuffer(*gpu->device, 4, "test.wrong");
+    gpu::ComputeKernel check = test::kernel(*gpu, "athenea/test/curvature_check");
+    gpu::CommandBatch batch(*gpu->device);
+    check.dispatch(batch, {kCount, 1, 1}, [&](rhi::ShaderCursor c) {
+        c["shapes"].setBinding(buffer->rhi());
+        c["wrong"].setBinding(wrong.rhi());
+        c["params"]["count"].setData(kCount);
+    });
+    REQUIRE(batch.submit(true));
+    std::array<uint32_t, 4> counts{};
+    REQUIRE(wrong.read(*gpu->device, 0, sizeof(counts), counts.data()));
+    INFO("off " << counts[0] << ", sign " << counts[1] << ", not flat " << counts[2] << " of " << counts[3]);
+    CHECK(counts[3] == kCount * 3);
+    CHECK(counts[0] == 0);
+    CHECK(counts[1] == 0);
+    CHECK(counts[2] == 0);
 }

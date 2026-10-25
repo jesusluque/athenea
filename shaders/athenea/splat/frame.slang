@@ -168,8 +168,10 @@ public struct FrameParams {
     public float s00; public float s01; public float s02; public float s03;
     public float s10; public float s11; public float s12; public float s13;
     public float s20; public float s21; public float s22; public float s23;
-    /// 1: `curvature` holds this cloud's shape operators, and a TX transfer's
-    /// reflection gets its slope across the footprint (splat_project).
+    /// 1: `curvature` holds this cloud's shape operators, three floats a
+    /// gaussian, and a TX transfer's reflection gets its slope across the
+    /// footprint (splat_project); 2: the same, one packed word a gaussian
+    /// (common/packing.slang's packCurvature).
     public uint  hasCurvature;
     /// 1: `txCache` holds this cloud's view-independent transfer terms
     /// (splatTransferViewless), each with the dome slice it is for.

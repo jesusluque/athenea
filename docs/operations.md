@@ -206,7 +206,8 @@ emit, tile sort and blend times separately.
 
 | Option | Value | Default | Notes |
 |---|---|---|---|
-| `input` | path, required | — | `.ply`, `.splat`, `.spz`, `.sog`, `meta.json` |
+| `input` | path, required | — | `.ply`, `.splat`, `.spz`, `.sog`, `meta.json`; or a USD ParticleField (`.usd`, `.usda`, `.usdc`) into a `.athc` |
+| `--prim` | prim path | the stage's first | a USD input: the ParticleField read |
 | `output` | path, required | — | `.usda`, `.usdc`, `.usd`, or `.athc` |
 | `--chunk-splats` | integer | `65536` | `.athc`: splats per streamed chunk |
 | `--max-group-fraction` | number | `0.5` | `.athc`: groups per splat the finest merged level may hold |
@@ -217,6 +218,13 @@ emit, tile sort and blend times separately.
 A `.athc` output refuses a non-zero `--rotate-x`: the container holds the
 cloud as it is, and the turn belongs on the prim that references it.
 
+A USD ParticleField goes into a `.athc` with everything it carries -- its
+material and layers, its transfer and open directions, its curvature (packed,
+bit 6), its shading normals, emission and Cryptomatte ids -- in its own space,
+at the default time. Nothing is converted again: it is the same cloud with its
+levels of detail. One a skeleton carries is refused. What stays on the prim
+(`relight`, `ior`) is authored on the prim that names the asset.
+
 A stage written here says `metersPerUnit = 1`: none of the input formats
 records a unit, and a capture's scale is taken to be metres. A cloud in
 another unit is scaled where it is referenced, or the stage's
@@ -225,6 +233,7 @@ another unit is scaled where it is referenced, or the stage's
 ```sh
 athenea convert capture.ply scene.usda
 athenea convert capture.ply capture.athc --chunk-splats 131072
+athenea convert car_tx.usdc car_tx.athc
 ```
 
 ### 2.4.1 `athenea decimate` — fewer gaussians, kept where they matter
@@ -1278,10 +1287,17 @@ more for the layers; one with a transfer keeps it under bit 5, its values as
 f16 pairs and its open directions after them -- the counts in a header of
 thirty-two bytes after the first, and the merged levels' a group's transfer
 averaged by opacity (a zonal one, whose axes do not average, a gaussian's),
-its bits set where half the weight has them, its material a gaussian's. Bit
-3 is kept for proposal 009. A `flags` bit this build does not know (bit 3,
-or past bit 5) is refused, file named: a later bit may add a block, and a reader
-that skipped it would read every block after it from the wrong place.
+its bits set where half the weight has them, its material a gaussian's. One
+with a curvature (`primvars:athenea:splat:curvature`, what turns a TX
+transfer's sharp lobes) keeps it under bit 6, one word an element after the
+open directions: bytes 0 to 2 the shape operator's uu, uv and vv, each bit 7
+its sign and bits 0 to 6 a step q of 16/127 of an octave over the 16 octaves
+under byte 3, which holds the largest's log2 rounded up as a signed byte
+(the size 2^(top - 16 + q 16/127); q 0 is flat); the extra header's fifth
+word is 1, and a merged group of more than one is flat (zero). Bit 3 is kept for
+proposal 009. A `flags` bit this build does not know (bit 3, or past bit 6)
+is refused, file named: a later bit may add a block, and a reader that
+skipped it would read every block after it from the wrong place.
 
 What a budget too small looks like: groups whose chunks have not arrived draw
 their merged gaussian, so the cloud is there but blunt, and it sharpens as the

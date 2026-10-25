@@ -57,10 +57,11 @@ Result<scene::GpuSplats> packed(gpu::Device& device, uint32_t count, uint32_t re
 /// WHAT A CLOUD CARRIES BESIDE ITS GAUSSIANS (lod_extras.slang): a buffer, its
 /// words a gaussian, and how a level's group merges it -- 0 the first
 /// gaussian's, 1 f16 pairs averaged by opacity, 2 bits set where half the
-/// weight has them. The material and the matte's ids take one gaussian's; a
-/// transfer of harmonics is averaged (it is linear in the sky) and a zonal
-/// one, whose axes do not average, takes one gaussian's; the open directions
-/// go by weight.
+/// weight has them, 3 zero for a group of more than one. The material and
+/// the matte's ids take one gaussian's; a transfer of harmonics is averaged
+/// (it is linear in the sky) and a zonal one, whose axes do not average,
+/// takes one gaussian's; the open directions go by weight; a merged group is
+/// flat (its curvature zero).
 struct Extra {
     gpu::Buffer scene::GpuSplats::* member;
     uint32_t                        words;
@@ -78,6 +79,13 @@ std::vector<Extra> extrasOf(const scene::GpuSplats& cloud) {
     if (cloud.hasShadowBits() && cloud.shadowWords > 0) {
         out.push_back({&scene::GpuSplats::shadowBits, cloud.shadowWords, 2});
     }
+    // The shape operator, packed (scene::packCurvature). A merged group is
+    // flat (a word of zero): one member's shape operator is in that member's
+    // axes, and on the group's it turned a TX sharp lobe into streaks across
+    // the Corvette's doors. Three floats are not carried.
+    if (cloud.hasCurvature() && cloud.curvaturePacked) {
+        out.push_back({&scene::GpuSplats::curvature, 1, 3});
+    }
     return out;
 }
 
@@ -93,6 +101,7 @@ Result<void> allocateExtras(gpu::Device& device, const scene::GpuSplats& like, u
     to.transferCount = like.transferCount;
     to.transferWords = like.transferWords;
     to.shadowWords = like.shadowWords;
+    to.curvaturePacked = like.hasCurvature() && like.curvaturePacked;
     return ok();
 }
 
@@ -101,7 +110,8 @@ bool sameExtras(const scene::GpuSplats& from, const scene::GpuSplats& to) {
     return from.hasPbr() == to.hasPbr() && from.hasLobes() == to.hasLobes() && from.hasCrypto() == to.hasCrypto() &&
            from.transferWords == to.transferWords && from.transferCount == to.transferCount &&
            from.shadowWords == to.shadowWords && from.transfer.valid() == to.transfer.valid() &&
-           from.hasShadowBits() == to.hasShadowBits();
+           from.hasShadowBits() == to.hasShadowBits() &&
+           (from.hasCurvature() && from.curvaturePacked) == (to.hasCurvature() && to.curvaturePacked);
 }
 
 /// The shading normals' bindings: the cloud's own where it keeps them, and a
@@ -636,6 +646,10 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         }
         frame.cloud.source = lod.splats.source;
         frame.cloud.linear = lod.splats.linear;
+        // Gathered anew: whatever was kept of the last cut's gaussians (a TX
+        // cloud's view-independent terms, keyed on the revision) is not this
+        // cut's, even where the count is the same.
+        ++frame.cloud.revision;
         frame.cloud.count = drawn;
         frame.cloud.declared = lod.count;
         frame.cloud.bounds = lod.splats.bounds;

@@ -37,6 +37,15 @@ StructuredBuffer<uint>      normals;
 // through it (rgb) and through the coat, as halves -- what the blend reads
 // beside the slope from memory.
 StructuredBuffer<float>     curvature;
+/// A gaussian's shape operator (uu, uv, vv): three floats, or one word a
+/// gaussian where `params.hasCurvature` is 2 -- a cloud from a `.athc` or its
+/// levels of detail (common/packing.slang's packCurvature).
+float3 curvatureOf(uint i) {
+    if (params.hasCurvature == 2u) {
+        return unpackCurvature(asuint(curvature[i]));
+    }
+    return float3(curvature[i * 3], curvature[i * 3 + 1], curvature[i * 3 + 2]);
+}
 RWStructuredBuffer<uint4>   slopes;
 // A splat each: a TX transfer's view-independent terms -- the body's light
 // (rgb), the field's coupling to the sky (rgb), the sun's share, and 1 where
@@ -836,10 +845,11 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
             // mesh's normal.
             const float3 axisN = float3(r[0][2], r[1][2], r[2][2]);
             const float faces = dot(cloudNormal, axisN) >= 0.0 ? 1.0 : -1.0;
-            slope.curvature = faces * 0.5 * (curvature[i * 3] + curvature[i * 3 + 2]);
+            const float3 shape = curvatureOf(i);
+            slope.curvature = faces * 0.5 * (shape.x + shape.z);
             // The bake's spread (m2sSpread at --specular-filter 1, a transfer
             // bake's): the largest principal curvature times the wider size.
-            const float a = curvature[i * 3], b = curvature[i * 3 + 1], c = curvature[i * 3 + 2];
+            const float a = shape.x, b = shape.y, c = shape.z;
             const float kMax = abs(0.5 * (a + c)) + sqrt(0.25 * (a - c) * (a - c) + b * b);
             slope.bakeSpread = kMax * max(scale.x, scale.y);
             // A FOLD'S COAT (kCoatFoldRoughness): where the surface turns
@@ -879,7 +889,7 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                 const float held = 1.0 - fold;
                 slope.foldWiden = fold * 0.25 * turn * turn;
                 const float3 shapeUV =
-                    held * float3(curvature[i * 3], curvature[i * 3 + 1], curvature[i * 3 + 2]);
+                    held * curvatureOf(i);
                 const float2x2 shapeOf = float2x2(shapeUV.x, shapeUV.y, shapeUV.y, shapeUV.z);
                 // The shape operator was measured on the mesh's normal; the
                 // eye may be on the other side of the disc.
