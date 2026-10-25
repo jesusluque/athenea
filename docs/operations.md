@@ -522,8 +522,9 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 | `--geometry-stagger` | flag | off | with `--geometry-key`: no whole key frames; blocks of 256 gaussians refreshed in turn, each once an interval |
 | `--geometry-position-bits` | 10 to 16 | `16` | with `--geometry`: a position axis over the sequence's range (the sparrow's 0.23 m: 12 bits are 56 um) |
 | `--geometry-scale-bits` | 6 to 10 | `10` | with `--geometry`: a log scale over its range |
-| `--geometry-rotation-bits` | 7 to 10 | `10` | with `--geometry`: each component of the store's smallest-three rotation, rounded (the word keeps 10 bits, the low ones zero) |
+| `--geometry-rotation-bits` | 5 to 10 | `10` | with `--geometry`: each component of the store's smallest-three rotation, rounded (the word keeps 10 bits, the low ones zero) |
 | `--geometry-predict` | 1 or 2 | `1` | with `--geometry-key`: the residual from the frame before, or from its motion carried on (2 b - c) |
+| `--geometry-hold` | P,S,R, each 0 to 64 | off | with `--geometry-key` and `--geometry-predict 1`: between keys, a position axis within P of its steps of the value the decoder holds, a log scale within S, or a rotation whose three components are each within R (its index unchanged) keeps the held value and is sent as no change. The file is unchanged in format: a decoder needs no option. A held value is never more than P, S or R steps from the source |
 | `--ranges` | `group` or `frame` | `group` | each attribute's range over a group of pictures (from one key frame to the next), or each frame's own |
 | `--sh-degree` | 0 to 3 | `3` | at most the source's |
 | `--columns` | tiles a row | the squarest mosaic | |

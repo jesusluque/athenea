@@ -188,6 +188,7 @@ Result<PlanesCodec> PlanesCodec::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(c.blockBits_, enc, "videoPlanesBlockBits"));
     const char* geo = "athenea/scene/video_geometry";
     ATHENEA_TRY(make(c.geometryQuantise_, geo, "videoGeometryQuantise"));
+    ATHENEA_TRY(make(c.geometryHold_, geo, "videoGeometryHold"));
     ATHENEA_TRY(make(c.geometryPack_, geo, "videoGeometryPack"));
     ATHENEA_TRY(make(c.geometryApply_, geo, "videoGeometryApply"));
     ATHENEA_TRY(make(c.decode_, dec, "videoPlanesDecode"));
@@ -388,8 +389,17 @@ Result<std::vector<std::byte>> PlanesCodec::geometryEncode(const scene::GpuSplat
         p["scaleBits"].setData(layout.geometryScaleBits);
         p["rotationBits"].setData(layout.geometryRotationBits);
         p["order"].setData(before2 != nullptr ? at.order : std::min(at.order, 1u));
+        p["holdPosition"].setData(at.holdPosition);
+        p["holdScale"].setData(at.holdScale);
+        p["holdRotation"].setData(at.holdRotation);
     };
+    if (at.holds() && at.order != 1) {
+        return Error(ErrorCode::InvalidArgument, "video planes: a geometry hold wants order 1 prediction");
+    }
     geometryQuantise_.dispatch(batch, {n, 1, 1}, bind);
+    if (at.holds()) {
+        geometryHold_.dispatch(batch, {n, 1, 1}, bind);
+    }
     if (!quantiseOnly) {
         geometryPack_.dispatch(batch, {static_cast<uint32_t>(planeWords), 1, 1}, bind);
     }

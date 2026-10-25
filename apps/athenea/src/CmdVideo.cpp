@@ -617,6 +617,7 @@ void addVideo(CLI::App& app) {
         double quality = 0.5, megabits = 0.0, rate = 0.0;
         bool check = false, intra = false, chroma = false, holdBoxes = false, geometry = false, geometryStagger = false;
         uint32_t geometryKey = 0, geometryPositionBits = 16, geometryScaleBits = 10, geometryPredict = 1;
+        std::vector<uint32_t> geometryHold;
         uint32_t geometryRotationBits = 10;
         std::string chromaWeight = "mean";
     };
@@ -653,7 +654,14 @@ void addVideo(CLI::App& app) {
         ->check(CLI::Range(6u, 10u));
     enc->add_option("--geometry-rotation-bits", o->geometryRotationBits,
                     "with --geometry: bits a rotation component (of the store's smallest three)")
-        ->check(CLI::Range(7u, 10u));
+        ->check(CLI::Range(5u, 10u));
+    enc->add_option("--geometry-hold", o->geometryHold,
+                    "with --geometry-key and --geometry-predict 1: P,S,R -- between keys a position axis, a log "
+                    "scale or a rotation (all three components) that moved no more than that many of its steps "
+                    "from what the decoder holds keeps that value, sent as no change (conditional replenishment)")
+        ->expected(3)
+        ->delimiter(',')
+        ->check(CLI::Range(0u, 64u));
     enc->add_option("--geometry-predict", o->geometryPredict,
                     "with --geometry-key: what a frame between keys is a residual from -- 1 the frame before, 2 the "
                     "frame before's motion carried on (2 b - c)")
@@ -997,9 +1005,34 @@ void addVideo(CLI::App& app) {
                     if (auto r = codec->order(head, head.count, ranges, order); !r) cli::fail(r.error());
                     orderedFor = head.count;
                 }
+                if (o->geometryHold.size() == 3) {
+                    // Held values depend on every frame since a block's
+                    // key: the loop's last `interval` frames, encoded as
+                    // the stream does, leave in geomBefore what the decoder
+                    // holds when the loop comes round (each block keyed once
+                    // in them).
+                    const size_t from = last + 1 - std::min<size_t>(o->geometryKey, last + 1 - first);
+                    for (size_t back = from; back <= last; ++back) {
+                        scene::GpuSplats tail = prepare(back);
+                        frameBuffer(geomNow, tail.count, "video.geometryNow");
+                        frameBuffer(geomBefore, tail.count, "video.geometryBefore");
+                        frameBuffer(geomBefore2, tail.count, "video.geometryBefore2");
+                        video::PlaneLayout whole = layout;
+                        whole.splats = tail.count;
+                        video::GeometryFrame at{static_cast<uint32_t>(back - first), o->geometryKey, true, 1};
+                        at.holdPosition = o->geometryHold[0];
+                        at.holdScale = o->geometryHold[1];
+                        at.holdRotation = o->geometryHold[2];
+                        auto held = codec->geometryEncode(tail, whole, order, 0, ranges, at, geomNow, geomBefore, true);
+                        if (!held) cli::fail(held.error());
+                        std::swap(geomBefore2, geomBefore);
+                        std::swap(geomBefore, geomNow);
+                    }
+                }
                 // The loop's last two frames, what frame 0's first blocks
                 // are predicted from.
                 for (const size_t back : {last - 1, last}) {
+                    if (o->geometryHold.size() == 3) break;
                     if (back < first) continue;
                     scene::GpuSplats tail = prepare(back);
                     gpu::Buffer& into = back == last ? geomBefore : geomBefore2;
@@ -1020,8 +1053,13 @@ void addVideo(CLI::App& app) {
                     frameBuffer(geomBefore2, cloud.count, "video.geometryBefore2");
                     frameBuffer(geomState, cloud.count, "video.geometryState", 2);
                 }
-                const video::GeometryFrame geomAt{static_cast<uint32_t>(k - first), o->geometryKey, o->geometryStagger,
-                                                  o->geometryPredict};
+                video::GeometryFrame geomAt{static_cast<uint32_t>(k - first), o->geometryKey, o->geometryStagger,
+                                            o->geometryPredict};
+                if (o->geometryHold.size() == 3) {
+                    geomAt.holdPosition = o->geometryHold[0];
+                    geomAt.holdScale = o->geometryHold[1];
+                    geomAt.holdRotation = o->geometryHold[2];
+                }
                 if (!groupRanges) {
                     if (auto r = codec->ranges(cloud, layout, cloud.count, ranges); !r) cli::fail(r.error());
                 }

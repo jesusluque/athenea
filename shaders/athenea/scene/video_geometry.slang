@@ -5,6 +5,8 @@
 // key or as a zigzagged difference from the same gaussian a frame before.
 //   videoGeometryQuantise  encode: a picture's gaussians' four words, at
 //                          their index in the frame (a stable order's)
+//   videoGeometryHold      encode: conditional replenishment, a field that
+//                          moved too little keeps the value the decoder holds
 //   videoGeometryPack      encode: those words, absolute or as differences
 //                          from the frame before's, into 16 byte planes a
 //                          chunk; a thread a word of four bytes
@@ -29,9 +31,11 @@ struct GeometryParams {
     uint scaleBits;     // 6-10
     uint order;         // the prediction: 1 the frame before, 2 its motion carried on
     uint state2At;      // decode: the word where the frame before's state starts in `state` (its second half)
-    uint rotationBits;  // 7-10: a rotation component's bits (the word keeps 10, the low ones zero)
+    uint rotationBits;  // 5-10: a rotation component's bits (the word keeps 10, the low ones zero)
+    uint holdPosition;  // videoGeometryHold: steps a position field may drift from what the decoder holds
+    uint holdScale;     // ... a log scale field
+    uint holdRotation;  // ... a rotation component (in `rotationBits` steps); the index never holds
     uint pad1;
-    uint pad2;
 };
 
 StructuredBuffer<float4>         positions;
@@ -85,6 +89,48 @@ void videoGeometryQuantise(uint3 tid: SV_DispatchThreadID) {
         w = rounded;
     }
     now[j * 4 + 3] = w;
+}
+
+/// CONDITIONAL REPLENISHMENT (`--geometry-hold`): a field that moved no more
+/// than its threshold from what the decoder holds (`before`, the frame
+/// before as the decoder rebuilt it) is not sent -- `now` takes the held value,
+/// so its residual is 0 and the decoder's state stays exactly the encoder's.
+/// Values hold still until they have moved enough: no flicker by construction.
+/// Only between keys (a key sends what is held) and with order 1.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void videoGeometryHold(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    const uint j = params.first + i;
+    if (geometryKey(j, params.frame, params.interval, params.stagger)) {
+        return;
+    }
+    uint4 g = uint4(now[j * 4], now[j * 4 + 1], now[j * 4 + 2], now[j * 4 + 3]);
+    const uint4 b = uint4(before[j * 4], before[j * 4 + 1], before[j * 4 + 2], before[j * 4 + 3]);
+    uint f[6];
+    for (uint k = 0; k < 6; ++k) {
+        const uint v = geometryField(g, k), w = geometryField(b, k);
+        const int d = int((v - w) << 16) >> 16;
+        f[k] = uint(abs(d)) <= (k < 3 ? params.holdPosition : params.holdScale) ? w : v;
+    }
+    uint rot = g.w;
+    if ((g.w & 3u) == (b.w & 3u)) {
+        const uint n = min(params.rotationBits, 10u), drop = 10u - n;
+        bool held = true;
+        for (uint c = 0; c < 3; ++c) {
+            const uint shift = 22u - 10u * c + drop, mask = (1u << n) - 1u;
+            const int d = int((g.w >> shift) & mask) - int((b.w >> shift) & mask);
+            held = held && uint(abs(d)) <= params.holdRotation;
+        }
+        rot = held ? b.w : g.w;
+    }
+    now[j * 4 + 0] = f[0] | (f[1] << 16u);
+    now[j * 4 + 1] = f[2] | (f[3] << 16u);
+    now[j * 4 + 2] = f[4] | (f[5] << 16u);
+    now[j * 4 + 3] = rot;
 }
 
 /// Byte `plane` of gaussian j's value: its field absolute, or zigzagged from its prediction.

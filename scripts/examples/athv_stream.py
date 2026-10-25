@@ -64,11 +64,11 @@ def manifest_message(manifest, frame):
     return json_message(b"ATVM", athv.MANIFEST, manifest, frame)
 
 
-# The sparrow's dome (camera_sky.usda): a plain DomeLight on a Z-up stage, no transform, so its frame is the
-# stage's world (athenea leaves an authored dome as USD reads it: its pole on world +Y). The cloud's own space
-# (where decoded positions are) is the stage's world turned by /Live's rotateX(270): world = (x, z, -y). So a
-# direction d in the dome's frame is toWorld . d in the cloud's space, toWorld = these rows.
-DOME_TO_CLOUD = [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]]
+# The sparrow's dome, upright (camera_sky_upright.usda): the DomeLight turned rotateX(90) on a Z-up stage, so a
+# direction d in its own frame (pole +Y) is (dx, -dz, dy) in the stage's world, its pole world +Z. The cloud's own
+# space (where decoded positions are) is the stage's world turned by /Live's rotateX(270): world = (x, z, -y), a
+# world direction w is (wx, -wz, wy) there. Together d is (dx, -dy, -dz) in the cloud's space: toWorld = these rows.
+DOME_TO_CLOUD = [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]]
 
 
 def environment_block(url):

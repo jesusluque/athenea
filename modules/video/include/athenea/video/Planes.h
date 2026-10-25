@@ -161,6 +161,13 @@ struct GeometryFrame {
     uint32_t interval = 0;   ///< frames from one key to the next (0: every frame a key)
     bool     stagger = false;///< a key refreshes blocks of 256 in turn
     uint32_t order = 1;      ///< the prediction between keys: 1 the frame before, 2 its motion carried on
+    /// CONDITIONAL REPLENISHMENT (encode only, order 1): between keys a
+    /// field that is no more than this many of its steps from the value the
+    /// decoder holds keeps that value (residual 0). 0: every change is sent.
+    uint32_t holdPosition = 0;
+    uint32_t holdScale = 0;
+    uint32_t holdRotation = 0;   ///< all three components within it, the index unchanged
+    [[nodiscard]] bool holds() const noexcept { return holdPosition + holdScale + holdRotation != 0; }
 };
 
 /// How far a decoded cloud is from its source, an attribute: steps of its
@@ -224,6 +231,8 @@ public:
     /// `now` (four words a frame splat, at Morton rank `first` + i of the
     /// frame) and packed -- absolute, or against `before` -- into 16 byte
     /// planes a chunk, read back. `quantiseOnly`: `now` alone, nothing packed.
+    /// With `at.holds()`, `now` is what the decoder will hold (`before` must
+    /// be what it held a frame before).
     [[nodiscard]] Result<std::vector<std::byte>> geometryEncode(const scene::GpuSplats& cloud,
                                                                 const PlaneLayout& layout, const gpu::Buffer& order,
                                                                 uint32_t first, const gpu::Buffer& ranges,
@@ -258,7 +267,7 @@ public:
 private:
     gpu::Device*       device_ = nullptr;
     gpu::ComputeKernel partial_, finish_, widen_, morton_, encode_, high_, blocks_, chroma_, boxUnion_, blockBits_;
-    gpu::ComputeKernel decode_, compare_, geometryQuantise_, geometryPack_, geometryApply_;
+    gpu::ComputeKernel decode_, compare_, geometryQuantise_, geometryHold_, geometryPack_, geometryApply_;
     gpu::RadixSort     sort_;
     gpu::SortBuffers   sorting_;
     uint32_t           sortingFor_ = 0;
