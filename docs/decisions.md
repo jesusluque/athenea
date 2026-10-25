@@ -15483,3 +15483,20 @@ the L4.
 - The edge of a cutout's hole is not resolved (the candidate is not trusted there).
 - Texture aliasing inside a surface is the mip selection's, not this pass's.
 - The copy of the layer the kernel reads its neighbours from is a full-frame copy each frame.
+
+## Blender on Windows: the exit, the flatten, what F12 gathered, the OpenFX bundle (25 Oct)
+
+The issues the Windows run of 19 Oct left (#40 to #43), on the same laptop (RTX 3070 Laptop GPU, CUDA, Blender 5.3
+beta), with the path tracer on the compute BVH (*Path tracing on CUDA through the compute BVH*, 24 Oct). Each was
+reproduced with `tests/blender` scripts run headless against the build tree's plugin.
+
+**#41, Blender's 0xC0000409 on its way out.** 0xC0000409 is how Windows ends a process that calls `abort()`, and two
+different faults reached it through the same door: slang-rhi asserting on a failed CUDA call.
+
+- *The process context outlived the driver.* A command run inside the host (`athenea_mesh2splat`,
+  `athenea_flatten`, `athenea_compare`) makes the process's `gpu_host::Context` once, in a static. It was destroyed
+  with the statics at exit, after CUDA had shut itself down: gpe's last sync and slang-rhi's context push answered
+  `CUDA_ERROR_DEINITIALIZED` (4) and slang-rhi's assertion aborted. A flatten alone in a fresh Blender reproduced it
+  every time (exit 0xC0000409 after the command had returned 0). The context is now made once and never destroyed
+  (`installProcessContext`): it lives as long as the process, and the system takes back its memory. With it, the
+  same run exits 0.
