@@ -15675,3 +15675,63 @@ unless the cancel was looked at first -- so 1 or 4 by timing. The test shows the
 `test_module` passes whole; `tx_module` passes whole -- it was refused there before, since a bake wanted OptiX --
 the cloud against its reference relMSE 0.0528 and p99 9 (this build has OIDN), Esc ends 4; `viewport_readback.py`
 passes (half draws what float draws, p99 0).
+
+## A Windows package for one user (26 Oct)
+
+`cmake --install` (the install rules of 3 Oct) and `cpack` now make the Windows release: one ZIP,
+`athenea-<v>-windows-x64.zip`, holding the prefix -- `bin/` with every DLL the programs load, `share/athenea/shaders`,
+`plugin/usd`, `aofx/`, `ofx/Athenea.ofx.bundle`, `libraries/`, `blender/` with the add-on's zip, the operations
+manual in both languages and every third party's licence files -- and, at its root, `install.ps1`, `uninstall.ps1`
+and `INSTALL.md`. `scripts\package.ps1` is `cpack` over the build.
+
+**Why the install carries the DLLs.** Windows looks for a DLL beside the program first, so the toolchain's DLLs go in
+`bin/` with OpenUSD's plugInfo tree in `bin/usd` (OpenUSD reads it beside its own DLLs) and MaterialX's `libraries/`
+one level up (found from the MaterialX DLLs' parent); `athenea info` from the installed prefix names the shaders in
+`share/athenea/shaders`, MaterialX 1.39.5 and one TBB, `bin\tbb12.dll`. The install script copies whole folders
+(USD's `bin` and `lib`, Slang's `bin`, OCIO's, OIDN's) and by pattern CUDA's NVRTC, its builtins, nvJitLink and
+cudart, since what is loaded by name (Slang's compiler, NVRTC, OIDN's devices, USD's plugins) is in no import table.
+It then checks: `file(GET_RUNTIME_DEPENDENCIES)` over athenea, athenea-mcp, hdAthenea and the AOFX bundles resolves
+59 DLLs, all in `bin/` or under the Windows folder, and would fail the install otherwise. NVRTC's `.alt.dll` (44 MB,
+for programs that link cudart statically) is left out. The FetchContent dependencies install expat's headers and
+CMake configs; every rule of this project is the `athenea` component and the package holds only that.
+
+**Size.** The ZIP is 188 MB, 426 MB unpacked in 1 218 files: 351 MB of it `bin/` (128 DLLs), of which Slang's LLVM (81 MB), NVRTC (44 MB),
+nvJitLink (37 MB), Slang's compiler (25 MB), OpenVDB (23 MB) and DXC (21 MB). The Blender add-on's zip inside is
+53 MB.
+
+**The OpenFX bundle** is installed with its plugin and licence files only. Its server is the prefix's
+`bin\athenea-mcp.exe`, which `install.ps1` names in `ATHENEA_MCP` and which finds its DLLs and shaders beside it; a
+second copy of the server and the shaders inside the bundle would find its DLLs only through the `PATH`.
+
+**The per-user installer.** No administrator rights and no installer program: `install.ps1` copies the unpacked
+folder to `%LOCALAPPDATA%\athenea` (`robocopy /MIR`, so a second run replaces the first), writes the user's `PATH`
+(`+ bin`), `OFX_PLUGIN_PATH` (`+ ofx`) and `ATHENEA_MCP` raw into `HKCU\Environment` (a `PATH` holding `%VARIABLES%`
+keeps them), broadcasts the change, and records what it added in `<prefix>\install.json`; `uninstall.ps1` takes out
+exactly those entries, puts back an earlier `ATHENEA_MCP`, removes the add-on and deletes the prefix.
+`PXR_PLUGINPATH_NAME` is opt-in (`-UsdPluginPath`): a USD application built against another OpenUSD would be offered
+an `hdAthenea` it cannot load. With it set, a background Blender still loads the add-on's own `hdAthenea` (the add-on
+registers first). The Blender add-on is installed with `blender --command extension install-file` and enabled from a
+background session (`addon_utils.enable`, then `save_userpref`): `install-file --enable` in a profile that has never
+loaded its `user_default` repository installs but does not enable ("Repo module ... not a sub-module").
+`scripts\package-blender-addon.ps1` is the Windows add-on package: the manifest rewritten to `platforms =
+["windows-x64"]` (the source one says `macos-arm64`, which Blender refuses on Windows), the entries named with `/`,
+no byte order mark in the TOML, no `.pdb`/`.ilk`; `blender --command extension validate` passes. A licence file the
+toolchain's trees lack (OIDN's, OpenVDB's, zlib's on that machine) is taken from Blender's own SPDX texts.
+
+**Checked**, on an RTX 3070 Laptop GPU (8 GB, driver 621.01, CUDA 12.6 runtime, no OIDN in this build), from a clean
+place: the ZIP unpacked to a fresh folder, `install.ps1` writing its variables under a test key instead of
+`HKCU\Environment`, and every run with a `PATH` of System32 and what the install wrote, so no build tree or toolchain
+was reachable. `athenea --version` and `athenea info` (CUDA, the installed shaders, MaterialX 1.39.5); `athenea stage`
+on `tests/data/validate/two_balls.usda` at 480x270, raster (mean 0.119 0.145 0.187) and path traced, 64 paths over
+the compute BVH (mean 0.098 0.120 0.156); `athenea render` on `sh3.ply`; the OpenFX test host loading the installed
+bundle and rendering a 283 668-splat cloud at 320x180 through the installed `athenea-mcp`. With Blender 5.3 beta and its
+user resources in the test folder: the installed extension enabled, `test_module` passes whole; `tx_module` passes
+its conversion (592 s, no OIDN), the cloud against the GT (relMSE 0.0533, 8-bit p99 18), the catcher, the comparison
+with Cycles and the export, and was stopped at its 25-minute limit before the Blender splats and Esc steps. A second
+`install.ps1` leaves each variable with one entry; `uninstall.ps1` leaves no prefix, no entry, no extension.
+
+**Not done.** OIDN is not in this package: the build machine has no OIDN prefix, so `athenea info` says "denoiser
+none" and `--denoise` is refused; a build with `ATHENEA_OIDN_ROOT` set packages its DLLs as they are (the OIDN bin
+folder is copied whole). The package is not signed, and no `setup.exe` is made: WiX or Inno Setup with
+`PrivilegesRequired=lowest` over the same folder would be one, with the same registry writes. Blender is found on the
+`PATH` and in `Program Files\Blender Foundation\Blender 5.3*`, not through Steam or the Microsoft Store.

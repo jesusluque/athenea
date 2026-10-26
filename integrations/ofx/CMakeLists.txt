@@ -78,3 +78,15 @@ if(TARGET athenea_shaders_copy)
         COMMAND ${CMAKE_COMMAND} -E rm -rf "${ATHENEA_OFX_BUNDLE}/Contents/Resources/shaders/athenea/test"
         VERBATIM)
 endif()
+
+# Installed under ATHENEA_OFX_INSTALL_DIR (ofx/), the folder a host's
+# OFX_PLUGIN_PATH names. The installed bundle holds the plugin and its licence
+# files; the server is the prefix's bin/athenea-mcp, which finds its DLLs and
+# shaders beside it (ATHENEA_MCP, or the PATH, as the per-user install sets
+# them), so its copy and the shaders' stay with the build tree's bundle.
+set(ATHENEA_OFX_INSTALL_DIR "ofx" CACHE STRING "Install destination of Athenea.ofx.bundle, relative to the prefix")
+install(TARGETS athenea_ofx LIBRARY DESTINATION "${ATHENEA_OFX_INSTALL_DIR}/Athenea.ofx.bundle/Contents/${_ofx_arch}")
+install(FILES ${ATHENEA_LEGAL_FILES} DESTINATION "${ATHENEA_OFX_INSTALL_DIR}/Athenea.ofx.bundle/Contents/Resources")
+if(APPLE)
+    install(FILES "${ATHENEA_OFX_BUNDLE}/Contents/Info.plist" DESTINATION "${ATHENEA_OFX_INSTALL_DIR}/Athenea.ofx.bundle/Contents")
+endif()

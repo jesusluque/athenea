@@ -347,13 +347,14 @@ commit on each system, from a release preset's build tree:
 
 | Step | macOS | Linux | Windows |
 |---|---|---|---|
-| archive | `scripts/package.sh <build> <out>` (`.zip`) | `scripts/package.sh <build> <out>` (`.tar.gz`, needs `patchelf`) | `scripts\package.ps1 <build> <out>` (`.zip`) |
+| archive | `scripts/package.sh <build> <out>` (`.zip`) | `scripts/package.sh <build> <out>` (`.tar.gz`, needs `patchelf`) | `scripts\package.ps1 <build> <out>` (`.zip`, `cpack` over the install, 3.6) |
 | installer | `scripts/installer-macos.sh <folder>` (`.pkg`) | `scripts/installer-linux.sh <folder>` (`.deb`) | `scripts\installer-windows.ps1 <folder>` (`.exe`, Inno Setup 6) |
 
 `package.*` copies the libraries from the prefixes the build found
 (`CMakeCache.txt`) and makes their paths relative to each program: `rpath`
 `@executable_path/../lib` on macOS (then signs ad hoc), `$ORIGIN/../lib` on
-Linux, every DLL beside the programs on Windows. The release is published
+Linux; on Windows `cpack` packs the install, which puts every DLL beside the
+programs (3.6). The release is published
 with `gh release create vX.Y.Z` and the six files.
 
 ### 3.5 Another machine
@@ -364,7 +365,7 @@ builds and runs the suite there, and brings `LastTest.log` back into
 and the checkout there is `ATHENEA_REMOTE_DIR` (default `~/athenea`). It parses the skip messages out of the log, because
 a skip is not a pass.
 
-### 3.5 The install
+### 3.6 The install
 
 `cmake --install` lays the prefix out as the build tree is laid out --
 `bin/`, `plugin/usd/`, `aofx/`, with the shaders in `share/athenea/shaders`
@@ -377,14 +378,39 @@ files at the top. A file a binary reads at run time therefore needs three
 things in the same commit: an install rule, a lookup from
 `platform::executableDir()` or `platform::moduleDir()` that finds it in both
 layouts (`gpu::findShaderDirectory` asks `shaders` and then
-`share/athenea/shaders` at each level; `cli::engineBundleDir` asks
-`<exe>/../aofx`), and its line in that table. The toolchain's libraries are
+`share/athenea/shaders` at each level; the commands that load bundles ask
+`<exe>/../aofx` before the build tree's), and its line in that table. The toolchain's libraries are
 not copied: `INSTALL_RPATH` starts at `<prefix>/lib`, then `SLANG_ROOT` (Slang
 is loaded at run time, so nothing links it), then what
 `CMAKE_INSTALL_RPATH_USE_LINK_PATH` adds -- the USD, OIDN and OpenColorIO
 directories the binary was linked against. A program's `BUILD_RPATH` starts
 with the same `<prefix>/lib` entry, because on macOS the install rewrites only
 the entries that differ and appends the new ones last.
+
+Every rule after the dependencies is the `athenea` component
+(`CMAKE_INSTALL_DEFAULT_COMPONENT_NAME`, set before the first one), because
+the FetchContent dependencies bring rules of their own (expat's headers and
+CMake configs) that a package must not hold; `cmake/Package.cmake` packs that
+component alone (`CPACK_COMPONENTS_ALL`, one ZIP). On Windows it adds what the
+programs load: `cmake/InstallRuntime.cmake`, an install script, copies the
+toolchain's DLLs, OpenUSD's `lib/usd`, `plugin/usd` and MaterialX's
+`libraries`, CUDA's NVRTC and nvJitLink and the licence files of each, and
+`InstallRequiredSystemLibraries` the MSVC runtime after them; the script then
+runs `file(GET_RUNTIME_DEPENDENCIES)` (dumpbin) over the installed programs,
+hdAthenea and the bundles and fails the install on a DLL that resolves
+neither in `bin/` nor under the Windows folder. A DLL loaded by name at run
+time, which no import table shows (Slang's compiler, NVRTC, OIDN's devices),
+is copied by its folder or its pattern, never found by the check: a new one
+needs its line in that script. `packaging/windows/` holds what the package
+carries at its root -- `install.ps1`, `uninstall.ps1`, `INSTALL.md` -- and
+`ATHENEA_PACKAGE_BLENDER_ADDON` names the add-on's zip
+(`scripts/package-blender-addon.ps1`, from a `windows-x64-blender` build) to
+carry in `blender/`. The two installers stay apart on purpose: `install.ps1`
+writes only the user's environment (`HKCU\Environment`) and records what it
+wrote in `<prefix>\install.json`, which `uninstall.ps1` undoes; the Inno
+Setup one (3.4) installs for the machine. A setup program for the per-user
+route would be WiX or Inno Setup with `PrivilegesRequired=lowest`, over the
+same folder.
 
 ## 4. How to add something
 
@@ -1470,7 +1496,7 @@ libraries:
    exported, brought in as Blender splats, stopped) and
    `viewport_readback.py` (gpu: the colour's map float against half). The
    gpu ones use `athenea compare` from a desktop build (`ATHENEA_CLI`).
-5. The package is `scripts/package-blender-addon.sh` (operations manual,
+5. The package is `scripts/package-blender-addon.sh` (on Windows `.ps1`; operations manual,
    4.1.1). `integrations/blender/THIRD_PARTY_LICENSES.md` is its list of
    third parties: what the package carries and what it leaves to Blender. A
    library added to the package, or a new header dependency, adds its row

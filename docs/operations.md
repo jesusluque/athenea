@@ -69,7 +69,8 @@ cmake --install build/macos-arm64-release --prefix /opt/athenea
 | `share/athenea/shaders/` | the Slang shaders (`athenea/`, `nanovdb/`), without the test kernels |
 | `plugin/usd/` | `plugInfo.json`, `hdAthenea/` (the Hydra delegate, its `resources/plugInfo.json` and the licence files) and `atheneaSchemas/` |
 | `aofx/` | the AOFX bundles, each with the licence files in `Contents/Resources` |
-| `share/doc/athenea/` | `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md` |
+| `ofx/` | `Athenea.ofx.bundle`: the OpenFX plugin and its licence files. Its server is `bin/athenea-mcp` (`ATHENEA_MCP`, or the `PATH`): the copy of the server and of the shaders the build tree's bundle carries stays there |
+| `share/doc/athenea/` | `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md`, `operations.md` and `operations.es.md`; on Windows `third-party/` with the toolchain's licence files |
 
 The prefix keeps the build tree's relations, so an installed `athenea` finds
 its shaders, its plugins and its bundles with nothing set. The libraries are
@@ -82,6 +83,52 @@ toolchain prefixes must stay where they are. `--prefix` overrides
 variables, relative to the prefix. `athenea` registers `<exe>/../plugin/usd`
 whatever the second says; moved, the plugins are found only through
 `PXR_PLUGINPATH_NAME`.
+
+**The Windows package.** On Windows the install also carries what the
+programs load, since Windows looks for a DLL beside the program before the
+`PATH`: the toolchain's DLLs (OpenUSD with MaterialX, OpenVDB, TBB and Boost,
+OpenColorIO, Slang, OIDN when the build has it, DXC), CUDA's NVRTC and
+nvJitLink, and the MSVC runtime in `bin/`; OpenUSD's plugInfo tree in
+`bin/usd/`, its own plugins in `plugin/usd/`, MaterialX's data in
+`libraries/`. The install then reads the imports of the programs, hdAthenea
+and the bundles (`dumpbin`) and fails on a DLL that is neither in `bin/` nor
+in the system's folders. The NVIDIA driver is the machine's: version 560.76 or
+later for CUDA 12.6's runtime. `cpack` makes the ZIP from it:
+
+```powershell
+cmake --build --preset windows-x64-release
+cpack --config build\windows-x64-release\CPackConfig.cmake -B <out>
+```
+
+It writes `athenea-<v>-windows-x64.zip`, one folder holding the prefix with,
+at its root, `install.ps1`, `uninstall.ps1` and `INSTALL.md` (English and
+Spanish), and in `blender/` the add-on's zip when `ATHENEA_PACKAGE_BLENDER_ADDON`
+names one (§4.1.1). `install.ps1` installs for the user who runs it, with no
+administrator rights and nothing installed first:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 [-Prefix <folder>] [-Blender <blender.exe>]
+```
+
+| Option | Default | What it does |
+|---|---|---|
+| `-Prefix` | `%LOCALAPPDATA%\athenea` | where the package is copied (`robocopy /MIR`: a second run replaces the first) |
+| `-Blender` | the first Blender 5.3 on the `PATH` or in `Program Files\Blender Foundation\Blender 5.3*` | the Blender whose `user_default` extension repository receives the add-on, enabled (`blender --command extension install-file`) |
+| `-NoBlender` | off | no add-on |
+| `-UsdPluginPath` | off | `<prefix>\plugin\usd` on the user's `PXR_PLUGINPATH_NAME` too |
+| `-NoCheck` | off | no `athenea --version` and `athenea info` at the end |
+| `-Force` | off | install into a folder that is not empty and holds no previous install; its contents are replaced |
+
+It adds `<prefix>\bin` to the user's `PATH` and `<prefix>\ofx` to
+`OFX_PLUGIN_PATH`, and sets `ATHENEA_MCP` to `<prefix>\bin\athenea-mcp.exe`.
+`PXR_PLUGINPATH_NAME` is not set by default: every USD application reads it,
+and one built against another OpenUSD (a DCC's own) would be offered an
+`hdAthenea` it cannot load. Blender is not one of them: the add-on registers
+its own plugin first, and that is the one it loads. What it changed goes to `<prefix>\install.json`;
+`uninstall.ps1` (in the prefix; `-KeepFiles` leaves the files) reads it,
+removes the add-on, takes its entries out of the variables, puts back an
+`ATHENEA_MCP` set before, and deletes the prefix. A program started before
+either sees the change once restarted.
 
 ### 1.2 The runtime environment
 
@@ -1457,6 +1504,16 @@ and of what it is compiled against but leaves to Blender (OpenUSD, oneTBB,
 OpenColorIO, OIDN). The script stops if one is missing.
 `blender --command extension validate <zip>` checks the manifest.
 
+On Windows, `scripts\package-blender-addon.ps1 [-Build <dir>] [-Out <dir>]`
+(defaults `build\windows-x64-blender` and `build\blender-addon`) makes
+`athenea_hydra-<version>-windows-x64.zip` the same way: its manifest says
+`platforms = ["windows-x64"]`, `plugin/usd/hdAthenea` holds Slang's DLLs and
+`z.dll` beside hdAthenea (the add-on puts that folder on `PATH` before USD
+opens the plugin), and debug files (`.pdb`, `.ilk`) stay behind. A licence
+file the toolchain's trees lack is taken from Blender's own SPDX texts
+(`license\spdx`) when it is that licence's text; with neither, the script
+stops. The Windows package carries this zip in `blender/` (§1.1).
+
 **The render engine.** Blender's **Hydra** export method hands no point
 cloud to a delegate and runs no export hook; with **USD**, a converted
 cloud's Empty and a Gaussian-splat point cloud reach hdAthenea (see
@@ -2411,6 +2468,7 @@ the README shows.
 | `readme-images.sh [outdir]` | the images in the README, from the sparrow asset |
 | `remote-test.sh user@host [preset]` | builds and runs the suite on another machine and brings the log back |
 | `package-blender-addon.sh [build] [out]` | the Blender extension as a directory and a zip, with zstd and libwebp carried and every third party's licence files (4.1.1) |
+| `package-blender-addon.ps1 [-Build <dir>] [-Out <dir>]` | the same on Windows, from a `windows-x64-blender` build (4.1.1) |
 | `scripts/film/` | the sparrow film: its frames, its camera and its shadow (`SPARROW` the stages' folder, `ATHENEA` the binary) |
 | `bmw-to-usd.py`, `sparrow-*.py` | authoring helpers for those assets |
 

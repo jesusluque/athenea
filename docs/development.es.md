@@ -358,13 +358,14 @@ compilación de un preset release:
 
 | Paso | macOS | Linux | Windows |
 |---|---|---|---|
-| archivo | `scripts/package.sh <build> <out>` (`.zip`) | `scripts/package.sh <build> <out>` (`.tar.gz`, necesita `patchelf`) | `scripts\package.ps1 <build> <out>` (`.zip`) |
+| archivo | `scripts/package.sh <build> <out>` (`.zip`) | `scripts/package.sh <build> <out>` (`.tar.gz`, necesita `patchelf`) | `scripts\package.ps1 <build> <out>` (`.zip`, `cpack` sobre la instalación, 3.6) |
 | instalador | `scripts/installer-macos.sh <carpeta>` (`.pkg`) | `scripts/installer-linux.sh <carpeta>` (`.deb`) | `scripts\installer-windows.ps1 <carpeta>` (`.exe`, Inno Setup 6) |
 
 `package.*` copia las bibliotecas de los prefijos que encontró la compilación
 (`CMakeCache.txt`) y hace sus rutas relativas a cada programa: `rpath`
 `@executable_path/../lib` en macOS (y firma ad hoc), `$ORIGIN/../lib` en
-Linux, cada DLL junto a los programas en Windows. La release se publica con
+Linux; en Windows `cpack` empaqueta la instalación, que pone cada DLL junto a
+los programas (3.6). La release se publica con
 `gh release create vX.Y.Z` y los seis ficheros.
 
 ### 3.5 Otra máquina
@@ -375,7 +376,7 @@ corre la suite allí, y trae `LastTest.log` de vuelta a
 el checkout allí es `ATHENEA_REMOTE_DIR` (por defecto `~/athenea`). Extrae del log los mensajes de skip, porque un skip
 no es un pass.
 
-### 3.5 La instalación
+### 3.6 La instalación
 
 `cmake --install` dispone el prefijo como está dispuesto el árbol de build --
 `bin/`, `plugin/usd/`, `aofx/`, con los shaders en `share/athenea/shaders`
@@ -389,8 +390,9 @@ ejecución necesita por tanto tres cosas en el mismo commit: una regla de
 instalación, una búsqueda desde `platform::executableDir()` o
 `platform::moduleDir()` que lo encuentre en las dos disposiciones
 (`gpu::findShaderDirectory` pregunta por `shaders` y luego por
-`share/athenea/shaders` en cada nivel; `cli::engineBundleDir` pregunta por
-`<exe>/../aofx`), y su línea en esa tabla. Las bibliotecas del toolchain no se
+`share/athenea/shaders` en cada nivel; las órdenes que cargan bundles
+preguntan por `<exe>/../aofx` antes que por los del árbol de build), y su
+línea en esa tabla. Las bibliotecas del toolchain no se
 copian: `INSTALL_RPATH` empieza en `<prefijo>/lib`, luego `SLANG_ROOT` (Slang
 se carga en tiempo de ejecución, así que nada lo enlaza), luego lo que añade
 `CMAKE_INSTALL_RPATH_USE_LINK_PATH` -- los directorios de USD, OIDN y
@@ -398,6 +400,34 @@ OpenColorIO contra los que se enlazó el binario. El `BUILD_RPATH` de un
 programa empieza con la misma entrada `<prefijo>/lib`, porque en macOS la
 instalación reescribe solo las entradas que difieren y añade las nuevas al
 final.
+
+Cada regla posterior a las dependencias es del componente `athenea`
+(`CMAKE_INSTALL_DEFAULT_COMPONENT_NAME`, definido antes de la primera),
+porque las dependencias de FetchContent traen reglas propias (las cabeceras y
+las configuraciones de CMake de expat) que un paquete no debe llevar;
+`cmake/Package.cmake` empaqueta solo ese componente (`CPACK_COMPONENTS_ALL`,
+un ZIP). En Windows añade lo que cargan los programas:
+`cmake/InstallRuntime.cmake`, un script de instalación, copia las DLL del
+toolchain, `lib/usd`, `plugin/usd` de OpenUSD y `libraries` de MaterialX,
+NVRTC y nvJitLink de CUDA y los ficheros de licencia de cada uno, e
+`InstallRequiredSystemLibraries` el runtime de MSVC después de ellos; luego
+el script ejecuta `file(GET_RUNTIME_DEPENDENCIES)` (dumpbin) sobre los
+programas instalados, hdAthenea y los bundles, y hace fallar la instalación
+ante una DLL que no se resuelve ni en `bin/` ni bajo la carpeta de Windows.
+Una DLL que se carga por nombre en tiempo de ejecución, que no aparece en
+ninguna tabla de importaciones (el compilador de Slang, NVRTC, los
+dispositivos de OIDN), se copia por su carpeta o su patrón, y la comprobación
+nunca la encuentra: una nueva necesita su línea en ese script.
+`packaging/windows/` contiene lo que el paquete lleva en su raíz --
+`install.ps1`, `uninstall.ps1`, `INSTALL.md` --, y
+`ATHENEA_PACKAGE_BLENDER_ADDON` nombra el zip del add-on
+(`scripts/package-blender-addon.ps1`, desde un build `windows-x64-blender`)
+que se lleva en `blender/`. Los dos instaladores se mantienen separados a
+propósito: `install.ps1` escribe solo el entorno del usuario
+(`HKCU\Environment`) y anota lo que escribió en `<prefijo>\install.json`, que
+`uninstall.ps1` deshace; el de Inno Setup (3.4) instala para la máquina. Un
+programa de instalación para la ruta por usuario sería WiX o Inno Setup con
+`PrivilegesRequired=lowest`, sobre la misma carpeta.
 
 ## 4. Cómo se añade algo
 
@@ -1538,7 +1568,7 @@ se enlaza con las bibliotecas de Blender:
    `viewport_readback.py` (gpu: el mapeo del color en float frente a media).
    Los de gpu usan el `athenea compare` de una compilación de escritorio
    (`ATHENEA_CLI`).
-5. El paquete es `scripts/package-blender-addon.sh` (manual de operaciones,
+5. El paquete es `scripts/package-blender-addon.sh` (en Windows `.ps1`; manual de operaciones,
    4.1.1). `integrations/blender/THIRD_PARTY_LICENSES.md` es su lista de
    terceros: lo que lleva el paquete y lo que deja a Blender. Una biblioteca
    añadida al paquete, o una dependencia de cabeceras nueva, añade su fila

@@ -232,6 +232,11 @@ endif()
 # found it and both modules/ and tests/ name it.
 find_package(ZLIB REQUIRED)
 
+# Every install rule from here on is the `athenea` component, which is what
+# the package holds (cmake/Package.cmake); the dependencies above install
+# headers and CMake configs of their own under the default one.
+set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME athenea)
+
 # The licence, the NOTICE and the third parties' notices go wherever a binary
 # built here goes: beside bin/, into every AOFX bundle's Contents/Resources
 # (modules/aofx/sdk/cmake/AofxBundle.cmake) and into hdAthenea/resources
@@ -302,3 +307,6 @@ endif()
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
+
+# The package: cpack over the install (and, on Windows, what the programs load).
+include("${ATHENEA_ROOT}/cmake/Package.cmake")

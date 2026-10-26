@@ -69,7 +69,8 @@ cmake --install build/macos-arm64-release --prefix /opt/athenea
 | `share/athenea/shaders/` | los shaders de Slang (`athenea/`, `nanovdb/`), sin los kernels de test |
 | `plugin/usd/` | `plugInfo.json`, `hdAthenea/` (el delegate de Hydra, su `resources/plugInfo.json` y los ficheros de licencia) y `atheneaSchemas/` |
 | `aofx/` | los bundles AOFX, cada uno con los ficheros de licencia en `Contents/Resources` |
-| `share/doc/athenea/` | `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md` |
+| `ofx/` | `Athenea.ofx.bundle`: el plugin de OpenFX y sus ficheros de licencia. Su servidor es `bin/athenea-mcp` (`ATHENEA_MCP`, o el `PATH`): la copia del servidor y de los shaders que lleva el bundle del árbol de build se queda allí |
+| `share/doc/athenea/` | `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md`, `operations.md` y `operations.es.md`; en Windows, `third-party/` con los ficheros de licencia del toolchain |
 
 El prefijo conserva las relaciones del árbol de build, así que un `athenea`
 instalado encuentra sus shaders, sus plugins y sus bundles sin definir nada.
@@ -83,6 +84,53 @@ defecto `/usr/local`); `ATHENEA_SHADER_INSTALL_DIR` (por defecto
 de caché, relativas al prefijo. `athenea` registra `<exe>/../plugin/usd`
 diga lo que diga la segunda; si se mueven, los plugins solo se encuentran a
 través de `PXR_PLUGINPATH_NAME`.
+
+**El paquete de Windows.** En Windows la instalación lleva además lo que
+cargan los programas, porque Windows busca una DLL junto al programa antes
+que en el `PATH`: las DLL del toolchain (OpenUSD con MaterialX, OpenVDB, TBB
+y Boost, OpenColorIO, Slang, OIDN cuando el build lo tiene, DXC), NVRTC y
+nvJitLink de CUDA, y el runtime de MSVC en `bin/`; el árbol de plugInfo de
+OpenUSD en `bin/usd/`, sus propios plugins en `plugin/usd/`, los datos de
+MaterialX en `libraries/`. Después la instalación lee las importaciones de
+los programas, de hdAthenea y de los bundles (`dumpbin`) y falla ante una DLL
+que no está ni en `bin/` ni en las carpetas del sistema. El driver de NVIDIA
+es el de la máquina: versión 560.76 o posterior para el runtime de CUDA 12.6.
+`cpack` hace con ella el ZIP:
+
+```powershell
+cmake --build --preset windows-x64-release
+cpack --config build\windows-x64-release\CPackConfig.cmake -B <salida>
+```
+
+Escribe `athenea-<v>-windows-x64.zip`, una carpeta con el prefijo y, en su
+raíz, `install.ps1`, `uninstall.ps1` e `INSTALL.md` (en inglés y español), y
+en `blender/` el zip del add-on cuando `ATHENEA_PACKAGE_BLENDER_ADDON` nombra
+uno (§4.1.1). `install.ps1` instala para el usuario que lo ejecuta, sin
+permisos de administrador y sin instalar nada antes:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 [-Prefix <carpeta>] [-Blender <blender.exe>]
+```
+
+| Opción | Por defecto | Qué hace |
+|---|---|---|
+| `-Prefix` | `%LOCALAPPDATA%\athenea` | adónde se copia el paquete (`robocopy /MIR`: una segunda ejecución sustituye a la primera) |
+| `-Blender` | el primer Blender 5.3 del `PATH` o de `Program Files\Blender Foundation\Blender 5.3*` | el Blender en cuyo repositorio de extensiones `user_default` se instala el add-on, activado (`blender --command extension install-file`) |
+| `-NoBlender` | desactivada | sin add-on |
+| `-UsdPluginPath` | desactivada | `<prefijo>\plugin\usd` también en el `PXR_PLUGINPATH_NAME` del usuario |
+| `-NoCheck` | desactivada | sin `athenea --version` ni `athenea info` al final |
+| `-Force` | desactivada | instala en una carpeta que no está vacía y no tiene una instalación anterior; su contenido se sustituye |
+
+Añade `<prefijo>\bin` al `PATH` del usuario y `<prefijo>\ofx` a
+`OFX_PLUGIN_PATH`, y pone `ATHENEA_MCP` a `<prefijo>\bin\athenea-mcp.exe`.
+`PXR_PLUGINPATH_NAME` no se toca por defecto: la leen todas las aplicaciones
+de USD, y a una compilada contra otro OpenUSD (el propio de una aplicación
+DCC) se le ofrecería un `hdAthenea` que no puede cargar. Blender no es una de
+ellas: el add-on registra antes su propio plugin, y es ese el que carga. Lo que cambió queda en
+`<prefijo>\install.json`; `uninstall.ps1` (en el prefijo; `-KeepFiles` deja
+los ficheros) lo lee, quita el add-on, saca sus entradas de las variables,
+devuelve un `ATHENEA_MCP` que hubiera antes y borra el prefijo. Un programa
+arrancado antes de cualquiera de los dos ve el cambio al reiniciarlo.
 
 ### 1.2 El entorno de ejecución
 
@@ -1497,6 +1545,17 @@ MaterialX 1.39.5, zstd, libwebp, OpenVDB cuando los shaders contienen
 (OpenUSD, oneTBB, OpenColorIO, OIDN). El script se para si falta alguno.
 `blender --command extension validate <zip>` comprueba el manifiesto.
 
+En Windows, `scripts\package-blender-addon.ps1 [-Build <dir>] [-Out <dir>]`
+(por defecto `build\windows-x64-blender` y `build\blender-addon`) hace
+`athenea_hydra-<versión>-windows-x64.zip` del mismo modo: su manifiesto dice
+`platforms = ["windows-x64"]`, `plugin/usd/hdAthenea` lleva las DLL de Slang y
+`z.dll` junto a hdAthenea (el add-on pone esa carpeta en el `PATH` antes de
+que USD abra el plugin), y los ficheros de depuración (`.pdb`, `.ilk`) se
+quedan fuera. Un fichero de licencia que no está en los árboles del toolchain
+se toma de los textos SPDX del propio Blender (`license\spdx`) cuando es el
+texto de esa licencia; sin ninguno de los dos, el script se para. El paquete
+de Windows lleva este zip en `blender/` (§1.1).
+
 **El motor de render.** El método de exportación **Hydra** de Blender no
 entrega ninguna nube de puntos a un delegate ni ejecuta ningún hook de
 exportación; con **USD**, el Empty de una nube convertida y una nube de
@@ -2482,6 +2541,7 @@ assets que enseña el README.
 | `readme-images.sh [salida]` | las imágenes del README, desde el asset del gorrión |
 | `remote-test.sh user@host [preset]` | compila y corre la suite en otra máquina y trae el log |
 | `package-blender-addon.sh [build] [salida]` | la extensión de Blender como directorio y zip, con zstd y libwebp dentro y los ficheros de licencia de cada tercero (4.1.1) |
+| `package-blender-addon.ps1 [-Build <dir>] [-Out <dir>]` | lo mismo en Windows, desde un build `windows-x64-blender` (4.1.1) |
 | `scripts/film/` | la película del gorrión: sus frames, su cámara y su sombra (`SPARROW` la carpeta de las escenas, `ATHENEA` el binario) |
 | `bmw-to-usd.py`, `sparrow-*.py` | ayudas de autoría para esos assets |
 
