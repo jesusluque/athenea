@@ -1,4 +1,7 @@
 // Copyright (c) 2026 jesus luque.
+// Copyright (c) 2011-2026 PlayCanvas Ltd. (the SOG format, after gsplat-sog-data.js)
+// SPDX-License-Identifier: Apache-2.0 AND MIT
+// (PlayCanvas's MIT notice is in THIRD_PARTY_NOTICES.md.)
 #include "athenea/io/Sog.h"
 
 #include <algorithm>

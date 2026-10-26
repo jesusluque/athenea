@@ -63,17 +63,12 @@ target_compile_options(hdAthenea PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-
 # The plugin's own directory first: a plugin shipped with its libraries
 # beside it (libslang, in a package another program loads) finds them
 # there, wherever the package was unpacked.
-if(APPLE)
-    set(ATHENEA_PLUGIN_ORIGIN "@loader_path")
-else()
-    set(ATHENEA_PLUGIN_ORIGIN "$ORIGIN")
-endif()
 set_target_properties(hdAthenea PROPERTIES
     PREFIX "" OUTPUT_NAME "hdAthenea"
     CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
     LIBRARY_OUTPUT_DIRECTORY "${ATHENEA_HYDRA_PLUGIN_DIR}/hdAthenea"
-    BUILD_RPATH "${ATHENEA_PLUGIN_ORIGIN};${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib"
-    INSTALL_RPATH "${ATHENEA_PLUGIN_ORIGIN}")
+    BUILD_RPATH "${ATHENEA_ORIGIN};${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib"
+    INSTALL_RPATH "${ATHENEA_ORIGIN};${SLANG_ROOT}/lib")
 file(MAKE_DIRECTORY "${ATHENEA_HYDRA_PLUGIN_DIR}/hdAthenea/resources")
 if(WIN32)
     # Windows finds a plugin's DLLs beside it: Slang's, and zlib's from the
@@ -128,3 +123,16 @@ file(WRITE "${ATHENEA_HYDRA_PLUGIN_DIR}/plugInfo.json" "{ \"Includes\": [ \"*/re
 file(MAKE_DIRECTORY "${ATHENEA_HYDRA_PLUGIN_DIR}/atheneaSchemas/resources")
 configure_file(schemas/plugInfo.json "${ATHENEA_HYDRA_PLUGIN_DIR}/atheneaSchemas/resources/plugInfo.json" COPYONLY)
 configure_file(schemas/generatedSchema.usda "${ATHENEA_HYDRA_PLUGIN_DIR}/atheneaSchemas/resources/generatedSchema.usda" COPYONLY)
+
+# Installed in the build's own layout under ATHENEA_PLUGIN_INSTALL_DIR
+# (plugin/usd): `athenea` registers <exe>/../plugin/usd, a host is pointed at
+# it with PXR_PLUGINPATH_NAME, and hdAthenea finds the shaders three levels
+# up, in share/athenea/shaders.
+if(NOT ATHENEA_IOS)
+    install(FILES "${ATHENEA_HYDRA_PLUGIN_DIR}/plugInfo.json" DESTINATION "${ATHENEA_PLUGIN_INSTALL_DIR}")
+    install(TARGETS hdAthenea LIBRARY DESTINATION "${ATHENEA_PLUGIN_INSTALL_DIR}/hdAthenea")
+    install(FILES "${ATHENEA_HYDRA_PLUGIN_DIR}/hdAthenea/resources/plugInfo.json" ${ATHENEA_LEGAL_FILES}
+            DESTINATION "${ATHENEA_PLUGIN_INSTALL_DIR}/hdAthenea/resources")
+    install(FILES schemas/plugInfo.json schemas/generatedSchema.usda
+            DESTINATION "${ATHENEA_PLUGIN_INSTALL_DIR}/atheneaSchemas/resources")
+endif()

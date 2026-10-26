@@ -48,6 +48,19 @@ TEST_CASE("shaders are found from the module, the executable's way and the plugi
     CHECK(gpu::findShaderDirectory(fromPlugin) == shaders);
 }
 
+TEST_CASE("an install's share/athenea/shaders is found from bin/ and from the plugin", "[gpu][paths]") {
+    ScratchTree tree;
+    const auto shaders = tree.make("prefix/share/athenea/shaders");
+    tree.make("prefix/share/athenea/shaders/athenea");
+    const auto bin = tree.make("prefix/bin");
+    const auto plugin = tree.make("prefix/plugin/usd/hdAthenea");
+
+    const std::filesystem::path fromBin[] = {bin};
+    CHECK(gpu::findShaderDirectory(fromBin) == shaders);
+    const std::filesystem::path fromPlugin[] = {plugin};
+    CHECK(gpu::findShaderDirectory(fromPlugin) == shaders);
+}
+
 TEST_CASE("the module is asked before the executable", "[gpu][paths]") {
     ScratchTree tree;
     const auto packaged = tree.make("addon/shaders");

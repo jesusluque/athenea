@@ -18,7 +18,8 @@ athenea_add_module(gpu
         athenea::core
         slang-rhi)
 target_compile_definitions(athenea_gpu PRIVATE
-    ATHENEA_BUILD_SHADER_DIR="${ATHENEA_SHADER_OUTPUT_DIR}")
+    ATHENEA_BUILD_SHADER_DIR="${ATHENEA_SHADER_OUTPUT_DIR}"
+    ATHENEA_INSTALL_SHADER_DIR="${ATHENEA_SHADER_INSTALL_DIR}")
 # gpe's backend decides which render device can share it (Device.cpp).
 if(GPE_BACKEND STREQUAL "Vulkan")
     target_compile_definitions(athenea_gpu PRIVATE ATHENEA_GPE_VULKAN=1)

@@ -55,12 +55,41 @@ y el plugin de Hydra con rutas relativas a ellos. Un horneado no necesita
 OptiX: bajo WSL2, que no lo carga, un horneado traza como en cualquier
 dispositivo CUDA.
 
+Un build corre desde su propio árbol (`build/<preset>/bin/athenea`). Para
+ponerlo en otro sitio, se instala:
+
+```sh
+cmake --install build/macos-arm64-release --prefix /opt/athenea
+/opt/athenea/bin/athenea --version
+```
+
+| Ruta bajo el prefijo | Qué contiene |
+|---|---|
+| `bin/` | `athenea`, `athenea-mcp`, `genlock-cli` |
+| `share/athenea/shaders/` | los shaders de Slang (`athenea/`, `nanovdb/`), sin los kernels de test |
+| `plugin/usd/` | `plugInfo.json`, `hdAthenea/` (el delegate de Hydra, su `resources/plugInfo.json` y los ficheros de licencia) y `atheneaSchemas/` |
+| `aofx/` | los bundles AOFX, cada uno con los ficheros de licencia en `Contents/Resources` |
+| `share/doc/athenea/` | `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md` |
+
+El prefijo conserva las relaciones del árbol de build, así que un `athenea`
+instalado encuentra sus shaders, sus plugins y sus bundles sin definir nada.
+Las bibliotecas no se copian: los binarios instalados encuentran Slang, USD,
+OIDN y OpenColorIO en las rutas absolutas contra las que se compilaron,
+después de `<prefijo>/lib`, así que los prefijos del toolchain tienen que
+quedarse donde están. `--prefix` sustituye a `CMAKE_INSTALL_PREFIX` (por
+defecto `/usr/local`); `ATHENEA_SHADER_INSTALL_DIR` (por defecto
+`share/athenea/shaders`), `ATHENEA_PLUGIN_INSTALL_DIR` (por defecto
+`plugin/usd`) y `AOFX_BUNDLE_INSTALL_DIR` (por defecto `aofx`) son variables
+de caché, relativas al prefijo. `athenea` registra `<exe>/../plugin/usd`
+diga lo que diga la segunda; si se mueven, los plugins solo se encuentran a
+través de `PXR_PLUGINPATH_NAME`.
+
 ### 1.2 El entorno de ejecución
 
 | Variable | Qué hace |
 |---|---|
-| `ATHENEA_SHADER_DIR` | de dónde se leen los shaders de Slang. Sin ella el motor busca un directorio `shaders` que contenga `athenea/` junto a la imagen desde la que se cargó su código, o hasta tres directorios por encima -- `<exe>/../shaders` para un programa, `<build>/shaders` para el plugin de Hydra cargado por usdview o Blender --, luego junto al ejecutable, y luego en el directorio con el que se compiló. `athenea info` imprime el que está usando. |
-| `PXR_PLUGINPATH_NAME` | apunta una aplicación USD a `<build>/plugin/usd`, donde están el delegate de Hydra y los schemas codeless. La necesita cualquier host que no sea `athenea`. `athenea` registra por su cuenta `<su binario>/../plugin/usd` al arrancar, así que los schemas que aplica una nube convertida se escriben esté o no definida. |
+| `ATHENEA_SHADER_DIR` | de dónde se leen los shaders de Slang. Sin ella el motor busca un directorio `shaders` que contenga `athenea/` junto a la imagen desde la que se cargó su código, o hasta tres directorios por encima -- `<exe>/../shaders` para un programa, `<build>/shaders` para el plugin de Hydra cargado por usdview o Blender; en cada nivel también `share/athenea/shaders`, el de una instalación (§1.1) --, luego junto al ejecutable, y luego en el directorio con el que se compiló. `athenea info` imprime el que está usando. |
+| `PXR_PLUGINPATH_NAME` | apunta una aplicación USD a `<build>/plugin/usd` (instalado, `<prefijo>/plugin/usd`), donde están el delegate de Hydra y los schemas codeless. La necesita cualquier host que no sea `athenea`. `athenea` registra por su cuenta `<su binario>/../plugin/usd` al arrancar, así que los schemas que aplica una nube convertida se escriben esté o no definida. |
 | `ATHENEA_MATERIALX_ROOT` | un directorio que contiene los `libraries/` de MaterialX, que el compilador de materiales de hdAthenea lee en lugar de las bibliotecas que cargó el USD del host. Sin definir por defecto: se usan las del host. Para un host cuyo MaterialX es anterior al generador de Slang (Blender 5.3 trae 1.39.4: sin implementaciones `genslang` y con definiciones de nodo anteriores), se apunta a las de 1.39.5. Se lee una vez, cuando compila el primer material; los renderers propios del host conservan las suyas. |
 | `AOFX_PLUGIN_PATH` | directorios extra de bundles AOFX, buscados antes que la ruta del sistema y antes que `--path`. Después van `aofx/` junto a la carpeta del ejecutable (la disposición de una release) y los bundles del árbol de compilación. |
 | `ATHENEA_MCP` | el servidor que arranca el plugin OpenFX (§6.1), en lugar del `athenea-mcp` que lleva su bundle en `Contents/Resources/bin` y del que haya en el `PATH`. |
@@ -777,6 +806,10 @@ declara: sus efectos, sus entradas y sus parámetros con sus defectos.
 |---|---|---|---|
 | `--path` | directorio ‹repetible› | ninguno | se busca después de `$AOFX_PLUGIN_PATH` |
 
+Después de estos, los bundles del propio motor: `<exe>/../aofx` si existe
+(una instalación, y un árbol de build), y si no el `aofx/` del build
+registrado al compilar.
+
 `athenea aofx run` corre un efecto sobre ficheros EXR.
 
 | Opción | Valor | Por defecto | Notas |
@@ -1414,7 +1447,7 @@ que toma un frame), y sólo el rasterizador suma las capas.
 ### 4.1 Apuntar una aplicación al plugin
 
 ```sh
-export PXR_PLUGINPATH_NAME=<build>/plugin/usd
+export PXR_PLUGINPATH_NAME=<build>/plugin/usd   # o <prefijo>/plugin/usd, instalado
 ```
 
 Ese directorio tiene el delegate de Hydra `hdAthenea` y los schemas codeless

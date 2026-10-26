@@ -216,8 +216,10 @@ private:
 /// The first `shaders` directory holding the engine's tree (`athenea/`) at
 /// one of `starts` or up to three directories above it, in the order given:
 /// <exe>/../shaders for a program in bin/, and
-/// <plugin>/hdAthenea/../../../shaders for the plugin in a build tree.
-/// Empty if there is none.
+/// <plugin>/hdAthenea/../../../shaders for the plugin in a build tree. At
+/// each level `shaders` is asked before `share/athenea/shaders`, where
+/// `cmake --install` puts them (<prefix>/bin/.., and
+/// <prefix>/plugin/usd/hdAthenea/../../..). Empty if there is none.
 [[nodiscard]] std::filesystem::path findShaderDirectory(std::span<const std::filesystem::path> starts);
 
 }   // namespace athenea::gpu

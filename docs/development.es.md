@@ -375,6 +375,30 @@ corre la suite allí, y trae `LastTest.log` de vuelta a
 el checkout allí es `ATHENEA_REMOTE_DIR` (por defecto `~/athenea`). Extrae del log los mensajes de skip, porque un skip
 no es un pass.
 
+### 3.5 La instalación
+
+`cmake --install` dispone el prefijo como está dispuesto el árbol de build --
+`bin/`, `plugin/usd/`, `aofx/`, con los shaders en `share/athenea/shaders`
+donde el árbol tiene `shaders/` --, así que cada ruta por la que busca el
+código es relativa a la imagen que busca y vale para los dos (operations.md
+§1.1 tiene la tabla). Las reglas están junto a lo que instalan: los programas
+en `apps/*/CMakeLists.txt`, hdAthenea y los schemas en `modules/usd`, los
+bundles en `AofxBundle.cmake`, los shaders, `genlock-cli` y los ficheros de
+licencia en el nivel superior. Un fichero que un binario lee en tiempo de
+ejecución necesita por tanto tres cosas en el mismo commit: una regla de
+instalación, una búsqueda desde `platform::executableDir()` o
+`platform::moduleDir()` que lo encuentre en las dos disposiciones
+(`gpu::findShaderDirectory` pregunta por `shaders` y luego por
+`share/athenea/shaders` en cada nivel; `cli::engineBundleDir` pregunta por
+`<exe>/../aofx`), y su línea en esa tabla. Las bibliotecas del toolchain no se
+copian: `INSTALL_RPATH` empieza en `<prefijo>/lib`, luego `SLANG_ROOT` (Slang
+se carga en tiempo de ejecución, así que nada lo enlaza), luego lo que añade
+`CMAKE_INSTALL_RPATH_USE_LINK_PATH` -- los directorios de USD, OIDN y
+OpenColorIO contra los que se enlazó el binario. El `BUILD_RPATH` de un
+programa empieza con la misma entrada `<prefijo>/lib`, porque en macOS la
+instalación reescribe solo las entradas que difieren y añade las nuevas al
+final.
+
 ## 4. Cómo se añade algo
 
 ### 4.1 Un kernel
@@ -1548,7 +1572,12 @@ ahí en el mismo commit. Un fichero derivado conserva en su cabecera el aviso
 de copyright y la licencia del original, como
 `plugins/mesh2splat/mesh2splat.slang` conserva los de mesh2splat (BSD
 3-Clause con una cláusula sobre las marcas de EA), y su propia línea
-`// Copyright (c) 2026 jesus luque.` para los cambios. El build copia los tres
+`// Copyright (c) 2026 jesus luque.` para los cambios, la primera. Debajo van
+la línea de copyright del original y una línea `SPDX-License-Identifier`
+(`Apache-2.0 AND MIT` para código de athenea sobre un original MIT, como
+`Sog.cpp`; `Apache-2.0` para el port de ACES). gpe y genlock, los submódulos
+del propio autor, también son Apache-2.0, cada uno con su `LICENSE` y su
+`NOTICE`. El build copia los tres
 ficheros junto a `bin/`, dentro del `Contents/Resources` de cada bundle AOFX y
 en `hdAthenea/resources`, y `cmake --install` los pone en `share/doc/athenea`
 y dentro de los bundles instalados.

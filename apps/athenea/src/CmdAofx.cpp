@@ -4,6 +4,7 @@
 // bundle declares, why one was refused, and one effect over EXR files.
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -20,6 +21,7 @@
 #include "athenea/io/Exr.h"
 
 namespace athenea::cli {
+
 namespace {
 
 const char* typeName(aofx::ParamType type) {

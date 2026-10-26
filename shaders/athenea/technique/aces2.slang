@@ -1,4 +1,6 @@
 // Copyright (c) 2026 jesus luque.
+// Copyright Contributors to the ACES Project. (ported from aces-core)
+// SPDX-License-Identifier: Apache-2.0
 //
 // The ACES 2.0 output transform, ported function for function from the
 // Academy's reference (aces-core, Lib.Academy.OutputTransform.ctl and
@@ -17,10 +19,9 @@
 // as 10.0. Matrices are row-vector ones, `mul(v, M)`, as the reference's
 // mult_f3_f33(v, M).
 //
-// The reference's notice, which the code ported from it keeps:
-//   SPDX-License-Identifier: Apache-2.0
-//   Copyright Contributors to the ACES Project.
-// (THIRD_PARTY_NOTICES.md; the licence text is the repository's LICENSE.)
+// The reference's notice, which the code ported from it keeps, is the second
+// line above (THIRD_PARTY_NOTICES.md; the licence text is the repository's
+// LICENSE).
 module aces2;
 
 public struct Chromaticities {

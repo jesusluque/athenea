@@ -59,6 +59,11 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 | [MaterialX](https://github.com/AcademySoftwareFoundation/MaterialX) Slang generator | Apache-2.0 (text in `LICENSE`) | Copyright Contributors to the MaterialX Project | `modules/material` (`MaterialCompiler`) builds on `MaterialXGenSlang` and emits its node implementations |
 | [spz](https://github.com/nianticlabs/spz) (vendored in `third_party/spz`) | MIT (below) | Copyright (c) 2024 Niantic Labs; the source files carry Copyright (c) 2025 Niantic Labs and Copyright (c) 2025 Adobe Inc. | `io::readSpz`, compiled into the binaries |
 
+The ACES and SOG files above carry, under athenea's own copyright line, the
+upstream one and an SPDX identifier (`Apache-2.0` for ACES, `Apache-2.0 AND
+MIT` for SOG: athenea's code on PlayCanvas's format). spz's files keep their
+own headers.
+
 PlayCanvas (MIT):
 
 ```text
@@ -128,10 +133,13 @@ AOFX bundles.
 | [aopenfx](https://github.com/jesusluque/aopenfx) (submodule) | `sparrow` branch | BSD 3-Clause (below) |
 | [spz](https://github.com/nianticlabs/spz) | vendored | MIT (section 2) |
 | [OpenFX, Natron's](https://github.com/NatronGitHub/openfx) headers, support library and the Foundry extension headers in `include/nuke` (submodule) | `0759758d` | BSD 3-Clause (below); in `Athenea.ofx` only |
+| [gpe](https://github.com/jesusluque/gpe) (submodule) | `lrt-fixes` branch | Apache-2.0 (text in `LICENSE`), Copyright (c) 2026 gpe contributors. |
+| [genlock](https://github.com/jesusluque/genlock) (submodule) | `main` branch | Apache-2.0 (text in `LICENSE`), Copyright (c) 2026 genlock contributors. |
 
-`gpe` and `genlock` (submodules) are by athenea's author and carry no
-third-party licence of their own; gpe's copy of metal-cpp is the Apple
-component listed above.
+`gpe` and `genlock` (submodules) are by athenea's author and are licensed,
+like athenea, under the Apache License, Version 2.0: each carries that text as
+`LICENSE` and its copyright line in `NOTICE`, whose content is the line given
+in the table. gpe's copy of metal-cpp is the Apple component listed above.
 
 slang-rhi (`LICENSE`; its full Apache-2.0 text is the one in `LICENSE`):
 
