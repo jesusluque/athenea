@@ -41,3 +41,34 @@ void m2sColourClasses(uint3 tid: SV_DispatchThreadID) {
     const bool green = c.g > 0.6 && c.r < 0.3 && c.b < 0.3;
     InterlockedAdd(counts[red ? 0 : blue ? 1 : green ? 2 : 3], 1u);
 }
+
+/// Where a converted cloud's gaussians stand, by strip: tests/data/
+/// budget_strips.usda's two cards of `rows` strips each, stacked in y from 0
+/// to 1, the first card left of `split` in x and the second right of it.
+/// counts[card * rows + row] is how many gaussians that are there at all
+/// stand on that strip, so a strip a budget left out reads zero.
+struct StripParams {
+    uint  x;       ///< the position's x field
+    uint  y;       ///< and its y field
+    uint  rows;
+    float split;
+};
+ConstantBuffer<StripParams> strips;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void m2sStripCounts(uint3 tid: SV_DispatchThreadID) {
+    const uint k = tid.x;
+    if (k >= params.count) {
+        return;
+    }
+    const uint at = k * params.stride;
+    if (!(records[at + params.opacity] > 0.0)) {
+        return;
+    }
+    const float x = records[at + strips.x];
+    const float y = records[at + strips.y];
+    const uint card = x < strips.split ? 0u : 1u;
+    const uint row = uint(clamp(int(floor(y * float(strips.rows))), 0, int(strips.rows) - 1));
+    InterlockedAdd(counts[card * strips.rows + row], 1u);
+}

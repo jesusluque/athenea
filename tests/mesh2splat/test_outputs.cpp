@@ -103,6 +103,59 @@ TEST_CASE("a budget too small is shared between the meshes, not spent on the fir
     CHECK(c.blue >= 300);
 }
 
+// A BUDGET SHARED KEEPS EVERY TRIANGLE. tests/data/budget_strips.usda: two
+// cards of sixteen thin strips each, converted at resolution 64 with
+// --max-splats 400. The shared budget coarsens the cell past a strip's
+// height, where a strip's count follows the cell and not its square: counted
+// at its coarser cell each card wanted more than its share, the share capped
+// it, and its last strips -- its last triangles in face order -- were left
+// out (overon's orange wall, 22 Oct): 200 of 214 each, the top strips
+// empty. Now every strip holds gaussians, and the cloud is no more than the
+// budget. Not far under it either -- but a strip's count moves in whole rows
+// of cells, so here the best fit is 352 (the next cell finer wants more than
+// 400); on overon's 96 pieces it is 99.8% of 1.5 M.
+TEST_CASE("a budget shared between meshes leaves none of their triangles out", "[mesh2splat][gpu]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    constexpr uint32_t kBudget = 400;
+    constexpr uint32_t kRows = 16;
+    const fs::path stage = output("budget_strips.usda");
+    REQUIRE(fs::exists(stage));
+    auto raw = usd::readParticleFieldRecords(stage);
+    if (!raw) FAIL(raw.error().toString());
+    REQUIRE(raw->count > 0);
+    auto records = gpu::Buffer::fromSpan<float>(*gpu->device, raw->records, "test.records");
+    REQUIRE(records);
+    auto check = gpu::ComputeKernel::create(*gpu->library, "athenea/test/mesh2splat_output_check", "m2sStripCounts");
+    if (!check) FAIL(check.error().toString());
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 2 * kRows, "counts");
+    gpu::CommandBatch batch(*gpu->device);
+    check->dispatch(batch, {raw->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["records"].setBinding(records->rhi());
+        cursor["counts"].setBinding(counts.rhi());
+        cursor["params"]["count"].setData(raw->count);
+        cursor["params"]["stride"].setData(raw->encoding.floatsPerRecord);
+        cursor["params"]["opacity"].setData(raw->encoding.opacity);
+        cursor["strips"]["x"].setData(raw->encoding.x);
+        cursor["strips"]["y"].setData(raw->encoding.y);
+        cursor["strips"]["rows"].setData(kRows);
+        cursor["strips"]["split"].setData(1.25F);
+    });
+    REQUIRE(batch.submit(true));
+    uint32_t perStrip[2 * kRows] = {};
+    REQUIRE(counts.read(*gpu->device, 0, sizeof(perStrip), perStrip));
+    uint32_t there = 0;
+    uint32_t empty = 0;
+    for (uint32_t s = 0; s < 2 * kRows; ++s) {
+        there += perStrip[s];
+        empty += perStrip[s] == 0 ? 1 : 0;
+    }
+    std::printf("  budget %u: %u gaussians, %u of %u strips empty (last red %u, last blue %u)\n", kBudget, there,
+                empty, 2 * kRows, perStrip[kRows - 1], perStrip[2 * kRows - 1]);
+    CHECK(empty == 0);
+    CHECK(there <= kBudget);
+    CHECK(there * 100 >= kBudget * 85);
+}
+
 // A CAMERA'S PIXEL DECIDES EACH MESH'S CELL (`--cell-from-camera`, Mesh2GS).
 // The red card stands three units from the lens and the blue one about seven:
 // a pixel covers 2.3 times as much at the blue card, so its cell is that much

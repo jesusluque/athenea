@@ -10782,8 +10782,9 @@ least) and walks a cell `sqrt(wanted / share)` times coarser
 multiplied by that). Proportional shares and one density floor are the same
 thing here: a cell `f` times coarser covers the surface with `f^2` fewer
 gaussians, so dividing the budget in proportion is coarsening every piece
-alike. A piece the coarsening leaves a little over its share keeps its first
-triangles' gaussians, as before; the warning and the log line say so. The
+alike. (A piece the coarsening left a little over its share kept its first
+triangles' gaussians and lost its last whole ones; counted again since 26
+Oct, see "A shared budget leaves no triangle out".) The
 count costs one short run a piece -- a count, a scan and one emit -- and was
 not timed here (to be measured on the Mustang on a GPU turn).
 
@@ -15061,3 +15062,40 @@ private network; the sparrow film's scripts read `SPARROW` and `ATHENEA` instead
 a copy per machine; the Blender tests and the MaterialX bench write under the build tree and `~/athenea-renders`.
 The macOS package identifier is `uk.co.lucab.athenea`, the order the OFX bundle already used. Every first-party
 source, script and CMake file carries the copyright line.
+
+## A shared budget leaves no triangle out (26 Oct)
+
+A dark triangle on overon's orange wall, seen on air, was a hole: the last
+triangle of `der_naranja_boca_b03` had no gaussian, and the host's background
+showed through. The bake log said why. The meshes wanted 44.4 M gaussians
+against `--max-splats 1500000`; each piece got a share in proportion and a
+cell `sqrt(wanted / share)` times coarser, and at that cell thirty pieces
+still wanted more than their share -- 15892 gaussians in all, exactly the
+"budget is exhausted" figure. The square root is right for the inside of a
+surface and wrong at its edges: the cells a triangle's border cuts, and a
+thin triangle's whole walk, shrink with the cell and not with its square. The
+share capped the piece, and since a triangle the budget cuts into writes
+nothing (`m2sScan`), what it lost were its last whole triangles: holes in
+walls, floors, ceilings and the sign of all three virtual sets.
+
+Every piece is now counted again at the cell it will walk, and that count is
+its share. The proportional shares are scaled alike -- uniform scaling keeps
+the pieces' ratios, so a branch that weights some pieces (`--detail`) keeps
+its weights -- by the largest factor whose counts together still fit: a step
+by `budget / sum` from the first count, then halving between a factor that
+fit and one that did not, at most twelve rounds, stopping within 1% under the
+budget. Each round is one count a piece. Overon's source as it stands,
+converted with `--no-bake` from `CAM_ptz` at 2560 pixels and 1.5 M: before,
+50 of 96 pieces short by 19638 (`der_naranja_boca_b06`, the wall of the
+ghost, by 275); after, none short and 1497332 gaussians, 99.82% of the
+budget. A count is a step function of the cell, so a stage of a few thin
+triangles lands further under: the test, `tests/data/budget_strips.usda`
+(two cards of sixteen 1 by 1/16 strips, resolution 64, `--max-splats 400`),
+lost each card's last strip before (200 of 214 each, the cloud the old binary
+wrote fails the case) and now holds gaussians on all 32 strips with 352, the
+next finer cell wanting more than 400.
+
+Not done: the per-triangle cut itself stays (a triangle the budget cuts into
+writes nothing), since with the shares counted it is reached only where no
+factor is found to fit in twelve rounds, which no stage here has met. Clouds
+baked before this keep their holes until they are baked again.

@@ -1,0 +1,58 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+# Two cards of sixteen thin strips each, red at x 0..1 and blue at x 1.5..2.5,
+# the strips 1 by 1/16 and stacked in y in face order (tests/mesh2splat). A
+# budget below what they want coarsens the cell past a strip's height, where a
+# strip's count follows the cell and not its square: counted at the share's
+# cell they want more than their shares, and the last strips of each card --
+# its last triangles -- were left out. Every strip has to hold gaussians.
+def Xform "World"
+{
+    def Mesh "Red" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 9, 8, 8, 9, 11, 10, 10, 11, 13, 12, 12, 13, 15, 14, 14, 15, 17, 16, 16, 17, 19, 18, 18, 19, 21, 20, 20, 21, 23, 22, 22, 23, 25, 24, 24, 25, 27, 26, 26, 27, 29, 28, 28, 29, 31, 30, 30, 31, 33, 32]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 0.0625, 0), (1, 0.0625, 0), (0, 0.125, 0), (1, 0.125, 0), (0, 0.1875, 0), (1, 0.1875, 0), (0, 0.25, 0), (1, 0.25, 0), (0, 0.3125, 0), (1, 0.3125, 0), (0, 0.375, 0), (1, 0.375, 0), (0, 0.4375, 0), (1, 0.4375, 0), (0, 0.5, 0), (1, 0.5, 0), (0, 0.5625, 0), (1, 0.5625, 0), (0, 0.625, 0), (1, 0.625, 0), (0, 0.6875, 0), (1, 0.6875, 0), (0, 0.75, 0), (1, 0.75, 0), (0, 0.8125, 0), (1, 0.8125, 0), (0, 0.875, 0), (1, 0.875, 0), (0, 0.9375, 0), (1, 0.9375, 0), (0, 1, 0), (1, 1, 0)]
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </World/Looks/Red>
+    }
+    def Mesh "Blue" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 9, 8, 8, 9, 11, 10, 10, 11, 13, 12, 12, 13, 15, 14, 14, 15, 17, 16, 16, 17, 19, 18, 18, 19, 21, 20, 20, 21, 23, 22, 22, 23, 25, 24, 24, 25, 27, 26, 26, 27, 29, 28, 28, 29, 31, 30, 30, 31, 33, 32]
+        point3f[] points = [(1.5, 0, 0), (2.5, 0, 0), (1.5, 0.0625, 0), (2.5, 0.0625, 0), (1.5, 0.125, 0), (2.5, 0.125, 0), (1.5, 0.1875, 0), (2.5, 0.1875, 0), (1.5, 0.25, 0), (2.5, 0.25, 0), (1.5, 0.3125, 0), (2.5, 0.3125, 0), (1.5, 0.375, 0), (2.5, 0.375, 0), (1.5, 0.4375, 0), (2.5, 0.4375, 0), (1.5, 0.5, 0), (2.5, 0.5, 0), (1.5, 0.5625, 0), (2.5, 0.5625, 0), (1.5, 0.625, 0), (2.5, 0.625, 0), (1.5, 0.6875, 0), (2.5, 0.6875, 0), (1.5, 0.75, 0), (2.5, 0.75, 0), (1.5, 0.8125, 0), (2.5, 0.8125, 0), (1.5, 0.875, 0), (2.5, 0.875, 0), (1.5, 0.9375, 0), (2.5, 0.9375, 0), (1.5, 1, 0), (2.5, 1, 0)]
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </World/Looks/Blue>
+    }
+    def Scope "Looks"
+    {
+        def Material "Red"
+        {
+            token outputs:surface.connect = </World/Looks/Red/Surface.outputs:surface>
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (1, 0, 0)
+                token outputs:surface
+            }
+        }
+        def Material "Blue"
+        {
+            token outputs:surface.connect = </World/Looks/Blue/Surface.outputs:surface>
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0, 0, 1)
+                token outputs:surface
+            }
+        }
+    }
+}

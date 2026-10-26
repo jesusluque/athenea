@@ -1300,6 +1300,105 @@ public:
                          "is shared in proportion, every piece's cell coarsened alike\n",
                          static_cast<unsigned long long>(total),
                          static_cast<unsigned long long>(options_->maxSplats));
+            // THE SHARE IS WHAT THE COARSER CELL WANTS, COUNTED AGAIN.
+            //
+            // The cell is coarsened by sqrt(wanted / share), which is right
+            // for the inside of a surface and wrong at its edges: the cells a
+            // triangle's border cuts, and a thin triangle's whole walk, shrink
+            // with the cell and not with its square. So a piece walked at its
+            // coarser cell wanted more than its share, the share capped it,
+            // and since a triangle the budget cuts into writes nothing, what
+            // it lost were its last whole triangles. On the overon set (22
+            // Oct) thirty meshes were 15892 gaussians short in all, and a
+            // 0.44 by 0.4 m triangle of an orange wall was a hole the host's
+            // background showed through.
+            //
+            // So every piece is counted again at the cell it will walk, and
+            // that count is its share. The proportional shares are scaled
+            // alike -- the pieces keep their ratios -- by the largest factor
+            // whose counts together still fit the budget: a step from the
+            // first count by budget / sum, then halving between a factor that
+            // fit and one that did not. A count is a step function of the
+            // cell (a thin strip's cells come in whole rows), so the search
+            // stops within 1% under the budget or after twelve rounds, on the
+            // best fit it saw. A cell a little coarser for every piece, and no
+            // triangle left out.
+            const std::vector<uint32_t> proportional = shareOf_;
+            std::vector<uint32_t>       counted(pieces, 0);
+            std::vector<uint32_t>       best;
+            uint64_t                    bestSum = 0;
+            double                      bestScale = 0.0;
+            double                      fits = 0.0;   // the largest factor seen to fit
+            double                      over = 0.0;   // the smallest seen not to, 0: none yet
+            double                      scale = 1.0;
+            double                      evaluated = 1.0;   // the factor the cells now stand at
+            const auto shareAt = [&](double factor) -> Result<void> {
+                for (size_t k = 0; k < pieces; ++k) {
+                    if (wantedBy_[k] > 0) {
+                        const double share = std::floor(static_cast<double>(proportional[k]) * factor);
+                        shareOf_[k] = static_cast<uint32_t>(
+                            std::clamp(share, 1.0, static_cast<double>(wantedBy_[k])));
+                    }
+                }
+                return deriveCells();
+            };
+            constexpr int kRounds = 12;
+            for (int round = 0; round < kRounds; ++round) {
+                if (round > 0) {
+                    ATHENEA_TRY(shareAt(scale));
+                    evaluated = scale;
+                }
+                uint64_t sum = 0;
+                for (size_t k = 0; k < pieces; ++k) {
+                    if (wantedBy_[k] == 0) {
+                        continue;
+                    }
+                    auto again = runOne(effect, meshes[pieces_[k].mesh], k, 1, 0);
+                    if (!again) return std::move(again).error();
+                    counted[k] = static_cast<uint32_t>(std::min<uint64_t>(again->wanted, 0xFFFFFFFFu));
+                    sum += counted[k];
+                }
+                if (sum <= options_->maxSplats) {
+                    if (best.empty() || sum > bestSum) {
+                        best = counted;
+                        bestSum = sum;
+                        bestScale = scale;
+                    }
+                    fits = std::max(fits, scale);
+                    if (sum * 100 >= options_->maxSplats * 99) {
+                        break;   // within 1% under the budget
+                    }
+                } else {
+                    over = over > 0.0 ? std::min(over, scale) : scale;
+                }
+                const double step =
+                    static_cast<double>(options_->maxSplats) / static_cast<double>(std::max<uint64_t>(sum, 1));
+                const double next = fits > 0.0 && over > 0.0 ? 0.5 * (fits + over) : scale * step;
+                if (over > 0.0 && fits > 0.0 && over - fits < 1.0e-4 * over) {
+                    break;   // nothing between the two to find
+                }
+                scale = next;
+            }
+            uint64_t sum = bestSum;
+            if (best.empty()) {
+                // Never seen to fit (not met on any stage so far): the last
+                // count stands, and the conversion's own cut keeps the first
+                // triangles, as it did before.
+                best = counted;
+                sum = 0;
+                for (size_t k = 0; k < pieces; ++k) sum += counted[k];
+            } else if (bestScale != evaluated) {
+                ATHENEA_TRY(shareAt(bestScale));   // the cells of the best fit, and its counts with them
+            }
+            for (size_t k = 0; k < pieces; ++k) {
+                if (wantedBy_[k] > 0) {
+                    shareOf_[k] = best[k];
+                }
+            }
+            cli::out("mesh2splat: at their coarser cells the pieces want %llu splats, %.2f%% of --max-splats\n",
+                     static_cast<unsigned long long>(sum),
+                     100.0 * static_cast<double>(sum) /
+                         static_cast<double>(std::max<uint64_t>(options_->maxSplats, 1)));
         } else {
             shareOf_ = wantedBy_;
         }

@@ -848,10 +848,20 @@ más que el presupuesto se reparte en proporción: cada una recibe
 `presupuesto × quiere / total` (y una como poco), y recorre una celda
 `sqrt(quiere / parte)` veces más gruesa para querer más o menos eso. Es un
 solo suelo de densidad para toda la escena: todas las mallas pierden densidad
-por igual y no se tira ninguna. El aviso dice cuántas se querían, y la línea
-de log de cada malla cuánto más gruesa recorrió. Una malla que aún quiere un
-poco más que su parte tras engrosarla conserva las gaussianas de sus primeros
-triángulos, en el orden de la malla. Contar cuesta una pasada corta por malla.
+por igual y no se tira ninguna. El engrosamiento no es exacto -- las celdas a
+lo largo de los bordes de un triángulo, y todo el recorrido de un triángulo
+fino, menguan con la celda y no con su cuadrado --, así que luego se vuelve a
+contar cada malla con su celda más gruesa, y esa cuenta es su parte. Las partes
+se escalan por igual, por el mayor factor con el que las cuentas juntas aún
+caben en el presupuesto (un paso por `presupuesto / suma`, y luego a mitades;
+como mucho doce rondas, parando a menos del 1% por debajo del presupuesto).
+Ninguna malla pierde triángulos, y la nube sale en `--max-splats` o justo por
+debajo: en una escena grande a menos del 1%, en unos pocos triángulos finos,
+cuyas cuentas se mueven por filas enteras de celdas, varios puntos por debajo.
+El aviso dice cuántas se querían, una línea `at their coarser cells the pieces
+want N splats, P% of --max-splats` en qué quedaron las partes, y la línea de
+log de cada malla cuánto más gruesa recorrió. Contar cuesta una pasada corta
+por malla y ronda.
 
 **Desde una cámara.** `--cell-from-camera` da a cada malla la celda de la
 cámara que la va a mirar (la regla de Mesh2GS): `z × (apertura / píxeles) /

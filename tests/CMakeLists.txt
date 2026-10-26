@@ -261,6 +261,9 @@ athenea_m2s_output(two_subsets ${CMAKE_CURRENT_SOURCE_DIR}/data/two_subsets.usda
 # A budget below what the two cards want: shared, not spent on the first.
 athenea_m2s_output(two_cards_budget ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usda --no-bake --no-camera
     --resolution 64 --max-splats 800 -o ${ATHENEA_M2S_OUTPUTS}/two_cards_budget.usda)
+# Thin strips under a budget: shared, and no mesh's last triangles left out.
+athenea_m2s_output(budget_strips ${CMAKE_CURRENT_SOURCE_DIR}/data/budget_strips.usda --no-bake --no-camera
+    --resolution 64 --max-splats 400 -o ${ATHENEA_M2S_OUTPUTS}/budget_strips.usda)
 # The cell from the stage's camera, 64 pixels across.
 athenea_m2s_output(two_cards_camera ${CMAKE_CURRENT_SOURCE_DIR}/data/two_cards.usda --no-bake --no-camera
     --cell-from-camera /World/Camera --camera-pixels 64 -o ${ATHENEA_M2S_OUTPUTS}/two_cards_camera.usda)

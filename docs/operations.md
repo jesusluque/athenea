@@ -829,10 +829,18 @@ want more than the budget it is shared in proportion: each gets
 `budget × wanted / total` (and one at least), and walks a cell
 `sqrt(wanted / share)` times coarser so that it wants about that. That is one
 density floor for the whole stage: every mesh loses density alike and none is
-dropped. The warning says how many were wanted, and each mesh's log line how
-much coarser it walked. A mesh that still wants a little more than its share
-after the coarsening keeps its first triangles' gaussians, in the mesh's
-order. The count costs one short run a mesh.
+dropped. The coarsening is not exact -- the cells along a triangle's edges, and
+a thin triangle's whole walk, shrink with the cell and not with its square --
+so every mesh is then counted again at its coarser cell, and that count is its
+share. The shares are scaled alike, by the largest factor whose counts together
+still fit the budget (a step by `budget / sum`, then halving; at most twelve
+rounds, stopping within 1% under the budget). No mesh loses triangles, and the
+cloud comes out at or just under `--max-splats`: on a large stage within 1%, on
+a few thin triangles, whose counts move in whole rows of cells, several percent
+under. The warning says how many were wanted, a line `at their coarser cells
+the pieces want N splats, P% of --max-splats` what the shares came to, and each
+mesh's log line how much coarser it walked. The counts cost one short run a
+mesh a round.
 
 **From a camera.** `--cell-from-camera` sizes each mesh's cell by the camera
 that will look at it (Mesh2GS's rule): `z × (aperture / pixels) / focal`,
