@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <tuple>
 #include <vector>
 
@@ -1284,6 +1285,163 @@ TEST_CASE("the bounce carries light from a second surface", "[technique][path]")
                 alone.p99, alone.max, static_cast<unsigned long long>(alone.over2));
     // Nothing to find, and the same seeds: the two frames are the same frame.
     CHECK(alone.max == 0);
+}
+
+// The route a device without inline rays traces by (CUDA): the scene's compute
+// BVHs, in a compute kernel. Where rays are inline the two routes trace the
+// same paths with the same seeds, so they must draw the same frame up to the
+// rounding of a hit; everywhere, the BVH route's bounce must find the wall
+// and its shadow ray the occluder.
+TEST_CASE("the path tracer's compute BVH route traces what its ray route traces", "[technique][path][bvh]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    std::vector<std::filesystem::path> shaderPaths;
+    for (const std::string& path : gpu->device->shaderSearchPaths()) {
+        shaderPaths.emplace_back(path);
+    }
+    auto compiler = material::MaterialCompiler::create({ATHENEA_MATERIALX_ROOT}, shaderPaths);
+    auto textures = material::TextureStore::create(*gpu->library);
+    auto builder = geom::MeshBuilder::create(*gpu->library);
+    auto scene = world::GpuScene::create(*gpu->library);
+    auto bvh = world::BvhScene::create(*gpu->library);
+    auto ids = technique::VisibilityBvh::create(*gpu->library);
+    auto programs = technique::MaterialPrograms::create(*gpu->library);
+    auto tracer = technique::PathTracer::create(*gpu->library);
+    auto table = light::LightTable::create(*gpu->library);
+    if (!compiler) FAIL(compiler.error().toString());
+    if (!textures) FAIL(textures.error().toString());
+    if (!builder) FAIL(builder.error().toString());
+    if (!scene) FAIL(scene.error().toString());
+    if (!bvh) FAIL(bvh.error().toString());
+    if (!ids) FAIL(ids.error().toString());
+    if (!programs) FAIL(programs.error().toString());
+    if (!tracer) FAIL(tracer.error().toString());
+    if (!table) FAIL(table.error().toString());
+    auto lambert = (*compiler)->compileXml(
+        "<?xml version=\"1.0\"?>\n<materialx version=\"1.39\">\n"
+        "  <oren_nayar_diffuse_bsdf name=\"d\" type=\"BSDF\">\n"
+        "    <input name=\"color\" type=\"color3\" value=\"0.8, 0.8, 0.8\" />\n"
+        "    <input name=\"roughness\" type=\"float\" value=\"0\" />\n"
+        "  </oren_nayar_diffuse_bsdf>\n"
+        "  <surface name=\"shader\" type=\"surfaceshader\"><input name=\"bsdf\" type=\"BSDF\" nodename=\"d\" /></surface>\n"
+        "  <surfacematerial name=\"material\" type=\"material\">\n"
+        "    <input name=\"surfaceshader\" type=\"surfaceshader\" nodename=\"shader\" />\n"
+        "  </surfacematerial>\n</materialx>\n");
+    if (!lambert) FAIL(lambert.error().toString());
+    REQUIRE(programs->setModules(std::span<const material::CompiledMaterial>(&*lambert, 1)));
+    REQUIRE(tracer->setPrograms(*programs));
+    const std::vector<float> blob = material::MaterialCompiler::parameters(
+        *lambert, **textures, [](const std::string&) { return 0xFFFFFFFFu; });
+    REQUIRE((*textures)->commit());
+    const std::vector<technique::MaterialRecord> rows{{0, 0, 0, 0}, {1, 0, 0, 0}};
+    auto records = gpu::Buffer::fromSpan<technique::MaterialRecord>(*gpu->device, rows, "materials.records");
+    auto blobBuffer = gpu::Buffer::fromSpan<float>(*gpu->device, blob, "materials.blob");
+    REQUIRE(records);
+    REQUIRE(blobBuffer);
+
+    const uint32_t w = 161;
+    const uint32_t h = 121;
+    render::Camera camera = render::Camera::lookingAt({0.0, 0.0, 0.0}, {0.0, 0.0, -1.0});
+    camera.lens.focal = 35.0;
+    const render::Projection projection = render::projectionFor(camera, w, h);
+    // The bounce test's plane and wall, and a small square between the lamp
+    // and the plane that shadows it.
+    std::array<world::MeshInstance, 3> all;
+    all[0].mesh = lambertSquare(*builder, 1.0F);
+    all[0].objectToWorld = aofx::xform::translation({0.0, 0.0, -5.0});
+    all[0].material = 1;
+    all[1].mesh = lambertSquare(*builder, 1.0F);
+    all[1].objectToWorld = aofx::xform::translation({1.0, 0.0, -4.0}) * aofx::xform::rotationY(-90.0);
+    all[1].material = 1;
+    all[2].mesh = lambertSquare(*builder, 0.25F);
+    all[2].objectToWorld = aofx::xform::translation({-0.4, 0.3, -3.6});
+    all[2].material = 1;
+    REQUIRE(scene->update(std::span<const world::MeshInstance>(all.data(), all.size()), projection));
+    REQUIRE(bvh->build(*scene));
+    std::optional<world::RayTracingScene> accel;
+    const bool inlineRays = caps.rayQuery && caps.accelerationStructure;
+    if (inlineRays) {
+        auto made = world::RayTracingScene::create(*gpu->library);
+        if (!made) FAIL(made.error().toString());
+        accel.emplace(std::move(*made));
+        REQUIRE(accel->build(*scene));
+    }
+    technique::VisibilityTargets visibility;
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        REQUIRE(ids->render(batch, *scene, *bvh, projection, w, h, visibility));
+        REQUIRE(batch.submit(true));
+    }
+    const auto draw = [&](bool shadow, uint32_t bounces, bool computeBvh, render::RenderTargets& out) -> Result<void> {
+        light::Light lamp;
+        lamp.kind = light::LightKind::Sphere;
+        lamp.lightToWorld = aofx::xform::translation({-0.8, 0.6, -2.5});
+        lamp.radius = 0.2F;
+        lamp.shadow = shadow;
+        REQUIRE(table->set(std::span<const light::Light>(&lamp, 1)));
+        technique::MaterialFrame frame;
+        frame.programs = &*programs;
+        frame.scene = &*scene;
+        frame.records = &*records;
+        frame.blob = &*blobBuffer;
+        frame.textures = &**textures;
+        frame.lights = &*table;
+        frame.shadows = accel.has_value() ? accel->topLevel() : nullptr;
+        frame.bvh = &*bvh;
+        frame.samples = 1;
+        tracer->restart();
+        technique::PathSettings paths;
+        paths.samples = 16;
+        paths.bounces = bounces;
+        paths.accumulate = true;
+        paths.computeBvh = computeBvh;
+        for (uint32_t pass = 0; pass < 4; ++pass) {
+            paths.seed = pass * 7919u;
+            gpu::CommandBatch batch(*gpu->device);
+            if (auto traced = tracer->trace(batch, visibility, projection, frame, paths, out); !traced) {
+                return traced;
+            }
+            REQUIRE(batch.submit(true));
+        }
+        return Result<void>(ok());
+    };
+    const auto compare = [&](const render::RenderTargets& a, const render::RenderTargets& b, const char* what) {
+        auto diff = render::compareImages(*gpu->library, a.colour, b.colour, w, h);
+        REQUIRE(diff);
+        std::printf("  %s: p99 %u, max %u, %llu of %u pixels beyond 2\n", what, diff->p99, diff->max,
+                    static_cast<unsigned long long>(diff->over2), w * h);
+        return *diff;
+    };
+
+    render::RenderTargets traced;
+    if (auto first = draw(true, 2, true, traced); !first) {
+        // The path tracer's kernel is at Metal's 31 buffers already, and the
+        // trees are six more: Metal traces inline, and Vulkan is where the two
+        // routes are held to each other.
+        if (gpu->device->backend() == gpu::Backend::Metal) {
+            SKIP("the BVH route's kernel does not fit Metal's buffers: " << first.error().toString());
+        }
+        FAIL(first.error().toString());
+    }
+    // The bounce finds the wall, and the shadow ray the occluder: without
+    // either the frame is another frame.
+    render::RenderTargets direct;
+    REQUIRE(draw(true, 0, true, direct));
+    CHECK(compare(direct, traced, "BVH route, no bounce against two").max > 0);
+    render::RenderTargets unshadowed;
+    REQUIRE(draw(false, 2, true, unshadowed));
+    CHECK(compare(unshadowed, traced, "BVH route, no shadow against a shadow").max > 0);
+    if (!inlineRays) {
+        SUCCEED("no inline rays here: the BVH route is this device's only compute route");
+        return;
+    }
+    // The same paths by the other route: only where a hit's rounding sends a
+    // path another way may a pixel differ.
+    render::RenderTargets rays;
+    REQUIRE(draw(true, 2, false, rays));
+    const auto routes = compare(rays, traced, "inline rays against the BVH, two bounces, shadowed");
+    CHECK(routes.p99 <= 1);
+    CHECK(routes.over2 * 100 < uint64_t{w} * h);
 }
 
 // The plan's last check for the integrator: the error against a converged

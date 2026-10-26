@@ -134,6 +134,16 @@ frame de solo splats lo traza entero `render::GaussianRayTracer`, cuyas dos
 rutas (estructuras de aceleración por hardware, BVH por compute) comparten
 `shaders/athenea/rt/rt_integrate.slang`.
 
+Los rayos del propio path tracer -- un rebote, un rayo de sombra, los de un
+horneado -- van por uno de tres caminos, y su kernel generado lleva exactamente
+uno: ray queries en línea donde el dispositivo los tiene (Metal, Vulkan,
+D3D12); los BVH por compute de la escena (`world::BvhScene`, recorridos por
+`technique/bvh_rays.slang`) donde no los tiene y el frame los trae
+(`MaterialFrame::bvh`), que es lo que hace el motor en CUDA; y un pipeline de
+OptiX sólo para quien llame en un dispositivo CUDA sin darle BVH.
+`PathSettings::computeBvh` toma la ruta del BVH también en un dispositivo con
+rayos en línea, y así se comprueban la una contra la otra.
+
 ### 1.5 La capa de shaders
 
 `shaders/athenea/<área>` refleja los módulos: `common`, `algo`, `scene`, `splat`,

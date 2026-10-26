@@ -47,12 +47,13 @@ the machine's own.
 | System | Installer | Installs to | Needs |
 |---|---|---|---|
 | macOS (Apple silicon) | `athenea-<v>-macos-arm64.pkg` | `/usr/local/athenea`, programs linked into `/usr/local/bin` | macOS 15 or later. Not signed with a Developer ID: open it with right click, Open. |
-| Linux (x86_64) | `athenea_<v>_amd64.deb` | `/opt/athenea`, programs linked into `/usr/bin` | glibc 2.39 (Ubuntu 24.04 or later) and an NVIDIA driver with OptiX for baking (570 or later). |
-| Windows (x64) | `athenea-<v>-windows-x64-setup.exe` | `Program Files\athenea`, `bin\` added to the machine's `PATH` | an NVIDIA driver with OptiX (570 or later). Not signed: SmartScreen asks once. |
+| Linux (x86_64) | `athenea_<v>_amd64.deb` | `/opt/athenea`, programs linked into `/usr/bin` | glibc 2.39 (Ubuntu 24.04 or later) and an NVIDIA driver (570 or later). |
+| Windows (x64) | `athenea-<v>-windows-x64-setup.exe` | `Program Files\athenea`, `bin\` added to the machine's `PATH` | an NVIDIA driver (570 or later). Not signed: SmartScreen asks once. |
 
 The archives (`.zip`, `.tar.gz`) hold the same folder, run from wherever it is
 unpacked: the programs find the shaders, the AOFX bundles and the Hydra plugin
-relative to themselves. Under WSL2 a bake is refused: WSL2 does not load OptiX.
+relative to themselves. A bake needs no OptiX: under WSL2, which does not load
+it, a bake traces as on any CUDA device.
 
 ### 1.2 The runtime environment
 
@@ -83,7 +84,7 @@ Everything here is found at configure time, and the effect is felt at run time.
 | Open Image Denoise | `--denoise` and `athenea:denoise` do nothing; a path traced frame stays as it gathered. |
 | libwebp | `.sog` clouds are refused when read. |
 | OpenVDB | `.vdb` volume fields are refused when read. The path tracer still needs NanoVDB's `nanovdb/PNanoVDB.h`, header-only: a USD prefix without it names a directory holding it with `-DATHENEA_NANOVDB_INCLUDE=<dir>`, or the configure warns that the path tracer's kernels will not compile. |
-| OptiX headers (CUDA) | ray tracing by pipeline on CUDA; inline ray queries still work, so most of the engine does. |
+| OptiX headers (CUDA) | ray tracing by pipeline on CUDA: mesh visibility by rays (`--visibility rays`) and the splat ray tracer's hardware route. The path tracer and the bakes trace through the compute BVH there whether or not it is present. |
 | zstd | `.spz` clouds are refused, with `this build reads no .spz`. |
 
 ### 1.4 Metal and CUDA
@@ -99,9 +100,13 @@ What differs between them, in practice:
 - **Ray tracing.** Metal has inline ray queries and acceleration structures
   but no ray-tracing pipelines, so the hardware route that needs a pipeline is
   unavailable and `athenea info` says so. CUDA has the pipeline (OptiX, given
-  its headers and a driver that loads it) and no ray queries. A bake needs one
-  of the two: where there is neither -- CUDA under WSL2, which does not load
-  OptiX -- `athenea mesh2splat` refuses it with "has no ray tracing".
+  its headers and a driver that loads it) and no ray queries. The path tracer
+  and every bake trace on CUDA through the scene's compute BVH, in a compute
+  kernel: a path traced kernel compiles in minutes the first time (seven to
+  fifteen on an RTX 3070 laptop, by what else the machine is doing) and comes
+  from the shader cache after that, where its OptiX pipeline took over twenty
+  minutes and 25 GB of host memory, and failed without them. CUDA under WSL2,
+  which does not load OptiX, bakes the same way.
 - **The denoiser.** On Metal, Open Image Denoise runs on the engine's own
   queue. On Vulkan it runs through CUDA with imported memory.
 - **Half precision.** Reported by `athenea info`; where it is absent the engine

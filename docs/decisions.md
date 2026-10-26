@@ -13504,8 +13504,9 @@ reflects included. A floor so baked shows its sheen with no reflection pass
 and is wrong from anywhere else.
 
 **Not done**: the bake is degree 0, so nothing of the light depends on the view; an
-instanced mesh and a GeomSubset's binding are left as they are; on CUDA the
-bake's pipeline is not made (an OptiX failure the other bakes share).
+instanced mesh and a GeomSubset's binding are left as they are. (On CUDA the
+bake's OptiX pipeline was not made; it traces through the compute BVH now --
+*Path tracing on CUDA through the compute BVH*, 24 Oct.)
 
 ### Measured (M5 Pro, release, 1920 x 1080, `athenea stage --frames 20`)
 
@@ -15483,6 +15484,84 @@ the L4.
 - The edge of a cutout's hole is not resolved (the candidate is not trusted there).
 - Texture aliasing inside a surface is the mip selection's, not this pass's.
 - The copy of the layer the kernel reads its neighbours from is a full-frame copy each frame.
+
+## Path tracing on CUDA through the compute BVH (24 Oct)
+
+On CUDA a transfer bake failed to make its ray tracing pipeline: `athenea mesh2splat --transfer` on
+`tests/data/validate/two_balls.usda` ended with `ShaderFailure: cannot make a ray tracing pipeline for
+..._path_direct_bake:tracePathsGen` after OptiX had compiled for nineteen and a half minutes and said only "Module
+compilation failed" (an RTX 3070 Laptop GPU, 8 GB, 32 GB of host memory, driver 610.62, OptiX 9). The raygen was 81 000
+to 86 000 instructions with nineteen trace sites. The sets' materials failed the same way (72 500 instructions).
+
+**It was not a regression.** Three later commits failed where an earlier build baked, which read as one; but the path
+tracer's source, the modules it imports and the material compiler are the same in both, and the earlier build had
+baked in 150 s because OptiX served its pipeline from its disk cache (which was full, `database or disk is full`, so
+the later builds' pipelines were never cached). With the cache emptied, both the earlier build and the branch's head
+compiled and baked: 1482 s and 1250 s, about twenty minutes of them OptiX's. While it compiles the process holds some
+26 GB, and the machine's free memory fell to 460 MB: the failures were OptiX running out of host memory while other
+work on the machine held some.
+
+**The fix is not to compile that pipeline.** `technique::PathTracer` has a third way to trace: through the scene's
+compute BVHs (`world::BvhScene`, which the Bvh visibility route already builds on CUDA), in a compute kernel.
+
+- `technique/bvh_rays.slang` walks visibility_bvh's trees -- instances in view space at the top, each mesh in
+  object space below -- for any ray of a kernel: nearest in (tMin, tMax), or any hit for a shadow ray, of the
+  instances whose mask shares a bit with the ray's. A ray that culls back faces culls a single-sided triangle's back
+  by visibility_bvh's rule, which is what `RAY_FLAG_CULL_BACK_FACING_TRIANGLES` does on the hardware route; one that
+  does not sees both. A world ray is taken into view space by the inverse of the frame's view to world; the
+  direction is not normalised, so the hit's t is the world ray's.
+- The traversal is `[noinline]`: every ray of the kernel calls one copy of it, so nineteen trace sites cost the
+  kernel no more than one.
+- The path tracer's `kRaysBvh` is the inline route's (`kRays`) with the traversal in place of `RayQuery`: the shadow
+  walk goes nearest first, one surface at a time, and asks a light's link, a cut-out and a glass of each surface it
+  meets.
+- The route is chosen per frame: a device without inline rays traces through `MaterialFrame::bvh` whenever the frame
+  carries one, and the engine gives it one whenever it path traces there. The OptiX pipeline remains for a caller
+  that hands a CUDA device no BVH. `PathSettings::computeBvh` takes the BVH route on a device with inline rays too.
+- Since every device now traces, the refusal of a bake on a device without ray tracing (CUDA under WSL2, which loads
+  no OptiX) is gone.
+
+### Measured (RTX 3070 Laptop GPU, CUDA, native Windows, release)
+
+| | OptiX pipeline | compute BVH |
+|---|---|---|
+| two_balls transfer bake, 283 669 gaussians, 16 paths, 3 bounces: first run | 1250-1482 s (the pipeline about 20 min, 26 GB) | 548 s (the kernel's compile most of it) |
+| the same, kernel cached | 150 s (bake 120 s) | 31 s (bake 11.7 s) |
+| a set (`--max-splats 800000`, 32 + 32 paths), 797 269 gaussians: first run | failed (72 500 instructions) | 986 s |
+| two_balls path traced, 480 x 270, 16 paths: first run | -- | 668 s |
+
+The compute kernels are compiled through nvrtc and the driver's JIT, seven to fifteen minutes for a path traced kernel
+on this machine, and come from the shader cache after that. The traced paths themselves are faster than OptiX's
+here: the bake's 11.7 s against 120 s.
+
+`[technique][path][bvh]` ("the path tracer's compute BVH route traces what its ray route traces"): on CUDA the BVH
+route's bounce finds the wall (no bounce against two: p99 4, max 6) and its shadow ray the occluder (unshadowed
+against shadowed: p99 13, max 14). On Vulkan, on the same laptop, where rays are inline, the two routes draw the same
+frame over the same seeds: p99 0, max 0. Metal skips it: the kernel with the trees binds more buffers than Metal's 31,
+and Metal traces inline.
+
+Across devices, `mesh2splat --validate` on two_balls (the `mesh2splat_validate` command): the GT path traced on CUDA
+through the BVH against the GT path traced on Metal with ray queries, relMSE 4.0e-10 (8-bit max 1); each material's
+cloud, CUDA's against Metal's, relMSE 5.7e-6 and 5.9e-7 (`athenea compare`). The set's cloud, drawn through the set's
+camera, shows its occlusion -- the cube's shadow on the floor, the corners -- where the OptiX bake left no cloud.
+
+Under WSL2 on the same laptop (Linux, CUDA 12.9), which loads no OptiX and where a bake used to be refused:
+`[technique][path][bvh]` passes with the same numbers; the set bakes, 797 269 gaussians in 237 s from an empty shader
+cache (200 s of it the bake), and drawn through its camera it is the Windows bake's picture (mean difference 4e-5).
+The kernels compiled there in about a minute where Windows took seven to fifteen: the time is the Windows side's
+nvrtc and driver JIT, not the kernel's size.
+
+### Not done
+
+- The kernel's first compile on CUDA under Windows is minutes, not seconds; an optimisation level for the driver's JIT, or a
+  kernel split by what a frame uses, would be the places to look.
+- Motion blur: the trees hold the frame's own records at the shutter's open, so a ray of a later shutter bucket
+  meets the geometry where it was at the open.
+- Splats shadowing meshes stay an inline-rays feature, as before.
+- `mesh2splat --validate` on CUDA under Windows printed per-material numbers that are not numbers (a relMSE of
+  5e22, a green mean of 2e10) while the frames it wrote -- the GT, the mesh's, each cloud's -- are right
+  (`athenea compare` on them: GT mean 0.098, cloud means 0.104). The masking or the measure over the crossing is
+  at fault, not the bake; not looked into.
 
 ## Blender on Windows: the exit, the flatten, what F12 gathered, the OpenFX bundle (25 Oct)
 

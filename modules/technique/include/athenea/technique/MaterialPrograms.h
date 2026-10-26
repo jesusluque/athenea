@@ -21,6 +21,7 @@
 #include "athenea/material/MaterialCompiler.h"
 #include "athenea/material/TextureStore.h"
 #include "athenea/render/Camera.h"
+#include "athenea/world/BvhScene.h"
 #include "athenea/world/GpuScene.h"
 
 namespace athenea::gpu {
@@ -145,6 +146,11 @@ struct MaterialFrame {
     const light::LightTable*      lights = nullptr;
     /// What a shadow ray traces against, when the device traces at all.
     rhi::IAccelerationStructure*  shadows = nullptr;
+    /// The scene's compute BVHs, built over this frame's records: where the
+    /// device has no inline rays, the path tracer traces through them in a
+    /// compute kernel rather than in a ray tracing pipeline. Null: the
+    /// pipeline where there is one (`shadows`), else no rays.
+    const world::BvhScene*        bvh = nullptr;
     /// Splat clouds a shadow ray is dimmed by: their tables packed into one
     /// buffer (technique::SplatShadows). Null, or a scene with no instances,
     /// and a cloud casts no shadow on a mesh -- which is what every frame did

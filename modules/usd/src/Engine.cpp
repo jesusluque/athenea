@@ -2155,19 +2155,11 @@ Result<void> Engine::bakePoints(const BakeRequest& bake, const render::Projectio
     if (bake.rays == nullptr || !bake.rays->valid() || bake.count == 0 || bake.out == nullptr) {
         return Error(ErrorCode::InvalidArgument, "nothing to bake");
     }
-    // A BAKE IS PATHS, and the path tracer finds a surface only through the
-    // device's ray tracing: ray queries, or a ray tracing pipeline (OptiX on
-    // CUDA, which has no ray queries), over acceleration structures. Without
-    // them it traced against nothing and baked every gaussian as seeing no
-    // surface at all -- CUDA without OptiX (WSL2) converted whole stages so --
-    // so a device that has neither says so instead.
-    const gpu::Caps& caps = device_->caps();
-    if (!caps.accelerationStructure || !(caps.rayQuery || caps.rayTracing)) {
-        return Error::make(ErrorCode::Unsupported,
-                           "a bake traces paths, and this device has no ray tracing (ray queries or a pipeline, and acceleration "
-                           "structures) on {}",
-                           gpu::toString(device_->backend()));
-    }
+    // A BAKE IS PATHS. The path tracer finds a surface through ray queries
+    // where the device has them and through the compute BVHs where it does
+    // not (CUDA, with OptiX or without it), so every device bakes. Before
+    // the BVH route, CUDA without OptiX (WSL2) was refused here, and CUDA
+    // with it compiled a ray tracing pipeline for twenty minutes or more.
     render::RenderSettings frame = settings;
     frame.width = 1;
     frame.height = 1;
@@ -2816,15 +2808,26 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         // A path traced surface needs a structure whatever the lights do --
         // its bounce is a ray -- while shading needs one only where a light
         // casts a shadow. The same structure serves both, and a path traced
-        // frame without it would trace against nothing and never know. The
-        // path tracer traces in a pipeline where rays are not inline (CUDA,
-        // through OptiX), and it wants the structure all the same: without it
-        // a bake on CUDA found no surface at all. Shading's shadow rays are
-        // inline only.
+        // frame without it would trace against nothing and never know.
+        // Shading's shadow rays are inline only.
         const bool inlineRays = caps.rayQuery && caps.accelerationStructure;
-        const bool pipelineRays = caps.rayTracing && caps.accelerationStructure;
+        // Where rays are not inline (CUDA), the path tracer traces through
+        // the compute BVHs the Bvh visibility route builds, in a compute
+        // kernel: its OptiX pipeline took over twenty minutes and 25 GB of
+        // host memory to compile for a bake, and failed without them.
+        const bool bvhRays = pathTracing && !inlineRays;
+        if (bvhRays) {
+            if (!bvhScene_.has_value()) {
+                auto bvh = world::BvhScene::create(*library_);
+                if (!bvh) return std::move(bvh).error();
+                bvhScene_.emplace(std::move(*bvh));
+            }
+            if (visibility != MeshVisibility::Bvh) {
+                ATHENEA_TRY(bvhScene_->build(*scene_));   // the Bvh route builds it in the pass below
+            }
+        }
         bool raysWanted = false;
-        if ((lightTable_->anyShadow() && inlineRays) || (pathTracing && (inlineRays || pipelineRays))) {
+        if ((lightTable_->anyShadow() && inlineRays) || (pathTracing && inlineRays)) {
             if (!rayTracingScene_.has_value()) {
                 auto accel = world::RayTracingScene::create(*library_);
                 if (!accel) return std::move(accel).error();
@@ -3154,10 +3157,12 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                                              settings.height, visibility_, cutouts));
             break;
         case MeshVisibility::Bvh:
-            if (!visibilityBvh_.has_value()) {
+            if (!bvhScene_.has_value()) {
                 auto bvh = world::BvhScene::create(*library_);
                 if (!bvh) return std::move(bvh).error();
                 bvhScene_.emplace(std::move(*bvh));
+            }
+            if (!visibilityBvh_.has_value()) {
                 auto made = technique::VisibilityBvh::create(*library_);
                 if (!made) return std::move(made).error();
                 visibilityBvh_.emplace(std::move(*made));
@@ -3183,6 +3188,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         // with it -- taking the pointer earlier left shading tracing against
         // a freed structure.
         frame.shadows = raysWanted ? rayTracingScene_->topLevel() : nullptr;
+        frame.bvh = bvhRays ? &*bvhScene_ : nullptr;
         frame.splatShadows = meshSplatShadows;
         frame.cloudShadow =
             cloudShadowMap_.has_value() && cloudShadowMap_->valid() ? cloudShadowMap_->textureView() : nullptr;
