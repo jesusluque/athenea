@@ -1568,9 +1568,24 @@ uint emissiveCount(uint word) {
     return asuint(emissiveWord(word));
 }
 
-/// The emitting triangles' share of next event estimation's choices: their
-/// power against the lights'. 0 where nothing emits or the frame has media.
-float emissiveShare() {
+/// The words before the rows' luminances (EmissiveTable::kHeaderWords).
+static const uint kEmissiveHeader = 9;
+
+/// The most of next event estimation's choices the emitting triangles take
+/// at a point, so the lights keep some wherever an emitter stands close.
+static const float kEmissiveShareMost = 0.9;
+
+/// The emitting triangles' share of next event estimation's choices at `p`:
+/// what each side can give there, their power against the lights' over the
+/// squared distance each stands at -- the emitters at their box's distance
+/// from p (no nearer than the box's half diagonal), the lights at the scene's
+/// reach, whose square a dome's and a sun's power carry (light_prefix).
+/// Power alone gave a bulb's filament, 3.7 cm2 of a 40 m floor's stage under
+/// a sun, one choice in six hundred: the floor under it read the filament
+/// through the material's rays alone, a firefly a pixel. 0 where nothing
+/// emits or the frame has media. Every density that carries the share takes
+/// it at the point that chose, so the weights still sum to one.
+float emissiveShare(float3 p) {
     // Without MIS the material's rays gather emission at full weight, so
     // next event estimation leaves the emitting triangles to them.
     if (!kEmissive || emissiveOn == 0 || path.mis == 0) {
@@ -1581,7 +1596,16 @@ float emissiveShare() {
         return 0.0;
     }
     const float lit = lightCount > 0 ? max(lights[lightCount - 1].cumulative, 0.0) : 0.0;
-    return emitted / (emitted + lit);
+    if (!(lit > 0.0)) {
+        return 1.0;
+    }
+    const float3 toBox = p - float3(emissiveWord(4), emissiveWord(5), emissiveWord(6));
+    const float radius = emissiveWord(7);
+    const float reach = max(emissiveWord(8), 1.0e-6);
+    const float closest2 = max(max(dot(toBox, toBox), radius * radius), 1.0e-12);
+    const float fromEmitters = emitted / closest2;
+    const float fromLights = lit / (reach * reach);
+    return min(fromEmitters / (fromEmitters + fromLights), kEmissiveShareMost);
 }
 
 /// A surface's triangle in world space, as the record that drew it holds it.
@@ -1597,13 +1621,13 @@ void worldTriangle(InstanceRecord r, MeshRecord m, uint triangle, out float3 a, 
 /// the direction that met surface s at `at` -- by the table's own weights
 /// (area times the row's luminance), so the two strategies' weights sum to one.
 float emissivePdfAt(Surface s, float3 at, float3 from) {
-    const float share = emissiveShare();
+    const float share = emissiveShare(from);
     if (!(share > 0.0)) {
         return 0.0;
     }
     const uint rows = emissiveCount(3);
     const uint row = materialRowOf(s);
-    const float luminance = row < rows ? emissiveWord(4 + row) : 0.0;
+    const float luminance = row < rows ? emissiveWord(kEmissiveHeader + row) : 0.0;
     if (!(luminance > 0.0)) {
         return 0.0;
     }
@@ -1644,7 +1668,7 @@ LightPoint sampleEmissive(float3 from, float u, float2 v) {
     lp.weighPdf = 0.0;
     lp.distance = 0.0;
     lp.wi = float3(0.0, 0.0, 1.0);
-    const float share = emissiveShare();
+    const float share = emissiveShare(from);
     const uint triangles = emissiveCount(0);
     const uint records = emissiveCount(1);
     const uint rows = emissiveCount(3);
@@ -1652,7 +1676,7 @@ LightPoint sampleEmissive(float3 from, float u, float2 v) {
     if (!(share > 0.0) || triangles == 0) {
         return lp;
     }
-    const uint cumulative = 4 + rows + records + 1;
+    const uint cumulative = kEmissiveHeader + rows + records + 1;
     const float target = clamp(u, 0.0, 0.999999) * emitted;
     uint lo = 0;
     uint hi = triangles - 1;
@@ -1673,13 +1697,13 @@ LightPoint sampleEmissive(float3 from, float u, float2 v) {
     uint rhi = records;
     while (rhi - rlo > 1) {
         const uint mid = (rlo + rhi) / 2;
-        if (emissiveCount(4 + rows + mid) <= g) {
+        if (emissiveCount(kEmissiveHeader + rows + mid) <= g) {
             rlo = mid;
         } else {
             rhi = mid;
         }
     }
-    const uint triangle = g - emissiveCount(4 + rows + rlo);
+    const uint triangle = g - emissiveCount(kEmissiveHeader + rows + rlo);
     const InstanceRecord r = instances[rlo];
     const MeshRecord m = meshes[r.mesh];
     float3 a, b, c;
@@ -1725,7 +1749,7 @@ R"(    // reached along, turned to view space for which side it shows.
 /// Light k's probability of being chosen at p, n, as gatherLight chooses:
 /// among the lights, times the lights' share against the emitting triangles.
 float lightChoiceProbability(uint k, float3 p, float3 n) {
-    const float lights_ = 1.0 - emissiveShare();
+    const float lights_ = 1.0 - emissiveShare(p);
     if (path.chooseLights == 2) {
         return lights_ * lightPdfChoiceAny(iesValues, lightNodeBase, lightTreeNodes, lightUnboundedCount, lights, k, p, n);
     }
@@ -1825,7 +1849,7 @@ float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crosse
     }
     // The choice's first part is the emitting triangles' (the caller takes
     // those); what is left of the number chooses among the lights.
-    const float share = emissiveShare();
+    const float share = emissiveShare(sh.inputs.positionWorld);
     const float pick = (random(pixel, sample, bounce, 11u) - share) / max(1.0 - share, 1.0e-9);
     const LightChoice choice = path.chooseLights == 2
                                    ? chooseLightAny(iesValues, lightNodeBase, lightTreeNodes, lightUnboundedCount,
@@ -2407,7 +2431,7 @@ R"(                    }
                 // gathered along the way: no next event estimation, no
                 // emission, no light of any kind. What it is after is the
                 // path's own weight when it finally leaves.
-                const float share = transferMode ? 0.0 : emissiveShare();
+                const float share = transferMode ? 0.0 : emissiveShare(cur.inputs.positionWorld);
                 if (share > 0.0 && random(tid, sample, bounce, 11u) < share) {
                     // An emitting triangle: sampled here, shaded next step.
                     const LightPoint lp = sampleEmissive(cur.inputs.positionWorld,

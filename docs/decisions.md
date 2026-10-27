@@ -2200,9 +2200,9 @@ either a vertex of the path or the point next event estimation chose on an
 emitting triangle, through the one call; a vertex that chose such a point
 waits a step, takes its emission, and goes on. The trip count is a
 uniform's, so the loop cannot be unrolled into copies. The choice between
-the lights and the emitting triangles is by power (an area light's L A
-against a triangle's area times luminance), and each side's density carries
-the other's share.
+the lights and the emitting triangles is by what each can give at the
+shading point (below, "The share where an emitter stands close"), and each
+side's density carries the other's share at the point that chose.
 
 **The weights.** Next event estimation's sample of a triangle is weighed by
 the power heuristic against the material's density in its direction; emission
@@ -2226,6 +2226,46 @@ emits 3, above the frame, lighting a floor, against a UsdLux rect light of
 the same size and radiance in its place (one bounce, 64x48): deep frames of
 8192 paths agree to relMSE 4.1e-7, and at 32 paths the error is 8.7e-5 sampled
 as a light against 11.75 by the material's rays alone.
+
+**The share where an emitter stands close.** By power alone (an area
+light's L A against a triangle's area times luminance, a sun's irradiance and
+a dome's radiance times the scene's reach squared) a small emitter on a large
+stage was next to never chosen: a desk lamp's filament, 3.7 cm2 at 2499
+W/m2 inside a clear bulb, against a sun over a 40 m floor (reach 28 m) had
+about one choice in six hundred, and the floor under the lamp read the
+filament through the material's rays alone -- a scatter of fireflies where
+another renderer draws a smooth warm pool. The glass was not the
+cause: the bulb is a UsdPreviewSurface at opacity 0, transparent, which a
+shadow ray passes as coverage (`shadowPassesThrough`) without counting a
+face of glass, and removing the glass left the fireflies as they were.
+Without the sun the dome alone (its radiance times pi R^2) still took most
+of the choices, and the fireflies stayed. The table now also keeps the
+emitting triangles' box (its centre and half diagonal, found on the device
+while the powers accumulate) and the lights' reach, and the share at a point
+p is `(Pe / max(d^2, r^2)) / (Pe / max(d^2, r^2) + Pl / R^2)`: the emitters at
+their box's distance from p, no nearer than its half diagonal, the lights at
+the reach their dome's and sun's power carry squared, at most 0.9 so the
+lights keep a tenth wherever an emitter stands close. Where the emitters are
+as far as the reach it is the power split it was. Sampling an emitting
+triangle, the density weighed when the material's ray meets one
+(`emissivePdfAt` at the vertex the ray left), and a light's choice
+probability all take the share at the vertex that chose, so MIS weights
+still sum to one. A light at a distance is still weighed at the reach, not
+at its own distance: the light tree's root would say better, and the tree
+against the dome and sun list is still split by power.
+
+**Checked** through Hydra: a 10 cm panel emitting 20, 30 cm over a 40 m
+floor under a sun of irradiance about 1 (power 0.2 against about 800), one
+bounce, 64x48: at 32 paths the error against 32768 paths of the material's
+rays alone is 4.1e-3 sampled as a light against 1.28e-1 by the rays alone
+(31 times less), and 8192 paths sampled as a light sit 1.4e-4 from that
+deep frame. On the lamp (800x450, 256 paths, 16 bounces) the floor under
+the bulb went from scattered fireflies to a pool. What grain is left there
+is mostly the filament's own: a metallic coil whose turns light each other,
+which next event estimation from a point on the coil reads with the 1/d^2
+of neighbouring turns. With the filament made non-reflecting the floor's
+pixels over 0.5 went from 16 to 2 in 80 000 at 1024 paths, and the mean came
+to what next event estimation alone gives.
 
 **Not done.** Emitting triangles are not sampled from inside media, nor
 under motion at their shutter slice (the table is the frame's). A table of

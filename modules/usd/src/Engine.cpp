@@ -3146,14 +3146,15 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         // revision counts. Not through media, whose kernel does not sample them.
         if (pathTracing && frame.volumeCount == 0) {
             const EmissiveKey key{scene_->generation(), scene_->positionsRevision(), revision_.load(),
-                                  materialRecords_.rhi(), scene_->instanceCount()};
+                                  materialRecords_.rhi(), scene_->instanceCount(), lightSceneRadius_};
             if (!emissiveTable_.has_value()) {
                 auto made = technique::EmissiveTable::create(*library_);
                 if (!made) return std::move(made).error();
                 emissiveTable_.emplace(std::move(*made));
             }
             if (!(key == emissiveKey_)) {
-                ATHENEA_TRY(emissiveTable_->build(frame, static_cast<uint32_t>(materialRecords_.count())));
+                ATHENEA_TRY(emissiveTable_->build(frame, static_cast<uint32_t>(materialRecords_.count()),
+                                                  lightSceneRadius_));
                 emissiveKey_ = key;
             }
             if (emissiveTable_->totalPower() > 0.0F) {

@@ -952,9 +952,10 @@ private:
         uint64_t          revision = 0;
         rhi::IBuffer*     records = nullptr;
         uint32_t          instances = 0;
+        float             reach = 0.0F;   ///< the lights' scene radius, which the share weighs them at
         [[nodiscard]] bool operator==(const EmissiveKey& o) const {
             return generation == o.generation && positions == o.positions && revision == o.revision &&
-                   records == o.records && instances == o.instances;
+                   records == o.records && instances == o.instances && reach == o.reach;
         }
     };
     std::optional<technique::EmissiveTable>    emissiveTable_;

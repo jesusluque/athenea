@@ -19,7 +19,7 @@ uniform uint              rowCount;
 uniform uint              recordCount;
 uniform uint              triangleCount;
 
-static const uint kHeader = 4;
+static const uint kHeader = 9;
 
 uint recordBase(uint i) {
     return asuint(emissive[kHeader + rowCount + i]);
@@ -116,11 +116,39 @@ void accumulatePower(uint3 tid: SV_DispatchThreadID) {
     const uint base = cumulativeAt();
     float running = 0.0;
     emissive[base] = 0.0;
+    // And the box round the triangles that emit: where next event
+    // estimation weighs them against the lights by distance (the path
+    // tracer's emissiveShare). The records walked in order with the
+    // triangles, as their first triangles are.
+    float3 lo = float3(3.0e38);
+    float3 hi = float3(-3.0e38);
+    uint record = 0;
     for (uint g = 0; g < triangleCount; ++g) {
-        running += emissive[base + 1 + g];
+        const float power = emissive[base + 1 + g];
+        running += power;
         emissive[base + 1 + g] = running;
+        if (!(power > 0.0)) {
+            continue;
+        }
+        while (record + 1 < recordCount && recordBase(record + 1) <= g) {
+            ++record;
+        }
+        const InstanceRecord r = instances[record];
+        const MeshRecord m = meshes[r.mesh];
+        const uint t = m.firstTriangle + g - recordBase(record);
+        for (uint k = 0; k < 3; ++k) {
+            const float3 v = rowsApply(r.world0, r.world1, r.world2, positions[m.firstPoint + indices[t * 3 + k]].xyz, 1.0);
+            lo = min(lo, v);
+            hi = max(hi, v);
+        }
     }
     emissive[2] = running;
+    const bool emits = running > 0.0 && all(lo <= hi);
+    const float3 centre = emits ? 0.5 * (lo + hi) : float3(0.0);
+    emissive[4] = centre.x;
+    emissive[5] = centre.y;
+    emissive[6] = centre.z;
+    emissive[7] = emits ? 0.5 * length(hi - lo) : 0.0;
 }
 )";
 
@@ -133,7 +161,7 @@ Result<EmissiveTable> EmissiveTable::create(gpu::ShaderLibrary& library) {
     return table;
 }
 
-Result<void> EmissiveTable::build(const MaterialFrame& frame, uint32_t rows) {
+Result<void> EmissiveTable::build(const MaterialFrame& frame, uint32_t rows, float lightReach) {
     total_ = 0.0F;
     triangles_ = 0;
     if (frame.programs == nullptr || frame.scene == nullptr || frame.records == nullptr || frame.blob == nullptr ||
@@ -177,12 +205,13 @@ Result<void> EmissiveTable::build(const MaterialFrame& frame, uint32_t rows) {
         bases[i] = static_cast<uint32_t>(triangles);
     }
     triangles_ = static_cast<uint32_t>(triangles);
-    std::vector<float> words(4 + size_t{rows} + bases.size() + size_t{triangles_} + 1, 0.0F);
+    std::vector<float> words(kHeaderWords + size_t{rows} + bases.size() + size_t{triangles_} + 1, 0.0F);
     words[0] = std::bit_cast<float>(triangles_);
     words[1] = std::bit_cast<float>(records);
     words[3] = std::bit_cast<float>(rows);
+    words[8] = lightReach;
     for (size_t i = 0; i < bases.size(); ++i) {
-        words[4 + rows + i] = std::bit_cast<float>(bases[i]);
+        words[kHeaderWords + rows + i] = std::bit_cast<float>(bases[i]);
     }
     auto made = gpu::Buffer::fromSpan<float>(*device_, words, "emissive.table");
     if (!made) return std::move(made).error();

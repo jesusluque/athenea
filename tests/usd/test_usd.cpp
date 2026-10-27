@@ -3027,6 +3027,92 @@ TEST_CASE("an emitting quad lights a floor as a rect light of its radiance, samp
     CHECK(errLight->relMse < errRays->relMse / 4.0);
 }
 
+// A small emitter on a large stage under a sun: a 10 cm panel 30 cm over a
+// 40 m floor. By power alone the sun -- its irradiance times the scene's
+// reach squared -- took all but one in thousands of next event estimation's
+// choices, and the floor under the panel read it through the material's rays
+// alone, one firefly a pixel (a desk lamp's filament in its bulb). Where the
+// panel stands close it must take its share by what it gives there: sampled
+// as a light, far less noisy than by the material's rays, and unbiased --
+// the frame converges on the one the material's rays alone converge on.
+TEST_CASE("a small emitter on a large sunlit stage takes next event estimation's choices where it stands close",
+          "[usd][gpu][mesh][path][mis][emissive]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    const fs::path path = scratch("emitter_under_sun.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def Mesh \"Floor\"\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-20, 0, 20), (20, 0, 20), (20, 0, -20), (-20, 0, -20)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    color3f[] primvars:displayColor = [(0.8, 0.8, 0.8)] ( interpolation = \"constant\" )\n}\n"
+               // 10 x 10 cm at y 0.3, emitting 20 each side: 0.2 of power
+               // against the sun's 15000 x 6.7e-5 x 28^2, about 800.
+               "def Mesh \"Panel\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+               "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+               "    point3f[] points = [(-0.05, 0.3, -1.05), (0.05, 0.3, -1.05), (0.05, 0.3, -0.95), (-0.05, 0.3, -0.95)]\n"
+               "    uniform token subdivisionScheme = \"none\"\n"
+               "    rel material:binding = </Materials/Glow>\n}\n"
+               "def Scope \"Materials\"\n{\n"
+               "    def Material \"Glow\"\n    {\n"
+               "        token outputs:mtlx:surface.connect = </Materials/Glow/Surface.outputs:out>\n"
+               "        def Shader \"Surface\"\n        {\n"
+               "            uniform token info:id = \"ND_surface_unlit\"\n"
+               "            float inputs:emission = 20\n"
+               "            color3f inputs:emission_color = (1, 1, 1)\n"
+               "            token outputs:out\n        }\n    }\n}\n"
+               "def DistantLight \"Sun\"\n{\n"
+               "    float inputs:intensity = 15000\n    float inputs:angle = 0.53\n"
+               "    double xformOp:rotateX = -90\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:rotateX\"]\n}\n"
+               "def Camera \"Camera\"\n{\n"
+               "    float focalLength = 24\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+               "    double3 xformOp:translate = (0, 0.9, 0.2)\n"
+               "    double xformOp:rotateX = -50\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateX\"]\n}\n";
+    }
+    const uint32_t w = 64, h = 48;
+    const auto frame = [&](bool mis, uint32_t total) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setPathMis(mis);
+        (*renderer)->setPathSamples(std::min<uint32_t>(total, 256));
+        (*renderer)->setPathTotal(total);
+        (*renderer)->setPathBounces(1);
+        auto image = (*renderer)->render("/Camera", 0.0, w, h, "rt");
+        if (!image) FAIL(image.error().toString());
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    const gpu::Buffer raysDeep = frame(false, 32768);
+    const gpu::Buffer lightDeep = frame(true, 8192);
+    const gpu::Buffer light = frame(true, 32);
+    const gpu::Buffer rays = frame(false, 32);
+    auto same = render::compareHdr(*gpu->library, lightDeep, raysDeep, w, h);
+    auto errLight = render::compareHdr(*gpu->library, light, raysDeep, w, h);
+    auto errRays = render::compareHdr(*gpu->library, rays, raysDeep, w, h);
+    REQUIRE(same);
+    REQUIRE(errLight);
+    REQUIRE(errRays);
+    std::printf("  a 10 cm emitter under a sun on a 40 m floor: deep MIS against the deep material's rays relMSE "
+                "%.3e; at 32 paths, the material's rays alone %.3e, sampled as a light %.3e (%.1f times less)\n",
+                same->relMse, errRays->relMse, errLight->relMse,
+                errRays->relMse / std::max(errLight->relMse, 1e-30));
+    CHECK(errLight->relMse < errRays->relMse / 8.0);
+    CHECK(same->relMse < errLight->relMse / 4.0);
+}
+
 // The traced technique over a mesh, through Hydra: what used to trace splats
 // and return now path traces the surfaces. A plane alone under one light has
 // nothing for a bounce to find, so the traced frame and the raster frame are
