@@ -174,6 +174,15 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
         shadows_ = shadows_ || light.shadow;
         domes_ = domes_ || light.kind == LightKind::Dome;
     }
+    // The mesh lights' region comes first in the words buffer (reserveMesh):
+    // every offset into the buffer written here is past it. It grows and
+    // never shrinks, so a frame whose emitters went out keeps its capacity.
+    const uint32_t region = meshWanted_ > meshWords_ ? meshWanted_ + meshWanted_ / 4 : meshWords_;
+    for (IesRecord& ies : iesRecords) {
+        ies.verticalOffset += region;
+        ies.horizontalOffset += region;
+        ies.candelaOffset += region;
+    }
     iesCount_ = static_cast<uint32_t>(iesRecords.size());
     if (iesRecords.empty()) {
         iesRecords.emplace_back();   // a buffer to bind, which nothing reads
@@ -190,7 +199,7 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
                                  kind == static_cast<uint32_t>(LightKind::Dome);
         (isUnbounded ? unbounded : bounded).push_back(k);
     }
-    nodeBase_ = static_cast<uint32_t>(iesValues.size());
+    nodeBase_ = region + static_cast<uint32_t>(iesValues.size());
     const uint32_t nodeCount = (bounded.empty() ? 0u : 2u * static_cast<uint32_t>(bounded.size()) - 1u) +
                                static_cast<uint32_t>(unbounded.size());
     iesValues.resize(iesValues.size() + size_t{nodeCount} * 16, 0.0F);
@@ -209,7 +218,7 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
     };
     std::vector<MotionExpansion> motionExpansions;
     if (anyMoves_) {
-        motionBase_ = static_cast<uint32_t>(iesValues.size());
+        motionBase_ = region + static_cast<uint32_t>(iesValues.size());
         for (const Light& light : lights) {
             const bool instanced = light.instanceRows != nullptr && light.instanceCount > 0;
             const uint32_t copies = instanced ? light.instanceCount : 1u;
@@ -221,7 +230,7 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
             const float t0 = !moving ? 0.0F : chainMoves ? light.instanceTimeStart : light.timeStart;
             const float t1 = !moving ? 0.0F : chainMoves ? light.instanceTimeEnd : light.timeEnd;
             if (instanced && moving) {
-                motionExpansions.push_back({static_cast<uint32_t>(iesValues.size()), copies,
+                motionExpansions.push_back({region + static_cast<uint32_t>(iesValues.size()), copies,
                                             chainMoves ? light.instanceRowsStart : light.instanceRows,
                                             chainMoves ? light.instanceRowsEnd : light.instanceRows});
             }
@@ -245,8 +254,8 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
     // reach the shares are measured against, compared as bytes. Lights the
     // device places or moves are new every frame.
     const bool placed = !expansions.empty() || !motionExpansions.empty() || anyMoves_;
-    const bool same = !placed && records.size() == lastRecords_.size() && iesValues.size() == lastValues_.size() &&
-                      sceneRadius == lastRadius_ &&
+    const bool same = !placed && region == meshWords_ && records.size() == lastRecords_.size() &&
+                      iesValues.size() == lastValues_.size() && sceneRadius == lastRadius_ &&
                       std::memcmp(records.data(), lastRecords_.data(), records.size() * sizeof(LightRecord)) == 0 &&
                       std::memcmp(iesValues.data(), lastValues_.data(), iesValues.size() * sizeof(float)) == 0;
     if (!same) {
@@ -264,9 +273,12 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
         auto madeRecords = gpu::Buffer::fromSpan<IesRecord>(*device_, iesRecords, "lights.ies.records");
         if (!madeRecords) return std::move(madeRecords).error();
         iesRecords_ = std::move(*madeRecords);
-        auto madeValues = gpu::Buffer::fromSpan<float>(*device_, iesValues, "lights.ies.values");
-        if (!madeValues) return std::move(madeValues).error();
-        iesValues_ = std::move(*madeValues);
+        if (region != meshWords_) {
+            meshWords_ = region;
+            ++meshGeneration_;
+            iesValues_ = gpu::Buffer();   // the region is made anew below, empty
+        }
+        ATHENEA_TRY(uploadWords(iesValues));
     }
     if (iesCount_ > 0) {
         // Each profile's power -- its intensity integrated over the sphere,
@@ -321,6 +333,32 @@ Result<void> LightTable::set(std::span<const Light> lights, float sceneRadius) {
         ATHENEA_TRY(batch.submit(true));
     }
     return buildBvh(bounded, unbounded);
+}
+
+/// The words after the mesh region, uploaded: written in place where the
+/// buffer holds them, else into a buffer made for both whose region is
+/// copied over on the device -- what the mesh lights wrote there stays.
+Result<void> LightTable::uploadWords(const std::vector<float>& head) {
+    const uint64_t regionBytes = uint64_t{meshWords_} * sizeof(float);
+    const uint64_t bytes = regionBytes + head.size() * sizeof(float);
+    if (iesValues_.valid() && iesValues_.bytes() >= bytes) {
+        if (!iesValues_.write(*device_, regionBytes, head.size() * sizeof(float), head.data())) {
+            return Error(ErrorCode::DeviceFailure, "lights: cannot upload the light words");
+        }
+        return ok();
+    }
+    std::vector<float> all(size_t{meshWords_} + head.size(), 0.0F);
+    std::copy(head.begin(), head.end(), all.begin() + meshWords_);
+    auto made = gpu::Buffer::fromSpan<float>(*device_, all, "lights.ies.values");
+    if (!made) return std::move(made).error();
+    if (iesValues_.valid() && meshWords_ > 0) {
+        gpu::CommandBatch batch(*device_);
+        batch.encoder()->copyBuffer(made->rhi(), 0, iesValues_.rhi(), 0, regionBytes);
+        batch.markDirty();
+        ATHENEA_TRY(batch.submit(true));
+    }
+    iesValues_ = std::move(*made);
+    return ok();
 }
 
 Result<void> LightTable::buildBvh(const std::vector<uint32_t>& bounded, const std::vector<uint32_t>& unbounded) {
@@ -520,6 +558,11 @@ void LightTable::bind(rhi::ShaderCursor cursor) const {
     // Moving lights' samples, where a kernel follows them.
     if (const rhi::ShaderCursor motion = cursor["lightMotionBase"]; motion.isValid()) {
         motion.setData(anyMoves_ ? motionBase_ : uint32_t{0});
+    }
+    // The mesh lights' region, where a kernel reads it: 0 says there is none
+    // and nothing in front of the IES values is the mesh lights'.
+    if (const rhi::ShaderCursor mesh = cursor["meshLightWords"]; mesh.isValid()) {
+        mesh.setData(meshWords_);
     }
     cursor["iesRecords"].setBinding(iesRecords_.rhi());
     cursor["iesValues"].setBinding(iesValues_.rhi());

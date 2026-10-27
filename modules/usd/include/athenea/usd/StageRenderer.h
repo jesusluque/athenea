@@ -495,6 +495,11 @@ public:
     /// Weigh light sampling and material sampling by the power heuristic
     /// (the default), or light a surface by light sampling alone.
     void setPathMis(bool mis);
+    /// Emitting meshes -- a material's emission, a MeshLightAPI -- clustered
+    /// into lights the raster and the path tracer sample (`athenea:meshLights`,
+    /// on by default). Off: the path tracer samples them from a flat table and
+    /// the raster shows their glow alone.
+    void setMeshLights(bool on);
     /// Let the path tracer's shadow rays through clear glass, tinted
     /// (`athenea:glassShadows`, on by default): a lamp behind its lens lights
     /// what stands in front by next event estimation. Off: glass stops them.

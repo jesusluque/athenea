@@ -191,12 +191,16 @@ public LightChoice chooseLightBvh(StructuredBuffer<float> tree, uint base, uint 
             return choice;
         }
         const float pa = ia / total;
+        // The far child's share as ib / total, the quotient lightPdfChoiceBvh
+        // takes, rather than 1 - pa: beside a near light pa rounds to within
+        // an ulp of 1 and 1 - pa kept a digit, so the descent and the pdf
+        // parted by more than 1e-4 for 7 draws in a million (mesh lights).
         if (pick < pa) {
             probability *= pa;
             pick = pick / pa;
             node = current.links.x;
         } else {
-            probability *= 1.0 - pa;
+            probability *= ib / total;
             pick = (pick - pa) / (1.0 - pa);
             node = current.links.y;
         }

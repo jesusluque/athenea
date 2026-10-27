@@ -1565,6 +1565,7 @@ found and does not.
 | `athenea:pathAdaptive` | bool | `false` | stop a pixel once its error is low enough |
 | `athenea:pathError` | float | `0.02` | the relative standard error it stops at |
 | `athenea:pathMis` | bool | `true` | multiple importance sampling |
+| `athenea:meshLights` | bool | `true` | emitting meshes and `MeshLightAPI` prims are lights the frame samples through a tree of clusters (§4.3, *Mesh lights*); off, the path tracer takes them from a flat table and the raster shows their glow |
 | `athenea:domeVisible` | bool | `true` | every technique: a dome is drawn behind the frame; off, the pixels nothing covers stay transparent (alpha 0), as a host's transparent film asks, and the dome still lights the frame |
 | `athenea:screenSpaceReflections` | bool | `false` | raster: the meshes that reflect show what the frame's meshes hold along their reflection (§4.3, *Screen-space reflections*) |
 | `athenea:meshAntialias` | int | `0` | raster: the meshes' edges resolved from 4, 8 or 16 samples a pixel, a count in between rounded up; 0 and 1 draw one sample a pixel (§4.3, *Mesh edges antialiased*) |
@@ -1979,6 +1980,38 @@ pixel. What it cannot resolve: a triangle that no pixel centre around it saw
 composited over the layer, whose depth is the pixel centre's. The raster
 technique only; the path tracer antialiases by its own passes
 (`athenea:antialias`).
+
+**Mesh lights** (`athenea:meshLights`, a render setting, on by default;
+`StageRenderer::setMeshLights`): a mesh whose material gives off light, or a
+mesh with UsdLux's `MeshLightAPI`, lights the path traced scene as a light
+does; the raster shows its glow. Its
+emitting triangles are gathered into clusters (by emission group, by which
+faces emit, by the octant their normal points into and by a cube of a 16^3
+grid over the emitters' bounds) and the path tracer chooses a triangle
+through a tree over the clusters, by how much each can matter at the point.
+A triangle is a light where its emission's luminance at its centre, read
+over its whole texture footprint, is above 1e-4; one under it is still met
+by the material's rays. The clusters are made again when the meshes, their
+materials or which of them emit change -- a stage loading, a material
+edited -- and only moved and reweighed while a frame plays. Off, the path
+tracer draws its emitting triangles from a flat table by power, as before,
+and the raster shows their glow alone.
+
+A `MeshLightAPI` prim emits its LightAPI radiance -- `inputs:color` times
+`inputs:intensity`, `inputs:exposure`, and the blackbody of
+`inputs:colorTemperature` where `inputs:enableColorTemperature` -- from its
+front faces, or from both where the gprim is double sided, seen and casting
+alike:
+
+| `light:materialSyncMode` | What it emits |
+|---|---|
+| `materialGlowTintsLight` (default) | the LightAPI radiance times the bound material's emission where the material emits; the radiance alone where it does not |
+| `independent` | the LightAPI radiance plus the material's emission |
+| `noMaterialResponse` | the LightAPI radiance alone |
+
+`inputs:normalize` is not applied yet: the radiance is not divided by the
+mesh's area. A stage holds at most 127 different sets of these controls; the
+prims past them take the last set, which is said once.
 
 ### 4.4 What the engine ignores, and what it refuses
 

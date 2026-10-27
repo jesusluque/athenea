@@ -16074,3 +16074,119 @@ the L4.
 - The edge of a cutout's hole is not resolved (the candidate is not trusted there).
 - Texture aliasing inside a surface is the mip selection's, not this pass's.
 - The copy of the layer the kernel reads its neighbours from is a full-frame copy each frame.
+
+## Mesh lights: emitting meshes and MeshLightAPI as lights (LIGHT1, 27 Oct)
+
+Emitting geometry lit the scene only in the path tracer and the bakes that go through it, chosen from a flat
+per-triangle power table (`EmissiveTable`, "Emitting triangles as a light" in M5); the raster and the relit
+gaussians showed its glow and nothing more, and UsdLux's `MeshLightAPI` was not read at all. The aim is that
+LED strips, screens, studio lamps and a car's lamps light meshes and TX gaussians every frame in the raster,
+without a bake. The work is staged: A (mesh lights as lights, the path tracer through a tree), B (meshes lit
+in the raster, sampled then analytic), C (TX gaussians relit by them), D (groups and dimming).
+
+### What Hydra hands over for a `MeshLightAPI`
+
+OpenUSD 26.08 makes no `meshLight` prim. A spike over `UsdImagingCreateSceneIndices` on a mesh with the API
+showed the prim stays a `mesh`, with a `light` container holding `isLight`, `materialSyncMode` and `filters`,
+and a material network of its own whose `light` terminal is a `MeshLight` node carrying `color`, `intensity`,
+`exposure` and `normalize`. `HdSceneIndexAdapterSceneDelegate::GetLightParamValue` reads only the container,
+so the mesh's Sync reads the inputs from the terminal scene index (`Mesh.cpp`, `meshLightOf`), as `Light.cpp`
+reads a dome's colour space. A change to an input dirties the mesh's material. Registering a `meshLight`
+sprim type would receive nothing, and is not done.
+
+### The design
+
+**A region, not more buffers.** Every kernel that lights anything binds the light words buffer (`iesValues`),
+and the shading and path tracing kernels are at Metal's thirty-one buffers. The mesh lights live in a region
+at its front (`LightTable::reserveMesh`), which the table shifts its IES values, tree nodes and motion samples
+past. The region keeps its contents while its size holds; a light table upload writes past it in place, or
+into a larger buffer the region is copied into on the device. `meshLightWords` (a uniform, 0 for none) says
+whether a kernel has one. The plan put the clusters' records after the UsdLux ones in `lights`; they are in
+the region instead, since a record count that moves with the UsdLux lights would have moved every cluster's
+index, and `lightCount` and every loop over it are untouched either way.
+
+**The region's layout** is `shaders/athenea/light/mesh_lights.slang`'s: a header (counts, offsets, the 32
+emission groups' weights, 128 emitter sets), each instance record's first triangle, the emitting triangles'
+scene numbers in order with their slots and clusters, then 16 words a triangle (corners in world space, power,
+in-cluster cumulative power, radiance, instance and triangle), 32 words a cluster (a rectangle standing in for
+it, power, area, its normals' cone, its triangle range, group and tree leaf) and the tree's nodes in
+`light_bvh.slang`'s encoding.
+
+**An instance record's flags carry who emits.** Bit 2 says `MeshLightAPI`, bits 3 to 7 an emission group,
+bits 24 to 30 the emitter set (a `MeshLightAPI`'s controls, numbered as first met in the frame), bit 31 that
+the record may emit at all -- its material row, a subset's or the API (`MaterialCompiler::emits`, a row flag
+`kMaterialEmits`). The material row keeps bits 8 to 23: 65535 rows.
+
+**A rebuild decides membership, a refit only moves.** `MeshLights::plan`, before the light table is set,
+counts the candidate records' triangles and probes each one's emission on the device -- the material at its
+centre with the triangle's whole texture footprint, so a screen is read at the mip that averages it, times the
+API's controls -- and counts what passes the threshold (1e-4 of luminance): two waits, which size the region.
+`MeshLights::write` then compacts, keys (group, sides, normal octant, a cube of a 16^3 grid over the
+emitters' bounds), sorts and cuts the clusters where the key changes, lays out the triangles and builds the
+tree with the compute LBVH's `bvh_hierarchy` and the light tree's `lightParents` and `lightSettle`: two more
+waits. A frame that moves an emitter, or reweighs a group, refits: corners, powers, each cluster's rectangle
+and leaf, and the tree settled in as many `lightSettle` passes as it is deep (measured once at the rebuild),
+recorded into the frame's batch with no wait. A rebuild runs when the scene's meshes, the material rows,
+the instance count or the emitter key (sets and flags) change, never because something moved.
+
+The plan named an LBVH over the triangles with cluster roots chosen by cone, extent and flatness; the key
+cells stand in for that. A cluster is then at most one cube of the grid, all its normals in one octant, which
+bounds both what a rectangle has to stand for and the cone; a long strip becomes one cluster a cube.
+
+**The rectangle** lies in the plane of the area-weighted normal through the area-weighted centre, its long
+side along the corners' principal direction in that plane, its extent their corners'. It gives off the
+cluster's power over its own area, so it carries the light the triangles do. Sampling and the path tracer use
+the triangles; the rectangle is for the closed forms (B2, C).
+
+**What a `MeshLightAPI` emits.** One radiance, both seen and casting, so every estimator agrees on it:
+`colour x intensity x 2^exposure` (the blackbody of the temperature where enabled) from the front faces, or
+both where the gprim is double sided; `materialGlowTintsLight` multiplies it by the material's emission where
+the material emits, `independent` adds the two, `noMaterialResponse` drops the material's
+(`meshLightEmission`, applied where the path tracer and the raster evaluate a material). UsdLux leaves the
+mode's light-ray and camera-ray responses apart; one radiance is the simplification. A material's own emission
+stays two-sided, as it always was. `normalize` is not applied.
+
+**The path tracer** chooses its emitting triangles through the tree where there are clusters
+(`sampleEmissive`): a cluster by its importance at the point (Conty and Kulla, the UsdLux lights' own),
+a triangle by its share of the cluster's power, a point uniform on it, divided by exactly that density.
+MIS weighs both strategies by another density they share -- the triangle's share of all the clusters'
+power over its area, found through its scene number by a binary search over the emitting ones -- since
+weights need only agree between the strategies. The plan weighed by the tree's own density; a second ascent
+of a tree in the path tracing kernel (the UsdLux lights' is the first) put Apple's Metal compiler into an
+internal error on any UsdPreviewSurface material (`AGXMetalG17X Code=3`, reproduced on the dumped kernel
+outside the engine and gone without the ascent). It costs the many-emitter case some of its gain (below).
+`EmissiveTable` stays, and is what `athenea:meshLights` off uses: the reference. Its serial power sum was to move to `PrefixSum`; that sum is over floats and `PrefixSum` sums
+uints, so it stays as it was.
+
+**A precision fix in the light tree.** `chooseLightBvh` took the far child's probability as `1 - pa`; beside a
+near light `pa` rounds to within an ulp of one, and the descent and `lightPdfChoiceBvh` (which takes
+`ib / total`) parted by more than 1e-4 for 7 draws in a million. The descent takes `ib / total` now. The
+UsdLux lights' tree is affected by rounding only.
+
+### Measured (Metal, M5 Pro)
+
+- A planar cluster of four triangles of three areas, 2^20 samples binned over its rectangle against the area
+  density its shares give: chi2 1578.9 on 1505 dof (z 1.35), the density integrating to 1.0000; no sample
+  whose density `meshClusterPdf` disputes beyond 1e-3, no tree choice whose probability `meshClusterChoicePdf`
+  disputes beyond 1e-4.
+- The clusters' power against `EmissiveTable`'s on twelve triangles: 5.294250 both.
+- Three frames of an emitter moved and stretched 1.2 to 1.6 times: no rebuild, three refits, the 24
+  membership words unchanged; the power 6.353100, 1.2 times the first, as the stretch says.
+- The path tracer through the tree against the flat table on a floor under a panel and a strip, 8192 paths
+  each: relMSE 1.53e-5, against 1.97e-3 for a 32-path flat frame. At 32 paths the tree's error is 1.20e-3.
+- Sixty strips over a floor, 32 paths against 8192 of the flat table: flat 5.88e-2, tree 4.01e-2, 1.46
+  times less; the two deep frames part by 1.16e-4. Weighed by the tree's own density it was 1.59e-2, 3.7
+  times less: what the compiler's limit costs.
+- The same on Vulkan (RTX 3070): the same numbers to the last digit printed; the technique cases on CUDA
+  as well (chi2 1578.7 on 1505 dof). The usd cases need rasterisation, which CUDA has not, and skip.
+- A `MeshLightAPI` quad of 1 x 1 at intensity 3 against a RectLight of the same, 8192 paths, in each of the
+  three sync modes (the third with an emitting material bound): relMSE 2.98e-7, against 6.51e-5 for its own
+  32-path frame.
+
+### Not done (stage A)
+
+- `inputs:normalize` on a `MeshLightAPI`.
+- More than 127 distinct sets of `MeshLightAPI` controls in a frame: the rest share the last.
+- Light linking on a mesh light: its clusters reach every prim.
+- Under motion blur the clusters are the shutter's first bucket's.
+- A frame with volumes takes no emitting triangle as a light, through the tree or the table, as before.

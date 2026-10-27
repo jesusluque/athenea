@@ -58,6 +58,7 @@
 #include "athenea/technique/SplatShadowMap.h"
 #include "athenea/technique/SplatShadows.h"
 #include "athenea/technique/EmissiveTable.h"
+#include "athenea/technique/MeshLights.h"
 #include "athenea/render/GaussianRayTracer.h"
 #include "athenea/render/PointRasterizer.h"
 #include "athenea/render/SplatQuery.h"
@@ -209,6 +210,7 @@ struct MaterialEntry {
     bool                                    cutout = false;        ///< its opacity cuts samples away: visibility evaluates it
     bool                                    transparent = false;   ///< opacityMode transparent: the tracer keeps the specular
     std::optional<material::Transmission>   transmission;        ///< lets light through, and how much: the bake's open-or-not rays look
+    bool                                    emits = false;       ///< may give off light: the mesh lights probe it (kMaterialEmits)
     std::optional<material::CompiledMaterial> compiled;
     /// Where it cuts: its opacity alone, what a shadow ray asks at a candidate.
     std::optional<material::CompiledMaterial> opacity;
@@ -495,6 +497,11 @@ public:
     /// has stopped or `pathTotal` is reached, whichever first.
     void setPathAdaptive(bool adaptive);
     void setPathMis(bool mis);
+    /// Whether emitting meshes are clustered into lights (`athenea:meshLights`,
+    /// technique::MeshLights): on, the raster and the path tracer sample
+    /// them as lights; off, the path tracer takes them from EmissiveTable's
+    /// flat distribution and the raster only shows their glow. On by default.
+    void setMeshLights(bool on);
     /// Whether a dome is drawn behind the frame (true) or its pixels are left
     /// transparent (false); either way the dome lights what the frame holds.
     void setScreenSpaceReflections(bool on);
@@ -958,6 +965,13 @@ private:
         }
     };
     std::optional<technique::EmissiveTable>    emissiveTable_;
+    /// The emitting meshes as lights, the setting, and the frame's emission
+    /// groups by name (slots 1 to 31, numbered as first met).
+    std::optional<technique::MeshLights>       meshLights_;
+    std::atomic<bool>                          meshLightsOn_{true};
+    std::map<std::string, uint32_t>            emissionGroups_;
+    bool                                       meshLightSetsSaid_ = false;
+    std::vector<bool>                          materialRowEmits_;   ///< by row: kMaterialEmits
     EmissiveKey                                emissiveKey_;
     std::optional<gpu::ComputeKernel>          domeGroups_;     ///< the domes' background in their groups' planes
     std::optional<gpu::ComputeKernel>          groupsScaled_;   ///< the path tracer's group means, copied out

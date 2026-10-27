@@ -95,7 +95,7 @@ athenea_test(athenea_technique_tests
     SOURCES technique/test_visibility.cpp technique/test_display.cpp technique/test_materials.cpp
             technique/test_lights.cpp technique/test_splat_shadows.cpp
             technique/test_splat_visibility.cpp technique/test_shadow_map.cpp
-            technique/test_environment.cpp
+            technique/test_environment.cpp technique/test_mesh_lights.cpp
     LIBS athenea::technique athenea::scene hio)
 target_compile_definitions(athenea_technique_tests PRIVATE ATHENEA_MATERIALX_ROOT="${ATHENEA_USD_ROOT}")
 
@@ -109,7 +109,7 @@ athenea_test(athenea_volume_tests
 set_target_properties(athenea_volume_tests PROPERTIES BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
 athenea_test(athenea_usd_tests
-    SOURCES usd/test_usd.cpp usd/test_migrate.cpp usd/test_cloud_shadow.cpp usd/test_lights.cpp usd/test_shadow_catcher.cpp usd/test_tree_leaves.cpp usd/test_glass_shadows.cpp usd/test_glass_tint.cpp
+    SOURCES usd/test_usd.cpp usd/test_migrate.cpp usd/test_cloud_shadow.cpp usd/test_lights.cpp usd/test_shadow_catcher.cpp usd/test_tree_leaves.cpp usd/test_glass_shadows.cpp usd/test_glass_tint.cpp usd/test_mesh_lights.cpp
     LIBS athenea::usd)
 add_dependencies(athenea_usd_tests hdAthenea)
 target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"

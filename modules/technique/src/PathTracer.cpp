@@ -24,6 +24,7 @@ import athenea.light.lights_image;
 // What a bake reads back of the material at its first vertex (BakePoints::material).
 import athenea.material.material_sample;
 import athenea.light.light_bvh;
+import athenea.light.mesh_lights;
 // The harmonics a bake projects onto, and the space a cloud is blended in.
 import athenea.common.sh;
 import athenea.common.color;
@@ -126,6 +127,7 @@ uniform uint                   lightMotionBase;   // in iesValues: moving lights
 uniform uint                   lightNodeBase;
 uniform uint                   lightTreeNodes;
 uniform uint                   lightUnboundedCount;
+uniform uint                   meshLightWords;   // the mesh lights' region in iesValues (mesh_lights.slang); 0: none
 ConstantBuffer<PathParams>     path;
 
 /// One round of PCG's output permutation over an LCG step: a hash of a
@@ -1152,6 +1154,9 @@ Shaded shadeSurface(uint2 pixel, Surface s) {
     const MaterialRecord m = materials[materialRowOf(s)];
     evaluateMaterial(m.function, out.inputs, m.blob);
     out.stack = gAtheneaResult;
+    // A MeshLightAPI prim's own emission, and an emission group's level.
+    out.stack.emission = meshLightEmission(iesValues, meshLightWords, s.instance.flags, out.inputs.inside,
+                                           out.stack.emission);
     out.coverage = (m.flags & (kMaterialCutout | kMaterialTransparent)) != 0;
     out.transparent = (m.flags & kMaterialTransparent) != 0;
     out.rowFlags = m.flags;
@@ -1568,15 +1573,32 @@ uint emissiveCount(uint word) {
     return asuint(emissiveWord(word));
 }
 
+/// WHETHER THE EMITTING TRIANGLES ARE CHOSEN THROUGH THE MESH LIGHTS' TREE
+/// (athenea:meshLights, technique::MeshLights) rather than EmissiveTable's
+/// flat distribution, which stays as the reference the tree is checked
+/// against.
+bool meshTree() {
+    return kEmissive && meshTotalPower(iesValues, meshLightWords) > 0.0;
+}
+
+)"
+R"(/// The emitting triangles' power, whichever of the two chooses them.
+float emittedPower() {
+    if (meshTree()) {
+        return meshTotalPower(iesValues, meshLightWords);
+    }
+    return kEmissive && emissiveOn != 0 ? emissiveWord(2) : 0.0;
+}
+
 /// The emitting triangles' share of next event estimation's choices: their
 /// power against the lights'. 0 where nothing emits or the frame has media.
 float emissiveShare() {
     // Without MIS the material's rays gather emission at full weight, so
     // next event estimation leaves the emitting triangles to them.
-    if (!kEmissive || emissiveOn == 0 || path.mis == 0) {
+    if (!kEmissive || path.mis == 0) {
         return 0.0;
     }
-    const float emitted = emissiveWord(2);
+    const float emitted = emittedPower();
     if (!(emitted > 0.0)) {
         return 0.0;
     }
@@ -1596,10 +1618,15 @@ void worldTriangle(InstanceRecord r, MeshRecord m, uint triangle, out float3 a, 
 /// The density, per solid angle at `from`, that next event estimation gives
 /// the direction that met surface s at `at` -- by the table's own weights
 /// (area times the row's luminance), so the two strategies' weights sum to one.
-float emissivePdfAt(Surface s, float3 at, float3 from) {
+float emissivePdfAt(Surface s, float3 at, float3 from, float3 fromNormal) {
     const float share = emissiveShare();
     if (!(share > 0.0)) {
         return 0.0;
+    }
+    if (meshTree()) {
+        // The tree's choice of the triangle's cluster at `from`, the cluster's
+        // of the triangle, the point uniform over it.
+        return share * meshLightPdfAt(iesValues, meshLightWords, s.instanceIndex, s.triangle, from, fromNormal, at);
     }
     const uint rows = emissiveCount(3);
     const uint row = materialRowOf(s);
@@ -1637,7 +1664,8 @@ struct LightPoint {
     bool   valid;
 };
 
-LightPoint sampleEmissive(float3 from, float u, float2 v) {
+LightPoint sampleEmissive(float3 from, float3 fromNormal, float u, float3 v3) {
+    const float2 v = v3.xy;
     LightPoint lp;
     lp.valid = false;
     lp.pdf = 0.0;
@@ -1645,42 +1673,73 @@ LightPoint sampleEmissive(float3 from, float u, float2 v) {
     lp.distance = 0.0;
     lp.wi = float3(0.0, 0.0, 1.0);
     const float share = emissiveShare();
-    const uint triangles = emissiveCount(0);
-    const uint records = emissiveCount(1);
-    const uint rows = emissiveCount(3);
-    const float emitted = emissiveWord(2);
-    if (!(share > 0.0) || triangles == 0) {
+    if (!(share > 0.0)) {
         return lp;
     }
-    const uint cumulative = 4 + rows + records + 1;
-    const float target = clamp(u, 0.0, 0.999999) * emitted;
-    uint lo = 0;
-    uint hi = triangles - 1;
-    while (lo < hi) {
-        const uint mid = (lo + hi) / 2;
-        if (emissiveWord(cumulative + 1 + mid) <= target) {
-            lo = mid + 1;
-        } else {
-            hi = mid;
+    // Which triangle: through the mesh lights' tree -- a cluster by its
+    // importance at `from`, a triangle by its share of the cluster -- or by
+    // the flat table's power. One tail after, so the kernel rebuilds a
+    // surface in one place (a second copy of it put Metal's compiler past an
+    // internal error).
+    uint instance = 0u;
+    uint triangle = 0u;
+    float probability = 0.0;
+    bool oneSided = false;
+    if (meshTree()) {
+        const LightChoice choice = chooseMeshCluster(iesValues, meshLightWords, from, fromNormal, u);
+        if (!choice.valid) {
+            return lp;
         }
+        const MeshCluster cluster = meshCluster(iesValues, choice.index);
+        const float total = cluster.count > 0u ? iesValues[meshTriangleAt(iesValues, cluster.first + cluster.count - 1u) + 3] : 0.0;
+        if (!(total > 0.0)) {
+            return lp;
+        }
+        const uint slot = meshPickTriangle(iesValues, cluster, clamp(v3.z, 0.0, 0.999999) * total);
+        const uint at = meshTriangleAt(iesValues, slot);
+        instance = asuint(iesValues[at + 11]);
+        triangle = asuint(iesValues[at + 15]);
+        probability = choice.probability * iesValues[at + 7] / total;
+        oneSided = (cluster.flags & kLightTwoSided) == 0u;
+    } else {
+        const uint triangles = emissiveCount(0);
+        const uint records = emissiveCount(1);
+        const uint rows = emissiveCount(3);
+        const float emitted = emissiveWord(2);
+        if (triangles == 0) {
+            return lp;
+        }
+        const uint cumulative = 4 + rows + records + 1;
+        const float target = clamp(u, 0.0, 0.999999) * emitted;
+        uint lo = 0;
+        uint hi = triangles - 1;
+        while (lo < hi) {
+            const uint mid = (lo + hi) / 2;
+            if (emissiveWord(cumulative + 1 + mid) <= target) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        const uint g = lo;
+        probability = (emissiveWord(cumulative + 1 + g) - emissiveWord(cumulative + g)) / emitted;
+        uint rlo = 0;
+        uint rhi = records;
+        while (rhi - rlo > 1) {
+            const uint mid = (rlo + rhi) / 2;
+            if (emissiveCount(4 + rows + mid) <= g) {
+                rlo = mid;
+            } else {
+                rhi = mid;
+            }
+        }
+        instance = rlo;
+        triangle = g - emissiveCount(4 + rows + rlo);
     }
-    const uint g = lo;
-    const float probability = (emissiveWord(cumulative + 1 + g) - emissiveWord(cumulative + g)) / emitted;
     if (!(probability > 0.0)) {
         return lp;
     }
-    uint rlo = 0;
-    uint rhi = records;
-    while (rhi - rlo > 1) {
-        const uint mid = (rlo + rhi) / 2;
-        if (emissiveCount(4 + rows + mid) <= g) {
-            rlo = mid;
-        } else {
-            rhi = mid;
-        }
-    }
-    const uint triangle = g - emissiveCount(4 + rows + rlo);
-    const InstanceRecord r = instances[rlo];
+    const InstanceRecord r = instances[instance];
     const MeshRecord m = meshes[r.mesh];
     float3 a, b, c;
     worldTriangle(r, m, triangle, a, b, c);
@@ -1696,7 +1755,11 @@ LightPoint sampleEmissive(float3 from, float u, float2 v) {
     }
     lp.distance = sqrt(distance2);
     lp.wi = offset / lp.distance;
-    const float cosine = abs(dot(crossed / twiceArea, lp.wi));
+    const float facing = dot(crossed / twiceArea, -lp.wi);
+    if (oneSided && facing <= 0.0) {
+        return lp;   // the back of a one-sided emitter
+    }
+    const float cosine = abs(facing);
     if (cosine <= 1.0e-6) {
         return lp;
     }
@@ -1709,7 +1772,7 @@ R"(    // reached along, turned to view space for which side it shows.
                                         toWorld.row0.y * w.x + toWorld.row1.y * w.y + toWorld.row2.y * w.z,
                                         toWorld.row0.z * w.x + toWorld.row1.z * w.y + toWorld.row2.z * w.z);
     Found f;
-    f.s = surfaceFromWeights(uint4(rlo + 1, triangle, 0, 0), weights, viewDirection);
+    f.s = surfaceFromWeights(uint4(instance + 1, triangle, 0, 0), weights, viewDirection);
     f.valid = true;
     f.positionWorld = at;
     f.eye = from;
@@ -1717,7 +1780,7 @@ R"(    // reached along, turned to view space for which side it shows.
     f.rayT = lp.distance;
     f.depth = f.s.depth;
     lp.found = f;
-    lp.weighPdf = emissivePdfAt(f.s, at, from);
+    lp.weighPdf = emissivePdfAt(f.s, at, from, fromNormal);
     lp.valid = lp.weighPdf > 0.0;
     return lp;
 }
@@ -2394,7 +2457,7 @@ R"(                    }
                 // estimation where that could have chosen this point.
                 float emissionWeight = 1.0;
                 if (previousWeighs && any(cur.stack.emission > float3(0.0))) {
-                    const float other = emissivePdfAt(found.s, found.positionWorld, previousFrom);
+                    const float other = emissivePdfAt(found.s, found.positionWorld, previousFrom, previousNormal);
                     emissionWeight = previousPdf * previousPdf / (previousPdf * previousPdf + other * other);
                 }
                 if (!transferMode) {
@@ -2410,9 +2473,10 @@ R"(                    }
                 const float share = transferMode ? 0.0 : emissiveShare();
                 if (share > 0.0 && random(tid, sample, bounce, 11u) < share) {
                     // An emitting triangle: sampled here, shaded next step.
-                    const LightPoint lp = sampleEmissive(cur.inputs.positionWorld,
+                    const LightPoint lp = sampleEmissive(cur.inputs.positionWorld, cur.inputs.normalWorld,
                                                          random(tid, sample, bounce, 11u) / share,
-                                                         random2(tid, sample, bounce, 3u));
+                                                         float3(random2(tid, sample, bounce, 3u),
+                                                                random(tid, sample, bounce, 23u)));
                     if (lp.valid) {
                         const float3 f = stackEval(cur.stack, cur.toEye, lp.wi);
                         // The shadow ray stops short of the emitting triangle, or it

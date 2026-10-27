@@ -47,9 +47,9 @@ coinciden, la cabecera tiene razón.
 | 10 | render | `render/TileRasterizer.h` y `shaders/athenea/splat/frame.slang` (el pipeline), `render/GaussianRayTracer.h`, `render/Flatten.h` (una nube TX como armónicos estándar) |
 | 11 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
 | 12 | material | `material/MaterialCompiler.h` — MaterialX a Slang |
-| 13 | light | `light/LightTable.h` — una luz en el dispositivo |
+| 13 | light | `light/LightTable.h` — una luz en el dispositivo; la región de las luces de malla al principio de sus palabras de luz, dispuesta en `shaders/athenea/light/mesh_lights.slang` |
 | 14 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
-| 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
+| 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h`, `technique/MeshLights.h` (mallas emisoras como luces: un rebuild que las agrupa en clusters, un refit por frame) |
 | 16 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
 | 17 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`), `usd/ShadowCatcher.h` (dónde se pone un shadow catcher: el suelo encontrado, el parche sobre él -- también el de un light catcher), `usd/LightGroups.h` (las lámparas de un coche: los grupos y estados de la escena, sus pesos por frame, y `athenea lights merge`) |
 | 18 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
@@ -82,6 +82,12 @@ tiene hilo de GPU y pool propios y sólo quiere el cruce.
 ### 1.3 Un frame, rasterizado
 
 1. `Engine::render` toma la proyección, los ajustes y la petición de AOVs.
+   Antes de fijar la tabla de luces, `technique::MeshLights::plan` decide si
+   las mallas emisoras se vuelven a agrupar en clusters (un rebuild, que
+   espera a los recuentos con los que dimensiona la región) y la tabla
+   reserva esa región delante de sus palabras de luz; después,
+   `MeshLights::write` la reconstruye o la reajusta, y el refit se graba sin
+   ninguna espera.
 2. Mallas: `world::GpuScene` guarda los pools y los registros de instancia;
    una ruta de visibilidad escribe `(instancia + 1, triángulo)` por píxel en
    el buffer de visibilidad. Las tres rutas escriben lo mismo —

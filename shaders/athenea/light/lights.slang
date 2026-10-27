@@ -26,6 +26,7 @@ public static const uint kLightShadow      = 1;   // casts one
 public static const uint kLightNormalize   = 2;   // divide the radiance by the area (a sun: its disc's projected solid angle)
 public static const uint kLightTemperature = 4;   // tint by the blackbody of `temperature`
 public static const uint kLightIesNormalize = 8;   // divide the IES intensity by the profile's power
+public static const uint kLightTwoSided    = 16;  // a mesh light's cluster: emits from both faces (mesh_lights.slang)
 
 public struct LightRecord {
     public uint   kind;

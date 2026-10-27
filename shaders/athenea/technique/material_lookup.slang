@@ -44,6 +44,8 @@ public static const uint kMaterialTransmits = 8u;
 public static const uint kMaterialGlassShadow = 16u;
 /// And a thin wall: one face is the whole glass.
 public static const uint kMaterialThinGlass = 32u;
+/// It may give off light: the mesh lights probe its triangles (MeshLights.h).
+public static const uint kMaterialEmits = 64u;
 /// The least probability a transparent surface is kept with, by a raster
 /// pixel's lot or a path's: held off zero so a window at opacity 0 still
 /// reflects, one sample in twenty at twenty times the weight.
@@ -70,7 +72,7 @@ public ConstantBuffer<MaterialLookupParams> lookup;
 /// The row a surface wears: its instance's, unless its triangle is in a
 /// GeomSubset that binds one of its own.
 public uint materialRowOf(Surface s) {
-    uint row = s.instance.flags >> 8;
+    uint row = (s.instance.flags >> 8) & 0xFFFFu;   // bits 24 and up are the mesh lights' (mesh_lights.slang)
     const uint subset = triangleSubsets[s.mesh.firstTriangle + s.triangle] & 0x7FFFFFFFu;
     if (subset != 0) {
         const uint subsetRow = subsetRows[s.mesh.subsetBase + subset - 1];

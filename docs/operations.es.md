@@ -1610,6 +1610,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:pathAdaptive` | bool | `false` | parar un píxel cuando su error baja lo suficiente |
 | `athenea:pathError` | float | `0.02` | el error estándar relativo en que para |
 | `athenea:pathMis` | bool | `true` | muestreo por importancia múltiple |
+| `athenea:meshLights` | bool | `true` | las mallas emisoras y las prims con `MeshLightAPI` son luces que el frame muestrea a través de un árbol de clusters (§4.3, *Luces de malla*); apagado, el path tracer las toma de una tabla plana y el raster muestra su brillo |
 | `athenea:domeVisible` | bool | `true` | toda técnica: se dibuja un dome detrás del frame; apagado, los píxeles que nada cubre quedan transparentes (alfa 0), como pide la película transparente de un host, y el dome sigue iluminando el frame |
 | `athenea:screenSpaceReflections` | bool | `false` | raster: las mallas que reflejan muestran lo que tienen las mallas del frame a lo largo de su reflejo (§4.3, *Reflejos en espacio de pantalla*) |
 | `athenea:meshAntialias` | int | `0` | raster: los bordes de las mallas se resuelven de 4, 8 o 16 muestras por píxel, un número intermedio redondeado hacia arriba; 0 y 1 dibujan una muestra por píxel (§4.3, *Bordes de malla antialiasados*) |
@@ -2041,6 +2042,39 @@ que un píxel), el borde del agujero de un recorte, y los splats compuestos
 sobre la capa, cuya profundidad es la del centro del píxel. Sólo la técnica
 raster; el path tracer antialiasa con sus propias pasadas
 (`athenea:antialias`).
+
+**Luces de malla** (`athenea:meshLights`, un render setting, encendido por
+defecto; `StageRenderer::setMeshLights`): una malla cuyo material emite luz, o
+una malla con la `MeshLightAPI` de UsdLux, ilumina la escena trazada como lo
+hace una luz; el raster muestra su brillo. Sus triángulos emisores se agrupan en clusters (por grupo de emisión, por
+qué caras emiten, por el octante al que apunta su normal y por un cubo de una
+rejilla de 16^3 sobre los límites de los emisores) y el path tracer elige un
+triángulo a través de un árbol sobre los clusters, según cuánto puede importar
+cada uno en el punto. Un triángulo es una luz cuando la luminancia de su
+emisión en su centro, leída sobre toda su huella de textura, supera 1e-4; uno
+por debajo lo siguen encontrando los rayos del material. Los clusters se
+rehacen cuando cambian las mallas, sus materiales o cuáles de ellas emiten --
+al cargar una escena, al editar un material -- y mientras un frame se
+reproduce solo se mueven y se reponderan. Apagado, el path tracer toma sus
+triángulos emisores de una tabla plana por potencia, como antes, y el raster
+muestra solo su brillo.
+
+Una prim con `MeshLightAPI` emite la radiancia de su LightAPI --
+`inputs:color` por `inputs:intensity`, `inputs:exposure`, y el cuerpo negro de
+`inputs:colorTemperature` donde `inputs:enableColorTemperature` -- desde sus
+caras frontales, o desde ambas donde la gprim es de doble cara, igual al verse
+que al iluminar:
+
+| `light:materialSyncMode` | Qué emite |
+|---|---|
+| `materialGlowTintsLight` (por defecto) | la radiancia de la LightAPI por la emisión del material enlazado donde el material emite; la radiancia sola donde no |
+| `independent` | la radiancia de la LightAPI más la emisión del material |
+| `noMaterialResponse` | la radiancia de la LightAPI sola |
+
+`inputs:normalize` aún no se aplica: la radiancia no se divide por el área de
+la malla. Una escena admite como mucho 127 juegos distintos de estos
+controles; las prims que pasan de ahí toman el último juego, y se avisa una
+vez.
 
 ### 4.4 Qué ignora el motor, y qué rechaza
 

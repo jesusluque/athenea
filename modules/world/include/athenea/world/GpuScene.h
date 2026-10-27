@@ -65,6 +65,10 @@ struct MeshInstance {
     /// light linking scene index). 0: none, which only an unlinked light
     /// reaches.
     uint64_t                             categories = 0;
+    /// The mesh lights' bits of the record's flags (technique::MeshLights):
+    /// bit 2 a MeshLightAPI prim, 3 to 7 its emission group, 24 to 30 its
+    /// emitter set, 31 that it may emit. The material row keeps bits 8 to 23.
+    uint32_t                             lightFlags = 0;
 };
 
 /// Many instances of one mesh whose transforms are already on the device
@@ -82,6 +86,7 @@ struct InstanceSet {
     uint32_t                             material = 0;
     std::vector<uint32_t>                subsetMaterials;
     uint64_t                             categories = 0;   ///< as MeshInstance's
+    uint32_t                             lightFlags = 0;   ///< as MeshInstance's
     /// Under a shutter, when the instancers move: the chain at the samples
     /// that bracket it (3 float4 rows an instance, as `chainRows`), and when
     /// those samples are, in the shutter's units. Both chains or neither.

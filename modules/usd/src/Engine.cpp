@@ -1,5 +1,9 @@
 // Copyright (c) 2026 jesus luque.
 #include "Engine.h"
+
+#include <bit>
+#include <cstring>
+#include <string_view>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/pxOsd/tokens.h>
 #include <pxr/base/gf/vec4f.h>
@@ -456,6 +460,7 @@ void Engine::setMaterial(const pxr::SdfPath& id, std::shared_ptr<void> mtlxDocum
     entry.cutout = material::MaterialCompiler::cutsOut(entry.document);
     entry.transparent = material::MaterialCompiler::transparentOpacity(entry.document);
     entry.transmission = material::MaterialCompiler::transmission(entry.document);
+    entry.emits = material::MaterialCompiler::emits(entry.document);
     entry.volume = material::MaterialCompiler::volumeCoefficients(entry.document);
     entry.pending = true;
 }
@@ -766,6 +771,12 @@ void Engine::setDenoise(bool denoise) { denoise_.store(denoise); }
 
 void Engine::setPathAdaptive(bool adaptive) { pathAdaptive_.store(adaptive); }
 void Engine::setPathMis(bool mis) { pathMis_.store(mis); }
+
+void Engine::setMeshLights(bool on) {
+    if (meshLightsOn_.exchange(on) != on) {
+        revision_.fetch_add(1);
+    }
+}
 void Engine::setGlassShadows(bool glass) { glassShadows_.store(glass); }
 void Engine::setDomeVisible(bool visible) { domeVisible_.store(visible); }
 void Engine::setScreenSpaceReflections(bool on) { screenSpaceReflections_.store(on); }
@@ -1705,6 +1716,7 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
     materialCutouts_ = false;
     materialGlass_ = false;
     materialRowUniform_.assign(1, false);
+    materialRowEmits_.assign(1, false);
     std::vector<uint32_t> unlitRows{~0u, ~0u};
     for (const auto& [id, entry] : materials_) {
         if (!entry.compiled) {
@@ -1758,7 +1770,8 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
                                (uniform && !entry.cutout && !entry.transparent ? technique::kMaterialUniform : 0u) |
                                (entry.transmission ? technique::kMaterialTransmits : 0u) |
                                (glass ? technique::kMaterialGlassShadow : 0u) |
-                               (glass && entry.transmission->thinWalled ? technique::kMaterialThinGlass : 0u);
+                               (glass && entry.transmission->thinWalled ? technique::kMaterialThinGlass : 0u) |
+                               (entry.emits ? technique::kMaterialEmits : 0u);
         materialCutouts_ = materialCutouts_ || entry.cutout;
         materialGlass_ = materialGlass_ || glass;
         // What a transmitting row lets through, for a ray that does not
@@ -1776,6 +1789,7 @@ Result<void> Engine::prepareMaterials(const std::vector<std::string>& aovPrimvar
         }
         rows.push_back({function, static_cast<uint32_t>(blob.size()), flags, passes});
         materialRowUniform_.push_back((flags & technique::kMaterialUniform) != 0);
+        materialRowEmits_.push_back(entry.emits);
         // What the row shows where a mesh draws it unlit: its first texture.
         {
             uint32_t texture = ~0u;
@@ -2266,6 +2280,54 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         }
         return rows;
     };
+    // THE MESH LIGHTS' BITS of an instance record (technique::MeshLights):
+    // whether it may emit -- its row, a subset's or a MeshLightAPI -- its
+    // emitter set (a MeshLightAPI's controls, numbered as first met this
+    // frame) and its emission group.
+    technique::MeshLightInputs meshLightInputs;
+    meshLightInputs.sets.emplace_back();   // set 0: none
+    meshLightInputs.on = meshLightsOn_.load();
+    for (auto& w : meshLightInputs.weights) {
+        w = {1.0F, 1.0F, 1.0F};
+    }
+    bool meshLightSetsFull = false;
+    const auto lightFlagsOf = [&](const MeshEntry& entry, uint32_t row, const std::vector<uint32_t>& subsetRows) {
+        const auto emits = [&](uint32_t r) { return r < materialRowEmits_.size() && materialRowEmits_[r]; };
+        bool may = emits(row) || std::any_of(subsetRows.begin(), subsetRows.end(), emits);
+        uint32_t flags = 0;
+        if (entry.look.meshLight.has_value()) {
+            const MeshLook::MeshLight& l = *entry.look.meshLight;
+            technique::MeshLightSet set;
+            for (int c = 0; c < 3; ++c) {
+                set.colour[c] = l.colour[c] * l.intensity;
+            }
+            set.exposure = l.exposure;
+            set.temperature = l.temperature;
+            set.enableTemperature = l.enableTemperature;
+            set.mode = l.mode;
+            set.twoSided = entry.look.doubleSided;
+            auto found = std::find(meshLightInputs.sets.begin() + 1, meshLightInputs.sets.end(), set);
+            uint32_t index = static_cast<uint32_t>(found - meshLightInputs.sets.begin());
+            if (found == meshLightInputs.sets.end()) {
+                if (meshLightInputs.sets.size() < technique::kMaxMeshLightSets) {
+                    meshLightInputs.sets.push_back(set);
+                } else {
+                    index = technique::kMaxMeshLightSets - 1;   // past the last, the last set's controls
+                    meshLightSetsFull = true;
+                }
+            }
+            flags |= technique::kInstanceMeshLight | (index << 24);
+            may = true;
+        }
+        if (!entry.look.lightGroup.empty()) {
+            auto [at, added] = emissionGroups_.try_emplace(entry.look.lightGroup,
+                                                           static_cast<uint32_t>(emissionGroups_.size() + 1));
+            if (at->second < technique::kMaxEmissionGroups) {
+                flags |= at->second << 3;
+            }
+        }
+        return flags | (may ? technique::kInstanceEmits : 0u);
+    };
     std::vector<light::Light> lamps;
     std::vector<world::MeshInstance> meshInstances;
     std::vector<world::InstanceSet> meshSets;
@@ -2570,6 +2632,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 anyLit = anyLit || !set.unlit;
                 set.material = rowOf(entry.look.material);
                 set.subsetMaterials = subsetRowsOf(entry);
+                set.lightFlags = lightFlagsOf(entry, set.material, set.subsetMaterials);
                 set.categories = categoryMask(entry.look.categories);
                 meshSets.push_back(std::move(set));
                 continue;
@@ -2612,6 +2675,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                        entry.look.material.IsEmpty() ? std::string("nothing") : entry.look.material.GetString(),
                        instance.material);
             instance.subsetMaterials = subsetRowsOf(entry);
+            instance.lightFlags = lightFlagsOf(entry, instance.material, instance.subsetMaterials);
             instance.categories = categoryMask(entry.look.categories);
             meshInstances.push_back(std::move(instance));
         }
@@ -2846,7 +2910,47 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 lightSceneRadius_ = std::max(0.5F * std::sqrt(dx * dx + dy * dy + dz * dz), 1.0e-3F);
             }
         }
+        // THE MESH LIGHTS: planned before the light table is set, since a
+        // rebuild sizes the region in front of the light words; written
+        // after, a refit recorded with no wait.
+        if (meshLightSetsFull && !meshLightSetsSaid_) {
+            log::warn("hdAthenea: more than {} distinct MeshLightAPI controls; the rest share the last",
+                      technique::kMaxMeshLightSets - 1);
+            meshLightSetsSaid_ = true;
+        }
+        if (!meshLights_.has_value()) {
+            auto made = technique::MeshLights::create(*library_);
+            if (!made) return std::move(made).error();
+            meshLights_.emplace(std::move(*made));
+        }
+        technique::MaterialFrame probeFrame;
+        probeFrame.programs = &*materialPrograms_;
+        probeFrame.scene = &*scene_;
+        probeFrame.records = &materialRecords_;
+        probeFrame.blob = &materialBlob_;
+        probeFrame.textures = textures_.get();
+        probeFrame.lights = &*lightTable_;
+        {
+            std::vector<uint64_t> key;
+            for (const technique::MeshLightSet& set : meshLightInputs.sets) {
+                for (const float v : {set.colour[0], set.colour[1], set.colour[2], set.exposure, set.temperature}) {
+                    key.push_back(std::bit_cast<uint32_t>(v));
+                }
+                key.push_back(set.mode | (set.enableTemperature ? 16u : 0u) | (set.twoSided ? 32u : 0u));
+            }
+            for (const world::MeshInstance& m : meshInstances) key.push_back(m.lightFlags);
+            for (const world::InstanceSet& m : meshSets) key.push_back(m.lightFlags);
+            meshLightInputs.emitterKey = std::hash<std::string_view>{}(
+                std::string_view(reinterpret_cast<const char*>(key.data()), key.size() * sizeof(uint64_t)));
+        }
+        ATHENEA_TRY(meshLights_->plan(probeFrame, projection, meshLightInputs));
+        lightTable_->reserveMesh(meshLights_->wordsNeeded());
         ATHENEA_TRY(lightTable_->set(lamps, lightSceneRadius_));
+        {
+            gpu::CommandBatch meshLightBatch(*device_);
+            ATHENEA_TRY(meshLights_->write(meshLightBatch, probeFrame, *lightTable_, meshLightInputs));
+            ATHENEA_TRY(meshLightBatch.submit(false));
+        }
         ATHENEA_TRY(prepareEnvironment(lamps));
         // A path traced surface needs a structure whatever the lights do --
         // its bounce is a ray -- while shading needs one only where a light

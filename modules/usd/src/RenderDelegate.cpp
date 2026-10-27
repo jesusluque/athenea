@@ -336,6 +336,10 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     mis.name = "Weigh light sampling and material sampling (MIS) (rt)";
     mis.key = _atheneaSettings->pathMis;
     mis.defaultValue = VtValue(true);
+    HdRenderSettingDescriptor meshLights;
+    meshLights.name = "Emitting meshes light the scene as lights (mesh lights)";
+    meshLights.key = TfToken("athenea:meshLights");
+    meshLights.defaultValue = VtValue(true);
     HdRenderSettingDescriptor screenSpaceReflections;
     screenSpaceReflections.name = "Screen-space reflections on the meshes that reflect";
     screenSpaceReflections.key = TfToken("athenea:screenSpaceReflections");
@@ -406,7 +410,7 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
             total,     denoise,     adaptive,    error,       mis,        glassShadows, motion,     transferIndirect, displayBlend, reflectCloud, splatShadows,
             cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, domePrefiltered, domeVisible, splatView,
-            screenSpaceReflections, meshAntialias};
+            screenSpaceReflections, meshAntialias, meshLights};
 }
 
 athenea::usd::MeshVisibility HdAtheneaRenderDelegate::GetMeshVisibility() const {
@@ -529,6 +533,11 @@ bool HdAtheneaRenderDelegate::GetSplatDisplayBlend() const {
 
 bool HdAtheneaRenderDelegate::GetPathMis() const {
     const VtValue value = GetRenderSetting(_atheneaSettings->pathMis);
+    return !value.IsHolding<bool>() || value.UncheckedGet<bool>();
+}
+
+bool HdAtheneaRenderDelegate::GetMeshLights() const {
+    const VtValue value = GetRenderSetting(TfToken("athenea:meshLights"));
     return !value.IsHolding<bool>() || value.UncheckedGet<bool>();
 }
 

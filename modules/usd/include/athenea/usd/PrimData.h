@@ -317,6 +317,24 @@ struct MeshLook {
     /// `st_lightmap` where the mesh has it, else `st` -- with no light, lobe
     /// or dome: a surface whose light is in its texture already (a lightmap).
     bool                      unlit = false;
+    /// UsdLux's MeshLightAPI, where the prim has it: the LightAPI inputs as
+    /// Hydra hands them to a mesh (the light container's `isLight` and
+    /// `materialSyncMode`, the light network's node for the rest), so the
+    /// mesh lights the scene (technique::MeshLights).
+    struct MeshLight {
+        std::array<float, 3> colour{1.0F, 1.0F, 1.0F};
+        float                intensity = 1.0F;
+        float                exposure = 0.0F;
+        bool                 normalize = false;
+        bool                 enableTemperature = false;
+        float                temperature = 6500.0F;
+        uint32_t             mode = 0;   ///< 0 materialGlowTintsLight, 1 independent, 2 noMaterialResponse
+        bool operator==(const MeshLight&) const = default;
+    };
+    std::optional<MeshLight>  meshLight;
+    /// The light group its emission is in (`primvars:athenea:lightGroup`, or
+    /// the MeshLightAPI's `athenea:lightGroup`): empty for none.
+    std::string               lightGroup;
 };
 
 /// The bytes of a float array a VtValue holds (float or half, any tuple

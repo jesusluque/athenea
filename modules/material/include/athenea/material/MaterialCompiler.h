@@ -139,6 +139,12 @@ public:
     /// transparent opacity): what a ray that only asks whether the way is
     /// open must look at instead of stopping (technique::kMaterialTransmits).
     [[nodiscard]] static bool transmits(const std::shared_ptr<void>& document);
+    /// Whether it may give off light: an emission input that is not zero or
+    /// that a graph drives (OpenPBR's `emission_luminance`, standard_surface's
+    /// and surface_unlit's `emission`, glTF's `emissive`, UsdPreviewSurface's
+    /// `emissiveColor`), or an EDF node. Errs toward yes: the mesh lights'
+    /// probe measures what it actually gives off (technique::kMaterialEmits).
+    [[nodiscard]] static bool emits(const std::shared_ptr<void>& document);
     /// What it lets through, where it does (`transmits`): constants a ray
     /// reads without evaluating the material (technique's `pathThrough`).
     [[nodiscard]] static std::optional<Transmission> transmission(const std::shared_ptr<void>& document);

@@ -939,6 +939,70 @@ std::optional<Transmission> MaterialCompiler::transmission(const std::shared_ptr
     return std::nullopt;
 }
 
+bool MaterialCompiler::emits(const std::shared_ptr<void>& document) {
+    const auto doc = std::static_pointer_cast<mx::Document>(document);
+    if (!doc) {
+        return false;
+    }
+    const auto driven = [](const mx::InputPtr& input) {
+        return !input->getNodeName().empty() || !input->getNodeGraphString().empty() ||
+               !input->getInterfaceName().empty() || !input->getOutputString().empty();
+    };
+    // Zero is the only value that says no: a colour of black, a weight of 0.
+    const auto nonzero = [](const mx::ValuePtr& value) {
+        if (!value) return false;
+        if (value->isA<float>()) return value->asA<float>() > 0.0F;
+        if (value->isA<mx::Color3>()) {
+            const mx::Color3 c = value->asA<mx::Color3>();
+            return c[0] > 0.0F || c[1] > 0.0F || c[2] > 0.0F;
+        }
+        if (value->isA<mx::Vector3>()) {
+            const mx::Vector3 c = value->asA<mx::Vector3>();
+            return c[0] > 0.0F || c[1] > 0.0F || c[2] > 0.0F;
+        }
+        return true;
+    };
+    for (const mx::ElementPtr& element : doc->traverseTree()) {
+        const mx::NodePtr node = element->asA<mx::Node>();
+        if (!node) {
+            continue;
+        }
+        const std::string& category = node->getCategory();
+        if (category.size() > 4 && category.compare(category.size() - 4, 4, "_edf") == 0) {
+            return true;
+        }
+        // The weight and the colour must both be non-zero; an input the node
+        // does not author takes its definition's default.
+        const auto value = [&](const char* name) -> std::optional<bool> {
+            const mx::InputPtr input = node->getInput(name);
+            if (input) {
+                return driven(input) || nonzero(input->getValue());
+            }
+            const mx::NodeDefPtr def = node->getNodeDef();
+            const mx::InputPtr fallback = def ? def->getActiveInput(name) : nullptr;
+            if (!fallback) {
+                return std::nullopt;
+            }
+            return nonzero(fallback->getValue());
+        };
+        for (const auto& [weight, colour] : {std::pair{"emission_luminance", "emission_color"},
+                                              std::pair{"emission", "emission_color"},
+                                              std::pair{"emissive_strength", "emissive"},
+                                              std::pair{"", "emissiveColor"}}) {
+            const std::optional<bool> w = weight[0] != '\0' ? value(weight) : std::optional<bool>(true);
+            const std::optional<bool> c = value(colour);
+            // A pair the node does not define at all says nothing.
+            if (!w.has_value() || !c.has_value()) {
+                continue;
+            }
+            if (*w && *c) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool MaterialCompiler::transmits(const std::shared_ptr<void>& document) {
     return transmission(document).has_value();
 }

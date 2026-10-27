@@ -181,6 +181,8 @@ inline constexpr uint32_t kLightShadow = 1;
 inline constexpr uint32_t kLightNormalize = 2;
 inline constexpr uint32_t kLightTemperature = 4;
 constexpr uint32_t kLightIesNormalize = 8;   ///< divide the IES intensity by the profile's power
+/// A mesh light's cluster emits from both faces (shaders/athenea/light/mesh_lights.slang).
+constexpr uint32_t kLightTwoSided = 16;
 
 /// A light with no collection: it reaches every prim.
 inline constexpr uint32_t kLightUnlinked = 0xFFFFFFFFU;
@@ -223,6 +225,19 @@ public:
     /// The record a light becomes, for tests and for the table itself.
     [[nodiscard]] static LightRecord recordOf(const Light& light);
 
+    /// THE MESH LIGHTS' REGION (technique::MeshLights): the first `words`
+    /// floats of the light words buffer, which the device owns and writes.
+    /// It sits in front of the IES values and the trees so that every kernel
+    /// that binds the lights already binds it, and no kernel at Metal's
+    /// thirty-one buffers takes one more. Asked for before `set`, which
+    /// grows the buffer: the region keeps what it holds while it keeps its
+    /// size, and `meshGeneration` counts the times it was made anew (empty).
+    void reserveMesh(uint32_t words) noexcept { meshWanted_ = words; }
+    [[nodiscard]] uint32_t meshWords() const noexcept { return meshWords_; }
+    [[nodiscard]] uint64_t meshGeneration() const noexcept { return meshGeneration_; }
+    /// The light words buffer, region first: what MeshLights' kernels write.
+    [[nodiscard]] const gpu::Buffer& words() const noexcept { return iesValues_; }
+
 private:
     uint64_t                 revision_ = 1;
     std::vector<LightRecord> lastRecords_;
@@ -249,6 +264,10 @@ private:
     uint32_t     unbounded_ = 0;
     [[nodiscard]] Result<void> buildBvh(const std::vector<uint32_t>& bounded, const std::vector<uint32_t>& unbounded);
     uint32_t     iesCount_ = 0;
+    uint32_t     meshWanted_ = 0;      ///< reserveMesh's
+    uint32_t     meshWords_ = 0;       ///< the region the buffer holds now
+    uint64_t     meshGeneration_ = 1;
+    [[nodiscard]] Result<void> uploadWords(const std::vector<float>& head);
     uint32_t     count_ = 0;
     uint32_t     capacity_ = 0;
     bool         shadows_ = false;

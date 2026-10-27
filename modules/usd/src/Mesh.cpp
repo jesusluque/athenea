@@ -9,7 +9,20 @@
 #include <pxr/imaging/hd/changeTracker.h>
 #include <pxr/imaging/hd/instancer.h>
 #include <pxr/imaging/hd/renderIndex.h>
+#include <pxr/imaging/hd/lightSchema.h>
+// Windows' headers define `interface` as `struct`, and the material network
+// schema names a parameter so.
+#if defined(_WIN32) && defined(interface)
+#undef interface
+#endif
+#include <pxr/imaging/hd/light.h>
+#include <pxr/imaging/hd/materialConnectionSchema.h>
+#include <pxr/imaging/hd/materialNetworkSchema.h>
+#include <pxr/imaging/hd/materialNodeParameterSchema.h>
+#include <pxr/imaging/hd/materialNodeSchema.h>
+#include <pxr/imaging/hd/materialSchema.h>
 #include <pxr/imaging/hd/meshTopology.h>
+#include <pxr/imaging/hd/sceneIndex.h>
 #include <pxr/imaging/hd/sceneDelegate.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/pxOsd/subdivTags.h>
@@ -46,6 +59,87 @@ bool firstFloat(VtValue const& value, float* out) {
         return true;
     }
     return false;
+}
+
+/// A string a primvar or attribute holds, as a token or a string.
+std::string textOf(VtValue const& value) {
+    if (value.IsHolding<TfToken>()) return value.UncheckedGet<TfToken>().GetString();
+    if (value.IsHolding<std::string>()) return value.UncheckedGet<std::string>();
+    if (value.IsHolding<VtArray<TfToken>>() && !value.UncheckedGet<VtArray<TfToken>>().empty()) {
+        return value.UncheckedGet<VtArray<TfToken>>()[0].GetString();
+    }
+    if (value.IsHolding<VtArray<std::string>>() && !value.UncheckedGet<VtArray<std::string>>().empty()) {
+        return value.UncheckedGet<VtArray<std::string>>()[0];
+    }
+    return {};
+}
+
+/// UsdLux's MESHLIGHTAPI ON A MESH, as Hydra delivers it: UsdImaging makes
+/// no meshLight prim of its own (OpenUSD 26.08: the spike in
+/// docs/decisions.md, mesh lights), it leaves the prim a mesh and gives it a
+/// `light` container (`isLight`, `materialSyncMode`) and a material network
+/// of its own whose `light` terminal is a MeshLight node carrying the
+/// LightAPI's inputs. GetLightParamValue reads only the container, so the
+/// inputs are read here from the terminal scene index, as Light.cpp reads a
+/// dome's colour space.
+std::optional<athenea::usd::MeshLook::MeshLight> meshLightOf(HdSceneDelegate* delegate, const SdfPath& id) {
+    const HdSceneIndexBaseRefPtr index = delegate->GetRenderIndex().GetTerminalSceneIndex();
+    if (!index) {
+        return std::nullopt;
+    }
+    const HdSceneIndexPrim prim = index->GetPrim(id);
+    if (!prim.dataSource) {
+        return std::nullopt;
+    }
+    const HdContainerDataSourceHandle container =
+        HdContainerDataSource::Cast(prim.dataSource->Get(HdLightSchemaTokens->light));
+    if (!container) {
+        return std::nullopt;
+    }
+    const auto sampled = [&](const TfToken& name) -> VtValue {
+        if (const HdSampledDataSourceHandle ds = HdSampledDataSource::Cast(container->Get(name))) {
+            return ds->GetValue(0.0F);
+        }
+        return {};
+    };
+    const VtValue isLight = sampled(HdTokens->isLight);
+    if (!isLight.IsHolding<bool>() || !isLight.UncheckedGet<bool>()) {
+        return std::nullopt;
+    }
+    athenea::usd::MeshLook::MeshLight out;
+    const std::string mode = textOf(sampled(HdTokens->materialSyncMode));
+    out.mode = mode == "independent" ? 1u : mode == "noMaterialResponse" ? 2u : 0u;
+    const HdMaterialSchema material = HdMaterialSchema::GetFromParent(prim.dataSource);
+    if (!material.IsDefined()) {
+        return out;
+    }
+    const HdMaterialNetworkSchema network = material.GetMaterialNetwork();
+    const HdMaterialConnectionSchema terminal = network.GetTerminals().Get(HdMaterialTerminalTokens->light);
+    if (!terminal.IsDefined() || !terminal.GetUpstreamNodePath()) {
+        return out;
+    }
+    const TfToken node = terminal.GetUpstreamNodePath()->GetTypedValue(0.0F);
+    const HdMaterialNodeParameterContainerSchema parameters = network.GetNodes().Get(node).GetParameters();
+    const auto parameter = [&](const TfToken& name) -> VtValue {
+        for (const TfToken& key : {name, TfToken("inputs:" + name.GetString())}) {
+            const HdMaterialNodeParameterSchema p = parameters.Get(key);
+            if (p.IsDefined() && p.GetValue()) {
+                return p.GetValue()->GetValue(0.0F);
+            }
+        }
+        return {};
+    };
+    float value = 0.0F;
+    if (firstFloat(parameter(HdLightTokens->intensity), &value)) out.intensity = value;
+    if (firstFloat(parameter(HdLightTokens->exposure), &value)) out.exposure = value;
+    if (firstFloat(parameter(HdLightTokens->colorTemperature), &value)) out.temperature = value;
+    GfVec3f colour;
+    if (firstVec3(parameter(HdLightTokens->color), &colour)) out.colour = {colour[0], colour[1], colour[2]};
+    const VtValue normalize = parameter(HdLightTokens->normalize);
+    out.normalize = normalize.IsHolding<bool>() && normalize.UncheckedGet<bool>();
+    const VtValue temperature = parameter(HdLightTokens->enableColorTemperature);
+    out.enableTemperature = temperature.IsHolding<bool>() && temperature.UncheckedGet<bool>();
+    return out;
 }
 
 }   // namespace
@@ -269,6 +363,8 @@ void HdAtheneaMesh::Sync(HdSceneDelegate* delegate, HdRenderParam* renderParam, 
                 l.coordSys.push_back({name, athenea::usd::fromUsd(delegate->GetTransform(coordSys))});
             }
         }
+        l.meshLight = meshLightOf(delegate, id);
+        l.lightGroup = textOf(delegate->Get(id, TfToken("athenea:lightGroup")));
         look = l;
     }
     athenea::render::Mat4 transform;

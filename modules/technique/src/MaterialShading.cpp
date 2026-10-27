@@ -18,6 +18,7 @@ const char* kKernelPrelude = R"(
 import athenea.common.octahedral;
 import athenea.light.lights_image;
 import athenea.light.light_bvh;
+import athenea.light.mesh_lights;
 
 struct LightingParams {
     uint  samples;
@@ -35,6 +36,7 @@ uniform uint                  lightNodeBase;
 uniform uint                  lightTreeNodes;
 uniform uint                  lightUnboundedCount;
 uniform uint                  lightCount;
+uniform uint                  meshLightWords;   // the mesh lights' region in iesValues; 0: none
 ConstantBuffer<LightingParams> lighting;
 
 /// Two numbers for the i-th sample of light k at a pixel. Stratification and
@@ -405,7 +407,9 @@ bool tabled(Surface s) {
         return false;
     }
     const uint row = materialRowOf(s);
-    return (s.instance.flags & 2u) == 0 && row < materialTableRows && (materials[row].flags & kMaterialUniform) != 0 &&
+    // Not a mesh light nor an emission group's: the table holds a row's
+    // emission, not an instance's.
+    return (s.instance.flags & 0xFEu) == 0 && row < materialTableRows && (materials[row].flags & kMaterialUniform) != 0 &&
            materialTable.Load(int3(2, int(row), 0)).w > 0.5 &&
            domesReach(s.instance.categoriesLo, s.instance.categoriesHi);
 }
@@ -474,7 +478,9 @@ void shadeEvaluated(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
     const float3 toEye = normalize(inputs.viewPosition - inputs.positionWorld);
     const float coverage =
         (m.flags & (kMaterialCutout | kMaterialTransparent)) != 0 ? 1.0 : gAtheneaResult.opacity;
-    colour[at] = float4(gAtheneaResult.emission * coverage, coverage);
+    const float3 emitted =
+        meshLightEmission(iesValues, meshLightWords, s.instance.flags, inputs.inside, gAtheneaResult.emission);
+    colour[at] = float4(emitted * coverage, coverage);
     writeDomeSurface(tid, true, toEye, inputs.positionWorld, coverage);
     depth[at] = s.depth;
     float3 groups[8];
@@ -1085,7 +1091,8 @@ void shadeMaterials(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
     // whatever was copied or not (kNoShadowBits has the history).
 #define stack gAtheneaResult
     const float3 toEye = normalize(inputs.viewPosition - inputs.positionWorld);
-    float3 radiance = stack.emission;
+    // A MeshLightAPI prim's own emission, and an emission group's level.
+    float3 radiance = meshLightEmission(iesValues, meshLightWords, s.instance.flags, inputs.inside, stack.emission);
     // What light sampling cannot reach, or reaches badly, is met along the
     // lobes' own samples instead: a dome is sampled over the hemisphere above
     // the normal, so light through the surface (glass) never meets it; a

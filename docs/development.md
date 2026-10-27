@@ -47,9 +47,9 @@ document, the header is right.
 | 10 | render | `render/TileRasterizer.h` and `shaders/athenea/splat/frame.slang` (the pipeline), `render/GaussianRayTracer.h`, `render/Flatten.h` (a TX cloud as standard harmonics) |
 | 11 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
 | 12 | material | `material/MaterialCompiler.h` — MaterialX into Slang |
-| 13 | light | `light/LightTable.h` — a light on the device |
+| 13 | light | `light/LightTable.h` — a light on the device; the mesh lights' region at the front of its light words, laid out in `shaders/athenea/light/mesh_lights.slang` |
 | 14 | world | `world/GpuScene.h` — the scene as every technique reads it |
-| 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
+| 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h`, `technique/MeshLights.h` (emitting meshes as lights: a rebuild that clusters them, a refit a frame) |
 | 16 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
 | 17 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`), `usd/ShadowCatcher.h` (where a shadow catcher stands: the ground found, the patch on it -- a light catcher's too), `usd/LightGroups.h` (a car's lamps: the stage's groups and states, their weights a frame, and `athenea lights merge`) |
 | 18 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
@@ -82,6 +82,11 @@ a pool of its own and wants only the crossing.
 ### 1.3 A frame, rasterised
 
 1. `Engine::render` takes the projection, the settings and the AOV request.
+   Before the light table is set, `technique::MeshLights::plan` decides
+   whether the emitting meshes are clustered again (a rebuild, which waits
+   for the counts it sizes the region by) and the table reserves that region
+   in front of its light words; after, `MeshLights::write` rebuilds or
+   refits it, the refit recorded with no wait.
 2. Meshes: `world::GpuScene` holds the pools and the instance records;
    a visibility route writes `(instance + 1, triangle)` per pixel into the
    visibility buffer. Three routes write the same thing —

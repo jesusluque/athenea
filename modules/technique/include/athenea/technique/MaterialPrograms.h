@@ -62,6 +62,9 @@ inline constexpr uint32_t kMaterialTransmits = 8u;
 inline constexpr uint32_t kMaterialGlassShadow = 16u;
 /// And it is a thin wall: one face is the whole glass (2R / (1 + R) reflected).
 inline constexpr uint32_t kMaterialThinGlass = 32u;
+/// It may give off light (material::MaterialCompiler::emits): the mesh
+/// lights probe its triangles (technique::MeshLights).
+inline constexpr uint32_t kMaterialEmits = 64u;
 
 class MaterialPrograms {
 public:

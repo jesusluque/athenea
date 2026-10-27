@@ -10,6 +10,7 @@ athenea_add_module(technique
         src/MaterialPrograms.cpp
         src/MaterialShading.cpp
         src/EmissiveTable.cpp
+        src/MeshLights.cpp
         src/Environment.cpp
         src/PathTracer.cpp
         src/SplatShadowMap.cpp
