@@ -815,7 +815,7 @@ Result<void> StreamingShare::seal() {
         failure = "the shared store's payload passes four billion elements";
         return Error(ErrorCode::InvalidArgument, failure);
     }
-    std::vector<std::pair<gpu::Buffer scene::GpuSplats::*, gpu::Buffer>> joined;
+    std::vector<std::pair<CloudMember, gpu::Buffer>> joined;
     {
         gpu::CommandBatch batch(*device);
         for (const auto& [member, words] : extrasOf(x0)) {
