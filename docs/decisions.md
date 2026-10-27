@@ -16382,6 +16382,17 @@ indirect half as the plan said: a lightmapped mesh is drawn unlit, so nothing el
   the ball as a whole is not closer with the layer (relMSE 0.0249 against 0.0237 without): the layer brings
   the red, and the direct light of stage C at this range is what is short.
 
+#### Frame times (Metal, M5 Pro, RelWithDebInfo, 1440 x 810 raster, `athenea stage --frames 40 --no-readback`)
+
+| stage | mesh lights on | `--no-mesh-lights` |
+|---|---|---|
+| tests/data/mesh_light_strip.usda (sixty strips over a floor) | 10.27 ms | 10.62 ms |
+| the TX ball of the bleed test, its layer and the strip (95994 gaussians) | 11.63 ms | 13.57 ms |
+
+With ATHENEA_STAGES on the strip stage: shadow rays 1.4 ms, shading (closed form, cut and filter) 7.2 to
+7.5 ms; on the ball, the splat projection with the mesh lights' rectangles 1.1 ms. Mesh lights off, the
+emitting triangles are still sampled from the flat table, which is no cheaper.
+
 #### Not done (stage E)
 
 - Stage C's direct light on a gaussian 0.4 units from a strip's edge is short by about half: the cut, the
