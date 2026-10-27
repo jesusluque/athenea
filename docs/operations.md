@@ -1597,9 +1597,9 @@ Read but not declared:
 | `athenea:colourHalf` | bool (or an int, non-zero) | the host, through the delegate | the `color` AOV is half float (`Float16Vec4`) rather than float; for a host that copies the colour through host memory to show it (Blender's viewport). Read when the host asks for the AOV's format, so it is set before the first frame. Light groups and other outputs stay float |
 | `athenea:disableMotionBlur` | bool | settings or product | for this product |
 | `athenea:disableDepthOfField` | bool | settings or product | for this product |
-| `athenea:lightGroup` | string | a light prim | the group a light's contribution is gathered under |
+| `athenea:lightGroup` | string | a light prim; or a mesh, as `primvars:athenea:lightGroup` (constant) | the group a light's contribution is gathered under; on a mesh, its emission group: what it gives off, seen and lighting (§4.3, *Mesh lights*), 31 such groups a frame |
 | `athenea:lightState` | string | settings prim, or a host | the light state whose targets a stage's lamp groups take; empty: each at its `initialOn` (§3.6). Read by `StageRenderer`, not by hdAthenea under another host |
-| `athenea:lightLevel:<group>` | float | settings prim, or a host | that lamp group's level over the state's: 0 off, 1 its radiance |
+| `athenea:lightLevel:<group>` | float | settings prim, or a host | that lamp group's level over the state's: 0 off, 1 its radiance; for an emission group, what its emitters give off is multiplied by it, both seen and lighting |
 
 ### 4.3 The API schemas
 
@@ -2022,6 +2022,13 @@ its sheen as a body -- shadowed by its TX transfer's own bits and adding the
 transfer's bounce. A cloud whose colours are light already
 (`primvars:athenea:splat:litBody`) is left as it is. A cloud casts no shadow of
 a mesh light onto a mesh.
+
+A mesh in an emission group (`primvars:athenea:lightGroup`) gives off its
+light, seen and lighting, times its group's level (`athenea:lightLevel:<group>`;
+where none is set, the lamp rig's weight of a group of that name, §3.6), and
+its light goes into the group's output (`lightGroup:<group>`), what is seen of
+the emitter itself included. A level changed redraws the frame with the same
+clusters: no rebuild, a few numbers uploaded.
 
 A `MeshLightAPI` prim emits its LightAPI radiance -- `inputs:color` times
 `inputs:intensity`, `inputs:exposure`, and the blackbody of

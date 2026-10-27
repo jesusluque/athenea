@@ -52,7 +52,7 @@ public static const uint kMeshSlotBase = 10;
 public static const uint kMeshRevision = 11;       // counts every rebuild and refit
 public static const uint kMeshOn = 12;             // 1: the clusters are lights (athenea:meshLights)
 public static const uint kMeshDepth = 13;          // the tree's depth, which a refit settles in
-public static const uint kMeshGroupBase = 16;      // 32 groups, 4 words each: rgb weight
+public static const uint kMeshGroupBase = 16;      // 32 groups, 4 words each: rgb weight, the AOV group (1 + index; 0 none)
 public static const uint kMeshSetBase = 144;       // 256 emitter sets, 8 words each
 public static const uint kMeshHeaderWords = 2192;
 public static const uint kMeshMaxGroups = 32;
@@ -97,6 +97,15 @@ public float3 meshGroupWeight(StructuredBuffer<float> w, uint words, uint group)
         return float3(1.0);
     }
     return meshFloat3(w, kMeshGroupBase + 4u * min(group, kMeshMaxGroups - 1u));
+}
+
+/// The light group output (AOV) an emission group's light is gathered
+/// under: 1 + its index among the frame's `lightGroup:NAME` outputs, 0 none.
+public uint meshGroupAov(StructuredBuffer<float> w, uint words, uint group) {
+    if (group == 0u || words < kMeshHeaderWords) {
+        return 0u;
+    }
+    return meshWord(w, kMeshGroupBase + 4u * min(group, kMeshMaxGroups - 1u) + 3u);
 }
 
 /// WHAT A SURFACE GIVES OFF, given what its material said: the MeshLightAPI

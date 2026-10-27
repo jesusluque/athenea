@@ -73,6 +73,9 @@ struct MeshLightInputs {
     std::vector<MeshLightSet>                 sets;
     /// Each emission group's weight, linear rgb; group 0 is always one.
     std::array<std::array<float, 3>, kMaxEmissionGroups> weights{};
+    /// The light group output (`lightGroup:NAME`) each emission group's light
+    /// goes into: 1 + its index among the frame's, 0 none.
+    std::array<uint32_t, kMaxEmissionGroups> aovGroups{};
     /// Whatever, besides the meshes and materials, says which instances emit
     /// (their emitter sets and groups): a different key rebuilds.
     uint64_t                                  emitterKey = 0;
@@ -120,6 +123,8 @@ public:
     /// moving or dimmed emitter to.
     [[nodiscard]] uint64_t rebuilds() const noexcept { return rebuilds_; }
     [[nodiscard]] uint64_t refits() const noexcept { return refits_; }
+    /// How many times the header alone was uploaded again (a level, a set's controls).
+    [[nodiscard]] uint64_t headerWrites() const noexcept { return headerWrites_; }
     /// Changes whenever what the clusters hold may have (a rebuild, a refit).
     [[nodiscard]] uint64_t revision() const noexcept { return rebuilds_ * 1000003ULL + refits_; }
 
@@ -139,6 +144,7 @@ private:
         uint64_t                 instances = ~uint64_t{0};
         float                    time = -1.0F;
         std::array<std::array<float, 3>, kMaxEmissionGroups> weights{};
+        std::array<uint32_t, kMaxEmissionGroups> aovGroups{};
         std::vector<MeshLightSet> sets;
         bool operator==(const RefitKey&) const = default;
     };
@@ -180,6 +186,7 @@ private:
     uint32_t    wordsNeeded_ = 0;
     uint64_t    rebuilds_ = 0;
     uint64_t    refits_ = 0;
+    uint64_t    headerWrites_ = 0;
     // The region's layout, in words, as the last rebuild set it out.
     uint32_t    recordBase_ = 0, qualifiedBase_ = 0, slotBase_ = 0, triangleBase_ = 0, clusterBase_ = 0, nodeBase_ = 0;
 };

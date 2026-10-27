@@ -161,7 +161,7 @@ float3 lobeRectangle(Lobe lobe, float3 toEye, float3 p0, float3 p1, float3 p2, f
 /// of everything under it, its colour and facing its most important
 /// cluster's, and only the diffuse lobes see it. Unshadowed: the caller
 /// multiplies by the ratio.
-float3 meshClosedForm(uint2 tid, float3 p, float3 n, float3 toEye) {
+float3 meshClosedForm(uint2 tid, float3 p, float3 n, float3 toEye, float shadow, inout float3 groups[8]) {
     float3 sum = float3(0.0);
     const uint base = meshWord(iesValues, kMeshNodeBase);
     const uint2 tile = tid / 16u;
@@ -207,7 +207,12 @@ float3 meshClosedForm(uint2 tid, float3 p, float3 n, float3 toEye) {
                               cos(min(max(acos(clamp(receiver, -1.0, 1.0)) - spread, 0.0), 0.5 * kPi));
                 }
             }
-            sum += albedo / kPi * power * emitter / d2;
+            const float3 arrived = albedo / kPi * power * emitter / d2;
+            sum += arrived;
+            const uint aov = meshGroupAov(iesValues, meshLightWords, m.group);
+            if (aov != 0u && aov <= 8u) {   // written out only where the frame has groups
+                groups[aov - 1u] += shadow * arrived;
+            }
             continue;
         }
         const float3 x = m.axisX * m.halfX;
@@ -223,6 +228,11 @@ float3 meshClosedForm(uint2 tid, float3 p, float3 n, float3 toEye) {
             response += lobeRectangle(gAtheneaResult.lobes[k], toEye, p0, p1, p2, p3, twoSided, false);
         }
         sum += response * m.radiance;
+        // A cluster's light is its emission group's (athenea:lightGroup).
+        const uint aov = meshGroupAov(iesValues, meshLightWords, m.group);
+        if (aov != 0u && aov <= 8u) {   // written out only where the frame has groups
+            groups[aov - 1u] += shadow * response * m.radiance;
+        }
     }
     return sum;
 }
@@ -1317,6 +1327,13 @@ void shadeMaterials(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
     const float3 toEye = normalize(inputs.viewPosition - inputs.positionWorld);
     // A MeshLightAPI prim's own emission, and an emission group's level.
     float3 radiance = meshLightEmission(iesValues, meshLightWords, s.instance.flags, inputs.inside, stack.emission);
+    // An emitter in an emission group shows its own light in that group too.
+    if (kLightGroups) {
+        const uint aov = meshGroupAov(iesValues, meshLightWords, meshInstanceGroup(s.instance.flags));
+        if (aov != 0u && aov <= 8u) {
+            groups[aov - 1u] += radiance;
+        }
+    }
     // What light sampling cannot reach, or reaches badly, is met along the
     // lobes' own samples instead: a dome is sampled over the hemisphere above
     // the normal, so light through the surface (glass) never meets it; a
@@ -1412,7 +1429,7 @@ R"(    const uint meshSamples = meshSampleCount();
     if (meshAnalytic != 0u && meshClusterCount(iesValues, meshLightWords) > 0u) {
         // In closed form, shadowed by the filtered ratio of a few rays.
         const float shadow = meshShadowOn != 0u ? meshShadow.Load(int3(int(tid.x), int(tid.y), 0)) : 1.0;
-        radiance += shadow * meshClosedForm(tid, inputs.positionWorld, inputs.normalWorld, toEye);
+        radiance += shadow * meshClosedForm(tid, inputs.positionWorld, inputs.normalWorld, toEye, shadow, groups);
     } else if (meshSamples > 0u) {
         // THE MESH LIGHTS, SAMPLED: a cluster through the tree by its
         // importance here, a triangle by its share, a point on it -- the
@@ -1434,7 +1451,12 @@ R"(    const uint meshSamples = meshSampleCount();
             if (!any(f > float3(0.0)) || occludedSample(at, meshSampleBit(i))) {
                 continue;
             }
-            sum += f * ms.radiance / (ms.pdf * choice.probability);
+            const float3 arrived = f * ms.radiance / (ms.pdf * choice.probability);
+            sum += arrived;
+            const uint aov = meshGroupAov(iesValues, meshLightWords, meshCluster(iesValues, choice.index).group);
+            if (kLightGroups && aov != 0u && aov <= 8u) {
+                groups[aov - 1u] += arrived / float(meshSamples);
+            }
         }
         radiance += sum / float(meshSamples);
     }

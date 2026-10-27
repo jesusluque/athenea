@@ -324,6 +324,7 @@ std::vector<uint32_t> MeshLights::headerWords(const MeshLightInputs& inputs) con
         for (uint32_t c = 0; c < 3; ++c) {
             header[kGroupBase + 4 * g + c] = std::bit_cast<uint32_t>(g == 0 ? 1.0F : inputs.weights[g][c]);
         }
+        header[kGroupBase + 4 * g + 3] = g == 0 ? 0u : inputs.aovGroups[g];
     }
     for (uint32_t s = 1; s < std::min<size_t>(inputs.sets.size(), kMaxMeshLightSets); ++s) {
         const MeshLightSet& set = inputs.sets[s];
@@ -365,6 +366,7 @@ Result<void> MeshLights::write(gpu::CommandBatch& batch, const MaterialFrame& fr
     refit.instances = frame.scene->instancesRevision();
     refit.time = frame.time;
     refit.weights = inputs.weights;
+    refit.aovGroups = inputs.aovGroups;
     refit.sets = inputs.sets;
     if (pendingBuild_) {
         if (table.meshWords() < wordsNeeded_) {
@@ -380,12 +382,18 @@ Result<void> MeshLights::write(gpu::CommandBatch& batch, const MaterialFrame& fr
     }
     // Positions, transforms, levels or the sets' controls changed: the header
     // takes the new weights and controls, and the same clusters are refitted.
-    const bool header = refit.weights != refitKey_.weights || refit.sets != refitKey_.sets;
+    const bool header =
+        refit.weights != refitKey_.weights || refit.sets != refitKey_.sets || refit.aovGroups != refitKey_.aovGroups;
+    // Only the outputs moved: the header says so, and nothing is refitted.
+    const bool outputsOnly = header && refit.weights == refitKey_.weights && refit.sets == refitKey_.sets &&
+                             refit.positions == refitKey_.positions && refit.instances == refitKey_.instances &&
+                             refit.time == refitKey_.time;
     refitKey_ = refit;
     if (header) {
         ATHENEA_TRY(writeHeader(table, inputs));
+        ++headerWrites_;
     }
-    if (clusters_ > 0) {
+    if (clusters_ > 0 && !outputsOnly) {
         ATHENEA_TRY(this->refit(batch, frame, table));
         ++refits_;
     }

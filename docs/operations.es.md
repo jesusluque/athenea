@@ -1642,9 +1642,9 @@ Leídos pero no declarados:
 | `athenea:colourHalf` | bool (o un int, distinto de cero) | el host, a través del delegate | el AOV `color` es de media precisión (`Float16Vec4`) en vez de float; para un host que copia el color por memoria del host para mostrarlo (el viewport de Blender). Se lee cuando el host pide el formato del AOV, así que se pone antes del primer frame. Los grupos de luz y las demás salidas siguen en float |
 | `athenea:disableMotionBlur` | bool | settings o producto | para ese producto |
 | `athenea:disableDepthOfField` | bool | settings o producto | para ese producto |
-| `athenea:lightGroup` | string | un prim de luz | el grupo bajo el que se reúne su aportación |
+| `athenea:lightGroup` | string | un prim de luz; o una malla, como `primvars:athenea:lightGroup` (constante) | el grupo bajo el que se reúne su aportación; en una malla, su grupo de emisión: lo que emite, visto e iluminando (§4.3, *Luces de malla*), 31 grupos así por frame |
 | `athenea:lightState` | string | prim de settings, o un host | el estado de luces cuyos objetivos toman los grupos de lámparas de una escena; vacío: cada uno en su `initialOn` (§3.6). Lo lee `StageRenderer`, no hdAthenea bajo otro host |
-| `athenea:lightLevel:<grupo>` | float | prim de settings, o un host | el nivel de ese grupo de lámparas sobre el del estado: 0 apagado, 1 su radiancia |
+| `athenea:lightLevel:<grupo>` | float | prim de settings, o un host | el nivel de ese grupo de lámparas sobre el del estado: 0 apagado, 1 su radiancia; para un grupo de emisión, lo que emiten sus emisores se multiplica por él, visto e iluminando |
 
 ### 4.3 Los schemas de API
 
@@ -2085,6 +2085,13 @@ y su coat por el LTC, su sheen como un cuerpo -- con la sombra de los bits de
 su propia transferencia TX y sumando el rebote de la transferencia. Una nube
 cuyos colores ya son luz (`primvars:athenea:splat:litBody`) se queda como
 está. Una nube no proyecta sombra de una luz de malla sobre una malla.
+
+Una malla en un grupo de emisión (`primvars:athenea:lightGroup`) emite su luz,
+vista e iluminando, por el nivel de su grupo (`athenea:lightLevel:<grupo>`;
+donde no hay ninguno, el peso que el rig de lámparas da a un grupo de ese
+nombre, §3.6), y su luz va a la salida del grupo (`lightGroup:<grupo>`),
+incluido lo que se ve del propio emisor. Un nivel cambiado vuelve a dibujar el
+frame con los mismos clusters: ningún rebuild, unos pocos números subidos.
 
 Una prim con `MeshLightAPI` emite la radiancia de su LightAPI --
 `inputs:color` por `inputs:intensity`, `inputs:exposure`, y el cuerpo negro de

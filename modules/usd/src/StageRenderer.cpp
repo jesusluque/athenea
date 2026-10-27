@@ -1076,6 +1076,17 @@ uint64_t StageRenderer::cloudUploads() const {
     return engine != nullptr ? engine->cloudUploads() : 0;
 }
 
+StageRenderer::MeshLightCounts StageRenderer::meshLightCounts() const {
+    auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
+    Engine* engine = param != nullptr ? param->GetEngine() : nullptr;
+    MeshLightCounts counts;
+    if (engine != nullptr) {
+        const auto [rebuilds, refits, headers, clusters] = engine->meshLightCounts();
+        counts = {rebuilds, refits, headers, clusters};
+    }
+    return counts;
+}
+
 std::map<std::string, uint32_t> StageRenderer::cryptoManifest() const {
     auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
     Engine* engine = param != nullptr ? param->GetEngine() : nullptr;

@@ -772,6 +772,11 @@ void Engine::setDenoise(bool denoise) { denoise_.store(denoise); }
 void Engine::setPathAdaptive(bool adaptive) { pathAdaptive_.store(adaptive); }
 void Engine::setPathMis(bool mis) { pathMis_.store(mis); }
 
+void Engine::setEmissionLevels(std::map<std::string, float> levels) {
+    const std::lock_guard<std::mutex> held(guard_);
+    emissionLevels_ = std::move(levels);
+}
+
 void Engine::setMeshLightSamples(uint32_t samples) {
     meshLightSamples_.store(std::min<uint32_t>(samples, 64));
 }
@@ -3003,6 +3008,29 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             for (const world::InstanceSet& m : meshSets) key.push_back(m.lightFlags);
             meshLightInputs.emitterKey = std::hash<std::string_view>{}(
                 std::string_view(reinterpret_cast<const char*>(key.data()), key.size() * sizeof(uint64_t)));
+        }
+        // THE EMISSION GROUPS' WEIGHTS AND OUTPUTS (stage D): a group's
+        // `athenea:lightLevel`, or the lamp rig's weight of a group of that
+        // name, or one; and the `lightGroup:NAME` output it goes into.
+        {
+            const std::lock_guard<std::mutex> held(guard_);
+            for (const auto& [name, slot] : emissionGroups_) {
+                if (slot >= technique::kMaxEmissionGroups) {
+                    continue;
+                }
+                std::array<float, 3> weight{1.0F, 1.0F, 1.0F};
+                if (const auto level = emissionLevels_.find(name); level != emissionLevels_.end()) {
+                    weight = {level->second, level->second, level->second};
+                } else if (const auto rig = lightWeights_.find(name); rig != lightWeights_.end()) {
+                    weight = rig->second;
+                }
+                meshLightInputs.weights[slot] = weight;
+                const auto aov = std::find(aovRequest.lightGroups.begin(), aovRequest.lightGroups.end(), name);
+                meshLightInputs.aovGroups[slot] =
+                    aov != aovRequest.lightGroups.end()
+                        ? static_cast<uint32_t>(aov - aovRequest.lightGroups.begin()) + 1u
+                        : 0u;
+            }
         }
         ATHENEA_TRY(meshLights_->plan(probeFrame, projection, meshLightInputs));
         lightTable_->reserveMesh(meshLights_->wordsNeeded());

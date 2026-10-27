@@ -2328,8 +2328,13 @@ R"(                    }
                 }
             }
             if (lightStep) {
-                // The light point's emission, back to the vertex that chose it.
+                // The light point's emission, back to the vertex that chose it,
+                // and into its emission group's output where it is in one.
                 carried += lightScale * shaded.stack.emission;
+                if (kLightGroups) {
+                    addGroup(groups, meshGroupAov(iesValues, meshLightWords, meshInstanceGroup(target.s.instance.flags)),
+                             lightScale * shaded.stack.emission * opacity);
+                }
                 lightStep = false;
             } else {
                 // TRANSPARENT OPACITY (UsdPreviewSurface 2.6, opacityMode 0).
@@ -2462,6 +2467,11 @@ R"(                    }
                 }
                 if (!transferMode) {
                     carried += throughput * cur.stack.emission * emissionWeight;
+                    if (kLightGroups) {
+                        addGroup(groups,
+                                 meshGroupAov(iesValues, meshLightWords, meshInstanceGroup(found.s.instance.flags)),
+                                 throughput * cur.stack.emission * emissionWeight * opacity);
+                    }
                     if (bounce == 1) {
                         directPart += throughput * cur.stack.emission * emissionWeight;
                     }

@@ -162,3 +162,32 @@ void meshStatistic(uint3 tid: SV_DispatchThreadID) {
     result[2] = drawn / float(params.samples);
     result[5] = integral / float(params.samples);
 }
+
+// ---- two frames, one a multiple of the other -----------------------------------
+
+StructuredBuffer<float4>   frameA;
+StructuredBuffer<float4>   frameB;
+RWStructuredBuffer<uint>   scaledCounts;   // [pixels where scale a and b part beyond tolerance, pixels lit]
+uniform uint               scaledPixels;
+uniform float              scale;
+uniform float              scaledTolerance;
+
+/// Whether `scale` times frame a is frame b, pixel by pixel, to a relative
+/// tolerance: what a level does to its group's light, being linear.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void meshScaled(uint3 tid: SV_DispatchThreadID) {
+    const uint p = tid.x;
+    if (p >= scaledPixels) {
+        return;
+    }
+    const float3 a = frameA[p].rgb * scale;
+    const float3 b = frameB[p].rgb;
+    if (any(b > float3(1.0e-6))) {
+        InterlockedAdd(scaledCounts[1], 1u);
+    }
+    const float3 gap = abs(a - b) / max(abs(b), float3(1.0e-3));
+    if (any(gap > float3(scaledTolerance))) {
+        InterlockedAdd(scaledCounts[0], 1u);
+    }
+}

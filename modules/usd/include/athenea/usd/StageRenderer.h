@@ -553,6 +553,16 @@ public:
     /// How many times a splat cloud's arrays have been uploaded: once a cloud
     /// unless what it holds changes. What a time step is held to.
     [[nodiscard]] uint64_t cloudUploads() const;
+    /// The mesh lights' rebuilds, refits and header uploads so far
+    /// (technique::MeshLights), for a test to hold a level change to its
+    /// header and a move to a refit.
+    struct MeshLightCounts {
+        uint64_t rebuilds = 0;
+        uint64_t refits = 0;
+        uint64_t headerWrites = 0;
+        uint32_t clusters = 0;
+    };
+    [[nodiscard]] MeshLightCounts meshLightCounts() const;
 
     /// WHAT THE LAST FRAME HELD: splats handed over, splats a tile kept, the
     /// pairs the blend walked, the scene's instances and the frame's lights.

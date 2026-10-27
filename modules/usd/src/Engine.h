@@ -25,6 +25,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <pxr/base/tf/token.h>
@@ -506,6 +507,12 @@ public:
     /// (`athenea:meshLightSamples`, at most 64), each shadowed by a ray; 0,
     /// the default, lights in closed form instead (MaterialShading).
     void setMeshLightSamples(uint32_t samples);
+    /// THE EMISSION GROUPS' LEVELS (`athenea:lightLevel:<group>`): what an
+    /// emitter in the group gives off, both seen and lighting, is multiplied
+    /// by its group's level. A group a car's lamp rig weighs
+    /// (`setLightWeights`) takes that weight where no level is set. Changing
+    /// them refits the mesh lights and uploads their header, nothing else.
+    void setEmissionLevels(std::map<std::string, float> levels);
     /// Whether a dome is drawn behind the frame (true) or its pixels are left
     /// transparent (false); either way the dome lights what the frame holds.
     void setScreenSpaceReflections(bool on);
@@ -645,6 +652,12 @@ public:
     /// The level of each LOD group a view draws (athenea:lod:group).
     [[nodiscard]] std::set<const SplatEntry*> lodLevelsFor(const render::Projection& projection) const;
     [[nodiscard]] uint64_t cloudUploads() const noexcept { return cloudUploads_.load(); }
+    /// The mesh lights' rebuilds, refits, header uploads and clusters.
+    [[nodiscard]] std::tuple<uint64_t, uint64_t, uint64_t, uint32_t> meshLightCounts() const noexcept {
+        return meshLights_.has_value() ? std::tuple{meshLights_->rebuilds(), meshLights_->refits(),
+                                                    meshLights_->headerWrites(), meshLights_->clusters()}
+                                       : std::tuple<uint64_t, uint64_t, uint64_t, uint32_t>{0, 0, 0, 0};
+    }
     [[nodiscard]] const std::map<std::string, uint32_t>& cryptoManifest() const noexcept {
         return cryptoManifest_;
     }
@@ -978,6 +991,7 @@ private:
     std::atomic<bool>                          meshLightsOn_{true};
     std::atomic<uint32_t>                      meshLightSamples_{0};
     std::map<std::string, uint32_t>            emissionGroups_;
+    std::map<std::string, float>               emissionLevels_;   ///< setEmissionLevels', under guard_
     bool                                       meshLightSetsSaid_ = false;
     std::vector<bool>                          materialRowEmits_;   ///< by row: kMaterialEmits
     EmissiveKey                                emissiveKey_;

@@ -3102,6 +3102,9 @@ of its own under one stop of exposure: the groups sum to the beauty at all
 off (relative 1.0, the factor of two). Emission stays in no group, as the
 expression says (an emitting surface is `O`, not `L`): a frame with
 emissive geometry sums its groups short of the beauty by exactly that.
+*Amended with the mesh lights (stage D, below):* a mesh in an emission group
+(`primvars:athenea:lightGroup`) puts its emission, seen and lighting, into its
+group; emission in no group is still in none.
 
 **Not done.**
 `materialBindingPurposes` is applied since the usd-wg end to end (below):
@@ -16302,3 +16305,35 @@ either error.
 - The ray traced route of a frame of splats alone: it has no meshes, so no mesh lights.
 - A lamp baked into a cloud's light layer is not told apart from the same lamp as a mesh light.
 - The tests the plan named on a converted pawn, K = 4 against K = 64, and the cache's bit-identity.
+
+### Stage D: emission groups and their levels
+
+A mesh's `primvars:athenea:lightGroup` (constant, a string) names its emission group, numbered 1 to 31 as
+first met in the engine's life and kept in bits 3 to 7 of its instance records. A group's weight is its
+`athenea:lightLevel:<group>` (the delegate reads every such setting), else the lamp rig's weight of a group
+of the same name (`setLightWeights`, the car's lamps), else one; it sits in the mesh region's header beside
+the output the group's light goes into (`lightGroup:<group>`, 1 + its index among the frame's). The weight
+multiplies what an emitter gives off wherever that is evaluated (`meshLightEmission`: the raster's shading,
+the path tracer's), and the clusters' power in the refit, so the tree stops choosing a lamp switched off.
+A changed level is a header upload and a refit -- no probe, no rebuild. The plan put the weights in
+constants every kernel binds; in the header, which every kernel that reads the mesh lights binds already,
+they cost no binding and are uploaded the same way.
+
+A cluster's light goes into its group's output: in the raster per cut entry and per sample, shadow
+included; in the path tracer, the emission met by a ray and the emission a light step reaches back to the
+vertex that chose it. What is seen of the emitter itself goes into its group too, so a frame lit by grouped
+emitters alone sums its groups to the beauty -- the amendment above.
+
+#### Measured (Metal, M5 Pro)
+
+- Two strips in groups `a` and `b` over a floor, 96 x 72, nothing else lighting it: the two outputs sum to
+  the beauty at all 6912 pixels within 1e-3 (worst 2.3e-7 raster, 2.1e-7 path traced).
+- Group `a` at 0.5 against 1 with `b` at 0: none of the 6624 lit pixels other than half, to 1e-3. The change
+  of level: no rebuild, one refit, one header upload.
+- Both groups at 0 against the same strips with a material that gives off nothing (a sphere light beside in
+  both): relMSE 0, max relative 0.
+
+#### Not done (stage D)
+
+- `athenea:lightGroup` on a material, and the MeshLightAPI's own group attribute: the gprim's primvar only.
+- A level is one number for the three channels; the lamp rig's weights keep their colour.

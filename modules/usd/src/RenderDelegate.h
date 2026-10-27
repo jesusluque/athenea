@@ -130,6 +130,8 @@ public:
     [[nodiscard]] bool GetPathMis() const;
     [[nodiscard]] bool GetMeshLights() const;
     [[nodiscard]] uint32_t GetMeshLightSamples() const;
+    /// The `athenea:lightLevel:<group>` settings, by group.
+    [[nodiscard]] std::map<std::string, float> GetLightLevels() const;
     /// "athenea:domeVisible": a dome is drawn behind what the frame holds
     /// (true, the default); false leaves those pixels transparent, alpha 0,
     /// as a host's transparent film asks. The dome still lights the frame.

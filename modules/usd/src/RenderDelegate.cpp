@@ -540,6 +540,22 @@ bool HdAtheneaRenderDelegate::GetPathMis() const {
     return !value.IsHolding<bool>() || value.UncheckedGet<bool>();
 }
 
+std::map<std::string, float> HdAtheneaRenderDelegate::GetLightLevels() const {
+    // Every `athenea:lightLevel:<group>` the settings hold, as a number.
+    std::map<std::string, float> levels;
+    const std::string prefix = "athenea:lightLevel:";
+    for (const auto& [key, value] : _settingsMap) {
+        const std::string& name = key.GetString();
+        if (name.rfind(prefix, 0) != 0 || name.size() == prefix.size()) {
+            continue;
+        }
+        if (value.IsHolding<float>()) levels[name.substr(prefix.size())] = value.UncheckedGet<float>();
+        else if (value.IsHolding<double>()) levels[name.substr(prefix.size())] = float(value.UncheckedGet<double>());
+        else if (value.IsHolding<int>()) levels[name.substr(prefix.size())] = float(value.UncheckedGet<int>());
+    }
+    return levels;
+}
+
 uint32_t HdAtheneaRenderDelegate::GetMeshLightSamples() const {
     const VtValue value = GetRenderSetting(TfToken("athenea:meshLightSamples"));
     if (value.IsHolding<int>()) return static_cast<uint32_t>(std::max(value.UncheckedGet<int>(), 0));
