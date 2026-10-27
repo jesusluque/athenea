@@ -111,6 +111,9 @@ struct PathParams {
     float towardY;
     float towardZ;
     float towardRadius;
+    // 1: the groups gather the emission groups' indirect light only
+    // (PathSettings::groupsIndirect).
+    uint  groupsIndirect;
 };
 
 Texture2D<uint4>               visibility;   // (instance + 1, triangle); row 0 on top
@@ -2205,6 +2208,7 @@ R"(    bool firstShaded = false;
         Shaded cur;
         cur.valid = false;
         bool   lightStep = false;     // the next step shades the light point, not the path
+        uint   lightStepBounce = 0;   // and the bounce of the vertex that chose it
         Found  lightPoint;
         float3 lightScale = float3(0.0);
         float  previousPdf = 0.0;     // the material's density for the direction that reached `found`
@@ -2246,8 +2250,8 @@ R"(    bool firstShaded = false;
                     throughput *= albedo;
                     const float3 direct = gatherLightMedium(p, -d, g, tid, sample, bounce, mask, group);
                     carried += throughput * direct;
-                    if (kLightGroups) {
-                        addGroup(groups, group, throughput * direct * opacity);
+                    if (kLightGroups && path.groupsIndirect == 0u) {
+                        if (path.groupsIndirect == 0u) addGroup(groups, group, throughput * direct * opacity);
                     }
                     if (bounce - crossed >= path.bounces || !kTraces) {
                         break;
@@ -2331,7 +2335,9 @@ R"(                    }
                 // The light point's emission, back to the vertex that chose it,
                 // and into its emission group's output where it is in one.
                 carried += lightScale * shaded.stack.emission;
-                if (kLightGroups) {
+                // Gathered as indirect only where a bounce came before the
+                // vertex that chose it (groupsIndirect).
+                if (kLightGroups && (path.groupsIndirect == 0u || lightStepBounce >= 1u)) {
                     addGroup(groups, meshGroupAov(iesValues, meshLightWords, meshInstanceGroup(target.s.instance.flags)),
                              lightScale * shaded.stack.emission * opacity);
                 }
@@ -2467,7 +2473,7 @@ R"(                    }
                 }
                 if (!transferMode) {
                     carried += throughput * cur.stack.emission * emissionWeight;
-                    if (kLightGroups) {
+                    if (kLightGroups && (path.groupsIndirect == 0u || bounce >= 2u)) {
                         addGroup(groups,
                                  meshGroupAov(iesValues, meshLightWords, meshInstanceGroup(found.s.instance.flags)),
                                  throughput * cur.stack.emission * emissionWeight * opacity);
@@ -2520,6 +2526,7 @@ R"(                    }
                             lightScale = throughput * f * glassThrough * weight * throughSplats / lp.pdf;
                             lightPoint = lp.found;
                             lightStep = true;
+                            lightStepBounce = bounce;
                             continue;
                         }
                     }
@@ -2527,7 +2534,7 @@ R"(                    }
                     const float3 direct = gatherLight(cur, tid, sample, bounce, crossed, mask, group);
                     carried += throughput * direct;
                     if (kLightGroups) {
-                        addGroup(groups, group, throughput * direct * opacity);
+                        if (path.groupsIndirect == 0u) addGroup(groups, group, throughput * direct * opacity);
                     }
                 }
             }
@@ -2924,6 +2931,9 @@ R"(            // deep before the ray is out again, and at the default of one
             }
             colour[c * pixels + at] = float4(value, alpha / float(samples));
         }
+        // The emission groups' light at the point, each its own mean over
+        // these paths (BakeRequest::lightGroups): unfitted, as a colour.
+        endGroups(at, pixels, groups, alpha, float(samples));
         return;
     }
     const float before = float(path.accumulated);
@@ -3297,6 +3307,7 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         cursor["path"]["transfer"].setData(uint32_t{
             bake == nullptr || !bake->transfer ? 0u : bake->cellSide >= 32 ? 3u : bake->cellSide >= 16 ? 2u : 1u});
         cursor["path"]["headlight"].setData(uint32_t{settings.headlight ? 1u : 0u});
+        cursor["path"]["groupsIndirect"].setData(uint32_t{settings.groupsIndirect ? 1u : 0u});
         cursor["path"]["mis"].setData(uint32_t{settings.mis ? 1u : 0u});
         cursor["path"]["shadowCutouts"].setData(uint32_t{frame.cutouts ? 1u : 0u});
         cursor["path"]["glassShadows"].setData(uint32_t{settings.glassShadows && frame.glass ? 1u : 0u});

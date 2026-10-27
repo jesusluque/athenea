@@ -396,6 +396,18 @@ public:
                                                          uint32_t degree = 0, bool transfer = false,
                                                          uint32_t batch = 0, uint32_t cellSide = 0,
                                                          uint32_t firstPoint = 0, bool material = false);
+    /// THE EMISSION GROUPS' LIGHT AT EACH POINT, ALL GROUPS IN ONE PASS
+    /// (`mesh2splat --light-groups`): the same rays as `bakePointsOnDevice`,
+    /// and back on the device `count * groups.size()` `float4`, a point's
+    /// groups together in the order named, each the mean radiance the paths
+    /// brought out of the point from that group's emitters
+    /// (`primvars:athenea:lightGroup`) at a level of one. `indirect`: only
+    /// what reached the point after a bounce. At most eight groups; a name no
+    /// emitter carries is black.
+    [[nodiscard]] Result<gpu::Buffer> bakeGroupsOnDevice(const gpu::Buffer& rays, uint32_t count, double time,
+                                                         const std::vector<std::string>& groups,
+                                                         uint32_t samples = 256, uint32_t bounces = 3,
+                                                         bool indirect = true, uint32_t batch = 0);
     /// THE SAME BAKE, ITS DIRECT LIGHT KEPT APART FROM ITS INDIRECT, and
     /// taken adaptively where `options.extraSamples` asks: a first pass of
     /// `samples` paths at every gaussian, then passes of `passSamples` at the

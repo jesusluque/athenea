@@ -191,3 +191,92 @@ void meshScaled(uint3 tid: SV_DispatchThreadID) {
         InterlockedAdd(scaledCounts[0], 1u);
     }
 }
+
+// ---- the groups' baked layers, added -------------------------------------------
+
+struct LayerSumParams {
+    uint  count;       // points
+    uint  groupsA;     // float4 a point in layersA, added
+    uint  groupsB;     // float4 a point in layersB, added; 0: layersB is a bake's constant term
+    float tolerance;   // relative, of the larger of the reference and `floor`
+    float floor;
+    float lit;         // a reference brighter than this counts as lit
+};
+
+StructuredBuffer<float4>       layersA;
+StructuredBuffer<float4>       layersB;
+RWStructuredBuffer<uint>       layerCounts;   // [points apart, points lit, worst gap as float bits, red over green]
+ConstantBuffer<LayerSumParams> layerSum;
+
+/// Whether the sum of one bake's groups is another's (their groups added, or
+/// a bake's colour, `0.5 + kSH0 * c0` as a cloud keeps its constant term),
+/// point by point, to a tolerance: light being linear in its emitters.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void meshLayerSum(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= layerSum.count) {
+        return;
+    }
+    float3 a = float3(0.0);
+    for (uint g = 0u; g < layerSum.groupsA; ++g) {
+        a += layersA[i * layerSum.groupsA + g].rgb;
+    }
+    float3 b = float3(0.0);
+    if (layerSum.groupsB == 0u) {
+        b = 0.5 + 0.28209479177387814 * layersB[i].rgb;
+    } else {
+        for (uint g = 0u; g < layerSum.groupsB; ++g) {
+            b += layersB[i * layerSum.groupsB + g].rgb;
+        }
+    }
+    const float scale = max(max(b.r, max(b.g, b.b)), layerSum.floor);
+    const float3 gap = abs(a - b) / scale;
+    const float worst = max(gap.r, max(gap.g, gap.b));
+    if (!(worst <= layerSum.tolerance)) {
+        InterlockedAdd(layerCounts[0], 1u);
+    }
+    if (max(b.r, max(b.g, b.b)) > layerSum.lit) {
+        InterlockedAdd(layerCounts[1], 1u);
+    }
+    InterlockedMax(layerCounts[2], asuint(isfinite(worst) ? worst : 3.0e38));
+    if (a.r > 1.5 * a.g) {
+        InterlockedAdd(layerCounts[3], 1u);
+    }
+}
+
+// ---- two frames compared where a mask says ---------------------------------------
+
+StructuredBuffer<float4>       maskedA;
+StructuredBuffer<float4>       maskedB;
+StructuredBuffer<float4>       maskFrame;    // where its red is over a half
+RWStructuredBuffer<float>      maskedOut;    // [sum of relative squared error, pixels, a's rgb sum, b's rgb sum]
+uniform uint                   maskedPixels;
+
+/// The relative squared error (a - b)^2 / (b^2 + 0.01), its channels' mean,
+/// summed over the masked pixels with the pixels counted and each frame's
+/// colour summed: one thread, a frame's worth of pixels.
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void meshMaskedError(uint3 tid: SV_DispatchThreadID) {
+    float error = 0.0;
+    float count = 0.0;
+    float3 sumA = float3(0.0);
+    float3 sumB = float3(0.0);
+    for (uint p = 0u; p < maskedPixels; ++p) {
+        if (!(maskFrame[p].r > 0.5)) {
+            continue;
+        }
+        const float3 a = maskedA[p].rgb;
+        const float3 b = maskedB[p].rgb;
+        const float3 e = (a - b) * (a - b) / (b * b + float3(0.01));
+        error += (e.r + e.g + e.b) / 3.0;
+        count += 1.0;
+        sumA += a;
+        sumB += b;
+    }
+    maskedOut[0] = error;
+    maskedOut[1] = count;
+    maskedOut[2] = sumA.r; maskedOut[3] = sumA.g; maskedOut[4] = sumA.b;
+    maskedOut[5] = sumB.r; maskedOut[6] = sumB.g; maskedOut[7] = sumB.b;
+}

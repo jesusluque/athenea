@@ -16085,7 +16085,7 @@ per-triangle power table (`EmissiveTable`, "Emitting triangles as a light" in M5
 gaussians showed its glow and nothing more, and UsdLux's `MeshLightAPI` was not read at all. The aim is that
 LED strips, screens, studio lamps and a car's lamps light meshes and TX gaussians every frame in the raster,
 without a bake. The work is staged: A (mesh lights as lights, the path tracer through a tree), B (meshes lit
-in the raster, sampled then analytic), C (TX gaussians relit by them), D (groups and dimming).
+in the raster, sampled then analytic), C (TX gaussians relit by them), D (groups and dimming), E (the groups' indirect light baked).
 
 ### What Hydra hands over for a `MeshLightAPI`
 
@@ -16337,3 +16337,55 @@ emitters alone sums its groups to the beauty -- the amendment above.
 
 - `athenea:lightGroup` on a material, and the MeshLightAPI's own group attribute: the gprim's primvar only.
 - A level is one number for the three channels; the lamp rig's weights keep their colour.
+
+### Stage E: the emission groups' indirect light, baked
+
+What a frame computes of a mesh light on a relit gaussian is its direct light (stage C) and one approximate
+bounce; the rest -- several bounces, the red a floor sends up onto what stands on it -- is baked once a group
+and scaled at run time by the group's level. `mesh2splat --light-groups a,b` traces one more bake through the
+conversion's rays with the groups asked for as light group outputs: the tracer already adds each path's light
+from a group's emitters into that group's plane of its sums (stage D), so every group is gathered by the same
+paths in one pass, and the plain bake's branch now writes those planes' means too. With `groupsIndirect` a
+group keeps only what came after a bounce: emission met from the second bounce on, a light step chosen at a
+vertex past the first, and none of the UsdLux lights' groups. Each group becomes a layer
+`primvars:athenea:splat:lightLayer:emission:<group>` (three floats a gaussian at level 1), the lamp layers'
+format, and a frame adds it in `lampLight` at the weight stage D gives the group's emitters (its
+`athenea:lightLevel`, else the rig's weight of its name, else one), so a dimmed group dims its direct and its
+baked light together. A changed level now also renews the layers' weights.
+
+The plan named a group id on the emitter clusters and per-group accumulators; the light group outputs are
+that, already there, and the bake takes them as a frame does. A layer is the group's light where it was baked:
+`--skinned` is refused.
+
+`athenea lightmap --light-groups` bakes the atlas with the groups at level 0 and, in one more pass, an atlas
+a group (`<name>_emission_<group>.exr`). These hold the group's whole light, direct included, and not its
+indirect half as the plan said: a lightmapped mesh is drawn unlit, so nothing else would add the direct light.
+`lightmapped.usda` binds the main atlas only.
+
+#### Measured (Metal, M5 Pro)
+
+- Forty points on a white floor by a red wall under two strips, 4096 paths, 3 bounces: groups `a` and `b`
+  baked together against both strips baked as one group, indirect only -- none of the 40 apart by 10%
+  (worst below 5e-4, the same paths), all 40 lit and red over green by more than 1.5; their whole light
+  against the plain bake's colour, the same.
+- A white ball beside a strip on a red floor (tests/data/mesh_light_bleed.usda), converted with a TX transfer
+  with and without `--light-groups strip` (96130 gaussians; the group bake 68.5 s at 256 paths beside the
+  transfer's 82.5 s), 192 x 192 against the mesh path traced (1024 paths, 6 bounces). On the ball, what the
+  layer adds is (0.0199, 0.0029, 0.0017) on average against the path tracer's (0.0225, 0.0033, 0.0019) --
+  the ball on its red floor less the ball on a black one.
+- Level 0.5 against 1: none of 27859 lit pixels other than half, direct and layer together; level 0: no
+  pixel lit.
+- `athenea lightmap --planar --light-groups strip` over that floor, 128 x 128, 64 paths: the main atlas
+  black (the strip is the stage's only light), the strip's atlas red, mean (0.018, 0.0027, 0.0016); the
+  group pass 29 s beside the atlas's 34 s.
+- On the same ball the frame's direct light is 56% of the path tracer's (green 0.0126 against 0.0226), so
+  the ball as a whole is not closer with the layer (relMSE 0.0249 against 0.0237 without): the layer brings
+  the red, and the direct light of stage C at this range is what is short.
+
+#### Not done (stage E)
+
+- Stage C's direct light on a gaussian 0.4 units from a strip's edge is short by about half: the cut, the
+  transfer's bits over the cone of the equivalent sphere, or both; not yet told apart.
+- The lightmap's group atlases are not added at the groups' levels by anything in this engine.
+- A radiance-baked cloud (`litBody`) keeps its groups' light in its colours; the layers are for relit clouds.
+- The test the plan named on a pawn; the ball stands in for it.

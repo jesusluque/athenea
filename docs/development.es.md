@@ -997,6 +997,20 @@ escribirse (`athenea/usd/transfer_filter_io`): el rgb de la mitad indirecta y
 el campo reflejado, con una varianza dada al filtro que nunca lo detiene, ya
 que un transfer no guarda momentos.
 
+**La luz de los grupos de emisión** (`mesh2splat --light-groups`,
+`lightmap --light-groups`) es un horneado más por los mismos rayos:
+`StageRenderer::bakeGroupsOnDevice` pide al frame los grupos como salidas de
+grupo de luz (`BakeRequest::lightGroups`), así que el tracer suma la luz de
+cada camino que viene de los emisores de un grupo al plano de ese grupo en
+sus sumas, y la rama del horneado simple escribe sus medias junto al color;
+el engine copia los planos fuera y `bake_gather` los coloca con los grupos de
+un punto juntos. Con `groupsIndirect` un grupo se queda solo con lo que llegó
+tras un rebote: la emisión encontrada desde el segundo rebote, y un paso de
+luz elegido en un vértice más allá del primero.
+`athenea/usd/mesh2splat_layers` reempaqueta la respuesta en una capa por
+grupo para el fichero; el lightmap esparce cada grupo en un atlas propio
+(`lightmapScatterGroup`), con los grupos a nivel 0 en el atlas principal.
+
 **Una gaussiana elevada** se hornea desde el punto plano que tiene debajo,
 bajando por la normal plana — un rayo desde donde está empezaría bajo la
 superficie allí donde el relieve la hundió — con una tercera entrada, su

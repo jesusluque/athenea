@@ -954,6 +954,19 @@ same filter before it is written (`athenea/usd/transfer_filter_io`): the
 indirect half's rgb and the reflected field, with a variance handed to the
 filter that never stops it, since a transfer keeps no moments.
 
+**The emission groups' light** (`mesh2splat --light-groups`,
+`lightmap --light-groups`) is one more bake through the same rays:
+`StageRenderer::bakeGroupsOnDevice` asks the frame for the groups as light
+group outputs (`BakeRequest::lightGroups`), so the tracer adds each path's
+light from a group's emitters into that group's plane of its sums, and the
+plain bake's branch writes their means beside the colour; the engine copies
+the planes out and `bake_gather` lays them a point's groups together. With
+`groupsIndirect` a group takes only what came after a bounce: emission met
+from the second bounce on, and a light step chosen at a vertex past the
+first. `athenea/usd/mesh2splat_layers` repacks the answer into a layer a
+group for the file; the lightmap scatters each group into an atlas of its
+own (`lightmapScatterGroup`), with the groups at level 0 in the main atlas.
+
 **A raised gaussian** is baked from the flat point under it, down the flat
 normal — a ray from where it stands would start under the surface wherever the
 relief sank it — with a third entry, its facing, laid out beside the two.

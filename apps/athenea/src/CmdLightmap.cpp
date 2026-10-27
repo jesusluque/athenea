@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -108,6 +109,7 @@ void addLightmap(CLI::App& app) {
         std::string name;
         double time = 0.0;
         bool defaultLights = false;
+        std::vector<std::string> lightGroups;
     };
     auto o = std::make_shared<Options>();
     auto* cmd = app.add_subcommand(
@@ -138,6 +140,10 @@ void addLightmap(CLI::App& app) {
     cmd->add_option("--prim", o->prim, "only meshes at or under this prim path");
     cmd->add_option("--time", o->time, "USD time code");
     cmd->add_flag("--default-lights", o->defaultLights, "a dome and a sun, for a stage with no lights");
+    cmd->add_option("--light-groups", o->lightGroups,
+                    "emission groups (primvars:athenea:lightGroup) baked out of the atlas and into one of their own "
+                    "each, all in one pass (at most 8; comma-separated or repeated)")
+        ->delimiter(',');
     cmd->callback([o] {
         const auto started = Clock::now();
         const fs::path out = o->output;
@@ -224,6 +230,19 @@ void addLightmap(CLI::App& app) {
                 if (o->defaultLights) {
                     ATHENEA_TRY((*renderer)->setDefaultLights(true));
                 }
+                // The groups baked apart are out of the atlas: their emitters
+                // at level 0 for it (athenea:lightLevel).
+                if (o->lightGroups.size() > 8) {
+                    return Error::make(ErrorCode::InvalidArgument, "lightmap: {} light groups; at most 8",
+                                       o->lightGroups.size());
+                }
+                for (const std::string& g : o->lightGroups) {
+                    (*renderer)->setLightLevel(g, 0.0F);
+                }
+                auto scatterGroup = gpu::ComputeKernel::create(library, "athenea/usd/lightmap", "lightmapScatterGroup");
+                if (!scatterGroup) return std::move(scatterGroup).error();
+                auto imageClear = gpu::ComputeKernel::create(library, "athenea/usd/lightmap", "lightmapImageClear");
+                if (!imageClear) return std::move(imageClear).error();
                 const uint32_t size = o->size;
                 const uint32_t texels = size * size;
                 for (const auto& [index, list] : byAtlas) {
@@ -437,48 +456,89 @@ void addLightmap(CLI::App& app) {
                         }
                         return ok();
                     };
-                    ATHENEA_TRY(grow(*image, o->dilate));
-                    gpu::Buffer* result = &*image;
-                    if (!o->noDenoise && technique::denoiserBuilt()) {
-                        ATHENEA_TRY(grow(*albedo, o->dilate));
-                        ATHENEA_TRY(grow(*normal, o->dilate));
-                        {
-                            gpu::CommandBatch batch(device);
-                            batch.encoder()->copyBuffer(aux->rhi(), 0, albedo->rhi(), 0, uint64_t{texels} * 16);
-                            batch.encoder()->copyBuffer(aux->rhi(), uint64_t{texels} * 16, normal->rhi(), 0,
-                                                        uint64_t{texels} * 16);
-                            batch.markDirty();
-                            ATHENEA_TRY(batch.submit(true));
+                    // Grown, denoised where it can be, masked, grown again and
+                    // written: the atlas's light, and each group's after it.
+                    const auto finish = [&](const std::string& base) -> Result<void> {
+                        ATHENEA_TRY(grow(*image, o->dilate));
+                        gpu::Buffer* result = &*image;
+                        if (!o->noDenoise && technique::denoiserBuilt()) {
+                            ATHENEA_TRY(grow(*albedo, o->dilate));
+                            ATHENEA_TRY(grow(*normal, o->dilate));
+                            {
+                                gpu::CommandBatch batch(device);
+                                batch.encoder()->copyBuffer(aux->rhi(), 0, albedo->rhi(), 0, uint64_t{texels} * 16);
+                                batch.encoder()->copyBuffer(aux->rhi(), uint64_t{texels} * 16, normal->rhi(), 0,
+                                                            uint64_t{texels} * 16);
+                                batch.markDirty();
+                                ATHENEA_TRY(batch.submit(true));
+                            }
+                            if (!denoiser) {
+                                auto made = technique::Denoiser::create(library);
+                                if (!made) return std::move(made).error();
+                                denoiser = std::make_unique<technique::Denoiser>(std::move(*made));
+                            }
+                            const auto denoiseStart = Clock::now();
+                            ATHENEA_TRY(denoiser->denoise(*image, &*aux, 0, uint64_t{texels} * 16, *denoised, size, size));
+                            cli::out("lightmap: atlas %d denoised (%s) in %.0f ms\n", index,
+                                     denoiser->description().c_str(), msSince(denoiseStart));
+                            {
+                                gpu::CommandBatch batch(device);
+                                mask->dispatch(batch, {texels, 1, 1}, [&](rhi::ShaderCursor c) {
+                                    c["owner"].setBinding(owner->rhi());
+                                    c["image"].setBinding(denoised->rhi());
+                                    bindAtlas(c, count);
+                                });
+                                ATHENEA_TRY(batch.submit(true));
+                            }
+                            ATHENEA_TRY(grow(*denoised, o->dilate));
+                            result = &*denoised;
                         }
-                        if (!denoiser) {
-                            auto made = technique::Denoiser::create(library);
-                            if (!made) return std::move(made).error();
-                            denoiser = std::make_unique<technique::Denoiser>(std::move(*made));
+                        gpu::Buffer* from = result;
+                        auto pixels = from->readAll<float>(device);
+                        if (!pixels) return std::move(pixels).error();
+                        const fs::path file = out / (base + ".exr");
+                        ATHENEA_TRY(io::writeExr(file, size, size, *pixels, {}, true));
+                        cli::out("lightmap: wrote %s (%u meshes)\n", file.string().c_str(),
+                                 static_cast<unsigned>(made.meshes.size()));
+                        return ok();
+                    };
+                    const std::string name = o->name.empty() ? "lightmap_" + std::to_string(index) : o->name;
+                    ATHENEA_TRY(finish(name));
+                    // THE EMISSION GROUPS, an atlas each (--light-groups): their
+                    // light whole, all of them in one bake, at level 1 -- the
+                    // atlas above was baked with them at 0.
+                    if (!o->lightGroups.empty()) {
+                        for (const std::string& g : o->lightGroups) {
+                            (*renderer)->setLightLevel(g, std::nullopt);
                         }
-                        const auto denoiseStart = Clock::now();
-                        ATHENEA_TRY(denoiser->denoise(*image, &*aux, 0, uint64_t{texels} * 16, *denoised, size, size));
-                        cli::out("lightmap: atlas %d denoised (%s) in %.0f ms\n", index,
-                                 denoiser->description().c_str(), msSince(denoiseStart));
-                        {
+                        const auto groupsStart = Clock::now();
+                        auto groups = (*renderer)->bakeGroupsOnDevice(*rays, count, o->time, o->lightGroups,
+                                                                      o->samples + o->extraSamples, o->bounces,
+                                                                      /*indirect=*/false);
+                        if (!groups) return std::move(groups).error();
+                        cli::out("lightmap: atlas %d, %zu emission groups baked in one pass in %.0f ms\n", index,
+                                 o->lightGroups.size(), msSince(groupsStart));
+                        for (size_t g = 0; g < o->lightGroups.size(); ++g) {
                             gpu::CommandBatch batch(device);
-                            mask->dispatch(batch, {texels, 1, 1}, [&](rhi::ShaderCursor c) {
-                                c["owner"].setBinding(owner->rhi());
-                                c["image"].setBinding(denoised->rhi());
+                            imageClear->dispatch(batch, {texels, 1, 1}, [&](rhi::ShaderCursor c) {
+                                c["image"].setBinding(image->rhi());
+                                bindAtlas(c, count);
+                            });
+                            scatterGroup->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) {
+                                c["baked"].setBinding(groups->rhi());
+                                c["texelOf"].setBinding(texelOf->rhi());
+                                c["image"].setBinding(image->rhi());
+                                c["groupStride"].setData(static_cast<uint32_t>(o->lightGroups.size()));
+                                c["groupIndex"].setData(static_cast<uint32_t>(g));
                                 bindAtlas(c, count);
                             });
                             ATHENEA_TRY(batch.submit(true));
+                            ATHENEA_TRY(finish(name + "_emission_" + o->lightGroups[g]));
                         }
-                        ATHENEA_TRY(grow(*denoised, o->dilate));
-                        result = &*denoised;
+                        for (const std::string& g : o->lightGroups) {
+                            (*renderer)->setLightLevel(g, 0.0F);
+                        }
                     }
-                    gpu::Buffer* from = result;
-                    auto pixels = from->readAll<float>(device);
-                    if (!pixels) return std::move(pixels).error();
-                    const std::string base = o->name.empty() ? "lightmap_" + std::to_string(index) : o->name;
-                    const fs::path file = out / (base + ".exr");
-                    ATHENEA_TRY(io::writeExr(file, size, size, *pixels, {}, true));
-                    cli::out("lightmap: wrote %s (%u meshes)\n", file.string().c_str(),
-                             static_cast<unsigned>(made.meshes.size()));
                     atlases.push_back(std::move(made));
                 }
                 return ok();

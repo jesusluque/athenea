@@ -527,6 +527,7 @@ receta es §3.1.
 | `--detail` | `PRIM=FACTOR` ‹repetible› | ninguno | cuando se reparte el presupuesto, las mallas en `PRIM` o por debajo toman FACTOR² veces su parte proporcional, así que su celda sale FACTOR veces más fina que la del resto; nunca más de lo que piden, y lo que no pueden tomar vuelve a las demás |
 | `--bake-toward` | 3 números, unidades del mundo | ninguno | hornea lo que ve una cámara situada ahí, reflejos incluidos, como un color por gaussiana (grado 0): para una cámara que solo gira en torno a ese punto. Una gaussiana que mira hacia otro lado hornea su cuerpo sobre su hemisferio |
 | `--bake-toward-radius` | unidades del mundo | `0.15` | `--bake-toward`: la bola alrededor del punto en la que puede estar la cámara; cada camino mira desde un punto de ella |
+| `--light-groups` | `GRUPO[,GRUPO...]` ‹repetible›, como mucho 8 | ninguno | grupos de emisión (`primvars:athenea:lightGroup`) cuya luz indirecta se hornea, todos en una pasada de `--bake-samples` + `--bake-extra` caminos y `--bake-bounces`, como una capa cada uno, `primvars:athenea:splat:lightLayer:emission:<grupo>`: lo que los emisores del grupo ponen en cada gaussiana a nivel 1 tras un rebote. La mitad directa es del propio frame (mesh lights sobre gaussianas reiluminadas); un frame suma la capa al nivel del grupo. No con `--skinned` |
 | `--transfer` | flag | apagado | hornear cuánto cielo llega a cada gaussiana, en vez de la luz que llegó |
 | `--indirect` / `--no-indirect` | flag | encendido | con `--transfer`: guardar también la mitad que rebotó; un transfer zonal guarda sólo la mitad directa |
 | `--transfer-degree` | 2 o 3 | 3 | con `--transfer`: el grado de los armónicos, 16 coeficientes directos y 48 indirectos con 3, los 9 y 27 del primer transfer con 2 |
@@ -689,6 +690,7 @@ textura es su atlas, leída en las mismas coordenadas.
 | `--prim` | ruta de prim | todas las mallas | |
 | `--time` | número | `0` | time code de USD |
 | `--default-lights` | flag | apagado | un dome y un sol para un stage que no tiene luces |
+| `--light-groups` | `GRUPO[,GRUPO...]` ‹repetible›, como mucho 8 | ninguno | grupos de emisión (`primvars:athenea:lightGroup`) sacados de cada atlas (horneado a nivel 0) y horneados en uno propio cada uno, todos en una pasada: `<nombre>_emission_<grupo>.exr`, la luz entera del grupo a nivel 1, directa e indirecta, ya que una malla con lightmap no se ilumina. `lightmapped.usda` enlaza solo el atlas principal; la suma a los niveles de los grupos es del host |
 
 **Atlas.** Una malla va en el atlas que dice su `userProperties:lightmap_atlas`
 (un int o un float) -- en la malla, o en el prim más cercano por encima que lo
@@ -1953,6 +1955,7 @@ nombre (§3.6):
 | Atributo | En | Tipo | Por defecto |
 |---|---|---|---|
 | `primvars:athenea:splat:lightLayer:<grupo>` | el field | color3f[] ‹1 por gaussiana, lineal, por unidad de radiancia› | — |
+| `primvars:athenea:splat:lightLayer:emission:<grupo>` | el field | color3f[] ‹1 por gaussiana, lineal, al nivel 1 del grupo› | — |
 | `primvars:athenea:splat:lightCatcher` | el field | bool | `false` |
 | `athenea:lightGroup:emissionLuminance` | un grupo | float | `1` (`:radiance` donde falta este) |
 | `athenea:lightGroup:emissionColor` | un grupo | color3f | `(1, 1, 1)` (`:color` donde falta este) |
@@ -2092,6 +2095,14 @@ donde no hay ninguno, el peso que el rig de lámparas da a un grupo de ese
 nombre, §3.6), y su luz va a la salida del grupo (`lightGroup:<grupo>`),
 incluido lo que se ve del propio emisor. Un nivel cambiado vuelve a dibujar el
 frame con los mismos clusters: ningún rebuild, unos pocos números subidos.
+
+La luz indirecta de un grupo de emisión -- lo que sus emisores ponen en una
+gaussiana tras un rebote, incluido el color que sube de un suelo rojo -- no la
+calcula un frame; `athenea mesh2splat --light-groups` la hornea, todos los
+grupos nombrados en una pasada, como una capa cada uno
+(`primvars:athenea:splat:lightLayer:emission:<grupo>`, a nivel 1), y un frame
+suma cada capa por el nivel de su grupo -- el mismo peso que lleva la luz
+directa del grupo, así que un grupo atenuado atenúa las dos.
 
 Una prim con `MeshLightAPI` emite la radiancia de su LightAPI --
 `inputs:color` por `inputs:intensity`, `inputs:exposure`, y el cuerpo negro de

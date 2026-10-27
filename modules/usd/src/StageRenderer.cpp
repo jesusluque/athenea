@@ -1705,6 +1705,89 @@ Result<gpu::Buffer> StageRenderer::bakePointsOnDevice(const gpu::Buffer& rays, u
     return std::move(*answer);
 }
 
+Result<gpu::Buffer> StageRenderer::bakeGroupsOnDevice(const gpu::Buffer& rays, uint32_t count, double time,
+                                                      const std::vector<std::string>& groups, uint32_t samples,
+                                                      uint32_t bounces, bool indirect, uint32_t batch) {
+    Impl& impl = *impl_;
+    if (count == 0 || !rays.valid() || rays.bytes() < uint64_t{count} * 48) {
+        return Error(ErrorCode::InvalidArgument, "bake: three float4 a point, and at least one point");
+    }
+    if (groups.empty() || groups.size() > technique::kMaxLightGroups) {
+        return Error::make(ErrorCode::InvalidArgument, "bake: {} light groups; one to {}", groups.size(),
+                           technique::kMaxLightGroups);
+    }
+    if (!impl.delegate->HasEngine()) {
+        return Error(ErrorCode::DeviceFailure, "bake: the render delegate has no GPU");
+    }
+    impl.delegate->SetRenderSetting(TfToken("athenea:settleStreams"), VtValue(true));
+    auto framing = framingCamera(time, 35.0, "rt");
+    if (!framing) return std::move(framing).error();
+    ATHENEA_TRY(aim(*framing, time, 1, 1, "rt"));
+    ATHENEA_TRY(execute(1, 1));
+
+    athenea::usd::Engine& engine = impl.delegate->GetEngine();
+    gpu::Device& device = engine.device();
+    auto gather = gpu::ComputeKernel::create(engine.library(), "athenea/usd/bake_gather", "bakeGather");
+    if (!gather) return std::move(gather).error();
+    const auto entries = static_cast<uint32_t>(groups.size());
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{count} * entries * 16;
+    desc.elementBytes = 16;
+    desc.label = "bake.groupsAnswer";
+    auto answer = gpu::Buffer::create(device, desc);
+    if (!answer) return std::move(answer).error();
+
+    render::RenderSettings settings;
+    settings.width = 1;
+    settings.height = 1;
+    const render::Projection projection = render::projectionFor(*framing, 1, 1);
+    render::RenderTargets out;
+    render::RenderTargets planes;
+    const uint32_t perPass = std::min(batch > 0 ? batch : kBakeBatch, count);
+    gpu::Buffer passRays;
+    if (perPass < count) {
+        desc.bytes = uint64_t{perPass} * 48;
+        desc.label = "bake.passRays";
+        auto made = gpu::Buffer::create(device, desc);
+        if (!made) return std::move(made).error();
+        passRays = std::move(*made);
+    }
+    for (uint32_t first = 0; first < count; first += perPass) {
+        const uint32_t n = std::min(perPass, count - first);
+        if (passRays.valid()) {
+            gpu::CommandBatch copy(device);
+            copy.encoder()->copyBuffer(passRays.rhi(), 0, rays.rhi(), uint64_t{first} * 48, uint64_t{n} * 48);
+            copy.markDirty();
+            ATHENEA_TRY(copy.submit(true));
+        }
+        athenea::usd::BakeRequest bake;
+        bake.rays = passRays.valid() ? &passRays : &rays;
+        bake.count = n;
+        bake.samples = samples;
+        bake.bounces = bounces;
+        bake.coefficients = 1;
+        bake.out = &out;
+        bake.lightGroups = groups;
+        bake.groupsIndirect = indirect;
+        bake.groupsOut = &planes;
+        ATHENEA_TRY(engine.bakePoints(bake, projection, settings));
+        if (!planes.colour.valid()) {
+            return Error(ErrorCode::InternalError, "bake: the frame wrote no groups");
+        }
+        gpu::CommandBatch laid(device);
+        gather->dispatch(laid, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["planes"].setBinding(planes.colour.rhi());
+            cursor["answer"].setBinding(answer->rhi());
+            cursor["params"]["count"].setData(n);
+            cursor["params"]["first"].setData(first);
+            cursor["params"]["entries"].setData(entries);
+            cursor["params"]["plane"].setData(planes.width * planes.height);
+        });
+        ATHENEA_TRY(laid.submit(true));
+    }
+    return std::move(*answer);
+}
+
 Result<void> allotBakePasses(gpu::ShaderLibrary& library, const gpu::Buffer& sums, uint32_t count,
                              uint32_t coefficients, const BakeOptions& options, gpu::Buffer& allot) {
     if (count == 0 || !sums.valid() || !allot.valid() || allot.bytes() < uint64_t{count} * 4) {

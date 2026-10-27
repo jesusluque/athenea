@@ -170,6 +170,12 @@ struct ExportOptions {
     /// `primvars:athenea:splat:ior` when above 1: the index the cloud's
     /// transmitting gaussians refract by. Not written at 0.
     float                           ior = 0.0F;
+    /// LIGHT LAYERS: by name, three floats a record of the light a group of
+    /// lamps or emitters puts on each gaussian, written as
+    /// `primvars:athenea:splat:lightLayer:<name>` (half floats), which a frame
+    /// adds at the group's weight (Engine::setLightWeights,
+    /// `athenea:lightLevel:<group>`).
+    std::vector<std::pair<std::string, std::span<const float>>> lightLayers;
 };
 
 /// WHAT A TRANSFER BAKE HANDS THE FILE, as the arrays a stage keeps

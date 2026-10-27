@@ -198,6 +198,36 @@ void lightmapScatter(uint3 tid: SV_DispatchThreadID) {
     image[texelOf[k]] = float4(radiance, 1.0);
 }
 
+// AN EMISSION GROUP'S ATLAS (`--light-groups`): the image emptied, then each
+// point's light from that group -- `groupStride` float4 a point, the groups
+// in order, radiance as it is (StageRenderer::bakeGroupsOnDevice) -- into its
+// texel.
+uniform uint groupStride;
+uniform uint groupIndex;
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void lightmapImageClear(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x >= atlas.texels) {
+        return;
+    }
+    image[tid.x] = float4(0.0);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void lightmapScatterGroup(uint3 tid: SV_DispatchThreadID) {
+    const uint k = tid.x;
+    if (k >= atlas.count) {
+        return;
+    }
+    const float4 light = baked[k * groupStride + groupIndex];
+    if (!(light.w > 0.0)) {
+        return;
+    }
+    image[texelOf[k]] = float4(max(light.rgb, float3(0.0)), 1.0);
+}
+
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void lightmapDilate(uint3 tid: SV_DispatchThreadID) {

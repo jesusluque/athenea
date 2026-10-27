@@ -40,6 +40,11 @@ struct PathSettings {
     uint32_t bounces = 1;     ///< indirect bounces after the first hit
     uint32_t seed = 0;        ///< which samples these are: the frame's index
     bool     accumulate = false;   ///< add to what is there rather than replace it
+    /// THE LIGHT GROUPS GATHER THE INDIRECT LIGHT OF THE EMISSION GROUPS ALONE
+    /// (a bake's `--light-groups`): an emitter's light goes into its group only
+    /// after a bounce -- the direct half is the frame's to draw live -- and no
+    /// UsdLux light's goes into any.
+    bool     groupsIndirect = false;
     /// Adaptive: a pixel whose mean's relative standard error has fallen
     /// below `errorTarget` after at least `minSamples` paths takes no more.
     /// The estimate is the pixel's own, from its luminance's second moment.

@@ -236,6 +236,9 @@ struct Options {
     /// look like one.
     uint32_t                 bakeDegree = 2;
     std::vector<float>       bakeToward;           // x y z: the one place every gaussian is seen from
+    /// EMISSION GROUPS WHOSE INDIRECT LIGHT IS BAKED as a layer each
+    /// (`primvars:athenea:splat:lightLayer:emission:<group>`), all in one pass.
+    std::vector<std::string> lightGroups;
     float                    bakeTowardRadius = 0.15F;
     /// ADAPTIVE: paths a gaussian on average added after the first pass,
     /// where the relative variance per cost says they are worth most.
@@ -2094,6 +2097,12 @@ public:
     [[nodiscard]] Result<void> filterTransferPart(aofx::Effect& filter, gpu::Buffer& answer, uint32_t coefficients,
                                                   uint32_t entries, uint32_t fieldFirst, uint32_t part,
                                                   uint32_t first, uint32_t chunk, uint32_t base, uint32_t count);
+    /// THE EMISSION GROUPS' INDIRECT LIGHT AT EVERY GAUSSIAN, all groups in
+    /// one bake (StageRenderer::bakeGroupsOnDevice): `out` a layer a group, in
+    /// the order named, three floats a gaussian.
+    [[nodiscard]] Result<void> bakeGroups(const std::string& stage, double time,
+                                          const std::vector<std::string>& groups, uint32_t samples,
+                                          uint32_t bounces, std::vector<std::vector<float>>& out);
     /// How much of an environment reaches each gaussian, instead of the light.
     /// With `zonal`, the cloud is posed where its skeleton stands at `time`
     /// before the bake traces it, and what the file keeps is `zonalOut` --
@@ -2357,6 +2366,50 @@ Result<void> Converter::bake(const std::string& stage, double time, const usd::B
                      "mesh2splat: more than half the gaussians found no surface under them; the bake "
                      "is unlikely to be what you want\n");
     }
+    return ok();
+}
+
+/// The groups' light where the gaussians stand, through the same rays as the
+/// bake: one pass for every group, its answer repacked into a layer a group
+/// on the device, and only the layers cross, to be written.
+Result<void> Converter::bakeGroups(const std::string& stage, double time, const std::vector<std::string>& groups,
+                                   uint32_t samples, uint32_t bounces, std::vector<std::vector<float>>& out) {
+    const auto started = std::chrono::steady_clock::now();
+    ATHENEA_TRY(spanRays());
+    auto renderer = usd::StageRenderer::open(stage, context_->deviceShared());
+    if (!renderer) return std::move(renderer).error();
+    auto answer = (*renderer)->bakeGroupsOnDevice(rays_, count_, time, groups, samples, bounces, true);
+    if (!answer) return std::move(answer).error();
+    gpu::Device& device = library_->device();
+    auto kernel = gpu::ComputeKernel::create(*library_, "athenea/usd/mesh2splat_layers", "m2sLayersInto");
+    if (!kernel) return std::move(kernel).error();
+    const auto n = static_cast<uint32_t>(groups.size());
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{count_} * n * 3 * sizeof(float);
+    desc.elementBytes = 4;
+    desc.label = "mesh2splat.groupLayers";
+    auto layers = gpu::Buffer::create(device, desc);
+    if (!layers) return std::move(layers).error();
+    {
+        gpu::CommandBatch batch(device);
+        kernel->dispatch(batch, {count_, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["answer"].setBinding(answer->rhi());
+            cursor["layers"].setBinding(layers->rhi());
+            cursor["params"]["count"].setData(count_);
+            cursor["params"]["groups"].setData(n);
+        });
+        ATHENEA_TRY(batch.submit(true));
+    }
+    out.assign(n, {});
+    for (uint32_t g = 0; g < n; ++g) {
+        out[g].resize(size_t{count_} * 3);
+        ATHENEA_TRY(layers->read(device, uint64_t{g} * count_ * 3 * sizeof(float), out[g].size() * sizeof(float),
+                                 out[g].data()));
+    }
+    const double took = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    cli::out("mesh2splat: the indirect light of %u emission groups baked in one pass at %u gaussians "
+             "(%u paths each, %u bounces) in %.0f ms\n",
+             n, count_, samples, bounces, took);
     return ok();
 }
 
@@ -3126,6 +3179,11 @@ void addMesh2Splat(CLI::App& app) {
                     "X Y Z in the stage's world: bake what a camera standing there sees -- reflections too -- "
                     "as one colour a gaussian (degree 0), for a camera that only turns about that point")
         ->expected(3);
+    cmd->add_option("--light-groups", o->lightGroups,
+                    "emission groups (primvars:athenea:lightGroup) whose indirect light is baked, all in one pass, "
+                    "as a layer each that a frame adds at the group's level (at most 8; comma-separated or "
+                    "repeated)")
+        ->delimiter(',');
     cmd->add_option("--bake-toward-radius", o->bakeTowardRadius,
                     "--bake-toward: the ball about the point the camera may stand in, world units");
     cmd->add_flag("--skinned", o->skinned,
@@ -3285,6 +3343,20 @@ void addMesh2Splat(CLI::App& app) {
             if (o->indirect) {
                 cli::out("mesh2splat: a zonal transfer keeps the direct half alone; the indirect one stays in "
                             "the world and would not turn with the gaussian\n");
+            }
+        }
+
+        // The groups' layers are light in the world, at the gaussians where
+        // the bake found them: a cloud a skeleton moves would carry them off.
+        if (!o->lightGroups.empty()) {
+            if (o->skinned) {
+                cli::err("mesh2splat: --light-groups bakes light where the gaussians stand, which a skeleton "
+                         "would move them out of; not with --skinned\n");
+                throw CLI::RuntimeError(1);
+            }
+            if (o->lightGroups.size() > 8) {
+                cli::err("mesh2splat: --light-groups: %zu groups; at most 8 in one pass\n", o->lightGroups.size());
+                throw CLI::RuntimeError(1);
             }
         }
 
@@ -3449,6 +3521,15 @@ void addMesh2Splat(CLI::App& app) {
                     ATHENEA_TRY(converter.bake(o->stage, o->time, bake, o->defaultLights, filter));
                 }
 
+                // THE EMISSION GROUPS' INDIRECT LIGHT, a layer a group: what
+                // the frame does not compute itself of a mesh light's, added
+                // at the group's level (docs/decisions.md, stage E).
+                std::vector<std::vector<float>> groupLayers;
+                if (!o->lightGroups.empty()) {
+                    ATHENEA_TRY(converter.bakeGroups(o->stage, o->time, o->lightGroups, o->bakeSamples + o->bakeExtra,
+                                                     o->bakeBounces, groupLayers));
+                }
+
                 // THE RIG, WHEN THE CLOUD KEEPS ONE. Four joints a gaussian came
                 // back with the records; what is gathered here is the joints'
                 // own transforms at each instant of the range, which is the only
@@ -3566,6 +3647,9 @@ void addMesh2Splat(CLI::App& app) {
                 options.shadowBits = transferred.shadowBits;
                 options.shadowWords = transferred.shadowWords;
                 options.transferZonal = transferred.zonal;
+                for (size_t g = 0; g < groupLayers.size(); ++g) {
+                    options.lightLayers.emplace_back("emission:" + o->lightGroups[g], groupLayers[g]);
+                }
                 // WHOLE OR NOT AT ALL: under another name beside it, and
                 // under its own only once it is complete, so a conversion
                 // that fails leaves no stage of half a cloud behind.

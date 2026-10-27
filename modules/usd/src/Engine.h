@@ -295,6 +295,15 @@ struct BakeRequest {
     bool                 toward = false;
     std::array<float, 3> towardPoint{0.0F, 0.0F, 0.0F};
     float                towardRadius = 0.0F;
+    /// THE EMISSION GROUPS' LIGHT AT EACH POINT (`mesh2splat --light-groups`),
+    /// in the same paths: by name, at most technique::kMaxLightGroups, each
+    /// group's mean radiance a plane of `groupsOut->colour` (one `float4` a
+    /// point, over the bake's grid of `groupsOut->width` x `height`), at the
+    /// emitters' level of one. `groupsIndirect`: only what reached the point
+    /// after a bounce, the direct half being what a frame computes itself.
+    std::vector<std::string> lightGroups;
+    bool                     groupsIndirect = false;
+    render::RenderTargets*   groupsOut = nullptr;
 };
 
 struct AovRequest {

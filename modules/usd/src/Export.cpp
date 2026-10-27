@@ -349,6 +349,20 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             .Set(VtValue(schlick));
     }
 
+    // LIGHT LAYERS, a group a layer: the floats as the bake left them, three
+    // a record (a reader takes float or half).
+    for (const auto& [name, values] : options.lightLayers) {
+        if (values.size() < size_t{count} * 3 || count == 0 || name.empty()) {
+            continue;
+        }
+        VtVec3fArray layer(count);
+        std::memcpy(layer.data(), values.data(), size_t{count} * 3 * sizeof(float));
+        UsdGeomPrimvarsAPI(splats.GetPrim())
+            .CreatePrimvar(TfToken("primvars:athenea:splat:lightLayer:" + name), SdfValueTypeNames->Float3Array,
+                           UsdGeomTokens->vertex)
+            .Set(VtValue(layer));
+    }
+
     // THE MATERIAL'S OWN ROUGHNESS, before `--specular-filter` widened the
     // stored one by the spread of normals under each gaussian.
     if (options.materialRoughness.size() >= count && count > 0) {

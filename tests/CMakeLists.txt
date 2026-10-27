@@ -109,7 +109,7 @@ athenea_test(athenea_volume_tests
 set_target_properties(athenea_volume_tests PROPERTIES BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
 athenea_test(athenea_usd_tests
-    SOURCES usd/test_usd.cpp usd/test_migrate.cpp usd/test_cloud_shadow.cpp usd/test_lights.cpp usd/test_shadow_catcher.cpp usd/test_tree_leaves.cpp usd/test_glass_shadows.cpp usd/test_glass_tint.cpp usd/test_mesh_lights.cpp usd/test_mesh_lights_raster.cpp usd/test_mesh_lights_tx.cpp usd/test_mesh_lights_groups.cpp
+    SOURCES usd/test_usd.cpp usd/test_migrate.cpp usd/test_cloud_shadow.cpp usd/test_lights.cpp usd/test_shadow_catcher.cpp usd/test_tree_leaves.cpp usd/test_glass_shadows.cpp usd/test_glass_tint.cpp usd/test_mesh_lights.cpp usd/test_mesh_lights_raster.cpp usd/test_mesh_lights_tx.cpp usd/test_mesh_lights_groups.cpp usd/test_mesh_lights_bake.cpp
     LIBS athenea::usd)
 add_dependencies(athenea_usd_tests hdAthenea)
 target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
@@ -510,6 +510,30 @@ set_tests_properties(mesh2splat_sheet_ball PROPERTIES
 # gaussian as one slice does: four slices of the paint ball, filtered. The
 # count emitted moves with the device's arithmetic (96130 on Metal, 96078 on
 # Vulkan), so the check is the baked share of it, not one total.
+# THE EMISSION GROUPS' BAKED BOUNCE (mesh lights, stage E): a white ball beside
+# a strip of mesh light on a red floor (tests/data/mesh_light_bleed.usda),
+# converted with a TX transfer with and without the strip's layer, then drawn
+# by a hidden case of the USD tests against the mesh path traced.
+foreach(mode groups plain)
+    set(flags --transfer --bake-samples 256 --bake-extra 0 --prim /World/Ball)
+    if(mode STREQUAL "groups")
+        list(APPEND flags --light-groups strip)
+    endif()
+    add_test(NAME mesh2splat_light_groups_${mode}
+        COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/mesh_light_bleed.usda ${flags} --no-camera
+                --resolution 192 -o ${ATHENEA_TX_DIR}/bleed_${mode}.usdc)
+    set_tests_properties(mesh2splat_light_groups_${mode} PROPERTIES
+        ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+        FIXTURES_SETUP bleed_clouds
+        LABELS gpe)
+endforeach()
+add_test(NAME mesh_lights_baked_bounce
+    COMMAND athenea_usd_tests "[.meshlights-bleed]")
+set_tests_properties(mesh_lights_baked_bounce PROPERTIES
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR};HDX_MSAA_SAMPLE_COUNT=1"
+    FIXTURES_REQUIRED bleed_clouds
+    LABELS gpe)
 add_test(NAME mesh2splat_tx_sliced
     COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/tx/paint.usda --prim /World/Ball --transfer
             --bake-samples 16 --bake-extra 0 --transfer-slice 25000 --no-camera --resolution 192

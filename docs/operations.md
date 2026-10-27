@@ -517,6 +517,7 @@ recipe is §3.1 below.
 | `--detail` | `PRIM=FACTOR` ‹repeatable› | none | where the budget is shared, the meshes at or under `PRIM` take FACTOR² times their proportional part, so their cell comes out FACTOR times finer than the rest's; never more than they want, and what they cannot take goes back to the others |
 | `--bake-toward` | 3 numbers, world units | none | bake what a camera standing there sees, reflections included, as one colour a gaussian (degree 0): for a camera that only turns about that point. A gaussian facing away bakes its body over its hemisphere |
 | `--bake-toward-radius` | world units | `0.15` | `--bake-toward`: the ball about the point the camera may stand in; each path looks from a point of it |
+| `--light-groups` | `GROUP[,GROUP...]` ‹repeatable›, at most 8 | none | emission groups (`primvars:athenea:lightGroup`) whose indirect light is baked, all in one pass of `--bake-samples` + `--bake-extra` paths and `--bake-bounces`, as a layer each, `primvars:athenea:splat:lightLayer:emission:<group>`: what the group's emitters put on each gaussian at level 1 after a bounce. The direct half is the frame's own (mesh lights on relit gaussians); a frame adds the layer at the group's level. Not with `--skinned` |
 | `--transfer` | flag | off | bake how much of a sky reaches each gaussian instead of the light that did |
 | `--indirect` / `--no-indirect` | flag | on | with `--transfer`: keep the bounced half as well; a zonal transfer keeps the direct half alone |
 | `--transfer-degree` | 2 or 3 | 3 | with `--transfer`: the harmonics' degree, 16 coefficients direct and 48 indirect at 3, the first transfer's 9 and 27 at 2 |
@@ -673,6 +674,7 @@ is its atlas, read at the same coordinates.
 | `--prim` | prim path | every mesh | |
 | `--time` | number | `0` | USD time code |
 | `--default-lights` | flag | off | a dome and a sun for a stage with none |
+| `--light-groups` | `GROUP[,GROUP...]` ‹repeatable›, at most 8 | none | emission groups (`primvars:athenea:lightGroup`) taken out of each atlas (baked at level 0) and baked into one of their own each, all in one pass: `<name>_emission_<group>.exr`, the group's whole light at level 1, direct and indirect, since a lightmapped mesh is unlit. `lightmapped.usda` binds the main atlas only; the sum at the groups' levels is the host's |
 
 **Atlases.** A mesh goes in the atlas its `userProperties:lightmap_atlas`
 says (an int or a float) -- on the mesh, or on the nearest prim above it that
@@ -1894,6 +1896,7 @@ stage, the first of a name winning (§3.6):
 | Attribute | On | Type | Default |
 |---|---|---|---|
 | `primvars:athenea:splat:lightLayer:<group>` | the field | color3f[] ‹1 a gaussian, linear, per unit of radiance› | — |
+| `primvars:athenea:splat:lightLayer:emission:<group>` | the field | color3f[] ‹1 a gaussian, linear, at the group's level 1› | — |
 | `primvars:athenea:splat:lightCatcher` | the field | bool | `false` |
 | `athenea:lightGroup:emissionLuminance` | a group | float | `1` (`:radiance` where this is missing) |
 | `athenea:lightGroup:emissionColor` | a group | color3f | `(1, 1, 1)` (`:color` where this is missing) |
@@ -2029,6 +2032,13 @@ where none is set, the lamp rig's weight of a group of that name, §3.6), and
 its light goes into the group's output (`lightGroup:<group>`), what is seen of
 the emitter itself included. A level changed redraws the frame with the same
 clusters: no rebuild, a few numbers uploaded.
+
+The indirect light of an emission group -- what its emitters put on a gaussian
+after a bounce, the colour a red floor sends up included -- is not computed by
+a frame; `athenea mesh2splat --light-groups` bakes it, every group named in
+one pass, as a layer each (`primvars:athenea:splat:lightLayer:emission:<group>`,
+at level 1), and a frame adds each layer times its group's level -- the same
+weight the group's direct light takes, so a dimmed group dims both.
 
 A `MeshLightAPI` prim emits its LightAPI radiance -- `inputs:color` times
 `inputs:intensity`, `inputs:exposure`, and the blackbody of

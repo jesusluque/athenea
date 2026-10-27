@@ -774,7 +774,11 @@ void Engine::setPathMis(bool mis) { pathMis_.store(mis); }
 
 void Engine::setEmissionLevels(std::map<std::string, float> levels) {
     const std::lock_guard<std::mutex> held(guard_);
-    emissionLevels_ = std::move(levels);
+    if (levels != emissionLevels_) {
+        emissionLevels_ = std::move(levels);
+        // A cloud's baked layer of a group's light is weighed by its level too.
+        ++lightWeightsVersion_;
+    }
 }
 
 void Engine::setMeshLightSamples(uint32_t samples) {
@@ -2269,7 +2273,11 @@ Result<void> Engine::bakePoints(const BakeRequest& bake, const render::Projectio
     frame.width = 1;
     frame.height = 1;
     render::RenderTargets nowhere;
-    return render(projection, frame, nowhere, Technique::RayTraced, true, nullptr, {},
+    // The groups asked for are the frame's: the path tracer gathers each into
+    // a plane of its sums, which the bake's branch copies out.
+    AovRequest aovs;
+    aovs.lightGroups = bake.lightGroups;
+    return render(projection, frame, nowhere, Technique::RayTraced, true, nullptr, aovs,
                   MeshVisibility::Automatic, &bake);
 }
 
@@ -2567,8 +2575,25 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                         std::vector<float> rows(size_t{scene::GpuSplats::kMaxLightGroups} * 4, 0.0F);
                         for (size_t k = 0; k < entry.gpu->lightGroups.size() && k < scene::GpuSplats::kMaxLightGroups;
                              ++k) {
-                            if (const auto found = lightWeights_.find(entry.gpu->lightGroups[k]);
-                                found != lightWeights_.end()) {
+                            // A layer of an emission group's light
+                            // (`emission:<group>`, mesh2splat --light-groups)
+                            // is weighed as that group's emitters are: its
+                            // level, or the lamp rig's weight of its name,
+                            // or one.
+                            const std::string& layer = entry.gpu->lightGroups[k];
+                            static const std::string kEmission = "emission:";
+                            if (layer.compare(0, kEmission.size(), kEmission) == 0) {
+                                const std::string group = layer.substr(kEmission.size());
+                                std::array<float, 3> weight{1.0F, 1.0F, 1.0F};
+                                if (const auto level = emissionLevels_.find(group); level != emissionLevels_.end()) {
+                                    weight = {level->second, level->second, level->second};
+                                } else if (const auto rig = lightWeights_.find(group); rig != lightWeights_.end()) {
+                                    weight = rig->second;
+                                }
+                                rows[k * 4] = weight[0];
+                                rows[k * 4 + 1] = weight[1];
+                                rows[k * 4 + 2] = weight[2];
+                            } else if (const auto found = lightWeights_.find(layer); found != lightWeights_.end()) {
                                 rows[k * 4] = found->second[0];
                                 rows[k * 4 + 1] = found->second[1];
                                 rows[k * 4 + 2] = found->second[2];
@@ -3545,8 +3570,34 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 paths.headlight = false;
                 paths.samples = std::max(bake->samples, 1u);
                 paths.bounces = bake->bounces;
+                paths.groupsIndirect = bake->groupsIndirect;
                 pathTracer_->restart();
                 ATHENEA_TRY(pathTracer_->bake(batch, visibility_, projection, frame, paths, points, *bake->out));
+                // The groups' means, a plane each after their sums, copied
+                // out as they lie (BakeRequest::lightGroups).
+                if (bake->groupsOut != nullptr && !bake->lightGroups.empty()) {
+                    const uint32_t groups = pathTracer_->lightGroups();
+                    const uint64_t plane = uint64_t{points.width} * points.height;
+                    if (groups < bake->lightGroups.size()) {
+                        return Error(ErrorCode::InternalError, "bake: the path tracer kept fewer groups than asked");
+                    }
+                    render::RenderTargets& into = *bake->groupsOut;
+                    const uint64_t bytes = plane * groups * 16;
+                    if (!into.colour.valid() || into.colour.bytes() < bytes) {
+                        gpu::BufferDesc desc;
+                        desc.bytes = bytes;
+                        desc.elementBytes = 16;
+                        desc.label = "bake.groups";
+                        auto made = gpu::Buffer::create(*device_, desc);
+                        if (!made) return std::move(made).error();
+                        into.colour = std::move(*made);
+                    }
+                    into.width = points.width;
+                    into.height = points.height;
+                    batch.encoder()->copyBuffer(into.colour.rhi(), 0, pathTracer_->sum().rhi(),
+                                                pathTracer_->lightGroupMeanOffset(0) * 16, bytes);
+                    batch.markDirty();
+                }
                 ATHENEA_TRY(batch.submit(true));
                 pathState_ = {};
                 return ok();
