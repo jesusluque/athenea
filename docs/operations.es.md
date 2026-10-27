@@ -2077,6 +2077,15 @@ muestra con sombra de un triángulo, como la dibuja la estimación del
 siguiente evento del path tracer: con más ruido, y lo que la forma cerrada
 aproxima. Ninguna de las dos ilumina la transmisión: es del path tracer.
 
+Una nube reiluminada (`AtheneaSplatLightingAPI`) también se ilumina con ellas,
+en el raster: cada celda de una rejilla de 32^3 sobre las nubes reiluminadas
+toma un corte de hasta 4 clusters, y cada gaussiana integra los rectángulos de
+esos clusters en forma cerrada -- su cuerpo por el factor de forma, su reflejo
+y su coat por el LTC, su sheen como un cuerpo -- con la sombra de los bits de
+su propia transferencia TX y sumando el rebote de la transferencia. Una nube
+cuyos colores ya son luz (`primvars:athenea:splat:litBody`) se queda como
+está. Una nube no proyecta sombra de una luz de malla sobre una malla.
+
 Una prim con `MeshLightAPI` emite la radiancia de su LightAPI --
 `inputs:color` por `inputs:intensity`, `inputs:exposure`, y el cuerpo negro de
 `inputs:colorTemperature` donde `inputs:enableColorTemperature` -- desde sus

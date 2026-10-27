@@ -16255,3 +16255,50 @@ of the quadrature (0.00572 against 0.03594, every case), and the strip's floor r
 - A cluster whose triangles curve is integrated over its plane's rectangle; screens with a varying picture
   are lit by their mean.
 - The aggregates' glossy lobes, and their shadows beyond the ratio's two rays.
+
+### Stage C: TX gaussians relit by mesh lights
+
+The splat projection is at its buffers' limit, so what a gaussian reads of the mesh lights is two textures in
+the parameter block the sky is already in (`SkyInputs`): the clusters' rectangles (four texels each) and, for
+each cell of a 32^3 grid over the relit clouds' box, a cut of up to 4 entries -- each a cluster and the
+factor its entry stands for (1, or a tree node's power over its most important cluster's at the cell's
+middle). `MeshLights::writeSplats` writes both when the clusters or the box change. The plan cut per chunk of
+256 consecutive gaussians; a cut by place needs no pass over the gaussians to make it and is the same for
+every cloud, and a chunk of a converted cloud is not a place.
+
+`relitByMeshLights` integrates each entry's rectangle in closed form by the layers `relitByOne` weighs a
+light's sample with: the body by the form factor, the horizon clipped by the sphere of the same vector (and,
+for what transmits, the form factor seen from behind); the base's reflection and the coat's by the LTC table
+at their roughness times their split-sum albedo (the sky's `environmentBrdfOf`); the sheen as a body of its
+colour. A TX transfer shadows each entry by its own bits over the cone of that sphere (`splatConeOpen`), and
+the bounce is read along the sphere's direction (`splatLightBounce`), once an entry. A cloud whose colours are
+light already (`litBody`) is left as it is. What a cloud keeps between frames is keyed on the mesh lights'
+revision too.
+
+A first version handed each rectangle to `relitByOne` as a light along the form factor's direction carrying
+its whole integral: right for the body, and a chrome ball showed the strip as a round dot.
+
+#### Measured (Metal, M5 Pro)
+
+The balls of tests/data/tx converted with a TX transfer (paint, rubber, chrome; 96130 gaussians each), on
+their ground under a 3 x 0.3 strip 2.4 above them, rasterised against the mesh path traced (1024 paths, 6
+bounces), 192 x 192; the same strip as a RectLight is what a relit gaussian took before, one sample at its
+middle. Cloud shadows off in both raster frames: neither has the ball's shadow on the ground, which is most of
+either error.
+
+| | mesh light, closed form | RectLight, middle sample | the mesh rasterised (mesh light) |
+|---|---|---|---|
+| paint | 0.187 | 0.185 | 0.039 |
+| rubber | 0.179 | 0.179 | 0.037 |
+| chrome | 0.413 | 1.834 | 0.066 |
+
+#### Not done (stage C)
+
+- A cloud casting a mesh light's shadow onto a mesh (the cloud shadow map's slots are the UsdLux lights'),
+  and onto itself beyond its transfer's bits.
+- The cache of the view-independent terms (`txCache`): the mesh lights are evaluated every frame.
+- The compile-time variant: a cloud without mesh lights runs the same kernel with the loop skipped by a
+  constant, not a kernel without it.
+- The ray traced route of a frame of splats alone: it has no meshes, so no mesh lights.
+- A lamp baked into a cloud's light layer is not told apart from the same lamp as a mesh light.
+- The tests the plan named on a converted pawn, K = 4 against K = 64, and the cache's bit-identity.

@@ -948,6 +948,9 @@ private:
     [[nodiscard]] Result<void> prepareEnvironment(const std::vector<light::Light>& lamps);
     /// The prepared sky handed to a renderer, where there is one.
     void bindEnvironment(render::SplatLights& lights) const;
+    /// The mesh lights handed to a renderer of relit splats, where there are any.
+    [[nodiscard]] Result<void> bindMeshLights(render::SplatLights& lights,
+                                              std::span<const render::SplatInstance> splats);
     /// The `cryptoOfPrim_` table and the manifest beside it, rebuilt when the
     /// scene's prims have changed since the last matte.
     [[nodiscard]] Result<void> prepareCryptoTable();

@@ -106,6 +106,22 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     auto emptyEnvSh = buffer(*r.device_, 1, 16, "splat.env.sh.empty");
     if (!emptyEnvSh) return std::move(emptyEnvSh).error();
     r.emptyEnvSh_ = *emptyEnvSh;
+    const auto emptyTexture = [&](gpu::Texture& texture, rhi::ComPtr<rhi::ITextureView>& view, rhi::Format format,
+                                  const char* label) -> Result<void> {
+        gpu::TextureDesc desc;
+        desc.format = format;
+        desc.usage = rhi::TextureUsage::ShaderResource;
+        desc.label = label;
+        auto made = gpu::Texture::create(*r.device_, desc);
+        if (!made) return std::move(made).error();
+        texture = std::move(*made);
+        auto v = texture.view(0);
+        if (!v) return std::move(v).error();
+        view = std::move(*v);
+        return ok();
+    };
+    ATHENEA_TRY(emptyTexture(r.emptyMeshRects_, r.emptyMeshRectsView_, rhi::Format::RGBA32Float, "splat.meshRects.empty"));
+    ATHENEA_TRY(emptyTexture(r.emptyMeshCells_, r.emptyMeshCellsView_, rhi::Format::RG32Uint, "splat.meshCells.empty"));
     // Never aliased onto another of the cloud's buffers: a stale flag would
     // read a splat's rotation as a displacement, and the picture would be
     // spectacular and hard to read.
@@ -517,12 +533,15 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             // Relighting: only where the prim asked for it and the frame has
             // lights to do it with. The buffer is bound either way, since a
             // name a shader declares must be bound whether it is read or not.
-            const bool relight = instance.relight && lights != nullptr && lights->any();
+            // Relit where the frame has lights of either kind: UsdLux ones, or
+            // only mesh lights (SplatLights::meshLights).
+            const bool relight = instance.relight && lights != nullptr && (lights->any() || lights->meshLights());
+            const bool records = relight && lights->any();
             cursor["params"]["relight"].setData(uint32_t{relight ? 1u : 0u});
-            cursor["params"]["lightCount"].setData(relight ? lights->count : 0u);
+            cursor["params"]["lightCount"].setData(records ? lights->count : 0u);
             cursor["params"]["categoriesLo"].setData(static_cast<uint32_t>(instance.categories & 0xFFFFFFFFu));
             cursor["params"]["categoriesHi"].setData(static_cast<uint32_t>(instance.categories >> 32));
-            cursor["lights"].setBinding(relight ? lights->records->rhi() : emptyLights_.rhi());
+            cursor["lights"].setBinding(records ? lights->records->rhi() : emptyLights_.rhi());
             // The shadow ray a relit splat casts against the cloud's own
             // proxies. Bound either way; taken only where there is a
             // structure to trace and the device can trace it inline.
@@ -544,6 +563,21 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             cursor["params"]["skyCloud"].setData(sky ? skyCloud : 0u);
             environment["sun"].setBinding(sky ? lights->envSun->rhi() : emptyEnvSh_.rhi());
             environment["ofLight"].setBinding(sky ? lights->envOfLight->rhi() : emptyEnvWords_.rhi());
+            // The mesh lights, in the same block: textures, bound either way.
+            const bool meshLit = relight && lights->meshLights();
+            environment["meshRects"].setBinding(meshLit ? lights->meshRects : emptyMeshRectsView_.get());
+            environment["meshCells"].setBinding(meshLit ? lights->meshCells : emptyMeshCellsView_.get());
+            environment["ltcTable"].setBinding(meshLit ? lights->ltc : emptyMeshRectsView_.get());
+            cursor["params"]["meshCellSide"].setData(meshLit ? lights->meshCellSide : 0u);
+            cursor["params"]["meshCutK"].setData(meshLit ? lights->meshCutK : 0u);
+            if (meshLit) {
+                cursor["params"]["meshGridLoX"].setData(lights->meshGridLo[0]);
+                cursor["params"]["meshGridLoY"].setData(lights->meshGridLo[1]);
+                cursor["params"]["meshGridLoZ"].setData(lights->meshGridLo[2]);
+                cursor["params"]["meshGridHiX"].setData(lights->meshGridHi[0]);
+                cursor["params"]["meshGridHiY"].setData(lights->meshGridHi[1]);
+                cursor["params"]["meshGridHiZ"].setData(lights->meshGridHi[2]);
+            }
             cursor["params"]["envLights"].setData(sky ? lights->envLights : 0u);
             cursor["params"]["envBaseSide"].setData(sky ? lights->envBaseSide : 1u);
             // What of an environment reaches each gaussian, where the cloud

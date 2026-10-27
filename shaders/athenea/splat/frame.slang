@@ -208,6 +208,13 @@ public struct FrameParams {
     /// as every other frame.
     public uint  displayBlend;
     public EditParams edit;      // this cloud instance's SplatEdit (common/edit.slang)
+    /// THE MESH LIGHTS' GRID (light/mesh_light_splat.slang): cells a side (0:
+    /// no mesh light reaches a relit splat), entries a cell, and the box it
+    /// is cut over, in the world.
+    public uint  meshCellSide;
+    public uint  meshCutK;
+    public float meshGridLoX; public float meshGridLoY; public float meshGridLoZ;
+    public float meshGridHiX; public float meshGridHiY; public float meshGridHiZ;
 };
 
 /// What the projection leaves for the blend, one record per splat, so a pair

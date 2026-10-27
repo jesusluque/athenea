@@ -13,6 +13,7 @@ import athenea.common.edit;
 // What a relit splat does with those lights is splat_relight's, shared with
 // the ray traced route so that the two cannot drift.
 import splat_relight;
+import splat_mesh_lights;
 import athenea.common.color;
 import athenea.scene.splat_encoding;
 import athenea.common.splat_override;
@@ -102,6 +103,13 @@ struct SkyInputs {
     // The sun `env_sun` took out of that sky: two float4 a dome.
     StructuredBuffer<float4>    sun;
     StructuredBuffer<uint>      ofLight;
+    // THE MESH LIGHTS AS THE SPLATS READ THEM (light/mesh_light_splat.slang):
+    // the clusters' rectangles and the cut of each cell of a grid over the
+    // clouds. In this block, as textures, so the kernel binds no buffer more;
+    // `params.meshCellSide` of 0 says there is nothing to read.
+    Texture2D<float4>           meshRects;
+    Texture2D<uint2>            meshCells;
+    Texture2D<float4>           ltcTable;     // light/ltc.slang's, fitted on the device
 };
 ParameterBlock<SkyInputs> environment;
 // How much of an environment reaches each gaussian, where its cloud carries
@@ -116,6 +124,16 @@ StructuredBuffer<uint>      shadowBits;
 // not `params.motion` says to read it, as every name a shader declares must
 // be.
 StructuredBuffer<uint>      motion;
+
+/// The mesh lights' grid, from the frame's constants.
+SplatMeshLights meshGrid() {
+    SplatMeshLights g;
+    g.cellSide = params.meshCellSide;
+    g.cutK = params.meshCutK;
+    g.gridLo = float3(params.meshGridLoX, params.meshGridLoY, params.meshGridLoZ);
+    g.gridHi = float3(params.meshGridHiX, params.meshGridHiY, params.meshGridHiZ);
+    return g;
+}
 
 void cull(uint slot, uint reason) {
     // Every early return zeroes the record first: a slot keeps last frame's
@@ -455,7 +473,10 @@ float3 relitToward<let kTransfer : int>(uint i, uint slot, float3 position, floa
                         shadowFactors, slot * params.shadowLights, shadowLights,
                         environment.texels, environment.sh, environment.ofLight, params.envLights, params.envBaseSide,
                         environment.sun, transfer, shadowBits,
-                        params.transferIndirect != 0, slope);
+                        params.transferIndirect != 0, slope) +
+           relitByMeshLights<kTransfer>(surface, normalize(eyeWorld - surface.position), meshGrid(),
+                                        environment.meshRects, environment.meshCells, environment.ltcTable, transfer, shadowBits,
+                                        params.transferIndirect != 0);
 }
 
 /// ONE SPLAT PROJECTED, and shaded where its cloud is relit. `kTransfer` 0
@@ -937,7 +958,10 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                             shadowFactors, slot * params.shadowLights, shadowLights,
                             environment.texels, environment.sh, environment.ofLight, params.envLights, params.envBaseSide,
                             environment.sun, transfer, shadowBits,
-                            params.transferIndirect != 0, slope);
+                            params.transferIndirect != 0, slope) +
+                 relitByMeshLights<kTransfer>(surface, normalize(eye - surface.position), meshGrid(),
+                                              environment.meshRects, environment.meshCells, environment.ltcTable, transfer, shadowBits,
+                                              params.transferIndirect != 0);
         if (params.splatView != kSplatViewNone) {
             viewed = splatParameterColour(params.splatView, surface, transfer, shadowBits, baked, posOpacity.w, scale);
         }

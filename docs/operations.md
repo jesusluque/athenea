@@ -2014,6 +2014,15 @@ sample of a triangle, as the path tracer's next event estimation draws it:
 noisier, and what the closed form converges to. Transmission is lit by
 neither: it is the path tracer's.
 
+A relit cloud (`AtheneaSplatLightingAPI`) is lit by them too, in the raster:
+each cell of a 32^3 grid over the relit clouds takes a cut of up to 4
+clusters, and each gaussian integrates those clusters' rectangles in closed
+form -- its body by the form factor, its reflection and its coat by the LTC,
+its sheen as a body -- shadowed by its TX transfer's own bits and adding the
+transfer's bounce. A cloud whose colours are light already
+(`primvars:athenea:splat:litBody`) is left as it is. A cloud casts no shadow of
+a mesh light onto a mesh.
+
 A `MeshLightAPI` prim emits its LightAPI radiance -- `inputs:color` times
 `inputs:intensity`, `inputs:exposure`, and the blackbody of
 `inputs:colorTemperature` where `inputs:enableColorTemperature` -- from its

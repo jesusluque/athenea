@@ -186,6 +186,8 @@ Result<MeshLights> MeshLights::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(lights.settle_, "athenea/light/light_bvh_build", "lightSettle"));
     ATHENEA_TRY(make(lights.boundsChunks_, "athenea/scene/bounds_chunks", "boundsChunks"));
     ATHENEA_TRY(make(lights.boundsReduce_, "athenea/scene/bounds_reduce", "boundsReduce"));
+    ATHENEA_TRY(make(lights.splatRects_, "athenea/light/mesh_light_splat", "meshSplatRects"));
+    ATHENEA_TRY(make(lights.splatCells_, "athenea/light/mesh_light_splat", "meshSplatCells"));
     auto prefix = gpu::PrefixSum::create(library);
     if (!prefix) return std::move(prefix).error();
     lights.prefix_.emplace(std::move(*prefix));
@@ -525,6 +527,60 @@ Result<void> MeshLights::rebuild(const MaterialFrame& frame, const light::LightT
     }
     log::debug("mesh lights: {} candidate triangles, {} emitting, {} clusters, tree depth {}", candidates_count_, t,
                c, depth_count_);
+    return ok();
+}
+
+Result<void> MeshLights::writeSplats(gpu::CommandBatch& batch, const light::LightTable& table,
+                                     const std::array<float, 3>& lo, const std::array<float, 3>& hi) {
+    const std::array<float, 6> box{lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]};
+    if (clusters_ == 0 || table.meshWords() < kHeaderWords) {
+        return ok();
+    }
+    if (splatRevision_ == revision() && box == splatBox_ && splatRectsView_ && splatCellsView_) {
+        return ok();
+    }
+    const auto texture = [&](gpu::Texture& into, rhi::ComPtr<rhi::ITextureView>& view, uint32_t w, uint32_t h,
+                             rhi::Format format, const char* label) -> Result<void> {
+        if (into.valid() && into.width() >= w && into.height() >= h && view) {
+            return ok();
+        }
+        gpu::TextureDesc desc;
+        desc.width = w;
+        desc.height = h;
+        desc.format = format;
+        desc.usage = rhi::TextureUsage::UnorderedAccess | rhi::TextureUsage::ShaderResource;
+        desc.label = label;
+        auto made = gpu::Texture::create(*device_, desc);
+        if (!made) return std::move(made).error();
+        into = std::move(*made);
+        auto v = into.view(0);
+        if (!v) return std::move(v).error();
+        view = std::move(*v);
+        return ok();
+    };
+    // Four texels a cluster, 256 clusters a row; the cells x K across, the
+    // other two axes down.
+    ATHENEA_TRY(texture(splatRectsTexture_, splatRectsView_, 1024, (clusters_ + 255) / 256, rhi::Format::RGBA32Float,
+                        "meshLights.splatRects"));
+    ATHENEA_TRY(texture(splatCellsTexture_, splatCellsView_, kSplatCells * kSplatCutK, kSplatCells * kSplatCells,
+                        rhi::Format::RG32Uint, "meshLights.splatCells"));
+    const gpu::Buffer& region = table.words();
+    const auto bind = [&](rhi::ShaderCursor cursor) {
+        cursor["meshRegion"].setBinding(region.rhi());
+        cursor["meshRegionWords"].setData(table.meshWords());
+        cursor["rectsOut"].setBinding(splatRectsView_.get());
+        cursor["cellsOut"].setBinding(splatCellsView_.get());
+        cursor["cellSide"].setData(kSplatCells);
+        cursor["cutK"].setData(kSplatCutK);
+        const float l[4] = {lo[0], lo[1], lo[2], 0.0F};
+        const float h[4] = {hi[0], hi[1], hi[2], 0.0F};
+        cursor["gridLo"].setData(l, sizeof(l));
+        cursor["gridHi"].setData(h, sizeof(h));
+    };
+    splatRects_->dispatch(batch, {clusters_, 1, 1}, bind);
+    splatCells_->dispatch(batch, {kSplatCells, kSplatCells, kSplatCells}, bind);
+    splatRevision_ = revision();
+    splatBox_ = box;
     return ok();
 }
 

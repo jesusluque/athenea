@@ -32,6 +32,7 @@
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/gpu/algo/PrefixSum.h"
+#include "athenea/gpu/Texture.h"
 #include "athenea/gpu/algo/RadixSort.h"
 #include "athenea/light/LightTable.h"
 #include "athenea/technique/MaterialPrograms.h"
@@ -100,6 +101,18 @@ public:
     [[nodiscard]] Result<void> write(gpu::CommandBatch& batch, const MaterialFrame& frame,
                                      const light::LightTable& table, const MeshLightInputs& inputs);
 
+    /// THE MESH LIGHTS AS RELIT SPLATS READ THEM (light/mesh_light_splat.slang):
+    /// the clusters' rectangles and a cut for each cell of a grid of
+    /// `kSplatCells` a side over the box `lo` to `hi` -- the frame's clouds --
+    /// into two textures, recorded into `batch` with no wait. Made again only
+    /// when the clusters or the box changed.
+    static constexpr uint32_t kSplatCells = 32;
+    static constexpr uint32_t kSplatCutK = 4;
+    [[nodiscard]] Result<void> writeSplats(gpu::CommandBatch& batch, const light::LightTable& table,
+                                           const std::array<float, 3>& lo, const std::array<float, 3>& hi);
+    [[nodiscard]] rhi::ITextureView* splatRects() const noexcept { return splatRectsView_.get(); }
+    [[nodiscard]] rhi::ITextureView* splatCells() const noexcept { return splatCellsView_.get(); }
+
     /// How many clusters, and emitting triangles, the last rebuild made.
     [[nodiscard]] uint32_t clusters() const noexcept { return clusters_; }
     [[nodiscard]] uint32_t triangles() const noexcept { return triangles_; }
@@ -149,6 +162,11 @@ private:
     gpu::Buffer candidateCounts_, candidateBases_, probed_, probedFlags_, probedOffsets_, compactRadiance_;
     gpu::Buffer centroidBuffer_, extents_, boundsResult_, headBuffer_, headOffsets_, leafBoxes_, children_, leaves_;
     gpu::Buffer changed_, depthCount_, total_, probeHeader_;
+    std::optional<gpu::ComputeKernel> splatRects_, splatCells_;
+    gpu::Texture                      splatRectsTexture_, splatCellsTexture_;
+    rhi::ComPtr<rhi::ITextureView>    splatRectsView_, splatCellsView_;
+    uint64_t                          splatRevision_ = ~uint64_t{0};
+    std::array<float, 6>              splatBox_{};
     gpu::SortBuffers sorting_;
     Key         key_;
     RefitKey    refitKey_;

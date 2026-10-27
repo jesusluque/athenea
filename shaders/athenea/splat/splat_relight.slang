@@ -1066,7 +1066,7 @@ public float3 splatPolish(SplatSurface s, float nDotV) {
 /// given 0.0097 of opacity and a gain of 25 where it needs 205, and every
 /// sheet under 1.5 reflected that much too little. 1.5 only where no index
 /// was kept.
-float thinWallGain(SplatSurface s) {
+public float thinWallGain(SplatSurface s) {
     if (!s.thinWalled) {
         return 1.0;
     }
@@ -1076,7 +1076,7 @@ float thinWallGain(SplatSurface s) {
 }
 
 /// How much of the body is not a thin wall's transmission, which is the blend's.
-float transmittedWeight(SplatSurface s) {
+public float transmittedWeight(SplatSurface s) {
     return s.thinWalled ? 0.0 : s.transmission;
 }
 

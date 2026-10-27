@@ -2165,6 +2165,63 @@ Result<void> Engine::prepareEnvironment(const std::vector<light::Light>& lamps) 
 
 /// What a renderer is handed of the prepared sky: nothing at all where none
 /// was prepared, and then a dome is its colour.
+/// THE MESH LIGHTS A RELIT SPLAT READS (stage C): their rectangles and the
+/// cut of each cell of a grid over the frame's relit clouds, written into
+/// textures when the clusters or the clouds' box changed, and handed to the
+/// rasteriser with the frame's lights. What a cloud keeps between frames is
+/// keyed on them too.
+Result<void> Engine::bindMeshLights(render::SplatLights& lights, std::span<const render::SplatInstance> splats) {
+    if (!meshLights_.has_value() || meshLights_->clusters() == 0 || !meshLightsOn_.load() ||
+        !lightTable_.has_value()) {
+        return ok();
+    }
+    // The relit clouds' box in the world: each cloud's box through its prim's
+    // matrix, as Engine::bounds folds it.
+    std::optional<scene::Bounds> all;
+    for (const render::SplatInstance& instance : splats) {
+        if (!instance.relight || instance.splats == nullptr) {
+            continue;
+        }
+        const scene::Bounds& box = instance.splats->bounds;
+        scene::Bounds moved;
+        for (int r = 0; r < 3; ++r) {
+            double centre = instance.objectToWorld.at(r, 3);
+            double extent = 0.0;
+            for (int c = 0; c < 3; ++c) {
+                const double mid = 0.5 * (double(box.min[size_t(c)]) + double(box.max[size_t(c)]));
+                const double half = 0.5 * (double(box.max[size_t(c)]) - double(box.min[size_t(c)]));
+                centre += instance.objectToWorld.at(r, c) * mid;
+                extent += std::abs(instance.objectToWorld.at(r, c)) * half;
+            }
+            moved.min[size_t(r)] = static_cast<float>(centre - extent);
+            moved.max[size_t(r)] = static_cast<float>(centre + extent);
+        }
+        if (!all) {
+            all = moved;
+        } else {
+            for (size_t k = 0; k < 3; ++k) {
+                all->min[k] = std::min(all->min[k], moved.min[k]);
+                all->max[k] = std::max(all->max[k], moved.max[k]);
+            }
+        }
+    }
+    if (!all) {
+        return ok();
+    }
+    gpu::CommandBatch batch(*device_);
+    ATHENEA_TRY(meshLights_->writeSplats(batch, *lightTable_, all->min, all->max));
+    ATHENEA_TRY(batch.submit(false));
+    lights.meshRects = meshLights_->splatRects();
+    lights.meshCells = meshLights_->splatCells();
+    lights.ltc = materialShading_.has_value() ? materialShading_->ltcView() : nullptr;
+    lights.meshCellSide = technique::MeshLights::kSplatCells;
+    lights.meshCutK = technique::MeshLights::kSplatCutK;
+    lights.meshGridLo = all->min;
+    lights.meshGridHi = all->max;
+    lights.revision ^= meshLights_->revision() * 0x9E3779B97F4A7C15ULL;
+    return ok();
+}
+
 void Engine::bindEnvironment(render::SplatLights& lights) const {
     if (!environment_.has_value() || !environment_->ready()) {
         return;
@@ -3276,7 +3333,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         const technique::MaterialFrame* cutouts = (materialCutouts_ || scene_->anyHidden()) ? &frame : nullptr;
         // The mesh lights' closed form needs its LTC table, fitted once, with
         // waits of its own: before the frame's batch opens.
-        if (!pathTracing && meshLightInputs.on && meshLights_->clusters() > 0 && meshLightSamples_.load() == 0) {
+        // The relit splats integrate over the clusters' rectangles with it too.
+        if (meshLightInputs.on && meshLights_->clusters() > 0) {
             ATHENEA_TRY(materialShading_->prepareClosedForm());
         }
             const auto meshStart = std::chrono::steady_clock::now();
@@ -3642,6 +3700,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         splatLights.count = lightTable_->count();
         bindEnvironment(splatLights);
     }
+    ATHENEA_TRY(bindMeshLights(splatLights, splats));
     // ATHENEA_STAGES=1: where a rasterised frame of splats goes, a line a frame.
     // Each stage waits for the device, so the frame is slower for it.
     static const bool stages = !platform::env("ATHENEA_STAGES").empty();

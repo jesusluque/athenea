@@ -15,6 +15,7 @@
 #include "athenea/gpu/AsyncReadback.h"
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/ComputeKernel.h"
+#include "athenea/gpu/Texture.h"
 #include "athenea/gpu/algo/PrefixSum.h"
 #include "athenea/gpu/algo/RadixSort.h"
 #include "athenea/render/Camera.h"
@@ -192,6 +193,20 @@ struct SplatLights {
     /// they do (light::LightTable::revision). 0 says nothing is known, and no
     /// cloud keeps what depends on them from one frame to the next.
     uint64_t                     revision = 0;
+    /// THE MESH LIGHTS, as a relit splat reads them (technique::MeshLights,
+    /// light/mesh_light_splat.slang): the clusters' rectangles, the cut of
+    /// each cell of a grid of `meshCellSide` a side over the box `meshGridLo`
+    /// to `meshGridHi`, `meshCutK` entries a cell. Null or 0: none.
+    rhi::ITextureView*           meshRects = nullptr;
+    rhi::ITextureView*           meshCells = nullptr;
+    rhi::ITextureView*           ltc = nullptr;   ///< the LTC table (light::LtcTable)
+    uint32_t                     meshCellSide = 0;
+    uint32_t                     meshCutK = 0;
+    std::array<float, 3>         meshGridLo{0.0F, 0.0F, 0.0F};
+    std::array<float, 3>         meshGridHi{0.0F, 0.0F, 0.0F};
+    [[nodiscard]] bool meshLights() const noexcept {
+        return meshRects != nullptr && meshCells != nullptr && ltc != nullptr && meshCellSide > 0 && meshCutK > 0;
+    }
 
     [[nodiscard]] bool environment() const noexcept {
         return envLights > 0 && envBaseSide > 0 && envTexels != nullptr && envSh != nullptr &&
@@ -424,6 +439,9 @@ private:
     /// One word and one record of nothing, for a frame with no sky prepared:
     /// a name a shader declares must be bound whether it is read or not.
     gpu::Buffer emptyEnvWords_, emptyEnvSh_;
+    /// And a texel of nothing for each of the mesh lights' textures.
+    gpu::Texture emptyMeshRects_, emptyMeshCells_;
+    rhi::ComPtr<rhi::ITextureView> emptyMeshRectsView_, emptyMeshCellsView_;
     /// The Cryptomatte id a projected slot carries, beside `proj_` and indexed
     /// the same way, so a pair names its splat's prim with one more read.
     gpu::Buffer cryptoIds_;

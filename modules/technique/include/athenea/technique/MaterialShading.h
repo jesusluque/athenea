@@ -46,6 +46,9 @@ public:
     /// the LTC table (fitted on the device the first time, a wait) and its
     /// kernels. A frame drawn without it samples them instead.
     [[nodiscard]] Result<void> prepareClosedForm();
+    /// The LTC table prepareClosedForm fitted, for whoever else integrates
+    /// over a rectangle (the relit splats); null before it.
+    [[nodiscard]] rhi::ITextureView* ltcView() const noexcept { return ltc_.has_value() ? ltc_->view() : nullptr; }
     /// The same, for a frame with light groups (their buffers declared) or
     /// without; `shade` switches as the frame asks.
     [[nodiscard]] Result<void> setPrograms(const MaterialPrograms& programs, bool groups);
