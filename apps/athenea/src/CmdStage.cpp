@@ -130,6 +130,8 @@ void addStage(CLI::App& app) {
         std::vector<std::string> variants;
         std::vector<std::string> splatOverrides;
         uint32_t lightSamples = 1;
+        uint32_t meshLightSamples = 0;
+        bool     noMeshLights = false;
         bool denoise = false, frameAll = false, splatShadows = false, defaultLights = false;
         bool transferIndirect = true;
         bool splatDisplayBlend = false;
@@ -180,6 +182,9 @@ void addStage(CLI::App& app) {
                     "rt: shutter slices for motion blur, 1 to 8 (the shutter is the camera's)");
     cmd->add_option("--refine", o->refine, "subdivision surfaces refined this many levels (0: the control mesh)");
     cmd->add_option("--light-samples", o->lightSamples, "samples per light per pixel");
+    cmd->add_option("--mesh-light-samples", o->meshLightSamples,
+                    "raster: samples a pixel drawn from the mesh lights (0: closed form)");
+    cmd->add_flag("--no-mesh-lights", o->noMeshLights, "emitting meshes are not clustered into lights");
     cmd->add_flag("--splat-shadows", o->splatShadows,
                   "a relit cloud shadows itself: one ray a splat against its own proxies");
     cmd->add_flag("--splat-reflections", o->splatReflections,
@@ -274,6 +279,8 @@ void addStage(CLI::App& app) {
         }
         (*renderer)->setRefineLevel(o->refine);
         (*renderer)->setLightSamples(o->lightSamples);
+        (*renderer)->setMeshLightSamples(o->meshLightSamples);
+        (*renderer)->setMeshLights(!o->noMeshLights);
         (*renderer)->setSplatShadows(o->splatShadows);
         (*renderer)->setSplatTransferIndirect(o->transferIndirect);
         (*renderer)->setSplatDisplayBlend(o->splatDisplayBlend);

@@ -129,6 +129,7 @@ public:
     /// "athenea:pathMis": light and material sampling weighed (true, the default).
     [[nodiscard]] bool GetPathMis() const;
     [[nodiscard]] bool GetMeshLights() const;
+    [[nodiscard]] uint32_t GetMeshLightSamples() const;
     /// "athenea:domeVisible": a dome is drawn behind what the frame holds
     /// (true, the default); false leaves those pixels transparent, alpha 0,
     /// as a host's transparent film asks. The dome still lights the frame.

@@ -1,0 +1,122 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+# A strip of light over two floors -- a Lambert one on the left, a glossy one
+# on the right -- and a box between them that casts its shadow on both. The
+# strip is an emitting material on a mesh; the lamp beside it is a
+# MeshLightAPI quad. What the raster's mesh lights are held to against the
+# path tracer (tests/usd/test_mesh_lights_raster.cpp).
+def Xform "World"
+{
+    def Mesh "Lambert" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-4, 0, 2), (0, 0, 2), (0, 0, -6), (-4, 0, -6)]
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </World/Looks/Matte>
+    }
+
+    def Mesh "Glossy" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(0, 0, 2), (4, 0, 2), (4, 0, -6), (0, 0, -6)]
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </World/Looks/Gloss>
+    }
+
+    def Cube "Box" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        double size = 0.6
+        double3 xformOp:translate = (0.4, 0.3, -2.4)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        rel material:binding = </World/Looks/Matte>
+    }
+
+    def Mesh "Strip" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-2.5, 1.6, -3.1), (2.5, 1.6, -3.1), (2.5, 1.6, -2.9), (-2.5, 1.6, -2.9)]
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </World/Looks/Glow>
+    }
+
+    def Mesh "Lamp" (
+        prepend apiSchemas = ["MeshLightAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-0.4, 1.2, -5.0), (0.4, 1.2, -5.0), (0.4, 1.2, -4.5), (-0.4, 1.2, -4.5)]
+        uniform token subdivisionScheme = "none"
+        float inputs:intensity = 4
+        color3f inputs:color = (0.6, 0.8, 1)
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Matte"
+        {
+            token outputs:surface.connect = </World/Looks/Matte/Preview.outputs:surface>
+            def Shader "Preview"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.7, 0.7, 0.7)
+                float inputs:roughness = 1
+                float inputs:specular = 0
+                int inputs:useSpecularWorkflow = 1
+                color3f inputs:specularColor = (0, 0, 0)
+                token outputs:surface
+            }
+        }
+
+        def Material "Gloss"
+        {
+            token outputs:surface.connect = </World/Looks/Gloss/Preview.outputs:surface>
+            def Shader "Preview"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.2, 0.2, 0.22)
+                float inputs:roughness = 0.3
+                float inputs:metallic = 0
+                token outputs:surface
+            }
+        }
+
+        def Material "Glow"
+        {
+            token outputs:mtlx:surface.connect = </World/Looks/Glow/Surface.outputs:out>
+            def Shader "Surface"
+            {
+                uniform token info:id = "ND_surface_unlit"
+                float inputs:emission = 3
+                color3f inputs:emission_color = (1, 0.8, 0.6)
+                token outputs:out
+            }
+        }
+    }
+
+    def Camera "Camera"
+    {
+        float focalLength = 24
+        float horizontalAperture = 36
+        float verticalAperture = 20.25
+        float2 clippingRange = (0.1, 1000)
+        double3 xformOp:translate = (0, 2.2, 2.2)
+        double xformOp:rotateX = -24
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateX"]
+    }
+}

@@ -365,6 +365,8 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--light-level` | `GROUP=LEVEL` ‹repeatable› | none | a lamp group's level over the state's (`athenea:lightLevel:GROUP`): 0 off, 1 its radiance, more for a lamp two functions share (a brake lamp at 4 its tail lamp). Fails on a group the stage does not carry |
 | `--refine` | integer | `0` | subdivision levels; 0 draws the control mesh |
 | `--light-samples` | integer | `1` | samples per light per pixel |
+| `--mesh-light-samples` | 0..64 | `0` | raster: samples a pixel from the mesh lights; 0 lights by them in closed form (`athenea:meshLightSamples`) |
+| `--no-mesh-lights` | flag | mesh lights on | emitting meshes are not clustered into lights (`athenea:meshLights` off) |
 | `--no-transfer-indirect` | flag | the half is added | draw a transferred cloud without its bounced half |
 | `--splat-display-blend` | flag | linear blend | raster: splats blended as a standard viewer blends them, sRGB values summed (`athenea:splatDisplayBlend`) |
 | `--splat-reflections` | flag | off | rt: a gaussian reflects the cloud it belongs to rather than only the sky |
@@ -1566,6 +1568,7 @@ found and does not.
 | `athenea:pathError` | float | `0.02` | the relative standard error it stops at |
 | `athenea:pathMis` | bool | `true` | multiple importance sampling |
 | `athenea:meshLights` | bool | `true` | emitting meshes and `MeshLightAPI` prims are lights the frame samples through a tree of clusters (§4.3, *Mesh lights*); off, the path tracer takes them from a flat table and the raster shows their glow |
+| `athenea:meshLightSamples` | int | `0` | raster: 0 lights meshes by the mesh lights in closed form; 1 to 64, by that many samples a pixel through their tree, each with a shadow ray (§4.3, *Mesh lights*) |
 | `athenea:domeVisible` | bool | `true` | every technique: a dome is drawn behind the frame; off, the pixels nothing covers stay transparent (alpha 0), as a host's transparent film asks, and the dome still lights the frame |
 | `athenea:screenSpaceReflections` | bool | `false` | raster: the meshes that reflect show what the frame's meshes hold along their reflection (§4.3, *Screen-space reflections*) |
 | `athenea:meshAntialias` | int | `0` | raster: the meshes' edges resolved from 4, 8 or 16 samples a pixel, a count in between rounded up; 0 and 1 draw one sample a pixel (§4.3, *Mesh edges antialiased*) |
@@ -1983,8 +1986,8 @@ technique only; the path tracer antialiases by its own passes
 
 **Mesh lights** (`athenea:meshLights`, a render setting, on by default;
 `StageRenderer::setMeshLights`): a mesh whose material gives off light, or a
-mesh with UsdLux's `MeshLightAPI`, lights the path traced scene as a light
-does; the raster shows its glow. Its
+mesh with UsdLux's `MeshLightAPI`, lights the scene as a light does, path
+traced and in the raster. Its
 emitting triangles are gathered into clusters (by emission group, by which
 faces emit, by the octant their normal points into and by a cube of a 16^3
 grid over the emitters' bounds) and the path tracer chooses a triangle
@@ -1996,6 +1999,20 @@ materials or which of them emit change -- a stage loading, a material
 edited -- and only moved and reweighed while a frame plays. Off, the path
 tracer draws its emitting triangles from a flat table by power, as before,
 and the raster shows their glow alone.
+
+The raster lights meshes by them in closed form (`athenea:meshLightSamples`
+0, the default): each 16 x 16 tile of the frame takes a cut of up to 16
+entries of the tree; a cluster is integrated over the rectangle that stands
+in for it -- its form factor for a diffuse lobe, the linearly transformed
+cosine fitted to GGX for a reflection, Zeltner's for a sheen -- and an entry
+that stands for many clusters lights the diffuse lobes as a point of their
+power. The shadow is two rays a pixel toward the clusters, their ratio of
+light that arrived over light there filtered over 9 x 9 pixels of the same
+depth and facing. Where the device has no inline rays (CUDA) there is no
+mesh light shadow. With 1 to 64 samples a pixel instead, each is a shadowed
+sample of a triangle, as the path tracer's next event estimation draws it:
+noisier, and what the closed form converges to. Transmission is lit by
+neither: it is the path tracer's.
 
 A `MeshLightAPI` prim emits its LightAPI radiance -- `inputs:color` times
 `inputs:intensity`, `inputs:exposure`, and the blackbody of

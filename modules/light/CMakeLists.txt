@@ -3,6 +3,7 @@
 athenea_add_module(light
     SOURCES
         src/LightTable.cpp
+        src/LtcTable.cpp
     PUBLIC_LIBS
         athenea::core
         athenea::gpu

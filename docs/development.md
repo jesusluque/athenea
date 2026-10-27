@@ -47,7 +47,7 @@ document, the header is right.
 | 10 | render | `render/TileRasterizer.h` and `shaders/athenea/splat/frame.slang` (the pipeline), `render/GaussianRayTracer.h`, `render/Flatten.h` (a TX cloud as standard harmonics) |
 | 11 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
 | 12 | material | `material/MaterialCompiler.h` — MaterialX into Slang |
-| 13 | light | `light/LightTable.h` — a light on the device; the mesh lights' region at the front of its light words, laid out in `shaders/athenea/light/mesh_lights.slang` |
+| 13 | light | `light/LightTable.h` — a light on the device; the mesh lights' region at the front of its light words, laid out in `shaders/athenea/light/mesh_lights.slang`; `light/LtcTable.h` — the LTC table, fitted on the device (`ltc_fit.slang`), and `ltc.slang`, a polygon's form factor and LTC integral |
 | 14 | world | `world/GpuScene.h` — the scene as every technique reads it |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h`, `technique/MeshLights.h` (emitting meshes as lights: a rebuild that clusters them, a refit a frame) |
 | 16 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
@@ -98,7 +98,10 @@ a pool of its own and wants only the crossing.
    directions, `traceShadows` traces every light and lobe sample's shadow ray
    into a bit, and `shadeMaterials` lights the pixel by those bits. A kernel
    that evaluates a material holds no ray query: on Metal the two together
-   wrote rows of garbage. `AovShading` rebuilds the same surface for
+   wrote rows of garbage. The mesh lights add two kernels in closed form:
+   `meshLightCut` takes each tile's cut of their tree, and `meshShadowFilter`
+   filters the shadow ratio `traceShadows` measured beside its bits
+   (`shaders/athenea/light/mesh_light_cut.slang`). `AovShading` rebuilds the same surface for
    the ids, the normals and the primvars; `CryptoShading` for the matte's id
    plane.
 4. Points, where there are any, are rasterised into a layer of their own and

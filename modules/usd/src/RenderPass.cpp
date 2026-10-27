@@ -232,6 +232,7 @@ void HdAtheneaRenderPass::_Execute(HdRenderPassStateSharedPtr const& state, TfTo
         _engine->setPathAdaptive(_delegate->GetPathAdaptive());
         _engine->setPathMis(_delegate->GetPathMis());
         _engine->setMeshLights(_delegate->GetMeshLights());
+        _engine->setMeshLightSamples(_delegate->GetMeshLightSamples());
         _engine->setGlassShadows(_delegate->GetGlassShadows());
         _engine->setPathError(_delegate->GetPathError());
         _engine->setMotionBuckets(_delegate->GetDisableMotionBlur() ? 1u : _delegate->GetMotionBuckets());

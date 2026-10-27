@@ -4,6 +4,7 @@
 #include "athenea/core/Log.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 
 #include "athenea/gpu/CommandBatch.h"
@@ -19,12 +20,14 @@ import athenea.common.octahedral;
 import athenea.light.lights_image;
 import athenea.light.light_bvh;
 import athenea.light.mesh_lights;
+import athenea.light.ltc;
+import athenea.rt.bvh_common;
 
 struct LightingParams {
     uint  samples;
     uint  chooseLights;
     uint  shadowCutouts;   // 1: a material of the frame cuts, and a shadow ray asks what it meets
-    uint  pad1;
+    uint  meshSamples;     // samples a pixel through the mesh lights' tree (MeshLights); 0: none
 };
 
 Texture2D<uint4>              visibility;   // (instance + 1, triangle); row 0 on top
@@ -65,11 +68,179 @@ float2 sampleAt(uint2 pixel, uint light, uint index) {
 static const uint kLobeLookups = 32;
 /// Shadow bits a pixel's light samples take: the lobe samples' come after.
 uint lightSampleBits() {
+    if (lightCount == 0u) {
+        return 0u;
+    }
     const uint samples = max(lighting.samples, 1u);
     return lighting.chooseLights != 0 ? samples : lightCount * samples;
 }
 uint lobeLookups() {
     return lightCount != 0 ? min(max(lighting.samples, 1u), kLobeLookups) : 0u;
+}
+/// THE MESH LIGHTS' SAMPLES (technique::MeshLights): this many a pixel, each a
+/// cluster through the tree, a triangle by its share and a point on it. Their
+/// shadow bits come after the light samples' and the lobe samples', whatever
+/// number of lobe samples a pixel drew.
+uint meshSampleCount() {
+    return meshClusterCount(iesValues, meshLightWords) > 0u ? lighting.meshSamples : 0u;
+}
+uint meshSampleBit(uint i) {
+    return lightSampleBits() + lobeLookups() + i;
+}
+/// THE MESH LIGHTS IN CLOSED FORM (meshAnalytic): the tile's lightcut
+/// (mesh_light_cut.slang), the LTC table and the filtered shadow ratio.
+uniform uint              meshAnalytic;
+Texture2D<uint>           meshCut;
+uniform uint              meshCutK;
+Texture2D<float4>         ltcTable;
+Texture2D<float>          meshShadow;
+uniform uint              meshShadowOn;
+static const uint kMeshRatioSamples = 2u;
+
+/// The table's texel for a GGX alpha and the cosine to the eye, bilinear
+/// between the four around it.
+float4 ltcAt(float alpha, float cosTheta) {
+    const uint size = 64u;
+    const float2 uv = ltcCoordinates(alpha, cosTheta, size) * float(size) - 0.5;
+    const int2 i0 = clamp(int2(floor(uv)), int2(0), int2(int(size) - 1));
+    const int2 i1 = min(i0 + 1, int2(int(size) - 1));
+    const float2 f = saturate(uv - float2(i0));
+    const float4 a = lerp(ltcTable.Load(int3(i0.x, i0.y, 0)), ltcTable.Load(int3(i1.x, i0.y, 0)), f.x);
+    const float4 b = lerp(ltcTable.Load(int3(i0.x, i1.y, 0)), ltcTable.Load(int3(i1.x, i1.y, 0)), f.x);
+    return lerp(a, b, f.y);
+}
+
+/// What one lobe returns of a rectangle of unit radiance, its weight in it:
+/// a diffuse lobe by the rectangle's form factor, a GGX one by the LTC
+/// fitted to it times its albedo in reflection, Zeltner's sheen by its own
+/// LTC. Transmission and hair are left out (the plan's: they stay sampled).
+float3 lobeRectangle(Lobe lobe, float3 toEye, float3 p0, float3 p1, float3 p2, float3 p3, bool twoSided,
+                     bool diffuseOnly) {
+    float3 n = lobe.normal;
+    if (dot(n, toEye) < 0.0) {
+        n = -n;
+    }
+    const float3x3 frame = ltcFrame(n, toEye);
+    const float cosEye = saturate(dot(n, toEye));
+    switch (lobe.kind) {
+    case kLobeOrenNayar:
+    case kLobeBurley:
+        return lobe.weight * lobeAlbedo(lobe, toEye) * ltcQuad(frame, p0, p1, p2, p3, twoSided) / kPi;
+    case kLobeTranslucent:
+        return lobe.weight * lobe.colour0 * ltcQuad(ltcFrame(-n, toEye), p0, p1, p2, p3, twoSided) / kPi;
+    case kLobeSheen: {
+        if ((lobe.flags & kFlagZeltner) == 0u || diffuseOnly) {
+            return lobe.weight * lobeAlbedo(lobe, toEye) * ltcQuad(frame, p0, p1, p2, p3, twoSided) / kPi;
+        }
+        const float r = clamp(lobe.roughness, 0.01, 1.0);
+        const float aInv = zeltnerLtcAInv(cosEye, r);
+        const float bInv = zeltnerLtcBInv(cosEye, r);
+        const float3x3 m = mul(ltcInverse(float4(aInv, bInv, aInv, 0.0)), frame);
+        return lobe.weight * lobeAlbedo(lobe, toEye) * ltcQuad(m, p0, p1, p2, p3, twoSided) / kPi;
+    }
+    case kLobeConductor:
+    case kLobeSchlick:
+    case kLobeDielectric: {
+        if (diffuseOnly || lobe.scatter == kScatterTransmit) {
+            return float3(0.0);
+        }
+        Lobe reflecting = lobe;
+        reflecting.scatter = kScatterReflect;
+        const float alpha = clamp(averageAlpha(max(lobe.alpha, float2(1.0e-4))), 4.0e-4, 1.0);
+        const float3x3 m = mul(ltcInverse(ltcAt(alpha, max(cosEye, 1.0e-3))), frame);
+        return lobe.weight * lobeAlbedo(reflecting, toEye) * ltcQuad(m, p0, p1, p2, p3, twoSided) / kPi;
+    }
+    default:
+        return float3(0.0);
+    }
+}
+
+/// The mesh lights at a pixel in closed form: each entry of its tile's cut.
+/// A cluster is integrated over its rectangle; a node of the tree that
+/// stands for many is a Lambertian point at its box's middle, its power that
+/// of everything under it, its colour and facing its most important
+/// cluster's, and only the diffuse lobes see it. Unshadowed: the caller
+/// multiplies by the ratio.
+float3 meshClosedForm(uint2 tid, float3 p, float3 n, float3 toEye) {
+    float3 sum = float3(0.0);
+    const uint base = meshWord(iesValues, kMeshNodeBase);
+    const uint2 tile = tid / 16u;
+    for (uint e = 0u; e < meshCutK; ++e) {
+        const uint entry = meshCut.Load(int3(int(tile.x * meshCutK + e), int(tile.y), 0));
+        if (entry == kMeshNone) {
+            break;
+        }
+        const LightNode top = lightNodeAt(iesValues, base, entry);
+        LightNode node = top;
+        for (uint step = 0u; step < 64u && node.links.w == 0u; ++step) {
+            const LightNode a = lightNodeAt(iesValues, base, node.links.x);
+            const LightNode b = lightNodeAt(iesValues, base, node.links.y);
+            node = lightImportance(a, p, n) + 1.0e-6 * a.lo.w >= lightImportance(b, p, n) + 1.0e-6 * b.lo.w ? a : b;
+        }
+        const MeshCluster m = meshCluster(iesValues, node.links.x & ~kLeafBit);
+        if (!(m.power > 0.0)) {
+            continue;
+        }
+        const bool twoSided = (m.flags & kLightTwoSided) != 0u;
+        if (top.links.w == 0u) {
+            // A node: E = P cos(emitter) cos(receiver) / d^2, P its rgb power.
+            const float3 centre = 0.5 * (top.lo.xyz + top.hi.xyz);
+            const float3 offset = centre - p;
+            const float radius2 = 0.25 * dot(top.hi.xyz - top.lo.xyz, top.hi.xyz - top.lo.xyz);
+            const float d2 = max(dot(offset, offset), radius2);
+            const float distance = sqrt(max(dot(offset, offset), 1.0e-12));
+            const float3 wi = offset / distance;
+            // The node is a box, not a point: the receiver's cosine is taken
+            // with the angle the box subtends allowed for (Conty and Kulla's
+            // bound), so a node straddling a surface's horizon still lights it.
+            const float spread = asin(saturate(sqrt(radius2) / distance));
+            const float facing = dot(m.normal, -wi);
+            const float emitter = twoSided ? abs(facing) : max(facing, 0.0);
+            const float3 power = m.radiance * (4.0 * m.halfX * m.halfY) * (top.lo.w / m.power);
+            float3 albedo = float3(0.0);
+            for (uint k = 0u; k < gAtheneaResult.count; ++k) {
+                const Lobe lobe = gAtheneaResult.lobes[k];
+                if (lobe.kind == kLobeOrenNayar || lobe.kind == kLobeBurley ||
+                    (lobe.kind == kLobeSheen && (lobe.flags & kFlagZeltner) == 0u)) {
+                    const float receiver = dot(lobe.normal, wi) * (dot(lobe.normal, toEye) < 0.0 ? -1.0 : 1.0);
+                    albedo += lobe.weight * lobeAlbedo(lobe, toEye) *
+                              cos(min(max(acos(clamp(receiver, -1.0, 1.0)) - spread, 0.0), 0.5 * kPi));
+                }
+            }
+            sum += albedo / kPi * power * emitter / d2;
+            continue;
+        }
+        const float3 x = m.axisX * m.halfX;
+        const float3 y = m.axisY * m.halfY;
+        const float3 q = m.centre - p;
+        const float3 p0 = q - x - y;
+        const float3 p1 = q + x - y;
+        const float3 p2 = q + x + y;
+        const float3 p3 = q - x + y;
+        float3 response = float3(0.0);
+        // The stack where the material left it, read in place.
+        for (uint k = 0u; k < gAtheneaResult.count; ++k) {
+            response += lobeRectangle(gAtheneaResult.lobes[k], toEye, p0, p1, p2, p3, twoSided, false);
+        }
+        sum += response * m.radiance;
+    }
+    return sum;
+}
+
+/// How far a shadow ray toward a point on an emitter goes: short of the
+/// emitter itself by more than `occluded` moves the ray's origin (along the
+/// normal and along the ray, 1e-3 of the scale each), or the emitting
+/// triangle is its own occluder and every sample is in shadow.
+float meshShadowReach(float3 p, float distance) {
+    return max(distance - 5.0e-3 * max(1.0, length(p)), 0.0);
+}
+
+/// The numbers mesh light sample i draws with: a pick and a point.
+float meshPick(uint2 pixel, uint i) { return sampleAt(pixel, 0xA000u, i).x; }
+float3 meshPoint(uint2 pixel, uint i) {
+    const float2 a = sampleAt(pixel, 0xA001u, i);
+    const float2 b = sampleAt(pixel, 0xA002u, i);
+    return float3(a, b.x);
 }
 
 /// TRANSPARENT OPACITY (UsdPreviewSurface 2.6, opacityMode transparent),
@@ -920,6 +1091,8 @@ void drawLobes(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
 const char* kTraceBody = R"(
 RWStructuredBuffer<uint> shadowBitsOut;
 uniform uint             shadowWords;
+RWStructuredBuffer<float4> meshRatioOut;   // a pixel: visible, unshadowed, view z, normal (mesh_light_cut.slang)
+uniform uint             meshRatio;        // 1: the closed form's shadow ratio is measured here
 StructuredBuffer<uint>   lobeDirs;      // drawLobes' directions, lobeLookups() a pixel
 uniform uint             lobesDrawn;    // 0: no lobe directions this frame
 uniform uint             domesClosed;   // 1: drawLobes marked the pixels whose domes are read prefiltered
@@ -946,7 +1119,10 @@ void traceShadows(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
         return;
     }
     const uint4 seen = visibility.Load(int3(int(tid.x), int(camera.height - 1 - tid.y), 0));
-    if (seen.x == 0 || lightCount == 0) {
+    if (meshRatio != 0u) {
+        meshRatioOut[tid.y * camera.width + tid.x] = float4(0.0);
+    }
+    if (seen.x == 0 || (lightCount == 0 && meshSampleCount() == 0u && meshRatio == 0u)) {
         return;   // shading reads no bit there
     }
     const uint at = tid.y * camera.width + tid.x;
@@ -962,7 +1138,9 @@ void traceShadows(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
                         lobeDirs[camera.width * camera.height * lobesHere + at] != 0u;
     uint word = 0u;
     uint bit = 0u;
-    if (lighting.chooseLights != 0) {
+    if (lightCount == 0u) {
+        // Mesh lights alone: their bits are the first.
+    } else if (lighting.chooseLights != 0) {
         for (uint i = 0; i < samples; ++i) {
             bool blocked = false;
             const float2 u = sampleAt(tid, 0, i);
@@ -1003,6 +1181,52 @@ void traceShadows(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
         const bool blocked =
             packed != kNoLobe && occluded(p, n, unpackLobe(packed), 1.0e30, kLightUnlinked);
         putShadowBit(at, word, bit, blocked);
+    }
+    // THE CLOSED FORM'S SHADOW, as a ratio: a few samples through the tree,
+    // what was visible of what was there, weighed by luminance and cosine,
+    // for meshShadowFilter to filter before dividing.
+    if (meshRatio != 0u && meshClusterCount(iesValues, meshLightWords) > 0u) {
+        float visible = 0.0;
+        float total = 0.0;
+        for (uint i = 0u; i < kMeshRatioSamples; ++i) {
+            const LightChoice choice = chooseMeshCluster(iesValues, meshLightWords, p, n, meshPick(tid, i));
+            if (!choice.valid) {
+                continue;
+            }
+            const MeshLightSample ms =
+                sampleMeshCluster(iesValues, meshLightWords, choice.index, p, meshPoint(tid, i));
+            if (!ms.valid) {
+                continue;
+            }
+            const float w = dot(ms.radiance, float3(0.2126, 0.7152, 0.0722)) * max(dot(n, ms.wi), 0.0) /
+                            (ms.pdf * choice.probability);
+            total += w;
+            if (!occluded(p, n, ms.wi, meshShadowReach(p, ms.distance), kLightUnlinked)) {
+                visible += w;
+            }
+        }
+        const float2 e = saturate(octEncode(n));
+        const uint packed = uint(e.x * 65535.0 + 0.5) | (uint(e.y * 65535.0 + 0.5) << 16u);
+        meshRatioOut[at] = float4(visible, total, s.depth, asfloat(packed));
+    }
+    // Then the mesh lights' samples, after every lobe bit the frame numbers
+    // (a pixel that drew fewer leaves the rest clear): the same choice and
+    // point the shading kernel draws, shadowed short of the emitter itself.
+    const uint meshes = meshSampleCount();
+    if (meshes > 0u) {
+        while (bit < meshSampleBit(0u)) {
+            putShadowBit(at, word, bit, false);
+        }
+        for (uint i = 0u; i < meshes; ++i) {
+            bool blocked = false;
+            const LightChoice choice = chooseMeshCluster(iesValues, meshLightWords, p, n, meshPick(tid, i));
+            if (choice.valid) {
+                const MeshLightSample ms =
+                    sampleMeshCluster(iesValues, meshLightWords, choice.index, p, meshPoint(tid, i));
+                blocked = ms.valid && occluded(p, n, ms.wi, meshShadowReach(p, ms.distance), kLightUnlinked);
+            }
+            putShadowBit(at, word, bit, blocked);
+        }
     }
     if ((bit & 31u) != 0u) {
         shadowBitsOut[at * shadowWords + (bit >> 5u)] = word;
@@ -1183,11 +1407,44 @@ void shadeMaterials(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
         }
         radiance += lobeSum / float(lobeCount);
     }
+)"
+R"(    const uint meshSamples = meshSampleCount();
+    if (meshAnalytic != 0u && meshClusterCount(iesValues, meshLightWords) > 0u) {
+        // In closed form, shadowed by the filtered ratio of a few rays.
+        const float shadow = meshShadowOn != 0u ? meshShadow.Load(int3(int(tid.x), int(tid.y), 0)) : 1.0;
+        radiance += shadow * meshClosedForm(tid, inputs.positionWorld, inputs.normalWorld, toEye);
+    } else if (meshSamples > 0u) {
+        // THE MESH LIGHTS, SAMPLED: a cluster through the tree by its
+        // importance here, a triangle by its share, a point on it -- the
+        // path tracer's next event estimate, without its MIS (no lobe sample
+        // here meets an emitter). Shadowed by traceShadows' bits.
+        float3 sum = float3(0.0);
+        for (uint i = 0u; i < meshSamples; ++i) {
+            const LightChoice choice = chooseMeshCluster(iesValues, meshLightWords, inputs.positionWorld,
+                                                         inputs.normalWorld, meshPick(tid, i));
+            if (!choice.valid) {
+                continue;
+            }
+            const MeshLightSample ms = sampleMeshCluster(iesValues, meshLightWords, choice.index,
+                                                         inputs.positionWorld, meshPoint(tid, i));
+            if (!ms.valid) {
+                continue;
+            }
+            const float3 f = stackEval(stack, toEye, ms.wi);
+            if (!any(f > float3(0.0)) || occludedSample(at, meshSampleBit(i))) {
+                continue;
+            }
+            sum += f * ms.radiance / (ms.pdf * choice.probability);
+        }
+        radiance += sum / float(meshSamples);
+    }
     if (lightCount == 0) {
         // The headlight: unit radiance from the eye, so a white Lambert
         // surface facing it shows 1. What meshes were lit by before there
-        // were lights.
-        radiance += kPi * stackEval(stack, toEye, toEye);
+        // were lights -- and still are, unless mesh lights light them.
+        if (meshClusterCount(iesValues, meshLightWords) == 0u) {
+            radiance += kPi * stackEval(stack, toEye, toEye);
+        }
     } else if (lighting.chooseLights != 0) {
         // One light a sample, in proportion to its power: the cost of a pixel
         // stops growing with the number of lights, and the density it was
@@ -1304,6 +1561,63 @@ void shadeMaterials(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
 constexpr uint64_t kLobeLookups = 32;
 
 }   // namespace
+
+Result<void> MaterialShading::prepareClosedForm() {
+    if (!ltc_.has_value()) {
+        auto made = light::LtcTable::create(*library_);
+        if (!made) return std::move(made).error();
+        ltc_.emplace(std::move(*made));
+    }
+    if (!meshCut_.has_value()) {
+        auto made = gpu::ComputeKernel::create(*library_, "athenea/light/mesh_light_cut", "meshLightCut");
+        if (!made) return std::move(made).error();
+        meshCut_.emplace(std::move(*made));
+    }
+    if (!meshFilter_.has_value()) {
+        auto made = gpu::ComputeKernel::create(*library_, "athenea/light/mesh_light_cut", "meshShadowFilter");
+        if (!made) return std::move(made).error();
+        meshFilter_.emplace(std::move(*made));
+    }
+    return ok();
+}
+
+Result<void> MaterialShading::ensureMeshTextures(uint32_t cutWidth, uint32_t cutHeight, uint32_t width,
+                                                 uint32_t height) {
+    const auto texture = [&](gpu::Texture& into, rhi::ComPtr<rhi::ITextureView>& view, uint32_t w, uint32_t h,
+                             rhi::Format format, const char* label) -> Result<void> {
+        if (into.valid() && into.width() >= w && into.height() >= h && view) {
+            return ok();
+        }
+        gpu::TextureDesc desc;
+        desc.type = rhi::TextureType::Texture2D;
+        desc.width = std::max(w, into.valid() ? into.width() : 1u);
+        desc.height = std::max(h, into.valid() ? into.height() : 1u);
+        desc.format = format;
+        desc.usage = rhi::TextureUsage::UnorderedAccess | rhi::TextureUsage::ShaderResource;
+        desc.label = label;
+        auto made = gpu::Texture::create(*device_, desc);
+        if (!made) return std::move(made).error();
+        into = std::move(*made);
+        auto v = into.view(0);
+        if (!v) return std::move(v).error();
+        view = std::move(*v);
+        return ok();
+    };
+    ATHENEA_TRY(texture(meshCutTexture_, meshCutView_, cutWidth, cutHeight, rhi::Format::R32Uint, "meshLights.cut"));
+    ATHENEA_TRY(texture(meshShadowTexture_, meshShadowView_, width, height, rhi::Format::R32Float,
+                        "meshLights.shadow"));
+    const uint64_t bytes = uint64_t{width} * height * 16;
+    if (!meshRatio_.valid() || meshRatio_.bytes() < bytes) {
+        gpu::BufferDesc desc;
+        desc.bytes = std::max<uint64_t>(bytes, 16);
+        desc.elementBytes = 16;
+        desc.label = "meshLights.ratio";
+        auto made = gpu::Buffer::create(*device_, desc);
+        if (!made) return std::move(made).error();
+        meshRatio_ = std::move(*made);
+    }
+    return ok();
+}
 
 Result<MaterialShading> MaterialShading::create(gpu::ShaderLibrary& library) {
     MaterialShading shading;
@@ -1564,6 +1878,8 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
     const uint32_t lightChoice = frame.lights == nullptr ? 0u
                                  : frame.chooseLights    ? (frame.lightBvh && frame.lights->hasBvh() ? 2u : 1u)
                                                          : 0u;
+    // The mesh lights' samples a pixel, where the frame has clusters.
+    const uint32_t meshSamples = frame.meshLights ? frame.meshLightSamples : 0u;
     const auto bindLights = [&](rhi::ShaderCursor cursor) {
         if (frame.lights != nullptr) {
             frame.lights->bind(cursor);
@@ -1573,6 +1889,7 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
             // by a lot, as the path tracer's does: asked in traceShadows,
             // which holds no lobe stack (kNoShadowBits says why that matters).
             cursor["lighting"]["shadowCutouts"].setData(uint32_t{frame.cutouts ? 1u : 0u});
+            cursor["lighting"]["meshSamples"].setData(meshSamples);
         }
     };
     // The shadow rays first, one bit a light sample, in a kernel of their own.
@@ -1585,12 +1902,22 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
     // shadow ray, no shading kernel, no dome (kUnlitBody, `unlitAlone`).
     const bool alone = !frame.lit && frame.unlitRows != nullptr && unlit_.has_value();
     const bool tracing = !(domes && frame.domesOnly) && !alone;
+    // The mesh lights in closed form: where the frame has clusters and draws
+    // no sample of them. The tiles' cut, and the shadow's ratio where rays are.
+    const bool closedForm = frame.meshLights && frame.meshLightSamples == 0 && frame.lights != nullptr &&
+                            ltc_.has_value() && meshCut_.has_value() && meshFilter_.has_value();
+    constexpr uint32_t kCutK = 16;
+    const uint32_t tilesX = (targets.width + 15) / 16;
+    const uint32_t tilesY = (targets.height + 15) / 16;
+    ATHENEA_TRY(ensureMeshTextures(closedForm ? tilesX * kCutK : 1, closedForm ? tilesY : 1,
+                                   closedForm ? targets.width : 1, closedForm ? targets.height : 1));
     if (tracing && shadowed_ && trace_.has_value() && lobes_.has_value() && frame.shadows != nullptr &&
-        lightCount > 0) {
+        (lightCount > 0 || meshSamples > 0 || closedForm)) {
         const uint64_t samples = std::max(frame.samples, 1u);
-        lobes = static_cast<uint32_t>(std::min<uint64_t>(samples, kLobeLookups));
-        const uint64_t bits = (frame.chooseLights ? samples : samples * lightCount) + lobes;
-        shadowWords = static_cast<uint32_t>((bits + 31) / 32);
+        lobes = lightCount > 0 ? static_cast<uint32_t>(std::min<uint64_t>(samples, kLobeLookups)) : 0u;
+        const uint64_t lightBits = lightCount == 0 ? 0 : frame.chooseLights ? samples : samples * lightCount;
+        const uint64_t bits = lightBits + lobes + meshSamples;
+        shadowWords = static_cast<uint32_t>(std::max<uint64_t>((bits + 31) / 32, 1));
     }
     // The directions, and then a word a pixel: whether drawLobes found its
     // domes read prefiltered (kDomePrefilter).
@@ -1636,9 +1963,39 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
             cursor["lobeDirs"].setBinding(lobes != 0 ? lobeDirs_.rhi() : shadowBits_.rhi());
             cursor["lobesDrawn"].setData(uint32_t{lobes != 0 ? 1u : 0u});
             cursor["domesClosed"].setData(uint32_t{domes ? 1u : 0u});
+            cursor["meshRatioOut"].setBinding(meshRatio_.rhi());
+            cursor["meshRatio"].setData(uint32_t{closedForm ? 1u : 0u});
             setCamera(cursor["camera"], projection, targets.width, targets.height);
         });
         ATHENEA_TRY(stage(times_.shadows));
+    }
+    const bool meshShadowed = closedForm && shadowWords != 0;
+    if (closedForm) {
+        meshCut_->dispatch(batch, {tilesX, tilesY, 1}, [&](rhi::ShaderCursor cursor) {
+            // The scene a surface is rebuilt from and the view to world: not
+            // the material frame, whose tables this kernel does not declare.
+            bindScene(cursor, *frame.scene);
+            const std::array<float, 12> toWorld = aofx::xform::inverseAffine(projection.worldToView).rows3x4();
+            cursor["toWorld"]["row0"].setData(toWorld.data(), sizeof(float) * 4);
+            cursor["toWorld"]["row1"].setData(toWorld.data() + 4, sizeof(float) * 4);
+            cursor["toWorld"]["row2"].setData(toWorld.data() + 8, sizeof(float) * 4);
+            cursor["meshRegion"].setBinding(frame.lights->words().rhi());
+            cursor["meshRegionWords"].setData(frame.lights->meshWords());
+            cursor["visibility"].setBinding((*ids).get());
+            cursor["cutOut"].setBinding(meshCutView_.get());
+            cursor["cutK"].setData(kCutK);
+            cursor["tilesX"].setData(tilesX);
+            cursor["tilesY"].setData(tilesY);
+            setCamera(cursor["camera"], projection, targets.width, targets.height);
+        });
+        if (meshShadowed) {
+            meshFilter_->dispatch(batch, {targets.width, targets.height, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["ratio"].setBinding(meshRatio_.rhi());
+                cursor["shadowOut"].setBinding(meshShadowView_.get());
+                cursor["radius"].setData(uint32_t{4});
+                setCamera(cursor["camera"], projection, targets.width, targets.height);
+            });
+        }
     }
     // A material the same everywhere, under the domes alone, is tabulated
     // here, a row a material, and its pixels shaded from it (shadeTabled).
@@ -1736,6 +2093,12 @@ Result<void> MaterialShading::shade(gpu::CommandBatch& batch, const VisibilityTa
                 cursor["groupColour"].setBinding(frame.groups.colour->rhi());
                 cursor["groupCount"].setData(std::min(frame.groups.count, kMaxLightGroups));
             }
+            cursor["meshAnalytic"].setData(uint32_t{closedForm ? 1u : 0u});
+            cursor["meshCut"].setBinding(meshCutView_.get());
+            cursor["meshCutK"].setData(closedForm ? kCutK : 0u);
+            cursor["ltcTable"].setBinding(ltc_.has_value() ? ltc_->view() : meshShadowView_.get());
+            cursor["meshShadow"].setBinding(meshShadowView_.get());
+            cursor["meshShadowOn"].setData(uint32_t{meshShadowed ? 1u : 0u});
             setCamera(cursor["camera"], projection, targets.width, targets.height);
         });
     }

@@ -47,7 +47,7 @@ coinciden, la cabecera tiene razón.
 | 10 | render | `render/TileRasterizer.h` y `shaders/athenea/splat/frame.slang` (el pipeline), `render/GaussianRayTracer.h`, `render/Flatten.h` (una nube TX como armónicos estándar) |
 | 11 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
 | 12 | material | `material/MaterialCompiler.h` — MaterialX a Slang |
-| 13 | light | `light/LightTable.h` — una luz en el dispositivo; la región de las luces de malla al principio de sus palabras de luz, dispuesta en `shaders/athenea/light/mesh_lights.slang` |
+| 13 | light | `light/LightTable.h` — una luz en el dispositivo; la región de las luces de malla al principio de sus palabras de luz, dispuesta en `shaders/athenea/light/mesh_lights.slang`; `light/LtcTable.h` — la tabla LTC, ajustada en el dispositivo (`ltc_fit.slang`), y `ltc.slang`, el factor de forma y la integral LTC de un polígono |
 | 14 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h`, `technique/MeshLights.h` (mallas emisoras como luces: un rebuild que las agrupa en clusters, un refit por frame) |
 | 16 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
@@ -99,7 +99,11 @@ tiene hilo de GPU y pool propios y sólo quiere el cruce.
    de las muestras de sus lóbulos, `traceShadows` traza el rayo de sombra de
    cada muestra de luz y de lóbulo en un bit, y `shadeMaterials` ilumina el
    píxel con esos bits. Un kernel que evalúa un material no contiene ninguna
-   ray query: en Metal las dos cosas juntas escribían filas de basura.
+   ray query: en Metal las dos cosas juntas escribían filas de basura. Las
+   luces de malla en forma cerrada añaden dos kernels: `meshLightCut` toma el
+   corte de su árbol de cada tile, y `meshShadowFilter` filtra el cociente de
+   sombra que `traceShadows` midió junto a sus bits
+   (`shaders/athenea/light/mesh_light_cut.slang`).
    `AovShading` reconstruye la misma
    superficie para los ids, las normales y los primvars; `CryptoShading` para
    el plano de ids de la matte.

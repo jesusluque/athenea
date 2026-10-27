@@ -373,6 +373,8 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--light-level` | `GRUPO=NIVEL` ‹repetible› | ninguno | el nivel de un grupo de lámparas sobre el del estado (`athenea:lightLevel:GRUPO`): 0 apagado, 1 su radiancia, más para una lámpara que comparten dos funciones (un freno a 4 veces su piloto). Falla con un grupo que la escena no lleva |
 | `--refine` | entero | `0` | niveles de subdivisión; 0 dibuja la malla de control |
 | `--light-samples` | entero | `1` | muestras por luz y píxel |
+| `--mesh-light-samples` | 0..64 | `0` | raster: muestras por píxel de las luces de malla; 0 ilumina por ellas en forma cerrada (`athenea:meshLightSamples`) |
+| `--no-mesh-lights` | flag | luces de malla encendidas | las mallas emisoras no se agrupan en luces (`athenea:meshLights` apagado) |
 | `--no-transfer-indirect` | flag | se suma | dibujar una nube con transfer sin su mitad rebotada |
 | `--splat-display-blend` | flag | mezcla lineal | raster: los splats se mezclan como los mezcla un visor estándar, sumando valores sRGB (`athenea:splatDisplayBlend`) |
 | `--splat-reflections` | flag | apagado | rt: una gaussiana refleja la nube a la que pertenece, no sólo el cielo |
@@ -1611,6 +1613,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:pathError` | float | `0.02` | el error estándar relativo en que para |
 | `athenea:pathMis` | bool | `true` | muestreo por importancia múltiple |
 | `athenea:meshLights` | bool | `true` | las mallas emisoras y las prims con `MeshLightAPI` son luces que el frame muestrea a través de un árbol de clusters (§4.3, *Luces de malla*); apagado, el path tracer las toma de una tabla plana y el raster muestra su brillo |
+| `athenea:meshLightSamples` | int | `0` | raster: 0 ilumina las mallas por las luces de malla en forma cerrada; de 1 a 64, por tantas muestras por píxel a través de su árbol, cada una con un rayo de sombra (§4.3, *Luces de malla*) |
 | `athenea:domeVisible` | bool | `true` | toda técnica: se dibuja un dome detrás del frame; apagado, los píxeles que nada cubre quedan transparentes (alfa 0), como pide la película transparente de un host, y el dome sigue iluminando el frame |
 | `athenea:screenSpaceReflections` | bool | `false` | raster: las mallas que reflejan muestran lo que tienen las mallas del frame a lo largo de su reflejo (§4.3, *Reflejos en espacio de pantalla*) |
 | `athenea:meshAntialias` | int | `0` | raster: los bordes de las mallas se resuelven de 4, 8 o 16 muestras por píxel, un número intermedio redondeado hacia arriba; 0 y 1 dibujan una muestra por píxel (§4.3, *Bordes de malla antialiasados*) |
@@ -2045,8 +2048,8 @@ raster; el path tracer antialiasa con sus propias pasadas
 
 **Luces de malla** (`athenea:meshLights`, un render setting, encendido por
 defecto; `StageRenderer::setMeshLights`): una malla cuyo material emite luz, o
-una malla con la `MeshLightAPI` de UsdLux, ilumina la escena trazada como lo
-hace una luz; el raster muestra su brillo. Sus triángulos emisores se agrupan en clusters (por grupo de emisión, por
+una malla con la `MeshLightAPI` de UsdLux, ilumina la escena como lo hace una
+luz, trazada y en el raster. Sus triángulos emisores se agrupan en clusters (por grupo de emisión, por
 qué caras emiten, por el octante al que apunta su normal y por un cubo de una
 rejilla de 16^3 sobre los límites de los emisores) y el path tracer elige un
 triángulo a través de un árbol sobre los clusters, según cuánto puede importar
@@ -2058,6 +2061,21 @@ al cargar una escena, al editar un material -- y mientras un frame se
 reproduce solo se mueven y se reponderan. Apagado, el path tracer toma sus
 triángulos emisores de una tabla plana por potencia, como antes, y el raster
 muestra solo su brillo.
+
+El raster ilumina las mallas por ellas en forma cerrada
+(`athenea:meshLightSamples` 0, el valor por defecto): cada tile de 16 x 16 del
+frame toma un corte de hasta 16 entradas del árbol; un cluster se integra
+sobre el rectángulo que lo representa -- su factor de forma para un lóbulo
+difuso, el coseno transformado linealmente ajustado a GGX para un reflejo, el
+de Zeltner para un sheen -- y una entrada que representa a muchos clusters
+ilumina los lóbulos difusos como un punto de su potencia. La sombra son dos
+rayos por píxel hacia los clusters, su cociente de la luz que llegó entre la
+luz que había, filtrado sobre 9 x 9 píxeles de la misma profundidad y
+orientación. Donde el dispositivo no tiene rayos inline (CUDA) no hay sombra
+de luces de malla. Con 1 a 64 muestras por píxel, en cambio, cada una es una
+muestra con sombra de un triángulo, como la dibuja la estimación del
+siguiente evento del path tracer: con más ruido, y lo que la forma cerrada
+aproxima. Ninguna de las dos ilumina la transmisión: es del path tracer.
 
 Una prim con `MeshLightAPI` emite la radiancia de su LightAPI --
 `inputs:color` por `inputs:intensity`, `inputs:exposure`, y el cuerpo negro de

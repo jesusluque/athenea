@@ -17,6 +17,7 @@
 
 #include "athenea/geom/Mesh.h"
 #include "athenea/light/LightTable.h"
+#include "athenea/light/LtcTable.h"
 #include "athenea/material/MaterialCompiler.h"
 #include "athenea/material/TextureStore.h"
 #include "athenea/render/ReferenceRenderer.h"
@@ -290,4 +291,53 @@ TEST_CASE("mesh lights carry the power EmissiveTable weighs, and a moved emitter
     CHECK(*differ == 0);
     // Stretched 1.6 along x, the panel's power grows by 0.6 of a third.
     CHECK(std::abs(movedTotal - meshTotal * (1.0F + 0.6F / 3.0F)) <= 1.0e-3F * meshTotal);
+}
+
+// THE LTC TABLE FITTED ON THE DEVICE (light::LtcTable) against what it stands
+// for: a rectangle's share of a GGX lobe, integrated by quadrature, for four
+// roughnesses and four angles to the eye; and a diffuse rectangle's form
+// factor, which the closed form has exactly (its horizon unclipped here).
+TEST_CASE("the fitted LTC table integrates a GGX lobe over a rectangle as quadrature does",
+          "[technique][lights][meshlights][ltc]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto table = light::LtcTable::create(*gpu->library);
+    if (!table) FAIL(table.error().toString());
+    auto check = gpu::ComputeKernel::create(*gpu->library, "athenea/test/ltc_check", "ltcCheck");
+    REQUIRE(check);
+    const uint32_t cases = 16;
+    auto results = gpu::Buffer::fromSpan<float>(*gpu->device, std::vector<float>(cases * 4, 0.0F), "ltc.results");
+    REQUIRE(results);
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        check->dispatch(batch, {cases, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["ltcTable"].setBinding(table->view());
+            cursor["results"].setBinding(results->rhi());
+            cursor["cases"].setData(cases);
+        });
+        REQUIRE(batch.submit(true));
+    }
+    std::vector<float> r(cases * 4);
+    REQUIRE(results->read(*gpu->device, 0, r.size() * 4, r.data()));
+    float worst = 0.0F;
+    float worstGrazing = 0.0F;
+    float worstDiffuse = 0.0F;
+    for (uint32_t k = 0; k < cases; ++k) {
+        const float closed = r[k * 4], quad = r[k * 4 + 1], dClosed = r[k * 4 + 2], dQuad = r[k * 4 + 3];
+        // Relative to the larger of the two and a floor of 1% of the lobe:
+        // where the rectangle holds almost none of it, the absolute error is
+        // what is seen.
+        const float error = std::abs(closed - quad) / std::max(std::max(closed, quad), 0.01F);
+        const float dError = std::abs(dClosed - dQuad) / std::max(dQuad, 1.0e-6F);
+        // Grazing (the last row of cases, 69 degrees) is where an LTC is
+        // known to fit worst; held apart.
+        (k / 4 == 3 ? worstGrazing : worst) = std::max(k / 4 == 3 ? worstGrazing : worst, error);
+        worstDiffuse = std::max(worstDiffuse, dError);
+        std::printf("  case %2u: GGX closed %.4f quadrature %.4f; diffuse %.5f against %.5f\n", k, double(closed),
+                    double(quad), double(dClosed), double(dQuad));
+    }
+    std::printf("  worst: GGX %.3f (at 69 degrees %.3f), diffuse %.2e\n", double(worst), double(worstGrazing),
+                double(worstDiffuse));
+    CHECK(worstDiffuse < 1.0e-3F);
+    CHECK(worst < 0.1F);
+    CHECK(worstGrazing < 0.3F);
 }

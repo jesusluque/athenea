@@ -772,6 +772,10 @@ void Engine::setDenoise(bool denoise) { denoise_.store(denoise); }
 void Engine::setPathAdaptive(bool adaptive) { pathAdaptive_.store(adaptive); }
 void Engine::setPathMis(bool mis) { pathMis_.store(mis); }
 
+void Engine::setMeshLightSamples(uint32_t samples) {
+    meshLightSamples_.store(std::min<uint32_t>(samples, 64));
+}
+
 void Engine::setMeshLights(bool on) {
     if (meshLightsOn_.exchange(on) != on) {
         revision_.fetch_add(1);
@@ -2963,7 +2967,11 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         const bool inlineRays = caps.rayQuery && caps.accelerationStructure;
         const bool pipelineRays = caps.rayTracing && caps.accelerationStructure;
         bool raysWanted = false;
-        if ((lightTable_->anyShadow() && inlineRays) || (pathTracing && (inlineRays || pipelineRays))) {
+        // Mesh lights cast shadows too: sampled, a ray a sample; in closed
+        // form, the ratio's few rays.
+        const bool meshLightsCast = meshLightInputs.on && meshLights_->clusters() > 0;
+        if (((lightTable_->anyShadow() || meshLightsCast) && inlineRays) ||
+            (pathTracing && (inlineRays || pipelineRays))) {
             if (!rayTracingScene_.has_value()) {
                 auto accel = world::RayTracingScene::create(*library_);
                 if (!accel) return std::move(accel).error();
@@ -3266,6 +3274,11 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             }
         }
         const technique::MaterialFrame* cutouts = (materialCutouts_ || scene_->anyHidden()) ? &frame : nullptr;
+        // The mesh lights' closed form needs its LTC table, fitted once, with
+        // waits of its own: before the frame's batch opens.
+        if (!pathTracing && meshLightInputs.on && meshLights_->clusters() > 0 && meshLightSamples_.load() == 0) {
+            ATHENEA_TRY(materialShading_->prepareClosedForm());
+        }
             const auto meshStart = std::chrono::steady_clock::now();
             gpu::CommandBatch batch(*device_);
         switch (visibility) {
@@ -3334,7 +3347,10 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                                      environment_->ready()
                                  ? environment_->meshView()
                                  : nullptr;
-        frame.domesOnly = frame.domeLighting != nullptr && !lamps.empty() &&
+        frame.meshLights = meshLightInputs.on && meshLights_->clusters() > 0;
+        frame.meshLightSamples = meshLightSamples_.load();
+        // The domes alone light the frame only where no mesh light does.
+        frame.domesOnly = frame.domeLighting != nullptr && !lamps.empty() && !frame.meshLights &&
                           lamps.size() <= technique::kEnvironmentDomes &&
                           std::all_of(lamps.begin(), lamps.end(),
                                       [](const light::Light& l) { return l.kind == light::LightKind::Dome; });

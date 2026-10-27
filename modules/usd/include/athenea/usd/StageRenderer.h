@@ -500,6 +500,10 @@ public:
     /// on by default). Off: the path tracer samples them from a flat table and
     /// the raster shows their glow alone.
     void setMeshLights(bool on);
+    /// Samples a pixel the raster draws from the mesh lights
+    /// (`athenea:meshLightSamples`, at most 64); 0, the default, lights by
+    /// them in closed form.
+    void setMeshLightSamples(uint32_t samples);
     /// Let the path tracer's shadow rays through clear glass, tinted
     /// (`athenea:glassShadows`, on by default): a lamp behind its lens lights
     /// what stands in front by next event estimation. Off: glass stops them.

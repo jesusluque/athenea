@@ -502,6 +502,10 @@ public:
     /// them as lights; off, the path tracer takes them from EmissiveTable's
     /// flat distribution and the raster only shows their glow. On by default.
     void setMeshLights(bool on);
+    /// Samples a pixel the raster draws from the mesh lights' tree
+    /// (`athenea:meshLightSamples`, at most 64), each shadowed by a ray; 0,
+    /// the default, lights in closed form instead (MaterialShading).
+    void setMeshLightSamples(uint32_t samples);
     /// Whether a dome is drawn behind the frame (true) or its pixels are left
     /// transparent (false); either way the dome lights what the frame holds.
     void setScreenSpaceReflections(bool on);
@@ -969,6 +973,7 @@ private:
     /// groups by name (slots 1 to 31, numbered as first met).
     std::optional<technique::MeshLights>       meshLights_;
     std::atomic<bool>                          meshLightsOn_{true};
+    std::atomic<uint32_t>                      meshLightSamples_{0};
     std::map<std::string, uint32_t>            emissionGroups_;
     bool                                       meshLightSetsSaid_ = false;
     std::vector<bool>                          materialRowEmits_;   ///< by row: kMaterialEmits

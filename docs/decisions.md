@@ -16190,3 +16190,68 @@ UsdLux lights' tree is affected by rounding only.
 - Light linking on a mesh light: its clusters reach every prim.
 - Under motion blur the clusters are the shutter's first bucket's.
 - A frame with volumes takes no emitting triangle as a light, through the tree or the table, as before.
+
+### Stage B: meshes lit by mesh lights in the raster
+
+**Sampled** (`athenea:meshLightSamples` 1 to 64): each sample is the path tracer's next event estimate --
+a cluster through the tree, a triangle, a point -- with no MIS (no lobe sample of the raster meets an
+emitter). `traceShadows` traces their rays after the light samples' and every lobe bit the frame numbers,
+so the bit of mesh sample `i` is at the same place in every pixel. A shadow ray toward an emitter stops
+short of it by more than the ray's origin moves (5e-3 of the scale): stopped at 1e-4 of the distance, the
+emitting triangle was its own occluder and the floor under a MeshLightAPI quad drew black. A frame lit by
+mesh lights alone has no headlight, in the raster as in the path tracer.
+
+**In closed form** (0, the default), the on-air path:
+
+- *The cut.* `meshLightCut` takes, for each 16 x 16 tile, a cut of up to 16 nodes of the tree from the
+  surface at the tile's middle: the most important node split while there is room, every cluster under
+  exactly one entry. With 8 entries, as the plan had it, eight 5 m strips (some 90 clusters) left most
+  of a floor to aggregates, and the tiles' borders showed as steps.
+- *A cluster* is integrated over its rectangle: a diffuse lobe by the form factor, the horizon clipped by
+  the sphere of the same vector (Snyder's integral; no clipping code); a GGX lobe -- a conductor, a
+  generalised Schlick, a dielectric's reflection -- by the linearly transformed cosine fitted to GGX, times
+  the lobe's own albedo in reflection; a Zeltner sheen by its own LTC. Transmission and hair are left out.
+- *An aggregate* (a node standing for several clusters) lights the diffuse lobes as a Lambertian point at
+  its box's middle: its power, the colour and facing of its most important cluster, the receiver's cosine
+  widened by the angle the box subtends. Without that widening a node straddling a surface's horizon gave
+  it nothing: the box's front face under strips above and in front of it drew black.
+- *The shadow* is a ratio (Heitz, Hill and McGuire 2018): two rays a pixel through the tree, the
+  luminance-and-cosine-weighted light that arrived and the light that was there, each summed over 9 x 9
+  pixels of the same depth (2%) and facing (cos^16) before they are divided. On CUDA, which has no inline
+  rays, there is none.
+
+**The LTC table is fitted on the device.** The published fit's licence file is BSD-like but GitHub
+classifies it as "other" (NOASSERTION); unclear, so the table is ours: `ltc_fit.slang` fits Heitz, Dupuy,
+Hill and Neubelt's parametrisation (the lobe's mean frame times [[m11, 0, m13], [0, m22, 0], [0, 0, 1]],
+Nelder-Mead on the integral of the cubed difference, sampled from both distributions) for GGX with
+height-correlated Smith masking, 64 x 64 (roughness, sqrt(1 - cos)), a dispatch a roughness row from the
+roughest down, each row starting from the one above. `light::LtcTable` fits it once a process, before the
+first frame that needs it.
+
+**A factor of 2 pi.** Hill's rational edge integral returns theta / (2 pi sin theta), not theta / sin theta:
+summed it is already the form factor's vector. Taken for the bare one, every closed form came out 1 / (2 pi)
+of the quadrature (0.00572 against 0.03594, every case), and the strip's floor read dark.
+
+#### Measured (Metal, M5 Pro)
+
+- The LTC table against quadrature, a rectangle and a GGX lobe over its albedo, four roughnesses (alpha
+  0.08 to 0.8) and four angles to the eye: within 9% up to 49 degrees (e.g. 0.3988 against 0.3981, 0.0646
+  against 0.0652), 25% at 69 degrees (0.0102 against 0.0136), where an LTC is known to fit worst. The form
+  factor against quadrature: 3.6e-6.
+- The strip stage (`tests/data/mesh_light_strip.usda`, 384 x 216) against 8192 paths of direct light,
+  antialiasing off in both: sampled, 4 a pixel relMSE 6.19e-3, 64 a pixel 3.98e-4 (15.5 times less for 16
+  times the samples: no bias); in closed form 5.85e-4.
+- A MeshLightAPI quad against a RectLight of the same, the rect path traced: the quad in closed form
+  3.37e-5; sampled 64 a pixel 4.41e-5; the rect light in the raster at 64 samples 4.46e-5.
+- The showcase (eight strips, a MeshLightAPI lamp, a box; 1024 x 576) in closed form against 1024 paths of
+  direct light: relMSE 7.58e-4.
+- A still stage drawn twice: 0 words differ.
+
+#### Not done (stage B)
+
+- UsdLux rect, disk and sphere lights through the same closed form: the plan's "closes LIGHT1 for them
+  too". They are still sampled, so that every existing frame stays as it was.
+- The cut's hysteresis: a cut is the tile's middle surface's each frame.
+- A cluster whose triangles curve is integrated over its plane's rectangle; screens with a varying picture
+  are lit by their mean.
+- The aggregates' glossy lobes, and their shadows beyond the ratio's two rays.

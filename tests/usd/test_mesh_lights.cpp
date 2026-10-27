@@ -324,11 +324,14 @@ TEST_CASE("mesh lights: the raster against the path tracer, as pictures", "[.mes
     const uint32_t w = 1024, h = 576;
     const auto samples = [](usd::StageRenderer& r) { r.setLightSamples(16); };
     const Frame raster = frameOf(*gpu, path, w, h, "raster", true, 1, samples);
+    const Frame sampled = frameOf(*gpu, path, w, h, "raster", true, 1,
+                                  [](usd::StageRenderer& r) { r.setMeshLightSamples(16); });
     // The direct light alone, through the pixels' middles: what the raster draws.
     const Frame traced = frameOf(*gpu, path, w, h, "rt", true, 1024, [](usd::StageRenderer& r) {
         r.setPathBounces(0);
         r.setAntialias(false);
     });
+    picture(*gpu, sampled, traced, "showcase_sampled16_pt_diff", 1.0F, 2.0F);
     auto diff = render::compareHdr(*gpu->library, raster.rgba, traced.rgba, w, h);
     REQUIRE(diff);
     std::printf("  showcase, raster against 1024 paths: relMSE %.3e, p99 relative %.3e\n", diff->relMse,

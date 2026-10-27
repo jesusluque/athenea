@@ -25,6 +25,7 @@
 #include "athenea/gpu/Texture.h"
 #include "athenea/render/Camera.h"
 #include "athenea/render/TileRasterizer.h"
+#include "athenea/light/LtcTable.h"
 #include "athenea/technique/MaterialPrograms.h"
 #include "athenea/technique/Visibility.h"
 
@@ -41,6 +42,10 @@ public:
 
     /// The kernel is rebuilt when `programs` dispatches to a different set.
     [[nodiscard]] Result<void> setPrograms(const MaterialPrograms& programs);
+    /// What the mesh lights' closed form needs before a frame's batch opens:
+    /// the LTC table (fitted on the device the first time, a wait) and its
+    /// kernels. A frame drawn without it samples them instead.
+    [[nodiscard]] Result<void> prepareClosedForm();
     /// The same, for a frame with light groups (their buffers declared) or
     /// without; `shade` switches as the frame asks.
     [[nodiscard]] Result<void> setPrograms(const MaterialPrograms& programs, bool groups);
@@ -114,6 +119,19 @@ private:
     std::optional<gpu::ComputeKernel> unlit_;   ///< shadeUnlit: the unlit surfaces' pixels
     std::optional<gpu::ComputeKernel> reflections_;   ///< shadeReflections: the screen-space reflections
     gpu::Buffer                       reflectionSource_;   ///< what was shaded, read by the reflections
+    // THE MESH LIGHTS IN CLOSED FORM: the LTC table (fitted once), the
+    // tiles' lightcuts, the shadow ratio and its filtered texture, and the
+    // kernels that make the last three.
+    std::optional<light::LtcTable>    ltc_;
+    std::optional<gpu::ComputeKernel> meshCut_;
+    std::optional<gpu::ComputeKernel> meshFilter_;
+    gpu::Texture                      meshCutTexture_;
+    rhi::ComPtr<rhi::ITextureView>    meshCutView_;
+    gpu::Texture                      meshShadowTexture_;
+    rhi::ComPtr<rhi::ITextureView>    meshShadowView_;
+    gpu::Buffer                       meshRatio_;
+    [[nodiscard]] Result<void> ensureMeshTextures(uint32_t cutWidth, uint32_t cutHeight, uint32_t width,
+                                                  uint32_t height);
     gpu::Texture                     evaluatedMask_;
     rhi::ComPtr<rhi::ITextureView>   evaluatedMaskView_;
     bool                             timeStages_ = false;

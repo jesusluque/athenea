@@ -1293,6 +1293,10 @@ void StageRenderer::setPathMis(bool mis) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:pathMis"), VtValue(mis));
 }
 
+void StageRenderer::setMeshLightSamples(uint32_t samples) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:meshLightSamples"), VtValue(static_cast<int>(samples)));
+}
+
 void StageRenderer::setMeshLights(bool on) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:meshLights"), VtValue(on));
 }

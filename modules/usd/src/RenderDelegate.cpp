@@ -340,6 +340,10 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     meshLights.name = "Emitting meshes light the scene as lights (mesh lights)";
     meshLights.key = TfToken("athenea:meshLights");
     meshLights.defaultValue = VtValue(true);
+    HdRenderSettingDescriptor meshLightSamples;
+    meshLightSamples.name = "Raster: samples a pixel drawn from the mesh lights (0: closed form)";
+    meshLightSamples.key = TfToken("athenea:meshLightSamples");
+    meshLightSamples.defaultValue = VtValue(0);
     HdRenderSettingDescriptor screenSpaceReflections;
     screenSpaceReflections.name = "Screen-space reflections on the meshes that reflect";
     screenSpaceReflections.key = TfToken("athenea:screenSpaceReflections");
@@ -410,7 +414,7 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
             total,     denoise,     adaptive,    error,       mis,        glassShadows, motion,     transferIndirect, displayBlend, reflectCloud, splatShadows,
             cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, domePrefiltered, domeVisible, splatView,
-            screenSpaceReflections, meshAntialias, meshLights};
+            screenSpaceReflections, meshAntialias, meshLights, meshLightSamples};
 }
 
 athenea::usd::MeshVisibility HdAtheneaRenderDelegate::GetMeshVisibility() const {
@@ -534,6 +538,13 @@ bool HdAtheneaRenderDelegate::GetSplatDisplayBlend() const {
 bool HdAtheneaRenderDelegate::GetPathMis() const {
     const VtValue value = GetRenderSetting(_atheneaSettings->pathMis);
     return !value.IsHolding<bool>() || value.UncheckedGet<bool>();
+}
+
+uint32_t HdAtheneaRenderDelegate::GetMeshLightSamples() const {
+    const VtValue value = GetRenderSetting(TfToken("athenea:meshLightSamples"));
+    if (value.IsHolding<int>()) return static_cast<uint32_t>(std::max(value.UncheckedGet<int>(), 0));
+    if (value.IsHolding<unsigned int>()) return value.UncheckedGet<unsigned int>();
+    return 0u;
 }
 
 bool HdAtheneaRenderDelegate::GetMeshLights() const {

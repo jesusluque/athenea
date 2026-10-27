@@ -191,6 +191,12 @@ struct MaterialFrame {
     /// distance within the lights' cones, at the shading point -- where the
     /// table has one (any bounded light); by power alone otherwise.
     bool                          lightBvh = true;
+    /// THE MESH LIGHTS (technique::MeshLights): whether the light table's
+    /// region holds clusters that light the frame, and how many samples a
+    /// pixel the raster draws from them through their tree (0: none drawn;
+    /// the closed form, where there is one, lights instead).
+    bool                          meshLights = false;
+    uint32_t                      meshLightSamples = 0;
     /// The light groups the frame writes beside its colour: a light's direct
     /// contribution, at every bounce, under its group. Emission and the
     /// background are in no group.
