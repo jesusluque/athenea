@@ -461,7 +461,7 @@ void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::Planes
             auto f = reader.read(k);
             if (!f) cli::fail(f.error());
             auto layout = video::PlaneLayout::make(f->splats, h.bits, h.restPerColour, h.hiInVideo, h.chunkSplats,
-                                                   h.columns, h.maxSplats, 0, 0, h.chroma, h.geometry);
+                                                   h.columns, h.maxSplats, 0, 0, h.chroma, h.geometry, h.layoutFold());
             if (!layout) cli::fail(layout.error());
             layout->positionHighBits = h.positionHighBits;
             layout->geometryPositionBits = h.geometryPositionBits;
@@ -492,7 +492,7 @@ void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::Planes
         auto picture = decoder.decode(f->unit, f->parameterSets, f->keyframe);
         if (!picture) cli::fail(picture.error());
         auto layout = video::PlaneLayout::make(f->splats, h.bits, h.restPerColour, h.hiInVideo, h.chunkSplats,
-                                               h.columns, h.maxSplats, 0, 0, h.chroma, h.geometry);
+                                               h.columns, h.maxSplats, 0, 0, h.chroma, h.geometry, h.layoutFold());
         if (!layout) cli::fail(layout.error());
         layout->positionBlock = h.positionBlock;
         layout->positionHighBits = h.positionHighBits;
@@ -620,6 +620,8 @@ void addVideo(CLI::App& app) {
         bool check = false, intra = false, chroma = false, holdBoxes = false, geometry = false, geometryStagger = false;
         uint32_t geometryKey = 0, geometryPositionBits = 16, geometryScaleBits = 10, geometryPredict = 1;
         std::vector<uint32_t> geometryHold;
+        bool geometryVideo = false;
+        std::vector<uint32_t> geometryFold{16, 16, 16};
         uint32_t geometryRotationBits = 10;
         std::string chromaWeight = "mean";
     };
@@ -670,6 +672,15 @@ void addVideo(CLI::App& app) {
                     "fitted from what the decoder holds, the rotation sent as a turn in steps by the gaussian's "
                     "shape, and keys that send what the decoder would hold")
         ->check(CLI::Range(1u, 3u));
+    enc->add_flag("--geometry-video", o->geometryVideo,
+                  "position, scale and rotation as luma planes of the video (a coarse plane each, and two folded "
+                  "fine ones where --geometry-fold says), nothing beside it but the ranges");
+    enc->add_option("--geometry-fold", o->geometryFold,
+                    "with --geometry-video: P,S,R, the fold of position, log scale and rotation -- two fine "
+                    "planes of 255 x 255 / K levels, placed by the coarse one within K / 4 of its steps; 0: the "
+                    "coarse plane alone")
+        ->expected(3)
+        ->delimiter(',');
     enc->add_flag("--geometry-stagger", o->geometryStagger,
                   "with --geometry-key: no whole key frames, blocks of 256 gaussians refreshed in turn");
     enc->add_flag("--hold-boxes", o->holdBoxes,
@@ -752,6 +763,9 @@ void addVideo(CLI::App& app) {
             cli::err("video-encode: --chroma is 8 bits only\n");
             throw CLI::RuntimeError(kExitFailure);
         }
+        const uint32_t fold = o->geometryVideo ? (video::PlaneLayout::kGeometryVideo | o->geometryFold[0] |
+                                                  (o->geometryFold[1] << 8u) | (o->geometryFold[2] << 16u))
+                                               : 0u;
         double rate = o->rate;
         auto frames = inputFrames(o->inputs, rate);
         if (!frames) cli::fail(frames.error());
@@ -814,6 +828,7 @@ void addVideo(CLI::App& app) {
         uint32_t orderedFor = 0, picture = 0;
         std::vector<double> unitBytes, sideBytes, keyBytes, interBytes, layMs, encodeMs, decodeMs, checkMs;
         std::vector<double> geometryBytes;
+        gpu::Buffer errorBins, previousError;   // --check: the geometry's error, histograms
         std::vector<video::AttributeError> worst;
         std::vector<double> meanSum;
         uint64_t keyframes = 0, checked = 0;
@@ -826,6 +841,13 @@ void addVideo(CLI::App& app) {
                             (o->geometryKey > 1 && o->order != "stable"))) {
             cli::err("video-encode: --geometry takes no --position-block, --position-target or --hi video, and a "
                      "--geometry-key past 1 wants --order stable\n");
+            throw CLI::RuntimeError(kExitFailure);
+        }
+        if (o->geometryVideo &&
+            (o->geometry || o->positionBlock != 0 || o->hi == "video" || o->bits != 8 || o->geometryFold.size() != 3 ||
+             std::any_of(o->geometryFold.begin(), o->geometryFold.end(), [](uint32_t k) { return k > 255; }))) {
+            cli::err("video-encode: --geometry-video is 8 bits, without --geometry, --position-block or --hi video, "
+                     "and --geometry-fold is three numbers 0..255\n");
             throw CLI::RuntimeError(kExitFailure);
         }
         if (o->positionTarget > 0.0F && o->positionBlock == 0) {
@@ -858,7 +880,7 @@ void addVideo(CLI::App& app) {
             const uint32_t rest = std::min(cloud->restPerColour, restAsked);
             auto cap = video::PlaneLayout::sliceSplats(cloud->count, o->bits, rest, o->hi == "video",
                                                        video::PlaneLayout::kBandSplats, o->columns, mostWidth,
-                                                       mostHeight, o->chroma, o->geometry);
+                                                       mostHeight, o->chroma, o->geometry, fold);
             if (!cap) cli::fail(cap.error());
             sliceCap = *cap;
             if (mostWidth != 0) {
@@ -868,7 +890,7 @@ void addVideo(CLI::App& app) {
                 // extra picture.
                 auto most = video::PlaneLayout::sliceSplats(uint32_t{1} << 30, o->bits, rest, o->hi == "video",
                                                             video::PlaneLayout::kBandSplats, o->columns, mostWidth,
-                                                            mostHeight, o->chroma, o->geometry);
+                                                            mostHeight, o->chroma, o->geometry, fold);
                 if (!most) cli::fail(most.error());
                 const uint32_t band = video::PlaneLayout::kBandSplats;
                 const uint64_t roomy = (uint64_t{cloud->count} * 21 / 20 + band - 1) / band * band;
@@ -876,12 +898,13 @@ void addVideo(CLI::App& app) {
             }
             auto made = video::PlaneLayout::make(sliceCap, o->bits, rest, o->hi == "video",
                                                  video::PlaneLayout::kBandSplats, o->columns, 0, mostWidth,
-                                                 mostHeight, o->chroma, o->geometry);
+                                                 mostHeight, o->chroma, o->geometry, fold);
             if (!made) cli::fail(made.error());
             layout = *made;
             layout.positionBlock = o->positionBlock;
             layout.positionHighBits = o->positionTarget > 0.0F && o->positionHighBits < 0 ? o->bits : highBits;
             layout.positionTarget = o->positionTarget;
+            if (o->geometryVideo) layout.positionHighBits = 0;   // nothing beside the video
             if (o->geometry) {
                 layout.positionHighBits = 0;   // nothing beside the video but the layer
                 layout.geometryPositionBits = o->geometryPositionBits;
@@ -938,6 +961,8 @@ void addVideo(CLI::App& app) {
             header.geometryOrder = o->geometryPredict;
             header.chroma = layout.chroma;
             header.stableOrder = stable;
+            header.geometryVideo = layout.geometryVideo();
+            header.geometryFold = layout.geometryFold & 0xFFFFFFu;
             auto w = video::AthvWriter::create(o->output, header);
             if (!w) cli::fail(w.error());
             writer = std::move(*w);
@@ -953,7 +978,8 @@ void addVideo(CLI::App& app) {
                      "frame, %u bits, high parts %s, encoder %s\n",
                      last - first + 1, cloud->count, layout.planes(), video::PlaneLayout::kTileWidth,
                      layout.tileHeight, layout.width, layout.height, (cloud->count + sliceCap - 1) / sliceCap,
-                     sliceCap < cloud->count ? "s" : "", layout.bits, layout.hiInVideo ? "in the video" : "beside it",
+                     sliceCap < cloud->count ? "s" : "", layout.bits,
+                     layout.geometryVideo() ? "none (geometry in the video)" : layout.hiInVideo ? "in the video" : "beside it",
                      encoder->hardware() ? "hardware" : "software");
             return std::move(*cloud);
         };
@@ -1089,7 +1115,7 @@ void addVideo(CLI::App& app) {
                     const uint32_t count = std::min(sliceCap, cloud.count - at);
                     auto sliced = video::PlaneLayout::make(count, layout.bits, layout.restPerColour, layout.hiInVideo,
                                                            layout.chunkSplats, layout.columns, sliceCap, 0, 0,
-                                                           layout.chroma, layout.geometry);
+                                                           layout.chroma, layout.geometry, layout.geometryFold);
                     if (!sliced) cli::fail(sliced.error());
                     sliced->positionBlock = layout.positionBlock;
                     sliced->positionHighBits = layout.positionHighBits;
@@ -1186,6 +1212,11 @@ void addVideo(CLI::App& app) {
                         if (auto r = batch.submit(true); !r) cli::fail(r.error());
                     }
                     checkMs.push_back(std::chrono::duration<double, std::milli>(Clock::now() - t).count());
+                    if (auto r = codec->geometryError(*back, cloud, order, at, count, at,
+                                                      stable && k != first, errorBins, previousError, cloud.count);
+                        !r) {
+                        cli::fail(r.error());
+                    }
                     auto errors = codec->compare(*sliced, *back, cloud, order, at, ranges, *side,
                                                  sliced->rangeBytes());
                     if (!errors) cli::fail(errors.error());
@@ -1250,6 +1281,21 @@ void addVideo(CLI::App& app) {
                 cli::out("video-encode: %-12s max %.2f steps, mean %.3f%s\n", name, it->second.first,
                          it->second.second,
                          std::string(name) == "position" ? " (steps of the 2 x bits position)" : "");
+            }
+            std::vector<uint32_t> bins(4 * video::PlanesCodec::kErrorBins);
+            if (auto r = errorBins.read(**device, 0, bins.size() * 4, bins.data()); !r) cli::fail(r.error());
+            const auto q = [&](int h, double base, double at) {
+                return video::PlanesCodec::errorQuantile(bins.data() + h * video::PlanesCodec::kErrorBins, base, at);
+            };
+            cli::out("video-encode: geometry error, median / p99 / p99.9: position %.1f / %.1f / %.1f um, rotation "
+                     "%.3f / %.3f / %.3f deg, largest scale %.2f / %.2f / %.2f %%\n",
+                     q(0, 1e-7, 0.5) * 1e6, q(0, 1e-7, 0.99) * 1e6, q(0, 1e-7, 0.999) * 1e6, q(1, 1e-5, 0.5),
+                     q(1, 1e-5, 0.99), q(1, 1e-5, 0.999), q(2, 1e-6, 0.5) * 100.0, q(2, 1e-6, 0.99) * 100.0,
+                     q(2, 1e-6, 0.999) * 100.0);
+            if (stable) {
+                cli::out("video-encode: position error's move from frame to frame, median / p99 / p99.9: %.1f / %.1f "
+                         "/ %.1f um\n",
+                         q(3, 1e-7, 0.5) * 1e6, q(3, 1e-7, 0.99) * 1e6, q(3, 1e-7, 0.999) * 1e6);
             }
             cli::out("video-encode: position high parts %s: %llu splat axes whose high part is not the source's\n",
                      far == 0 ? "exact" : "NOT exact", static_cast<unsigned long long>(far));
@@ -1412,7 +1458,7 @@ void addVideo(CLI::App& app) {
             if (!frame) cli::fail(frame.error());
             decodeMs.push_back(std::chrono::duration<double, std::milli>(Clock::now() - t).count());
             auto layout = video::PlaneLayout::make(f->splats, h.bits, h.restPerColour, h.hiInVideo, h.chunkSplats,
-                                                   h.columns, h.maxSplats, 0, 0, h.chroma, h.geometry);
+                                                   h.columns, h.maxSplats, 0, 0, h.chroma, h.geometry, h.layoutFold());
             if (!layout) cli::fail(layout.error());
             layout->positionBlock = h.positionBlock;
             layout->positionHighBits = h.positionHighBits;

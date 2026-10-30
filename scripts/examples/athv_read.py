@@ -53,6 +53,7 @@ def parse_header(b):
     target, = struct.unpack_from("<f", b, 72)
     geometry_interval, = struct.unpack_from("<I", b, 76)
     geometry_bits, = struct.unpack_from("<I", b, 80)
+    geometry_fold, = struct.unpack_from("<I", b, 84)
     return dict(version=version, codec=struct.pack("<I", codec).decode("latin-1"), bits=bits, restPerColour=rest,
                 chunkSplats=chunk, columns=columns, maxSplats=most, hiInVideo=bool(flags & 1),
                 antialiased=bool(flags & 2), chroma=bool(flags & 4), stableOrder=bool(flags & 8),
@@ -62,7 +63,8 @@ def parse_header(b):
                 positionTarget=round(target, 6), geometry=bool(flags & 16), geometryStagger=bool(flags & 32),
                 geometryInterval=geometry_interval, geometryPositionBits=(geometry_bits & 255) or 16,
                 geometryScaleBits=((geometry_bits >> 8) & 255) or 10, geometryOrder=((geometry_bits >> 16) & 255) or 1,
-                geometryRotationBits=(geometry_bits >> 24) or 10)
+                geometryRotationBits=(geometry_bits >> 24) or 10,
+                geometryVideo=bool(flags & 128), geometryFold=geometry_fold & 0xFFFFFF)
 
 
 def layout(h):
@@ -71,7 +73,12 @@ def layout(h):
     first = 6 if h["hiInVideo"] else 3
     # With colour in chroma: 8 opacity / scale / rotation planes and a Y plane a colour quantity.
     planes = first + (8 + 1 + h["restPerColour"] if h["chroma"] else attributes - 3)
-    if h.get("geometry"):
+    if h.get("geometryVideo"):
+        # Geometry in the video: nine coarse planes, two fine ones a folded attribute, the opacity, the colours.
+        fold = h["geometryFold"]
+        folded = (3 if fold & 255 else 0) + (3 if (fold >> 8) & 255 else 0) + (3 if (fold >> 16) & 255 else 0)
+        planes = 10 + 2 * folded + (1 + h["restPerColour"] if h["chroma"] else 3 + 3 * h["restPerColour"])
+    elif h.get("geometry"):
         # The geometry layer: the opacity and the colours only.
         planes = 1 + (1 + h["restPerColour"] if h["chroma"] else 3 + 3 * h["restPerColour"])
     chunks = (h["maxSplats"] + h["chunkSplats"] - 1) // h["chunkSplats"]
@@ -266,7 +273,8 @@ def describe(data):
                geometryLossless=h["geometry"], geometryKeyInterval=h["geometryInterval"],
                geometryStagger=h["geometryStagger"], geometryPositionBits=h["geometryPositionBits"],
                geometryScaleBits=h["geometryScaleBits"], geometryOrder=h["geometryOrder"],
-               geometryRotationBits=h["geometryRotationBits"], picturesPerFrame=first["slices"],
+               geometryRotationBits=h["geometryRotationBits"], geometryVideo=h["geometryVideo"],
+               geometryFold=h["geometryFold"], picturesPerFrame=first["slices"],
                pictureWidth=lay["width"], pictureHeight=lay["height"], meanBytesPerFrame=round(total / frames),
                meanMbps=round(total / frames * 8 * h["rate"] / 1e6, 2), fullRange=True)
     if len(first["sets"]) == 3:

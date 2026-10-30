@@ -101,9 +101,34 @@ struct PlaneLayout {
     /// The encode's block chroma: 0 the plain mean of its splats, 1 weighed
     /// by opacity x the area of their two largest axes.
     uint32_t chromaWeight = 0;
+    /// GEOMETRY IN THE VIDEO (`geometryFold` bit 31): position, log scale and
+    /// rotation as luma planes over the record's ranges, nothing beside the
+    /// video. The rotation goes as x, y, z of its canonical form (of the four
+    /// quaternions that turn the ellipsoid onto itself, the one with the
+    /// largest w, w >= 0: w is rebuilt). Each of these nine attributes has a
+    /// COARSE plane (8 bits over its range); a FOLDED one also has two FINE
+    /// planes: the value at 255 x 255 / K levels as two triangle waves of
+    /// period 510 levels a quarter period apart, which the coarse plane
+    /// places within +-K/4 of its own codes (video_planes_common.slang). K a
+    /// group, a byte each: position bits 0-7, log scale 8-15, rotation
+    /// 16-23; 0 = no fine planes. Planes: the nine coarse ones, the fine
+    /// ones (two an attribute, in the same order), the opacity, the colours.
+    uint32_t geometryFold = 0;
+    static constexpr uint32_t kGeometryVideo = 1u << 31;
+    static constexpr uint32_t kGeometryAttributes = 9;
+    [[nodiscard]] bool geometryVideo() const noexcept { return (geometryFold & kGeometryVideo) != 0; }
+    [[nodiscard]] uint32_t foldedAttributes() const noexcept {
+        if (!geometryVideo()) return 0;
+        return ((geometryFold & 0xFFu) != 0 ? 3u : 0u) + (((geometryFold >> 8) & 0xFFu) != 0 ? 3u : 0u) +
+               (((geometryFold >> 16) & 0xFFu) != 0 ? 3u : 0u);
+    }
 
     [[nodiscard]] uint32_t attributes() const noexcept { return kAttributesBeforeRest + 3 * restPerColour; }
     [[nodiscard]] uint32_t planes() const noexcept {
+        if (geometryVideo()) {
+            return kGeometryAttributes + 2u * foldedAttributes() + 1u +
+                   (chroma ? 1u + restPerColour : 3u + 3u * restPerColour);
+        }
         if (geometry) {
             return 1u + (chroma ? 1u + restPerColour : 3u + 3u * restPerColour);
         }
@@ -146,14 +171,15 @@ struct PlaneLayout {
                                                   bool hiInVideo, uint32_t chunkSplats, uint32_t columns,
                                                   uint32_t tileSplats = 0, uint32_t mostWidth = 0,
                                                   uint32_t mostHeight = 0, bool chroma = false,
-                                                  bool geometry = false);
+                                                  bool geometry = false, uint32_t geometryFold = 0);
     /// A frame too big for one picture goes as SLICES, each a picture of its
     /// own holding a run of the frame's Morton order: the most splats one
     /// takes (a multiple of `chunkSplats`), `splats` when the frame fits.
     [[nodiscard]] static Result<uint32_t> sliceSplats(uint32_t splats, uint32_t bits, uint32_t restPerColour,
                                                       bool hiInVideo, uint32_t chunkSplats, uint32_t columns,
                                                       uint32_t mostWidth = 0, uint32_t mostHeight = 0,
-                                                      bool chroma = false, bool geometry = false);
+                                                      bool chroma = false, bool geometry = false,
+                                                      uint32_t geometryFold = 0);
 };
 
 /// One frame, encoded: what the codec takes and what goes beside it.
@@ -271,6 +297,23 @@ public:
                                                               const gpu::Buffer& ranges, const gpu::Buffer& page,
                                                               uint64_t highOffset);
 
+    /// THE GEOMETRY'S ERROR in its own units: slice splats 0 .. `count` of
+    /// `decoded` (Morton ranks from `first`) against `source` through
+    /// `order`, added to `histograms` (4 x kErrorBins counters, made zero
+    /// when invalid): position distance, rotation angle, the largest scale
+    /// ratio less 1 and -- with `jitter` -- how far the position's error moved
+    /// since the frame before, which `previous` (a float4 a frame splat, from
+    /// `frameFirst`) holds and is given this frame's.
+    static constexpr uint32_t kErrorBins = 256;
+    [[nodiscard]] Result<void> geometryError(const scene::GpuSplats& decoded, const scene::GpuSplats& source,
+                                             const gpu::Buffer& order, uint32_t first, uint32_t count,
+                                             uint32_t frameFirst, bool jitter, gpu::Buffer& histograms,
+                                             gpu::Buffer& previous, uint32_t frameSplats);
+    /// A histogram's quantile (bin `b` covers base x 2^((b - 1) / 8) ..
+    /// base x 2^(b / 8); bin 0 everything at or below base): bookkeeping on
+    /// counts read back.
+    [[nodiscard]] static double errorQuantile(const uint32_t* bins, double base, double q);
+
     /// A store of `count` packed splats with `restPerColour` rest
     /// coefficients a colour (positions, shape, harmonics only).
     [[nodiscard]] static Result<scene::GpuSplats> allocate(gpu::Device& device, uint32_t count,
@@ -279,7 +322,7 @@ public:
 private:
     gpu::Device*       device_ = nullptr;
     gpu::ComputeKernel partial_, finish_, widen_, morton_, encode_, high_, blocks_, chroma_, boxUnion_, blockBits_;
-    gpu::ComputeKernel decode_, compare_, geometryQuantise_, geometryHold_, geometryFit_, geometryMotion_, geometryPack_,
+    gpu::ComputeKernel decode_, compare_, geometryError_, geometryQuantise_, geometryHold_, geometryFit_, geometryMotion_, geometryPack_,
         geometryApply_;
     gpu::RadixSort     sort_;
     gpu::SortBuffers   sorting_;

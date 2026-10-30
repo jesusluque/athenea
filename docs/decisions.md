@@ -16507,3 +16507,109 @@ staggered over 60, 10-bit positions, 7-bit scales, the 7-bit rotation step, degr
   a path trace of the mesh, which neither cloud's pages favour.
 - SRT itself (the producer writes to stdout; the player's server forwards it over a WebSocket).
 - P pictures for slices (each slice would need its own encoder session).
+
+## Geometry in the video: everything in the HEVC picture (30 Oct)
+
+The sparrow's web ladder with nothing beside the video: position, scale and rotation, which ladder2 sends as an
+exact deflated layer (§8c of FORMAT.md), go into luma planes of the same picture as opacity and colour
+(`video-encode --geometry-video`, FORMAT.md §8e). Lossless HEVC (x265 `--lossless`, transquant bypass, Main
+profile) was measured once before the choice of this route: VideoToolbox's decoder (through ffmpeg) gave it back
+bit for bit, and the ladder2 r0 geometry as 13 byte planes with P pictures every 30 took 0.600 MB a frame, the
+same as the deflated layer (0.59). It was not taken further.
+
+### What the codec does to geometry planes
+
+- **Positions are smooth, the rest is noise.** The mean change between consecutive gaussians of the stable order,
+  in 8-bit codes over each attribute's range (r0, frame 0): positions 0.6-1.7, log scales 12-32, quaternion
+  components 37-51 (uniform noise would be 85). A shape's parameters are not continuous along the surface, and
+  neither its covariance's logarithm (15-29) nor a frame of each run of 256 fitted rigidly to frame 0 (positions'
+  change between frames 13.9 -> 1.6 steps, rotations' only 7.7 -> 5.9 deg) made them so.
+- **VideoToolbox has no QP**, only a quality for the whole picture. On noise-like planes its error at quality
+  0.4-0.5 (ladder2's colour quality) is 4-9 codes mean, so an 8-bit rotation component is several degrees off and
+  a hi/lo byte split of a position breaks wherever the high byte moves by one. Quality 1.0 is not lossless.
+- **Folds, and why two waves.** A position goes as a coarse 8-bit plane over the sequence's range and a fine value
+  of N = 255 x 255 / K levels sent as a triangle wave of period 510 levels (no saw teeth: a smooth position stays a
+  smooth image). One wave fails near its turns: a value and its mirror are close there, and a coarse error of 3
+  codes picked the wrong one (p99 38 levels on x). Two waves a quarter period apart -- the one on its slope is read
+  -- bring that to p99 4 levels, the fine sample's own error.
+- **Canonical rotation.** Of the four quaternions of an ellipsoid (q and q times a half turn about each own axis)
+  the one with the largest w, w >= 0: three components in [-0.87, 0.87] are sent, w is rebuilt. One plane fewer,
+  no sign flips at w = 0, and a smaller range for the same codes.
+
+### Measured on r0 (150k, degree 1, 61 frames)
+
+Geometry error against the source pages from `video-encode --check` (`videoPlanesGeometryError`: distance,
+rotation angle up to the ellipsoid's half turns, largest axis' scale ratio; median / p99), and the frame-to-frame
+move of the position error. Drawn as webrig_t.sh draws ladder2 (lockstep, 1024 x 1024, against the SPZ pages; flicker
+is `video-flicker`, sRGB codes mean / p99). All with P pictures, a key every 30:
+
+| setting | Mbit/s at 30 | position um | rotation deg | scale % | error's move um | PSNR ref / close | flicker close |
+|---|---:|---|---|---|---:|---|---|
+| ladder2 r0 (geometry layer, quality 0.4 all-intra) | 148.9 | 47 / 79 | 0.39 / 0.72 | 0.82 / 0.82 | 61 | 44.23 / 34.17 | 3.06 / 28 |
+| folds 8,8,8, quality 0.4 | 68.5 | 1787 / 16998 | 21.0 / 76.9 | 28.6 / 136 | 819 | -- | -- |
+| folds 8,8,8, quality 0.6 | 143.5 | 447 / 11022 | 7.4 / 24.9 | 12.0 / 37.1 | 447 | -- | -- |
+| folds 8,8,8, quality 0.5, all-intra | 243.0 | 974 / 13107 | 13.6 / 32.3 | 22.0 / 74.2 | 893 | -- | -- |
+| one wave (before quadrature), folds 16,8,8, quality 0.95 | 473.4 | 43 / 1263 | 0.0 / 2.2 | 0.0 / 3.6 | 56 | -- | -- |
+| one wave, folds 16,8,8, quality 1.0 | 465.5 | 26 / 632 | 0.0 / 0.85 | 0.0 / 1.26 | 36 | -- | -- |
+| folds 32,0,0, quality 0.8 | 111.6 | 290 / 751 | 2.2 / 8.1 | 4.3 / 12.0 | 145 | 45.74 / 35.55 | 2.63 / 27 |
+| folds 16,0,0, quality 0.85 | 162.0 | 112 / 290 | 1.7 / 5.7 | 3.0 / 9.3 | 86 | 46.55 / 36.61 | 2.28 / 22 |
+| **folds 16,0,0, quality 0.9** | **224.0** | **66 / 158** | **1.0 / 3.4** | **1.6 / 5.1** | **61** | **46.82 / 37.18** | **2.15 / 21** |
+| folds 16,32,32, quality 0.85 | 369.8 | 112 / 290 | 0.23 / 0.60 | 0.41 / 1.26 | 86 | 46.61 / 36.63 | 2.27 / 22 |
+| folds 16,16,16, quality 0.85 | 400.5 | 112 / 290 | 0.16 / 0.36 | 0.0 / 0.82 | 86 | -- | -- |
+
+(The rows from 8,8,8 to the one-wave ones precede the canonical rotation and the second wave: four rotation planes,
+one fine plane an attribute.)
+
+- **Folding scale and rotation buys geometry, not pixels.** Folds 16,32,32 bring rotation to 0.23 deg and scale to
+  0.4 % (ladder2: 0.39 deg, 0.82 %) at 1.65x the bytes, and draw no better than folds 16,0,0 (the coarse planes:
+  rotation 1.0 deg, scale 1.6 % median) -- 46.61 against 46.82 dB, flicker 2.27 against 2.15. The ladder takes
+  16,0,0.
+- **The picture beats ladder2 on screen** at every setting from quality 0.85 up, with less flicker. Part of that is
+  the colour: ladder2's colour was quality 0.4 all-intra, here the one quality is 0.85-0.9 and P pictures hold a
+  still colour still. The geometry is not as exact: positions 66 um median against 47.
+- **Predicted pictures are what keep it still.** All-intra at quality 0.5 cost 1.01 MB a frame against 0.32 with P
+  pictures (folds 16,16,16) and its geometry error moves every frame; with P pictures the error's frame-to-frame
+  move is about its size (61 um median at quality 0.9).
+
+### The ladder (quality 0.9, folds 16,0,0, a key every 30, pictures up to 4K)
+
+| rung | gaussians | picture (level) | Mbit/s at 30: video / ladder2 | PSNR reference: video / ladder2 | PSNR close: video / ladder2 | flicker reference | flicker close: video / ladder2 | position um | rotation deg | scale % |
+|---|---:|---|---|---|---|---|---|---|---|---|
+| r0 | 149 714 | 2048 x 1600 (5.0) | 224.0 / 148.9 | 46.82 / 44.23 | 37.18 / 34.17 | 0.23 / 0.32 | 2.15 / 21 vs 3.06 / 28 | 66 / 158 | 1.0 / 3.4 | 1.6 / 5.1 |
+| r1 | 74 691 | 1536 x 1344 (4.0) | 116.3 / 76.6 | 40.95 / 39.76 | 30.26 / 29.34 | 0.46 / 0.53 | 4.34 / 56 vs 4.89 / 57 | 66 / 158 | 1.0 / 3.1 | 2.1 / 6.6 |
+| r2 | 40 042 | 1024 x 1280 (4.0) | 69.8 / 44.9 | 39.85 / 38.81 | 29.19 / 28.37 | 0.52 / 0.59 | 4.77 / 61 vs 5.32 / 63 | 66 / 158 | 1.0 / 3.1 | 2.1 / 6.6 |
+| r3 | 19 889 | 1024 x 640 (3.1) | 41.9 / 25.9 | 38.83 / 37.75 | 28.21 / 27.27 | 0.54 / 0.60 | 4.93 / 62 vs 5.47 / 63 | 66 / 158 | 1.0 / 3.1 | 2.3 / 6.6 |
+| r4 | 15 576 | 1024 x 640 (3.1) | 35.1 / 21.7 | 37.55 / 36.21 | 27.16 / 26.02 | 0.56 / 0.62 | 5.05 / 63 vs 5.62 / 64 | 66 / 158 | 1.0 / 3.1 | 2.5 / 6.6 |
+
+PSNR is the median over the 61 frames against the SPZ pages; flicker is mean / p99 (reference: mean); geometry
+is median / p99 from `--check`. Every rung is better on screen than ladder2's and flickers less, at 1.5-1.6x its
+bytes. The pictures stay under 4K at this count (r0 2048 x 1600, 20 planes); the area left is what folds of scale
+and rotation would take (32 planes, 3072 x 1920 at r0). Files: `web-sparrow/ladder-video/` (`.athv`, `.hvcC`,
+triplets SPZ | video | difference x 8 at epochs 1 and 31 for both cameras), segmented in
+`athenea-web-drop/sparrow/athv/ladder-video/` (two segments, cut at the keys at 0 and 30).
+
+ladder2's geometry error is its quantisation (11-bit positions, 8-bit log scales and rotation components), the same
+on every rung: positions 47 / 72-79 um, rotation 0.39 / 0.72 deg, scale 0.82 / 0.82-1.26 %, the error's move 61 um
+(its settings encoded again with `--check`). The video's positions are 1.4x and its p99 2x ladder2's; rotation and
+scale (coarse planes) 2.6x and 2-5x.
+
+### The player
+
+`athv-player.js` reads header bit 7 and the folds (offset 84), decodes the planes as the engine does (WGSL
+`unfold`, the canonical rotation rebuilt), and decodes predicted pictures after their key (`type: "delta"`); a
+dropped or failed picture waits for the next key. Chrome on the Mac (WebCodecs, Annex B) decoded the 2048 x 1600
+level 5.0 pictures and their P pictures: no picture dropped, decode 11-12 ms and copy 7 ms a picture (r0 as a file);
+the ladder over HTTP played and switched rungs at the segment boundaries (2 switches, 0 stalls), desktop and in the
+iPhone 15 Pro emulation, which is Chrome's own decoder. The ABR ladder mode is unchanged (segments start at keys, which the
+segmenter already required).
+
+### Not done
+
+- Safari on an iPhone itself (only Chrome's iPhone emulation here). Recent iPhones decode HEVC up to level 5.1
+  (4K at 30) in hardware; r0's pictures are 2048 x 1600, level 5.0. Chrome on the Mac hands Annex B pictures over
+  as video range, which the player undoes at a level of the coarse or fine sample; an hvcC configuration (full range
+  as coded) was not tried.
+- Per-plane quality: VideoToolbox's one quality spends the same on colour as on geometry. Two pictures a frame (a
+  geometry stream and a colour stream) would let colour go back to 0.4.
+- Positions in each run's own fitted frame (still planes between keys) and the covariance's logarithm, measured
+  in a prototype only: neither paid for its complexity at these settings.

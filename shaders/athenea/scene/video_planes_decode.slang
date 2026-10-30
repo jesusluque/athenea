@@ -92,6 +92,18 @@ float attributeAt(uint a, uint i) {
     return dequantise(sampleAt(attributePlane(params, a), i), rangeOf(a, 0), rangeOf(a, 1), sampleLevels(params));
 }
 
+/// Geometry attribute `a` (geometry in the video): its coarse sample, and its
+/// fine one unfolded when it has one.
+float geometryAt(uint a, uint i) {
+    const uint fold = foldOf(params, a);
+    const uint coarse = sampleAt(coarsePlane(a), i);
+    if (fold == 0) {
+        return dequantise(coarse, rangeOf(a, 0), rangeOf(a, 1), 255u);
+    }
+    const uint u = unfold(coarse, sampleAt(finePlane(params, a, 0u), i), sampleAt(finePlane(params, a, 1u), i), fold);
+    return dequantise(u, rangeOf(a, 0), rangeOf(a, 1), foldLevels(fold));
+}
+
 /// Colour quantity q (0 the base colour, 1 + b harmonic basis b) of splat
 /// `i` as RGB: three luma planes, or (`chroma`) its Y plane and that tile's
 /// Co and Cg at the splat's 2 x 2 block.
@@ -146,6 +158,26 @@ void videoPlanesDecode(uint3 tid: SV_DispatchThreadID) {
     }
     const uint i = params.first + tid.x;
     const uint j = params.at + tid.x;
+    if (geometryVideo(params)) {
+        // Position, scale and rotation from their planes: coarse, and fine
+        // where folded.
+        float g[kGeometryAttributes];
+        for (uint k = 0; k < kGeometryAttributes; ++k) {
+            const uint a = geometryAttribute(k);
+            g[k] = geometryAt(a, i);
+        }
+        outPositions[j] = float4(g[0], g[1], g[2], clamp(attributeAt(3, i), 0.0, 5.0));
+        // The canonical rotation: w >= 1/2 from x, y, z.
+        float4 vq = float4(g[6], g[7], g[8], sqrt(max(0.0, 1.0 - g[6] * g[6] - g[7] * g[7] - g[8] * g[8])));
+        vq /= max(length(vq), 1e-8);
+        const float3 vbase = colourAt(0, i);
+        outShape[j * 4 + 0] = encodeQuaternion(vq);
+        outShape[j * 4 + 1] = packHalves(halfSafe(g[3]), halfSafe(g[4]));
+        outShape[j * 4 + 2] = packHalves(halfSafe(g[5]), halfSafe(vbase.x));
+        outShape[j * 4 + 3] = packHalves(halfSafe(vbase.y), halfSafe(vbase.z));
+        writeRest(i, j);
+        return;
+    }
     if (params.geometry != 0) {
         // Position, scale and rotation from the exact layer: their bits over
         // the sequence's ranges, the rotation the store's own word.
@@ -247,4 +279,63 @@ void videoPlanesCompare(uint3 tid: SV_DispatchThreadID) {
         InterlockedAdd(errors[a * 4 + 2], 1u);
     }
     InterlockedAdd(errors[a * 4 + 3], far);
+}
+
+// --- the geometry's error in its own units ------------------------------------
+//
+// videoPlanesGeometryError: a decoded slice against its source, a thread a
+// splat, into four histograms of 256 bins, 8 a doubling (bin 0 also holds
+// zero): the position's distance (bins from 0.1 um), the rotation's angle
+// (degrees, from 1e-5, up to the ellipsoid's own half turns), the largest axis' scale ratio less 1 (from 1e-6), and
+// -- with `jitter` 1, a stable order's frame after the first -- how far the
+// position's error moved since the frame before (`previousError`, a float4 a
+// frame splat, written for the next frame either way).
+
+struct GeometryErrorParams {
+    uint count;
+    uint first;          ///< the slice's first Morton rank
+    uint frameFirst;     ///< the slice's first splat in its frame
+    uint jitter;
+    uint shWords;
+    uint sourceShWords;
+};
+ConstantBuffer<GeometryErrorParams> errorParams;
+RWStructuredBuffer<uint>            histograms;      // 4 x 256
+RWStructuredBuffer<float4>          previousError;   // a frame splat
+
+static const uint kErrorBins = 256;
+
+uint errorBin(float v, float base) {
+    if (!(v > base)) {
+        return 0u;
+    }
+    return min(uint(log2(v / base) * 8.0) + 1u, kErrorBins - 1u);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void videoPlanesGeometryError(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= errorParams.count) {
+        return;
+    }
+    const uint s = order[errorParams.first + i];
+    const float3 dp = decodedPositions[i].xyz, sp = sourcePositions[s].xyz;
+    const float3 e = dp - sp;
+    InterlockedAdd(histograms[errorBin(length(e), 1.0e-7)], 1u);
+    const float4 qd = decodeQuaternion(decodedShape[i * 4]);
+    const float4 qs = decodeQuaternion(sourceShape[s * 4]);
+    const float angle = ellipsoidAngle(qs, qd) * 57.29577951308232;
+    InterlockedAdd(histograms[kErrorBins + errorBin(angle, 1.0e-5)], 1u);
+    const uint dw1 = decodedShape[i * 4 + 1], dw2 = decodedShape[i * 4 + 2];
+    const uint sw1 = sourceShape[s * 4 + 1], sw2 = sourceShape[s * 4 + 2];
+    const float3 dl = float3(lowHalf(dw1), highHalf(dw1), lowHalf(dw2));
+    const float3 sl = float3(lowHalf(sw1), highHalf(sw1), lowHalf(sw2));
+    const float3 ratio = abs(exp(clamp(dl - sl, -20.0, 20.0)) - 1.0);
+    InterlockedAdd(histograms[2u * kErrorBins + errorBin(max(ratio.x, max(ratio.y, ratio.z)), 1.0e-6)], 1u);
+    const uint g = errorParams.frameFirst + i;
+    if (errorParams.jitter != 0) {
+        InterlockedAdd(histograms[3u * kErrorBins + errorBin(length(e - previousError[g].xyz), 1.0e-7)], 1u);
+    }
+    previousError[g] = float4(e, 0.0);
 }

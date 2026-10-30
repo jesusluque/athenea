@@ -135,6 +135,82 @@ TEST_CASE("video planes give a cloud back within half a step, the position high 
     }
 }
 
+TEST_CASE("geometry in the video: folded positions and rotations within a fine level, nothing beside the video",
+          "[video][gpu][planes]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Device& device = *gpu->device;
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    REQUIRE(loader);
+    auto codec = video::PlanesCodec::create(*gpu->library);
+    REQUIRE(codec);
+    test::CloudBuilder built = test::randomCloud(70000, 23, 0.004F, 0.3F);
+    auto cloud = loader->upload(built.raw, 1);
+    REQUIRE(cloud);
+    // Positions and rotations folded (K 16), log scales coarse only.
+    const uint32_t fold = video::PlaneLayout::kGeometryVideo | 16u | (16u << 16);
+    auto layout = video::PlaneLayout::make(cloud->count, 8, cloud->restPerColour, false,
+                                           video::PlaneLayout::kBandSplats, 0, 0, 0, 0, true, false, fold);
+    REQUIRE(layout);
+    Encoded e;
+    e.layout = *layout;
+    e.layout.positionHighBits = 0;
+    REQUIRE(e.layout.planes() == 9 + 2 * 6 + 1 + 1 + cloud->restPerColour);
+    REQUIRE(codec->ranges(*cloud, e.layout, cloud->count, e.ranges));
+    REQUIRE(codec->order(*cloud, cloud->count, e.ranges, e.order));
+    auto planes = codec->encode(*cloud, e.layout, e.order, 0, e.ranges);
+    REQUIRE(planes);
+    e.planes = std::move(*planes);
+    REQUIRE(e.planes.high.empty());
+    gpu::TextureDesc desc;
+    desc.width = e.layout.width;
+    desc.height = e.layout.height;
+    desc.format = rhi::Format::R8Unorm;
+    desc.label = "test.luma";
+    auto luma = gpu::Texture::create(device, desc);
+    REQUIRE(luma);
+    REQUIRE(luma->upload(device, 0, 0, e.planes.luma));
+    desc.width /= 2;
+    desc.height /= 2;
+    desc.format = rhi::Format::RG8Unorm;
+    desc.label = "test.chroma";
+    auto chroma = gpu::Texture::create(device, desc);
+    REQUIRE(chroma);
+    REQUIRE(chroma->upload(device, 0, 0, e.planes.chroma));
+
+    gpu::Buffer side = sidePage(device, e.planes);
+    auto back = video::PlanesCodec::allocate(device, cloud->count, e.layout.restPerColour, "test.back");
+    REQUIRE(back);
+    {
+        gpu::CommandBatch batch(device);
+        REQUIRE(codec->decode(batch, e.layout, luma->rhi(), chroma->rhi(), side.rhi(), 0, e.layout.rangeBytes(), 0,
+                              cloud->count, *back, 0, e.layout.restPerColour));
+        REQUIRE(batch.submit(true));
+    }
+    auto errors = codec->compare(e.layout, *back, *cloud, e.order, 0, e.ranges, side, e.layout.rangeBytes());
+    REQUIRE(errors);
+    // Position: half a level of N = 4064 (16.1 steps of the 16-bit reference) and a float's rounding.
+    for (uint32_t a = 0; a < 3; ++a) {
+        CAPTURE(a, (*errors)[a].maxSteps);
+        CHECK((*errors)[a].maxSteps <= 0.55 * 65535.0 / 4064.0);
+    }
+    // Log scales: the coarse plane, half a step and the half's rounding.
+    for (uint32_t a = 4; a < 7; ++a) {
+        CAPTURE(a, (*errors)[a].maxSteps);
+        CHECK((*errors)[a].maxSteps <= 0.75);
+    }
+    // Rotation: the canonical form is another quaternion of the same
+    // ellipsoid, so it is measured as an angle up to the half turns; the
+    // store's 10-bit smallest three is most of it.
+    gpu::Buffer bins, previous;
+    REQUIRE(codec->geometryError(*back, *cloud, e.order, 0, cloud->count, 0, false, bins, previous, cloud->count));
+    std::vector<uint32_t> counts(4 * video::PlanesCodec::kErrorBins);
+    REQUIRE(bins.read(device, 0, counts.size() * 4, counts.data()));
+    const double worstDegrees =
+        video::PlanesCodec::errorQuantile(counts.data() + video::PlanesCodec::kErrorBins, 1e-5, 0.9999);
+    CAPTURE(worstDegrees);
+    CHECK(worstDegrees < 0.5);
+}
+
 TEST_CASE("positions over their block's box: the high parts exact, fewer of them or none", "[video][gpu][planes]") {
     ATHENEA_REQUIRE_GPU(gpu);
     gpu::Device& device = *gpu->device;

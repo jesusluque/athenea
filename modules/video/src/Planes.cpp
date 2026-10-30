@@ -2,6 +2,7 @@
 #include "athenea/video/Planes.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
 
@@ -58,13 +59,14 @@ void setLayout(rhi::ShaderCursor p, const PlaneLayout& l) {
     p["geometry"].setData(uint32_t{l.geometry ? 1u : 0u});
     p["geometryPositionBits"].setData(l.geometryPositionBits);
     p["geometryScaleBits"].setData(l.geometryScaleBits);
+    p["geometryFold"].setData(l.geometryFold);
 }
 
 }   // namespace
 
 Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t nRest, bool nHi,
                                       uint32_t nChunk, uint32_t nColumns, uint32_t tileSplats, uint32_t mostWidth,
-                                      uint32_t mostHeight, bool nChroma, bool nGeometry) {
+                                      uint32_t mostHeight, bool nChroma, bool nGeometry, uint32_t nFold) {
     const uint64_t mostW = mostWidth != 0 ? std::min(mostWidth, kMostSide) : kMostSide;
     const uint64_t mostH = mostHeight != 0 ? std::min(mostHeight, kMostSide) : kMostSide;
     if (nBits != 8 && nBits != 10) {
@@ -80,6 +82,10 @@ Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t
     if (nSplats == 0) {
         return Error(ErrorCode::InvalidArgument, "video planes: a frame of no splats");
     }
+    if ((nFold & kGeometryVideo) != 0 && (nGeometry || nHi || nBits != 8)) {
+        return Error(ErrorCode::InvalidArgument,
+                     "video planes: geometry in the video is 8 bits, without the geometry layer or high parts");
+    }
     PlaneLayout l;
     l.splats = nSplats;
     l.bits = nBits;
@@ -89,6 +95,7 @@ Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t
     l.positionHighBits = nBits;
     l.chroma = nChroma;
     l.geometry = nGeometry;
+    l.geometryFold = nFold;
     const uint32_t tileChunks = std::max(l.chunks(), (tileSplats + nChunk - 1) / nChunk);
     l.tileHeight = tileChunks * (nChunk / kTileWidth);
     const uint32_t planes = l.planes();
@@ -125,7 +132,7 @@ Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t
 
 Result<uint32_t> PlaneLayout::sliceSplats(uint32_t nSplats, uint32_t nBits, uint32_t nRest, bool nHi,
                                           uint32_t nChunk, uint32_t nColumns, uint32_t mostWidth,
-                                          uint32_t mostHeight, bool nChroma, bool nGeometry) {
+                                          uint32_t mostHeight, bool nChroma, bool nGeometry, uint32_t nFold) {
     if (make(nSplats, nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight, nChroma, nGeometry)) {
         return nSplats;
     }
@@ -134,7 +141,7 @@ Result<uint32_t> PlaneLayout::sliceSplats(uint32_t nSplats, uint32_t nBits, uint
         const uint64_t n = uint64_t{chunks} * nChunk;
         if (n < nSplats &&
             make(static_cast<uint32_t>(n), nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight, nChroma,
-                 nGeometry)) {
+                 nGeometry, nFold)) {
             return static_cast<uint32_t>(n);
         }
     }
@@ -195,6 +202,7 @@ Result<PlanesCodec> PlanesCodec::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(c.geometryApply_, geo, "videoGeometryApply"));
     ATHENEA_TRY(make(c.decode_, dec, "videoPlanesDecode"));
     ATHENEA_TRY(make(c.compare_, dec, "videoPlanesCompare"));
+    ATHENEA_TRY(make(c.geometryError_, dec, "videoPlanesGeometryError"));
     return c;
 }
 
@@ -605,6 +613,49 @@ Result<std::vector<AttributeError>> PlanesCodec::compare(const PlaneLayout& layo
         out[k].far = words[k * 4 + 3];
     }
     return out;
+}
+
+Result<void> PlanesCodec::geometryError(const scene::GpuSplats& decoded, const scene::GpuSplats& source,
+                                        const gpu::Buffer& order, uint32_t first, uint32_t count,
+                                        uint32_t frameFirst, bool jitter, gpu::Buffer& histograms,
+                                        gpu::Buffer& previous, uint32_t frameSplats) {
+    gpu::Device& device = *device_;
+    const bool fresh = !histograms.valid();
+    ATHENEA_TRY(ensure(device, histograms, uint64_t{4} * kErrorBins * 4, 4, "video.errorHistograms"));
+    ATHENEA_TRY(ensure(device, previous, uint64_t{std::max(frameSplats, 1u)} * 16, 16, "video.previousError"));
+    gpu::CommandBatch batch(device);
+    if (fresh) batch.encoder()->clearBuffer(histograms.rhi(), 0, uint64_t{4} * kErrorBins * 4);
+    geometryError_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) {
+        c["decodedPositions"].setBinding(decoded.positions.rhi());
+        c["decodedShape"].setBinding(decoded.shape.rhi());
+        c["sourcePositions"].setBinding(source.positions.rhi());
+        c["sourceShape"].setBinding(source.shape.rhi());
+        c["order"].setBinding(order.rhi());
+        c["histograms"].setBinding(histograms.rhi());
+        c["previousError"].setBinding(previous.rhi());
+        rhi::ShaderCursor p = c["errorParams"];
+        p["count"].setData(count);
+        p["first"].setData(first);
+        p["frameFirst"].setData(frameFirst);
+        p["jitter"].setData(uint32_t{jitter ? 1u : 0u});
+        p["shWords"].setData(decoded.shWords);
+        p["sourceShWords"].setData(source.shWords);
+    });
+    batch.markDirty();
+    return batch.submit(true);
+}
+
+double PlanesCodec::errorQuantile(const uint32_t* bins, double base, double q) {
+    uint64_t total = 0;
+    for (uint32_t b = 0; b < kErrorBins; ++b) total += bins[b];
+    if (total == 0) return 0.0;
+    const auto goal = static_cast<uint64_t>(q * static_cast<double>(total));
+    uint64_t seen = 0;
+    for (uint32_t b = 0; b < kErrorBins; ++b) {
+        seen += bins[b];
+        if (seen > goal) return b == 0 ? base : base * std::exp2(static_cast<double>(b) / 8.0);
+    }
+    return base * std::exp2(static_cast<double>(kErrorBins - 1) / 8.0);
 }
 
 }   // namespace athenea::video

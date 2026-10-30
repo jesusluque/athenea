@@ -66,7 +66,7 @@ public struct VideoPlanesParams {
     public uint geometryAt;        ///< decode: the picture's first splat in its frame (the geometry state's index)
     public uint geometryPositionBits;  ///< the layer's bits a position axis (10-16)
     public uint geometryScaleBits;     ///< the layer's bits a log scale (6-10)
-    public uint pad9;
+    public uint geometryFold;          ///< bit 31: geometry in the video; the fold K of position (0-7), log scale (8-15), rotation (16-23)
 };
 
 public static const uint kTileWidth = 512;
@@ -119,6 +119,12 @@ public uint lowPlane(VideoPlanesParams p, uint axis) { return p.hiInVideo != 0 ?
 /// The luma plane attribute `a` >= 3 lies in -- with `chroma`, a colour
 /// attribute's quantity's Y plane, whose tile's chroma holds its Co and Cg.
 public uint attributePlane(VideoPlanesParams p, uint a) {
+    if (geometryVideo(p)) {
+        if (a < kFirstColour) {
+            return a == 3 ? opacityPlane(p) : coarsePlane(a);
+        }
+        return opacityPlane(p) + 1u + (p.chroma != 0 ? (a - kFirstColour) / 3u : a - kFirstColour);
+    }
     if (p.geometry != 0) {
         if (a < kFirstColour) {
             return 0u;   // the opacity, the one attribute before the colours with a plane
@@ -134,6 +140,19 @@ public uint attributePlane(VideoPlanesParams p, uint a) {
 /// The attribute a luma plane past the position's holds (with `chroma`, a
 /// colour quantity's Y), and with `chroma` the quantity (or ~0u).
 public uint planeAttribute(VideoPlanesParams p, uint plane) {
+    if (geometryVideo(p)) {
+        if (plane < kGeometryAttributes) {
+            return geometryAttribute(plane);
+        }
+        if (plane < opacityPlane(p)) {
+            return foldedAttribute(p, plane - kGeometryAttributes).x;
+        }
+        if (plane == opacityPlane(p)) {
+            return 3u;
+        }
+        const uint c = plane - opacityPlane(p) - 1u;
+        return kFirstColour + (p.chroma != 0 ? 3u * c : c);
+    }
     if (p.geometry != 0) {
         if (plane == 0) {
             return 3u;
@@ -147,11 +166,138 @@ public uint planeAttribute(VideoPlanesParams p, uint plane) {
     return plane - first + kFirstAttributePlane;
 }
 public uint colourQuantityOf(VideoPlanesParams p, uint plane) {
+    if (geometryVideo(p)) {
+        return p.chroma != 0 && plane > opacityPlane(p) ? plane - opacityPlane(p) - 1u : ~0u;
+    }
     if (p.geometry != 0) {
         return p.chroma != 0 && plane >= 1u ? plane - 1u : ~0u;
     }
     const uint first = p.hiInVideo != 0 ? 6u : 3u;
     return p.chroma != 0 && plane >= first + 8u ? plane - first - 8u : ~0u;
+}
+
+// --- GEOMETRY IN THE VIDEO (`geometryFold` bit 31) ---------------------------
+//
+// Nine geometry attributes -- position xyz (0-2), log scale xyz (4-6), and
+// the rotation's x, y, z (7-9) in its CANONICAL form: of the four quaternions
+// that turn the ellipsoid onto itself (q, and q times a half turn about each
+// of its own axes: q.i, q.j, q.k) the one whose w is largest, w >= 0 -- so w
+// is at least 1/2, rebuilt from the other three, and x, y, z lie in
+// [-0.87, 0.87]. Each over its range in the record (attribute 10's range is
+// written and not used):
+//   coarse  C = round(t * 255), t = (v - lo) / (hi - lo) in [0, 1]
+//   fine    (a folded attribute, fold K > 0) U = round(t * N), N =
+//           floor(255 * 255 / K) levels, as two triangle waves of period
+//           510 a quarter period apart (QUADRATURE): A = wave(U), B =
+//           wave(U + 128), wave(u) = m <= 255 ? m : 510 - m, m = u mod 510
+//   decode  the wave that is on a slope (A in 64..191, else B -- one of the
+//           two always is) gives U up to its period, and the coarse estimate
+//           C * N / 255 picks the period: the right one while the coarse
+//           sample is within 64 levels, K / 4 of its codes. The fine sample's
+//           own error is then the error, a level of N.
+// A wave has no saw teeth, so a smooth attribute stays a smooth image; a
+// single wave would be ambiguous near its turns, where U and its mirror are
+// close and a coarse error picks the wrong one.
+
+public static const uint kGeometryAttributes = 9;
+public static const uint kFoldPeriod = 510;
+public static const uint kQuadrature = 128;
+
+public bool geometryVideo(VideoPlanesParams p) { return (p.geometryFold >> 31) != 0; }
+/// Geometry attribute g (0-8) is attribute 0-2 or 4-9.
+public uint geometryAttribute(uint g) { return g < 3 ? g : g + 1u; }
+public uint geometryIndexOf(uint a) { return a < 3 ? a : a - 1u; }
+public uint foldOf(VideoPlanesParams p, uint a) {
+    const uint shift = a < 3 ? 0u : (a < 7 ? 8u : 16u);
+    return (p.geometryFold >> shift) & 0xFFu;
+}
+/// Folded geometry attributes before geometry attribute g.
+public uint foldedBefore(VideoPlanesParams p, uint g) {
+    uint n = 0;
+    for (uint k = 0; k < g && k < kGeometryAttributes; ++k) {
+        n += foldOf(p, geometryAttribute(k)) != 0 ? 1u : 0u;
+    }
+    return n;
+}
+public uint coarsePlane(uint a) { return geometryIndexOf(a); }
+/// Wave 0 (A) or 1 (B) of folded attribute `a`.
+public uint finePlane(VideoPlanesParams p, uint a, uint wave) {
+    return kGeometryAttributes + 2u * foldedBefore(p, geometryIndexOf(a)) + wave;
+}
+public uint opacityPlane(VideoPlanesParams p) {
+    return kGeometryAttributes + 2u * foldedBefore(p, kGeometryAttributes);
+}
+/// The attribute and the wave of fine plane `f` (from the first fine plane).
+public uint2 foldedAttribute(VideoPlanesParams p, uint f) {
+    uint n = 0;
+    for (uint k = 0; k < kGeometryAttributes; ++k) {
+        const uint a = geometryAttribute(k);
+        if (foldOf(p, a) != 0) {
+            if (n == f / 2u) {
+                return uint2(a, f % 2u);
+            }
+            n += 1u;
+        }
+    }
+    return uint2(0u, 0u);
+}
+public bool isFinePlane(VideoPlanesParams p, uint plane) {
+    return geometryVideo(p) && plane >= kGeometryAttributes && plane < opacityPlane(p);
+}
+public uint foldLevels(uint fold) { return (255u * 255u) / max(fold, 1u); }
+public uint foldWave(uint u) {
+    const uint m = u % kFoldPeriod;
+    return m <= 255u ? m : kFoldPeriod - m;
+}
+/// U from the coarse sample and wave A's and B's.
+public uint unfold(uint coarse, uint waveA, uint waveB, uint fold) {
+    const uint n = foldLevels(fold);
+    const bool useA = waveA >= 64u && waveA <= 191u;
+    const int shift = useA ? 0 : int(kQuadrature);
+    const int f = int(min(useA ? waveA : waveB, 255u));
+    const float estimate = float(coarse) * float(n) / 255.0 + float(shift);
+    const int j0 = int(floor(estimate / float(kFoldPeriod)));
+    float best = 3.4e38;
+    int found = 0;
+    for (int j = j0 - 1; j <= j0 + 1; ++j) {
+        const int a = j * int(kFoldPeriod) + f;
+        const int b = j * int(kFoldPeriod) + int(kFoldPeriod) - f;
+        if (abs(float(a) - estimate) < best) {
+            best = abs(float(a) - estimate);
+            found = a;
+        }
+        if (abs(float(b) - estimate) < best) {
+            best = abs(float(b) - estimate);
+            found = b;
+        }
+    }
+    return uint(clamp(found - shift, 0, int(n)));
+}
+/// The canonical rotation (above) of a unit quaternion (x, y, z, w).
+public float4 canonicalRotation(float4 q) {
+    // q.i = (w, z, -y, -x), q.j = (-z, w, x, -y), q.k = (y, -x, w, -z).
+    float4 best = q;
+    if (abs(-q.x) > abs(best.w)) {
+        best = float4(q.w, q.z, -q.y, -q.x);
+    }
+    if (abs(-q.y) > abs(best.w)) {
+        best = float4(-q.z, q.w, q.x, -q.y);
+    }
+    if (abs(-q.z) > abs(best.w)) {
+        best = float4(q.y, -q.x, q.w, -q.z);
+    }
+    return best.w < 0.0 ? -best : best;
+}
+/// The angle between two rotations of an ellipsoid, up to its own half
+/// turns (radians).
+public float ellipsoidAngle(float4 a, float4 b) {
+    // r = conj(a) * b; the four equivalents' w are r.w, -r.x, -r.y, -r.z.
+    const float4 r = float4(a.w * b.x - a.x * b.w - a.y * b.z + a.z * b.y,
+                            a.w * b.y + a.x * b.z - a.y * b.w - a.z * b.x,
+                            a.w * b.z - a.x * b.y + a.y * b.x - a.z * b.w,
+                            a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z);
+    const float m = max(max(abs(r.x), abs(r.y)), max(abs(r.z), abs(r.w))) / max(length(r), 1e-20);
+    return 2.0 * acos(clamp(m, 0.0, 1.0));
 }
 
 /// YCoCg as lifting steps, invertible exactly in real arithmetic (YCoCg-R's

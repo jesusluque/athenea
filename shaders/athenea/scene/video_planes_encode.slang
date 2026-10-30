@@ -47,6 +47,10 @@ ConstantBuffer<VideoPlanesParams> params;
 static const uint kRun = 1024;
 
 float valueOf(uint s, uint a) {
+    if (geometryVideo(params) && a >= 7 && a < 11) {
+        float4 q = decodeQuaternion(shape[s * 4]);
+        return canonicalRotation(q / max(length(q), 1e-20))[a - 7];
+    }
     return attributeOf(positions, shape, sh, params.sourceShWords, params.sourceRest, s, a, params.chroma);
 }
 
@@ -199,6 +203,19 @@ void videoPlanesBlocks(uint3 tid: SV_DispatchThreadID) {
 uint sampleOf(uint plane, uint i) {
     i = min(i, params.count - 1);   // past the last splat: the last again, which costs the codec nothing
     const uint s = order[params.first + i];
+    if (geometryVideo(params)) {
+        const uint a = planeAttribute(params, plane);
+        const uint fold = a < kFirstColour && a != 3 ? foldOf(params, a) : 0u;
+        if (fold == 0) {
+            return quantise(valueOf(s, a), ranges[a * 2], ranges[a * 2 + 1], 255u);
+        }
+        const uint levels = foldLevels(fold);
+        const uint u = quantise(valueOf(s, a), ranges[a * 2], ranges[a * 2 + 1], levels);
+        if (isFinePlane(params, plane)) {
+            return foldWave(u + foldedAttribute(params, plane - kGeometryAttributes).y * kQuadrature);
+        }
+        return uint(round(float(u) * 255.0 / float(levels)));
+    }
     if (params.geometry == 0 && (plane < 3 || (params.hiInVideo != 0 && plane < 6))) {
         const uint axis = plane % 3;
         const uint q = positionOf(s, i, axis);

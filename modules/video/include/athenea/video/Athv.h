@@ -65,6 +65,14 @@ struct AthvHeader {
     uint32_t geometryScaleBits = 10;
     uint32_t geometryRotationBits = 10;
     uint32_t geometryOrder = 1;   ///< the prediction between keys: 1 the frame before, 2 its motion carried on
+    /// GEOMETRY IN THE VIDEO (flags bit 7; Planes.h, PlaneLayout::geometryFold):
+    /// position, scale and rotation as luma planes, coarse and folded fine;
+    /// offset 84 holds the folds (position bits 0-7, log scale 8-15,
+    /// rotation 16-23). Nothing travels beside the video but the ranges.
+    bool     geometryVideo = false;
+    uint32_t geometryFold = 0;   ///< the three folds, without PlaneLayout's bit 31
+    /// What PlaneLayout::make takes as its `geometryFold`.
+    [[nodiscard]] uint32_t layoutFold() const noexcept { return geometryVideo ? (geometryFold | (1u << 31)) : 0u; }
     double   rate = 30.0;
     /// The rate as a fraction (30/1, 30000/1001): what a segmenter takes.
     uint32_t rateNumerator = 30;
