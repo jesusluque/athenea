@@ -60,6 +60,7 @@ def parse_header(b):
                 rateNumerator=num, rateDenominator=den,
                 sourceFrames=frames, quality=round(quality, 4), positionBlock=block, positionHighBits=high_bits,
                 positionTarget=round(target, 6), geometry=bool(flags & 16), geometryStagger=bool(flags & 32),
+                relightable=bool(flags & 64),
                 geometryInterval=geometry_interval, geometryPositionBits=(geometry_bits & 255) or 16,
                 geometryScaleBits=((geometry_bits >> 8) & 255) or 10, geometryOrder=((geometry_bits >> 16) & 255) or 1,
                 geometryRotationBits=(geometry_bits >> 24) or 10)
@@ -67,13 +68,15 @@ def parse_header(b):
 
 def layout(h):
     """The mosaic the header implies (Planes.cpp, PlaneLayout::make)."""
-    attributes = 14 + 3 * h["restPerColour"]
+    # Relightable (flag bit 6): one occlusion attribute and plane after the colours.
+    extra = 1 if h.get("relightable") else 0
+    attributes = 14 + 3 * h["restPerColour"] + extra
     first = 6 if h["hiInVideo"] else 3
     # With colour in chroma: 8 opacity / scale / rotation planes and a Y plane a colour quantity.
-    planes = first + (8 + 1 + h["restPerColour"] if h["chroma"] else attributes - 3)
+    planes = first + (8 + 1 + h["restPerColour"] + extra if h["chroma"] else attributes - 3)
     if h.get("geometry"):
         # The geometry layer: the opacity and the colours only.
-        planes = 1 + (1 + h["restPerColour"] if h["chroma"] else 3 + 3 * h["restPerColour"])
+        planes = 1 + (1 + h["restPerColour"] if h["chroma"] else 3 + 3 * h["restPerColour"]) + extra
     chunks = (h["maxSplats"] + h["chunkSplats"] - 1) // h["chunkSplats"]
     tile_height = chunks * (h["chunkSplats"] // 512)
     rows = (planes + h["columns"] - 1) // h["columns"]
@@ -263,7 +266,7 @@ def describe(data):
                columns=h["columns"], maxSplats=h["maxSplats"], hiInVideo=h["hiInVideo"],
                antialiased=h["antialiased"], positionBlock=h["positionBlock"],
                positionHighBits=h["positionHighBits"], chromaPlanes=h["chroma"], stableOrder=h["stableOrder"],
-               geometryLossless=h["geometry"], geometryKeyInterval=h["geometryInterval"],
+               relightable=h["relightable"], geometryLossless=h["geometry"], geometryKeyInterval=h["geometryInterval"],
                geometryStagger=h["geometryStagger"], geometryPositionBits=h["geometryPositionBits"],
                geometryScaleBits=h["geometryScaleBits"], geometryOrder=h["geometryOrder"],
                geometryRotationBits=h["geometryRotationBits"], picturesPerFrame=first["slices"],

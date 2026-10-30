@@ -638,6 +638,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                 p["zoneOutside"].setData(f.zoneOutside);
                 p["lambda"].setData(f.lambda);
                 p["backWeight"].setData(f.backWeight);
+                p["relightable"].setData(uint32_t{f.relightable ? 1u : 0u});
                 static const char* kZone[6] = {"zoneMinX", "zoneMinY", "zoneMinZ", "zoneMaxX", "zoneMaxY", "zoneMaxZ"};
                 for (size_t k = 0; k < 3; ++k) {
                     p[kZone[k]].setData(f.zoneMin[k]);

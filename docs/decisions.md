@@ -16507,3 +16507,83 @@ staggered over 60, 10-bit positions, 7-bit scales, the 7-bit rotation step, degr
   a path trace of the mesh, which neither cloud's pages favour.
 - SRT itself (the producer writes to stdout; the player's server forwards it over a WebSocket).
 - P pictures for slices (each slice would need its own encoder session).
+
+## A relightable stream: albedo and occlusion, lit by the player's sky (30 Oct)
+
+The web ladder carried each gaussian's light under one sky (`flatten`'s fit of the TX cloud under the
+bridge), so a player that shows another background drew a bird lit by the wrong one. A relightable stream
+carries what the gaussian is made of and lets the player light it: the first step is diffuse light with ambient
+occlusion; the specular lobes are not in it.
+
+### What travels
+
+- **Albedo** as the colour (degree 0, sRGB encoded, YCoCg in chroma as before) and **occlusion** as one more
+  attribute and one more luma plane after the colour planes, no chroma under it (`PlaneLayout::occlusion`,
+  attribute `14 + 3 * restPerColour`). The occlusion is `splatOpenness`: the TX transfer's constant term over
+  an open one's, the cosine-weighted share of the hemisphere the gaussian sees. For the skinned sparrow that is
+  the bind pose's (the zonal lobes turn with the gaussian; their constant term does not change with the turn),
+  so it is the same number every frame: there is no per-frame occlusion to bake, and none to defer.
+- **Header flag bit 6** (`AthvHeader::relightable`), manifest `"relightable": true`; the file version stays 2
+  and every baked file reads as before. A reader that does not know the bit must not be handed one (its mosaic
+  has a plane more). Byte-level spec: FORMAT.md §9c.
+- **The normal is not sent**: it is the shortest axis of the exact geometry layer's rotation, turned towards the
+  eye -- `splatNormal`'s rule, which the engine's own relit frame uses. A viewer-independent sign (away from a
+  local centroid, or the transfer's facing) would light the back of a thin feather from the side the eye is not
+  on; the decimated clouds' merged gaussians carry a stored normal the stream does not have, which is one of
+  the differences measured below.
+- **Albedo and occlusion apart**, not their product: for diffuse light the two are the same number
+  (`albedo * occ * E(n) / pi`), and the product would save a plane; they are kept apart because a specular term
+  needs the occlusion without the albedo.
+
+**The pages.** `flatten --relightable` writes SPZ pages whose constant term is the albedo and whose band-1 **x
+basis** (the third) holds the occlusion, grey; nothing is fitted and no sky applied. Not the first basis:
+SPZ's readers turn y and z (right-up-back read as right-down-front), which negates the y and z bases -- the
+first encode read every occlusion as its negative. `video-encode --relightable --sh-degree 0` loads the pages
+at degree 1 for it and lays the plane; `--check` measures it with the other attributes.
+
+### The player
+
+sparkwebGPU `athv-player.js` decodes the plane into a buffer of albedo, occlusion and normal per stable index
+(eased over frames as the colour was). `athv-env.js`'s `AthvRelight` projects the background's map onto nine
+harmonics on the GPU (one workgroup over every texel, weighted by its solid angle, in the map's own frame) when
+a map loads, and a compute pass writes every splat's colour, `albedo * occ * E(n) / pi * gain` sRGB encoded,
+when a frame is decoded, the map changes or the eye moves. With no background ("Sin fondo") a soft white dome,
+`L = 0.8 + 0.4 up`. One player plays both ladders, by the flag.
+
+### Measured (frames 1 and 31, the reference camera, 1024 x 1024)
+
+The reference is athenea's own relit frame of the 150k TX cloud (`dec150`) under each map, upright (rotateX 90,
+FORMAT §9b), `--splat-display-blend`; the player's still of the 150k rendition in Chrome (file mode, `?view=athenea`).
+PSNR on sRGB; "bird" is the pixels where the reference differs from the sky drawn alone (2.8 % of the frame).
+
+| stream, map | whole frame (dB) | bird (dB) |
+|---|---|---|
+| relit r0, studio | 37.13 / 37.78 | 21.58 / 22.18 |
+| relit r0, partly cloudy sky | 38.79 / 36.81 | 23.25 / 21.21 |
+| relit r0, bridge | 41.12 / 39.20 | 25.60 / 23.62 |
+| relit r0, desert | 37.69 / 36.86 | 22.13 / 21.26 |
+| relit r4 (10k), studio | 33.55 / 33.22 | 18.15 / 17.84 |
+| baked r0 (bridge sky), bridge | 39.52 / 40.05 | 23.99 / 24.49 |
+| baked r0 (bridge sky), studio | 30.48 / 29.35 | 14.90 / 13.73 |
+
+Under the sky it was baked for, the baked stream and the relit one are level (24 against 24.6 dB on the bird);
+under any other the relit stream is 7-8 dB closer. The relit bird is 15-25 % darker than the reference, most in
+blue: the reference adds the polish's reflection (white) and the transfer's direction (the sky through the
+open side, the sun shadowed by the bits), which a scalar occlusion and the shortest axis do not hold.
+
+**Bandwidth** (Mbit/s at 30, quality 0.4, the same geometry layer): 150k 148.9 -> 153.0, 75k 76.6 -> 79.2,
+40k 44.9 -> 46.6, 20k 25.9 -> 27.0, 10k 21.7 -> 22.8. Three planes instead of five (degree 1), yet the video
+part grows (150k: 0.065 -> 0.087 MB a frame): albedo and occlusion have more texture than a lit colour whose
+harmonics are smooth. The geometry layer is 86 % of every rung either way.
+
+**The player** (Playwright, Chrome, desktop and iPhone 15 Pro emulation): every rung and every background,
+no page error; the draw rate in that harness is the same for the baked ladder (8-14 frames/s, the harness's,
+not the relighting's).
+
+### Not done
+
+- Specular: the TX lobes against the prefiltered map, the sun's shadow from the open cells. They need the
+  roughness and lobe weights (and the bits) in the stream.
+- A directional occlusion: the zonal transfer's band 1 is a bent normal and its length, two more numbers that
+  would carry where the open side is.
+- The stored normals of merged gaussians (the decimation's); the shortest axis stands for them.

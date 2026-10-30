@@ -186,7 +186,8 @@ Result<void> AthvWriter::writeHeader() {
     o.u32(header_.maxSplats);
     o.u32((header_.hiInVideo ? 1u : 0u) | (header_.antialiased ? 2u : 0u) | (header_.chroma ? 4u : 0u) |
           (header_.stableOrder ? 8u : 0u) |
-          (header_.geometry ? 16u : 0u) | (header_.geometryStagger ? 32u : 0u));
+          (header_.geometry ? 16u : 0u) | (header_.geometryStagger ? 32u : 0u) |
+          (header_.relightable ? 64u : 0u));
     o.u32(header_.rendition);
     o.f64(header_.rate);
     o.u32(header_.rateNumerator);
@@ -264,6 +265,7 @@ Result<std::unique_ptr<AthvReader>> AthvReader::open(const std::filesystem::path
     hd.stableOrder = (flags & 8u) != 0;
     hd.geometry = (flags & 16u) != 0;
     hd.geometryStagger = (flags & 32u) != 0;
+    hd.relightable = (flags & 64u) != 0;
     if (version >= 2) {
         hd.rateNumerator = in.u32();
         hd.rateDenominator = in.u32();

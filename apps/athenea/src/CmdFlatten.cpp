@@ -117,6 +117,7 @@ void addFlatten(CLI::App& app) {
         std::string range;
         uint32_t chunkSplats = 0;
         bool     keepOrder = false;
+        bool     relightable = false;
     };
     auto o = std::make_shared<Options>();
     auto* cmd = app.add_subcommand(
@@ -171,6 +172,9 @@ void addFlatten(CLI::App& app) {
     cmd->add_flag("--keep-order", o->keepOrder,
                   "with --range: each frame's gaussians cut into pages in the order the stage lists them, not "
                   "along a Morton curve -- a skinned cloud's gaussian keeps its index in every frame");
+    cmd->add_flag("--relightable", o->relightable,
+                  "write each gaussian's albedo (the constant term) and its occlusion (band 1's x basis (its third), grey), "
+                  "not its light under the sky: what a player relights (video-encode --relightable)");
     cmd->add_option("--validate", o->validate,
                     "measure a written file against the meshes path traced, material by material, into this "
                     "directory");
@@ -309,6 +313,7 @@ void addFlatten(CLI::App& app) {
         settings.roughnessFloor = !o->noFloor;
         settings.floorShare = o->floorShare;
         settings.everyCloud = o->everyCloud;
+        settings.relightable = o->relightable;
         if (o->facing.size() == 3) {
             settings.facingCull = true;
             settings.facingPoint = {o->facing[0], o->facing[1], o->facing[2]};

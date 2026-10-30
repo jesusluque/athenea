@@ -121,6 +121,11 @@ void writeRest(uint i, uint j) {
     for (uint k = 0; k < params.keep * 3u; ++k) {
         if (k % 3u == 0) {
             basis = k / 3u < params.restPerColour ? colourAt(1u + k / 3u, i) : float3(0.0, 0.0, 0.0);
+            if (params.occlusion != 0 && k == 6) {
+                // A relightable stream's occlusion, where its source had it:
+                // band 1's x basis, grey.
+                basis = float3(attributeAt(params.occlusion, i));
+            }
         }
         const float v = basis[k % 3u];
         word |= (f32tof16(halfSafe(v)) & 0xFFFFu) << (filled * 16u);
@@ -220,10 +225,11 @@ void videoPlanesCompare(uint3 tid: SV_DispatchThreadID) {
     uint largest = 0, sum = 0, far = 0;
     const uint end = min(params.count, (run + 1) * kCompareRun);
     for (uint i = run * kCompareRun; i < end; ++i) {
-        const float d = attributeOf(decodedPositions, decodedShape, decodedSh, params.shWords, params.restPerColour,
-                                    i, a, params.chroma);
+        const float d = attributeOf(decodedPositions, decodedShape, decodedSh, params.shWords,
+                                    params.occlusion != 0 ? 1u : params.restPerColour, i, a, params.chroma,
+                                    params.occlusion);
         const float s = attributeOf(sourcePositions, sourceShape, sourceSh, params.sourceShWords, params.sourceRest,
-                                    order[params.first + i], a, params.chroma);
+                                    order[params.first + i], a, params.chroma, params.occlusion);
         const float steps = abs(d - s) / step;
         const uint sixteenths = uint(min(steps * 16.0, 4.0e9));
         largest = max(largest, sixteenths);

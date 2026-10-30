@@ -54,6 +54,10 @@ struct AthvHeader {
     /// Index i is the same gaussian in every frame (video-encode --order
     /// stable): a player may smooth a gaussian over frames.
     bool     stableOrder = false;
+    /// RELIGHTABLE (flag bit 6): the colour is the albedo and an occlusion
+    /// plane follows it (Planes.h, PlaneLayout::occlusion); a player lights
+    /// the gaussians with its own sky. Older readers see degree 0 colours.
+    bool     relightable = false;
     /// THE GEOMETRY LAYER (Planes.h, PlaneLayout::geometry): position, scale
     /// and rotation exact beside the video, a key every `geometryInterval`
     /// frames (0: every frame), or with `geometryStagger` blocks of 256 in

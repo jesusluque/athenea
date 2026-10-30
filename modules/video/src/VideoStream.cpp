@@ -96,7 +96,7 @@ Result<void> VideoStream::push(lod::PageQueue& queue, uint32_t stream, uint32_t 
         if (!decoded) return std::move(decoded).error();
         decodeMs += msSince(t);
         auto layout = PlaneLayout::make(frame->splats, h.bits, h.restPerColour, h.hiInVideo, h.chunkSplats, h.columns,
-                                        h.maxSplats, 0, 0, h.chroma, h.geometry);
+                                        h.maxSplats, 0, 0, h.chroma, h.geometry, h.relightable);
         if (!layout) return std::move(layout).error();
         layout->positionBlock = h.positionBlock;
         layout->positionHighBits = h.positionHighBits;

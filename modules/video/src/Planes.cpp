@@ -58,13 +58,14 @@ void setLayout(rhi::ShaderCursor p, const PlaneLayout& l) {
     p["geometry"].setData(uint32_t{l.geometry ? 1u : 0u});
     p["geometryPositionBits"].setData(l.geometryPositionBits);
     p["geometryScaleBits"].setData(l.geometryScaleBits);
+    p["occlusion"].setData(l.occlusionAttribute());
 }
 
 }   // namespace
 
 Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t nRest, bool nHi,
                                       uint32_t nChunk, uint32_t nColumns, uint32_t tileSplats, uint32_t mostWidth,
-                                      uint32_t mostHeight, bool nChroma, bool nGeometry) {
+                                      uint32_t mostHeight, bool nChroma, bool nGeometry, bool nOcclusion) {
     const uint64_t mostW = mostWidth != 0 ? std::min(mostWidth, kMostSide) : kMostSide;
     const uint64_t mostH = mostHeight != 0 ? std::min(mostHeight, kMostSide) : kMostSide;
     if (nBits != 8 && nBits != 10) {
@@ -89,6 +90,10 @@ Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t
     l.positionHighBits = nBits;
     l.chroma = nChroma;
     l.geometry = nGeometry;
+    if (nOcclusion && nRest != 0) {
+        return Error(ErrorCode::InvalidArgument, "video planes: an occlusion plane goes with degree 0 colours only");
+    }
+    l.occlusion = nOcclusion;
     const uint32_t tileChunks = std::max(l.chunks(), (tileSplats + nChunk - 1) / nChunk);
     l.tileHeight = tileChunks * (nChunk / kTileWidth);
     const uint32_t planes = l.planes();
@@ -125,8 +130,9 @@ Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t
 
 Result<uint32_t> PlaneLayout::sliceSplats(uint32_t nSplats, uint32_t nBits, uint32_t nRest, bool nHi,
                                           uint32_t nChunk, uint32_t nColumns, uint32_t mostWidth,
-                                          uint32_t mostHeight, bool nChroma, bool nGeometry) {
-    if (make(nSplats, nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight, nChroma, nGeometry)) {
+                                          uint32_t mostHeight, bool nChroma, bool nGeometry, bool nOcclusion) {
+    if (make(nSplats, nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight, nChroma, nGeometry,
+             nOcclusion)) {
         return nSplats;
     }
     // Chunk counts, from the most that could fit down: bookkeeping on sizes.
@@ -134,7 +140,7 @@ Result<uint32_t> PlaneLayout::sliceSplats(uint32_t nSplats, uint32_t nBits, uint
         const uint64_t n = uint64_t{chunks} * nChunk;
         if (n < nSplats &&
             make(static_cast<uint32_t>(n), nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight, nChroma,
-                 nGeometry)) {
+                 nGeometry, nOcclusion)) {
             return static_cast<uint32_t>(n);
         }
     }

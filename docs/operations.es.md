@@ -545,6 +545,7 @@ exacta, la baja por el códec. La croma se queda en gris medio, así que el
 | `--position-high-bits` | 0 a `--bits` | `--bits` | los bits de una posición por encima de la muestra, enviados exactos junto al vídeo; 0 no envía ninguno (con `--position-block`, la caja es lo que la mantiene cerca) |
 | `--chroma` | flag | no | colores como YCoCg: la Y de cada color un plano de luma, su Co y su Cg el Cb y el Cr de esa tesela, una muestra por bloque de 2 x 2 de cuatro gaussianas consecutivas en el orden de Morton; solo 8 bits |
 | `--chroma-weight` | `mean` o `area` | `mean` | el croma de un bloque: la media simple de sus gaussianas, o ponderada por opacidad x el área de sus dos ejes mayores |
+| `--relightable` | flag | no | las páginas son de `flatten --relightable`: el color es el albedo y tras los planos de color va un plano de luma más, la oclusión (0 a 1, leída del rojo de la base x de la banda 1 de las páginas, sin croma debajo); bit 6 de los flags de la cabecera. Necesita `--sh-degree 0` (el albedo no tiene armónicos; las páginas se cargan aun así con grado 1 por la oclusión) y páginas que la lleven. Un reproductor ilumina las gaussianas con su propio cielo |
 | `--reduce` | `pairs`, `prune`, `mix`, `cut`, `keep` | `pairs` | con `--gaussians`: fusionadas por pares; las que menos aportan (opacidad x el área de los dos ejes más anchos) descartadas; la mitad del exceso descartada y después fusionadas; o el corte del octree por error, con sus tolerancias escaladas hasta la cuenta. Lo que una fusión limitada deja por encima de la cuenta se descarta. `keep`: las de mayor puntuación en el primer frame, los mismos registros en todos (lo que necesita `--order stable`) |
 | `--merge-growth` | factor | `0`: ninguno | `pairs`, `mix`: ninguna fusión más ancha (la raíz de la traza de su covarianza) que este factor por la más ancha de las dos |
 | `--merge-opacity` | 0 a 3 | `0` | `pairs`, `mix`: 0 la media de sus miembros, la fusión ensanchada, por debajo de 0,99; 1 su masa sobre el área ensanchada; 2 su masa, sin ensanchar; 3 su masa, sin ensanchar, hasta 5 (dibujada con el núcleo más duro de Spark) |
@@ -756,6 +757,7 @@ apagadas (`<output>_flatten_stage.usda`, que se queda junto a los ficheros).
 | `--range` | `INICIO:FIN[:PASO]` | sin fijar | una secuencia: cada time code aplanado y cortado en páginas SPZ, una época de un stream en vivo por frame (§3.7); fuerza `--format spz` y hace de `-o` un directorio |
 | `--chunk-splats` | entero | `65536` | con `--range`: las gaussianas que caben como mucho en una página; las de un frame se ordenan sobre una curva de Morton de su caja y se cortan en tramos de este tamaño, así que una página es una parte del modelo |
 | `--keep-order` | flag | no | con `--range`: cada frame se corta en páginas en el orden en que el stage lista sus gaussianas, no a lo largo de una curva de Morton: una gaussiana de una nube con esqueleto conserva su índice en todos los frames (lo que necesita `video-encode --order stable`) |
+| `--relightable` | flag | no | no se aplica cielo ni se ajusta nada: el término constante de cada gaussiana es su albedo (codificado sRGB con `--referred display`, lineal con `scene`; recortado a 0..1, con el grade aplicado) y la base x de la banda 1 (su tercera) guarda su oclusión, en gris -- la fracción del hemisferio, ponderada por el coseno, que ve su transfer TX, 1 en una nube sin transfer; las demás bases a cero. No es para un visor: es lo que lee `video-encode --relightable` |
 | `--validate` | directorio | ninguno | medir un fichero escrito contra las mallas trazadas, material a material (§3.1, *Una conversión medida*) |
 | `--validate-stage` | ruta | la de entrada | la escena de mallas desde la que se traza el GT |
 | `--validate-format` | `ply` \| `spz` | `spz` | qué fichero se vuelve a leer y se mide |
@@ -2685,7 +2687,9 @@ páginas SPZ y su `stream.txt` (§3.7), que lee `athenea stream`.
 versión 2: una cabecera de 128 bytes (códec, bits, coeficientes de resto,
 tamaño de chunk, columnas del mosaico, las gaussianas que caben como mucho en
 una imagen, si las partes altas de la posición son planos, el antialiasing de
-la fuente, si el color va en el croma, el id de la rendición, el ritmo y el
+la fuente, si el color va en el croma, si es reiluminable (bit 6 de los flags:
+el color es el albedo y lo sigue un plano de oclusión), el id de la rendición,
+el ritmo y el
 ritmo como fracción, los frames de origen, la calidad, el bloque y los bits
 altos de la posición) y un registro por imagen, cada uno completo en
 sí mismo. Un registro empieza con un prefijo fijo -- magic `ATVF`, tipo de

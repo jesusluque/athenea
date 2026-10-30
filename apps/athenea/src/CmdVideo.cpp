@@ -461,7 +461,7 @@ void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::Planes
             auto f = reader.read(k);
             if (!f) cli::fail(f.error());
             auto layout = video::PlaneLayout::make(f->splats, h.bits, h.restPerColour, h.hiInVideo, h.chunkSplats,
-                                                   h.columns, h.maxSplats, 0, 0, h.chroma, h.geometry);
+                                                   h.columns, h.maxSplats, 0, 0, h.chroma, h.geometry, h.relightable);
             if (!layout) cli::fail(layout.error());
             layout->positionHighBits = h.positionHighBits;
             layout->geometryPositionBits = h.geometryPositionBits;
@@ -484,7 +484,9 @@ void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::Planes
         auto f = reader.read(k);
         if (!f) cli::fail(f.error());
         if (!store.positions.valid()) {
-            auto s = video::PlanesCodec::allocate(device, f->sourceSplats, h.restPerColour, "video.dump");
+            // A relightable stream's occlusion goes to band 1's x basis.
+            auto s = video::PlanesCodec::allocate(device, f->sourceSplats, h.relightable ? 3u : h.restPerColour,
+                                                  "video.dump");
             if (!s) cli::fail(s.error());
             store = std::move(*s);
             total = f->sourceSplats;
@@ -492,7 +494,7 @@ void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::Planes
         auto picture = decoder.decode(f->unit, f->parameterSets, f->keyframe);
         if (!picture) cli::fail(picture.error());
         auto layout = video::PlaneLayout::make(f->splats, h.bits, h.restPerColour, h.hiInVideo, h.chunkSplats,
-                                               h.columns, h.maxSplats, 0, 0, h.chroma, h.geometry);
+                                               h.columns, h.maxSplats, 0, 0, h.chroma, h.geometry, h.relightable);
         if (!layout) cli::fail(layout.error());
         layout->positionBlock = h.positionBlock;
         layout->positionHighBits = h.positionHighBits;
@@ -515,7 +517,8 @@ void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::Planes
             }
         }
         if (auto r = codec.decode(batch, *layout, luma->texture.get(), luma->chroma.get(), side->rhi(), 0,
-                                  layout->rangeBytes(), 0, f->splats, store, f->firstSplat, h.restPerColour,
+                                  layout->rangeBytes(), 0, f->splats, store, f->firstSplat,
+                                  h.relightable ? 3u : h.restPerColour,
                                   h.geometry ? &state : nullptr, f->firstSplat);
             !r) {
             cli::fail(r.error());
@@ -622,6 +625,7 @@ void addVideo(CLI::App& app) {
         std::vector<uint32_t> geometryHold;
         uint32_t geometryRotationBits = 10;
         std::string chromaWeight = "mean";
+        bool relightable = false;
     };
     auto o = std::make_shared<Options>();
     auto* enc = app.add_subcommand("video-encode",
@@ -699,6 +703,9 @@ void addVideo(CLI::App& app) {
     enc->add_flag("--chroma", o->chroma,
                   "colours as YCoCg: Y a luma plane, Co and Cg the chroma of its tile, one a 2 x 2 block of four "
                   "Morton neighbours (8 bits)");
+    enc->add_flag("--relightable", o->relightable,
+                  "the pages are flatten --relightable's: the colour is the albedo (--sh-degree 0) and an "
+                  "occlusion plane follows it, read from the pages' band 1 x basis; a player lights the stream");
     enc->add_option("--chroma-weight", o->chromaWeight, "a block's chroma: mean, or area (weighed by opacity x area)")
         ->check(CLI::IsMember({"mean", "area"}));
     enc->add_option("--reduce", o->reduce,
@@ -750,6 +757,10 @@ void addVideo(CLI::App& app) {
         }
         if (o->chroma && o->bits != 8) {
             cli::err("video-encode: --chroma is 8 bits only\n");
+            throw CLI::RuntimeError(kExitFailure);
+        }
+        if (o->relightable && o->shDegree != 0) {
+            cli::err("video-encode: --relightable carries the albedo, degree 0: add --sh-degree 0\n");
             throw CLI::RuntimeError(kExitFailure);
         }
         double rate = o->rate;
@@ -845,7 +856,9 @@ void addVideo(CLI::App& app) {
         // file and the checker made.
         const auto prepare = [&](size_t k) -> scene::GpuSplats {
             bool aa = false;
-            auto cloud = loadFrame(**device, *loader, (*frames)[k], o->shDegree, aa);
+            // Relightable: the occlusion is the pages' band 1 x basis, so
+            // degree 1 is loaded whatever the colour keeps.
+            auto cloud = loadFrame(**device, *loader, (*frames)[k], o->relightable ? 1u : o->shDegree, aa);
             if (!cloud) cli::fail(cloud.error());
             if (o->gaussians != 0) {
                 cloud = reducer.reduce(std::move(*cloud), o->gaussians,
@@ -855,10 +868,15 @@ void addVideo(CLI::App& app) {
             }
             if (encoder != nullptr) return std::move(*cloud);
             antialiased = aa;
+            if (o->relightable && cloud->restPerColour == 0) {
+                cli::err("video-encode: --relightable reads the occlusion from the pages' band 1 x basis, and "
+                         "these have none (flatten --relightable writes it)\n");
+                throw CLI::RuntimeError(kExitFailure);
+            }
             const uint32_t rest = std::min(cloud->restPerColour, restAsked);
             auto cap = video::PlaneLayout::sliceSplats(cloud->count, o->bits, rest, o->hi == "video",
                                                        video::PlaneLayout::kBandSplats, o->columns, mostWidth,
-                                                       mostHeight, o->chroma, o->geometry);
+                                                       mostHeight, o->chroma, o->geometry, o->relightable);
             if (!cap) cli::fail(cap.error());
             sliceCap = *cap;
             if (mostWidth != 0) {
@@ -868,7 +886,7 @@ void addVideo(CLI::App& app) {
                 // extra picture.
                 auto most = video::PlaneLayout::sliceSplats(uint32_t{1} << 30, o->bits, rest, o->hi == "video",
                                                             video::PlaneLayout::kBandSplats, o->columns, mostWidth,
-                                                            mostHeight, o->chroma, o->geometry);
+                                                            mostHeight, o->chroma, o->geometry, o->relightable);
                 if (!most) cli::fail(most.error());
                 const uint32_t band = video::PlaneLayout::kBandSplats;
                 const uint64_t roomy = (uint64_t{cloud->count} * 21 / 20 + band - 1) / band * band;
@@ -876,7 +894,7 @@ void addVideo(CLI::App& app) {
             }
             auto made = video::PlaneLayout::make(sliceCap, o->bits, rest, o->hi == "video",
                                                  video::PlaneLayout::kBandSplats, o->columns, 0, mostWidth,
-                                                 mostHeight, o->chroma, o->geometry);
+                                                 mostHeight, o->chroma, o->geometry, o->relightable);
             if (!made) cli::fail(made.error());
             layout = *made;
             layout.positionBlock = o->positionBlock;
@@ -938,6 +956,7 @@ void addVideo(CLI::App& app) {
             header.geometryOrder = o->geometryPredict;
             header.chroma = layout.chroma;
             header.stableOrder = stable;
+            header.relightable = layout.occlusion;
             auto w = video::AthvWriter::create(o->output, header);
             if (!w) cli::fail(w.error());
             writer = std::move(*w);
@@ -1089,7 +1108,7 @@ void addVideo(CLI::App& app) {
                     const uint32_t count = std::min(sliceCap, cloud.count - at);
                     auto sliced = video::PlaneLayout::make(count, layout.bits, layout.restPerColour, layout.hiInVideo,
                                                            layout.chunkSplats, layout.columns, sliceCap, 0, 0,
-                                                           layout.chroma, layout.geometry);
+                                                           layout.chroma, layout.geometry, layout.occlusion);
                     if (!sliced) cli::fail(sliced.error());
                     sliced->positionBlock = layout.positionBlock;
                     sliced->positionHighBits = layout.positionHighBits;
@@ -1165,7 +1184,8 @@ void addVideo(CLI::App& app) {
                     if (!luma) cli::fail(luma.error());
                     auto side = sidePage(**device, f.ranges, f.high, f.geometry);
                     if (!side) cli::fail(side.error());
-                    auto back = video::PlanesCodec::allocate(**device, count, layout.restPerColour, "video.check");
+                    auto back = video::PlanesCodec::allocate(**device, count, layout.occlusion ? 3u : layout.restPerColour,
+                                                             "video.check");
                     if (!back) cli::fail(back.error());
                     {
                         gpu::CommandBatch batch(**device);
@@ -1179,7 +1199,8 @@ void addVideo(CLI::App& app) {
                         }
                         if (auto r = codec->decode(batch, *sliced, luma->texture.get(), luma->chroma.get(),
                                                    side->rhi(), 0, sliced->rangeBytes(), 0, count, *back, 0,
-                                                   layout.restPerColour, o->geometry ? &geomState : nullptr, at);
+                                                   layout.occlusion ? 3u : layout.restPerColour,
+                                                   o->geometry ? &geomState : nullptr, at);
                             !r) {
                             cli::fail(r.error());
                         }
@@ -1412,7 +1433,7 @@ void addVideo(CLI::App& app) {
             if (!frame) cli::fail(frame.error());
             decodeMs.push_back(std::chrono::duration<double, std::milli>(Clock::now() - t).count());
             auto layout = video::PlaneLayout::make(f->splats, h.bits, h.restPerColour, h.hiInVideo, h.chunkSplats,
-                                                   h.columns, h.maxSplats, 0, 0, h.chroma, h.geometry);
+                                                   h.columns, h.maxSplats, 0, 0, h.chroma, h.geometry, h.relightable);
             if (!layout) cli::fail(layout.error());
             layout->positionBlock = h.positionBlock;
             layout->positionHighBits = h.positionHighBits;
@@ -1422,7 +1443,8 @@ void addVideo(CLI::App& app) {
             layout->geometryMotion = h.geometryOrder == 3;
             layout->positionTarget = h.positionTarget;
             if (store.count < f->splats) {
-                auto s = video::PlanesCodec::allocate(**device, f->splats, h.restPerColour, "video.decoded");
+                auto s = video::PlanesCodec::allocate(**device, f->splats, h.relightable ? 3u : h.restPerColour,
+                                                      "video.decoded");
                 if (!s) cli::fail(s.error());
                 store = std::move(*s);
             }

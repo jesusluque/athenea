@@ -47,7 +47,7 @@ ConstantBuffer<VideoPlanesParams> params;
 static const uint kRun = 1024;
 
 float valueOf(uint s, uint a) {
-    return attributeOf(positions, shape, sh, params.sourceShWords, params.sourceRest, s, a, params.chroma);
+    return attributeOf(positions, shape, sh, params.sourceShWords, params.sourceRest, s, a, params.chroma, params.occlusion);
 }
 
 [shader("compute")]

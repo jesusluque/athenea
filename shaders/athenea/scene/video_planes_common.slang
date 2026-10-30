@@ -66,7 +66,10 @@ public struct VideoPlanesParams {
     public uint geometryAt;        ///< decode: the picture's first splat in its frame (the geometry state's index)
     public uint geometryPositionBits;  ///< the layer's bits a position axis (10-16)
     public uint geometryScaleBits;     ///< the layer's bits a log scale (6-10)
-    public uint pad9;
+    /// RELIGHTABLE: the occlusion's attribute (14 + 3 * restPerColour, the
+    /// last), 0 without one. Its plane follows the colour planes, with no
+    /// chroma under it; a cloud carries it as band 1's x basis (rest 6), red.
+    public uint occlusion;
 };
 
 public static const uint kTileWidth = 512;
@@ -147,6 +150,9 @@ public uint planeAttribute(VideoPlanesParams p, uint plane) {
     return plane - first + kFirstAttributePlane;
 }
 public uint colourQuantityOf(VideoPlanesParams p, uint plane) {
+    if (p.occlusion != 0 && plane == attributePlane(p, p.occlusion)) {
+        return ~0u;   // the occlusion's plane: luma only
+    }
     if (p.geometry != 0) {
         return p.chroma != 0 && plane >= 1u ? plane - 1u : ~0u;
     }
@@ -218,9 +224,15 @@ public uint halfAbove(float v) {
 }
 
 /// Attribute `a` of splat `s` of a packed cloud (packing.slang's layout),
-/// its colours as they are (`chroma` 0) or as YCoCg.
+/// its colours as they are (`chroma` 0) or as YCoCg. `occlusion`: the
+/// occlusion's attribute (0 none), read as band 1's x basis (the third
+/// harmonic, rest coefficient 6), red -- 1 for a cloud with no harmonics.
 public float attributeOf(StructuredBuffer<float4> positions, StructuredBuffer<uint> shape,
-                         StructuredBuffer<uint> sh, uint shWords, uint rest, uint s, uint a, uint chroma) {
+                         StructuredBuffer<uint> sh, uint shWords, uint rest, uint s, uint a, uint chroma,
+                         uint occlusion) {
+    if (occlusion != 0 && a == occlusion) {
+        return rest == 0 ? 1.0 : lowHalf(sh[s * shWords + 3u]);
+    }
     if (chroma != 0 && a >= kFirstColour) {
         const uint q = (a - kFirstColour) / 3u;
         const uint first = kFirstColour + 3u * q;   // r, g, b of quantity q

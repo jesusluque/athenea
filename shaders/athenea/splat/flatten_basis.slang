@@ -40,7 +40,7 @@ public static const uint kFlatRotation = 7;   ///< w x y z
 public static const uint kFlatSh = 11;        ///< 16 rgb triples, rgb per basis; [0] the 3DGS DC
 public static const uint kFlatNormal = 59;    ///< the facing the fit was weighted about
 public static const uint kFlatShrink = 62;    ///< what the higher bands were scaled by for positivity
-public static const uint kFlatFlags = 63;     ///< bit 0: thin wall; bit 1: shadow catcher
+public static const uint kFlatFlags = 63;     ///< bit 0: thin wall; bit 1: shadow catcher; bit 2: relightable (albedo, occlusion)
 
 /// The direction `k` of `n` on a Fibonacci sphere: equal areas, so one
 /// weight 4 pi / n each.

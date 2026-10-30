@@ -1112,6 +1112,10 @@ struct FlattenParams {
     float backWeight;      // a surface's back, likewise
     float zoneMinX; float zoneMinY; float zoneMinZ;
     float zoneMaxX; float zoneMaxY; float zoneMaxZ;
+    // RELIGHTABLE (`--relightable`): 1, each gaussian written as its albedo
+    // (the constant term) and its occlusion (band 1's x basis, grey),
+    // for a player that lights it with its own sky; nothing is fitted.
+    uint  relightable;
 };
 // What a flatten reads and writes, as one parameter block: on Metal a block
 // is one argument buffer, one slot of the 31 an entry point has. As four
@@ -1222,12 +1226,35 @@ void flattenSplat<let kTransfer : int>(uint i) {
     }
     uint flags = thin ? 1u : 0u;
     float shrink = 1.0;
+    float occlusion = 1.0;
     if (kTransfer == kProjectCatcher) {
         // Black, and as opaque as the frame draws it: the colour 0.5 + Y0 c0
         // is zero.
         opacity = catcherOpacity(i, r, scale, opacity);
         c[0] = float3(-kShDcOffset);
         flags |= 2u;
+    } else if (flatten.params.relightable != 0) {
+        // RELIGHTABLE (`--relightable`): not what a sky shows but what a
+        // player relights with -- the albedo as the constant term (sRGB
+        // encoded with `display`, as a viewer reads it, so the file alone
+        // shows the bird unlit) and the share of the hemisphere the gaussian
+        // sees, cosine-weighted (`splatOpenness`: the transfer's constant
+        // term over an open one's), as band 1's x basis, grey. Nothing
+        // depends on the eye, so nothing is fitted.
+        const float3 base = float3(highHalf(shape[row + 2]), lowHalf(shape[row + 3]), highHalf(shape[row + 3]));
+        float3 albedo = cloudLight(base, params.linearCloud != 0);
+        if (fate.graded) {
+            albedo = editGrade(params.edit, albedo);
+        }
+        albedo = saturate(albedo);
+        const float3 shown = flatten.params.display != 0 ? linearToSrgb(albedo) : albedo;
+        c[0] = (shown - 0.5) / kShY0;
+        SplatSurface s;
+        s.transferCount = params.transferCount;
+        s.transferBase = i * params.transferWords * 2;
+        splatTransferFrame(s, transfer, r, w0, w1, w2);
+        occlusion = splatOpenness(s, transfer);
+        flags |= 4u;
     } else {
         const float leastRoughness = flatten.params.roughnessFloor != 0 ? flatFloorCandidate(flatten.floorCandidate[0]) : 0.0;
         const float3 base = float3(highHalf(shape[row + 2]), lowHalf(shape[row + 3]), highHalf(shape[row + 3]));
@@ -1344,6 +1371,13 @@ void flattenSplat<let kTransfer : int>(uint i) {
     const float3x3 fileToLocal = float3x3(tFile, bFile, nFile);
     float3 turned[16];
     flatRotate(c, fileToLocal, turned);
+    if ((flags & 4u) != 0) {
+        // The occlusion is a number, not a direction: written after the
+        // turn, which would have spread it over band 1's three bases, and in
+        // the x basis (the third), which no reader turns -- SPZ's readers
+        // turn y and z, which would negate the first two.
+        turned[3] = float3(occlusion);
+    }
 
     // The gaussian: its axes through the cloud's transform and the file's
     // turn, its sizes by the transform's scale and the file's unit.

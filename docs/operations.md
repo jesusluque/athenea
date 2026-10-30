@@ -533,6 +533,7 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 | `--position-high-bits` | 0 to `--bits` | `--bits` | a position's bits past the sample, sent exact beside the video; 0 sends none (with `--position-block`, the box is what keeps it near) |
 | `--chroma` | flag | off | colours as YCoCg: each colour's Y a luma plane, its Co and Cg the Cb and Cr of that tile, one sample a 2 x 2 block of four consecutive Morton splats; 8 bits only |
 | `--chroma-weight` | `mean` or `area` | `mean` | a block's chroma: the plain mean of its splats, or weighed by opacity x the area of their two largest axes |
+| `--relightable` | flag | off | the pages are `flatten --relightable`'s: the colour is the albedo and one more luma plane follows the colour planes, the occlusion (0 to 1, read from the pages' band 1 x basis's red, no chroma under it); header flag bit 6. Needs `--sh-degree 0` (the albedo has no harmonics; the pages are still loaded at degree 1 for the occlusion) and pages that carry it. A player lights the gaussians with its own sky |
 | `--reduce` | `pairs`, `prune`, `mix`, `cut`, `keep` | `pairs` | with `--gaussians`: merged by pairs; the least contributing (opacity x the area of the two widest axes) dropped; half the excess dropped, then merged; or the octree's cut by error, its tolerances scaled to the count. Whatever a capped merge leaves above the count is dropped. `keep`: the first frame's highest scored, the same records every frame (what `--order stable` needs) |
 | `--merge-growth` | factor | `0`: none | `pairs`, `mix`: no merge wider (the square root of its covariance's trace) than this times the wider of the two |
 | `--merge-opacity` | 0 to 3 | `0` | `pairs`, `mix`: 0 the members' mean, the merge widened, under 0.99; 1 their mass over the widened area; 2 their mass, not widened; 3 their mass, not widened, up to 5 (drawn with Spark's harder kernel) |
@@ -742,6 +743,7 @@ kept beside the files).
 | `--range` | `START:END[:STEP]` | unset | a sequence: every time code flattened and cut into SPZ pages, one epoch of a live stream a frame (§3.7); forces `--format spz` and makes `-o` a directory |
 | `--chunk-splats` | integer | `65536` | with `--range`: the most gaussians a page holds; a frame's gaussians are ordered along a Morton curve of its box and cut into runs of this many, so a page is a part of the model |
 | `--keep-order` | flag | off | with `--range`: each frame cut into pages in the order the stage lists its gaussians, not along a Morton curve: a skinned cloud's gaussian keeps its index in every frame (what `video-encode --order stable` needs) |
+| `--relightable` | flag | off | no sky is applied and nothing is fitted: each gaussian's constant term is its albedo (sRGB encoded with `--referred display`, linear with `scene`; clamped to 0..1, grade applied) and band 1's x basis (its third) holds its occlusion, grey -- the cosine-weighted share of the hemisphere its TX transfer sees, 1 for a cloud without a transfer; the other bases are zero. Not meant for a viewer: what `video-encode --relightable` reads |
 | `--validate` | directory | none | measure a written file against the meshes path traced, material by material (§3.1, *A conversion measured*) |
 | `--validate-stage` | path | the input | the stage of meshes the GT is traced from |
 | `--validate-format` | `ply` \| `spz` | `spz` | which file is read back and measured |
@@ -2605,7 +2607,9 @@ and its `stream.txt` (§3.7), which `athenea stream` reads.
 **Video written.** `athenea video-encode` writes a `.athv`, version 2: a
 128-byte header (codec, bits, rest coefficients, chunk size, mosaic columns,
 the most splats a picture holds, whether the position high parts are planes,
-the source's antialiasing, whether colour is in chroma, the rendition id, the
+the source's antialiasing, whether colour is in chroma, whether it is
+relightable (flag bit 6: the colour is the albedo and an occlusion plane follows
+it), the rendition id, the
 rate and the rate as a fraction, the source frames, the quality, the position
 block and high bits) and a record a picture, each whole
 in itself. A record starts with a fixed prefix -- magic `ATVF`, record type

@@ -101,13 +101,26 @@ struct PlaneLayout {
     /// The encode's block chroma: 0 the plain mean of its splats, 1 weighed
     /// by opacity x the area of their two largest axes.
     uint32_t chromaWeight = 0;
+    /// RELIGHTABLE: the colour is the albedo (degree 0 only) and one more
+    /// attribute follows the colours, the OCCLUSION (0..1, the cosine-weighted
+    /// share of the hemisphere a gaussian sees): attribute `attributes() - 1`,
+    /// a luma plane of its own after the colour planes, no chroma under it.
+    /// The source carries it as its band 1 x basis's red (flatten
+    /// --relightable), and a decoded store gets it there, grey.
+    bool     occlusion = false;
+    [[nodiscard]] uint32_t occlusionAttribute() const noexcept {
+        return occlusion ? kAttributesBeforeRest + 3 * restPerColour : 0u;
+    }
 
-    [[nodiscard]] uint32_t attributes() const noexcept { return kAttributesBeforeRest + 3 * restPerColour; }
+    [[nodiscard]] uint32_t attributes() const noexcept {
+        return kAttributesBeforeRest + 3 * restPerColour + (occlusion ? 1u : 0u);
+    }
     [[nodiscard]] uint32_t planes() const noexcept {
+        const uint32_t extra = occlusion ? 1u : 0u;
         if (geometry) {
-            return 1u + (chroma ? 1u + restPerColour : 3u + 3u * restPerColour);
+            return 1u + (chroma ? 1u + restPerColour : 3u + 3u * restPerColour) + extra;
         }
-        return (hiInVideo ? 6u : 3u) + (chroma ? 8u + 1u + restPerColour : attributes() - 3u);
+        return (hiInVideo ? 6u : 3u) + (chroma ? 8u + 1u + restPerColour + extra : attributes() - 3u);
     }
     /// The second plane's bytes (NV12: a (Cb, Cr) pair a 2 x 2 block): only
     /// with `chroma`.
@@ -146,14 +159,15 @@ struct PlaneLayout {
                                                   bool hiInVideo, uint32_t chunkSplats, uint32_t columns,
                                                   uint32_t tileSplats = 0, uint32_t mostWidth = 0,
                                                   uint32_t mostHeight = 0, bool chroma = false,
-                                                  bool geometry = false);
+                                                  bool geometry = false, bool occlusion = false);
     /// A frame too big for one picture goes as SLICES, each a picture of its
     /// own holding a run of the frame's Morton order: the most splats one
     /// takes (a multiple of `chunkSplats`), `splats` when the frame fits.
     [[nodiscard]] static Result<uint32_t> sliceSplats(uint32_t splats, uint32_t bits, uint32_t restPerColour,
                                                       bool hiInVideo, uint32_t chunkSplats, uint32_t columns,
                                                       uint32_t mostWidth = 0, uint32_t mostHeight = 0,
-                                                      bool chroma = false, bool geometry = false);
+                                                      bool chroma = false, bool geometry = false,
+                                                      bool occlusion = false);
 };
 
 /// One frame, encoded: what the codec takes and what goes beside it.

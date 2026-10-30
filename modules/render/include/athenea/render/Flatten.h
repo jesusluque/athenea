@@ -73,6 +73,13 @@ struct FlattenSettings {
     std::array<float, 3> zoneMax{0, 0, 0};
     uint32_t             zoneSamples = 256;
     float                zoneOutside = 0.05F;
+    /// RELIGHTABLE: each gaussian written as its albedo (the constant term,
+    /// encoded as `display` says) and its occlusion -- the cosine-weighted
+    /// share of the hemisphere it sees, from its transfer, 1 without one --
+    /// as band 1's x basis (its third), grey; bands past it zero. No sky is applied
+    /// and nothing is fitted: a player lights it (docs/decisions.md,
+    /// "A relightable stream").
+    bool                 relightable = false;
 };
 
 /// One flattened cloud: `count` records of `kFlatStride` floats.
