@@ -267,6 +267,7 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
     auto splats = packed(device, n, cloud.restPerColour, cloud.shWords, "lod.splats", normals, emission);
     if (!splats) return std::move(splats).error();
     splats->linear = cloud.linear;   // reordered, in the space they were in
+    splats->antialiased = cloud.antialiased;
     {
         gpu::CommandBatch batch(device);
         morton_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
@@ -406,6 +407,7 @@ Result<LodCloud> LodBuilder::build(const scene::GpuSplats& cloud, const LodBuild
         if (!gaussians) return std::move(gaussians).error();
         // Merged in the space the cloud keeps its colours in (lod_leaf_moments).
         gaussians->linear = cloud.linear;
+        gaussians->antialiased = cloud.antialiased;
         gpu::CommandBatch batch(device);
         if (r == finest) {
             leafMoments_.dispatch(batch, {level.groups, 1, 1}, [&](rhi::ShaderCursor cursor) {
@@ -529,6 +531,9 @@ struct CutSelector::Frame {
     gpu::Buffer      state;       ///< the finest level's per-group state
     gpu::Buffer      needs;       ///< per chunk
     gpu::Buffer      readback;    ///< every part's count, then the needs: one read
+    /// A live cloud whose chunks disagree on antialiasing: one cloud a run of
+    /// chunks that agree, in chunk order, each its own instance.
+    std::vector<std::unique_ptr<Frame>> groups;
 };
 
 CutSelector::CutSelector() = default;
@@ -576,17 +581,117 @@ std::vector<Run> runsOf(const LodCloud& lod) {
             previous = -2;
             continue;
         }
+        // A chunk holding fewer than chunkSplats (the last, or a live page)
+        // leaves a gap before the next slot: the run ends with it.
         if (slot == previous + 1 && !runs.empty()) {
             runs.back().count += lod.chunkCount(c);
         } else {
             runs.push_back({static_cast<uint32_t>(slot) * lod.chunkSplats, lod.chunkCount(c)});
         }
-        previous = slot;
+        previous = lod.chunkCount(c) == lod.chunkSplats ? slot : -2;
     }
     return runs;
 }
 
 }   // namespace
+
+Result<void> CutSelector::ensureCloud(const LodCloud& lod, Frame& frame, uint32_t drawn) {
+    gpu::Device& device = *device_;
+    if (frame.capacity < drawn || frame.cloud.restPerColour != lod.splats.restPerColour ||
+        frame.cloud.shWords != lod.splats.shWords || !frame.cloud.positions.valid() ||
+        frame.cloud.hasNormals() != lod.splats.hasNormals() ||
+        frame.cloud.hasEmission() != lod.splats.hasEmission() || !sameExtras(lod.splats, frame.cloud)) {
+        const uint32_t capacity = std::max(drawn, frame.capacity + frame.capacity / 2);
+        auto made = packed(device, std::max(capacity, 1u), lod.splats.restPerColour, lod.splats.shWords,
+                           "cut.frame", lod.splats.hasNormals(), lod.splats.hasEmission());
+        if (!made) return std::move(made).error();
+        ATHENEA_TRY(allocateExtras(device, lod.splats, std::max(capacity, 1u), *made));
+        frame.cloud = std::move(*made);
+        frame.capacity = std::max(capacity, 1u);
+    }
+    frame.cloud.source = lod.splats.source;
+    frame.cloud.linear = lod.splats.linear;
+    frame.cloud.antialiased = lod.splats.antialiased;
+    frame.cloud.count = drawn;
+    frame.cloud.declared = lod.count;
+    frame.cloud.bounds = lod.splats.bounds;
+    return ok();
+}
+
+Result<uint32_t> CutSelector::copyChunks(const LodCloud& lod, Frame& frame,
+                                         std::vector<const scene::GpuSplats*>& clouds) {
+    // Runs of consecutive slots, cut where a chunk's antialiasing differs from
+    // the one before it (a live epoch whose pages disagree), in chunk order.
+    struct Group {
+        int8_t           flag = -1;
+        std::vector<Run> runs;
+        uint32_t         count = 0;
+    };
+    std::vector<Group> groups;
+    int32_t previous = -2;
+    for (uint32_t c = 0; c < lod.chunks(); ++c) {
+        const int32_t slot = lod.slots[c];
+        if (slot < 0) {
+            previous = -2;
+            continue;
+        }
+        const int8_t flag = c < lod.chunkAntialiased.size() ? lod.chunkAntialiased[c] : int8_t{-1};
+        if (groups.empty() || groups.back().flag != flag) {
+            groups.push_back({flag, {}, 0});
+            previous = -2;
+        }
+        Group& g = groups.back();
+        if (slot == previous + 1 && !g.runs.empty()) {
+            g.runs.back().count += lod.chunkCount(c);
+        } else {
+            g.runs.push_back({static_cast<uint32_t>(slot) * lod.chunkSplats, lod.chunkCount(c)});
+        }
+        g.count += lod.chunkCount(c);
+        previous = lod.chunkCount(c) == lod.chunkSplats ? slot : -2;
+    }
+    uint32_t drawn = 0;
+    while (frame.groups.size() < groups.size()) {
+        frame.groups.push_back(std::make_unique<Frame>());
+    }
+    gpu::CommandBatch batch(*device_);
+    rhi::ICommandEncoder* e = batch.encoder();
+    for (size_t k = 0; k < groups.size(); ++k) {
+        const Group& g = groups[k];
+        if (g.count == 0) {
+            continue;
+        }
+        Frame& part = *frame.groups[k];
+        ATHENEA_TRY(ensureCloud(lod, part, g.count));
+        part.cloud.antialiased = g.flag < 0 ? lod.splats.antialiased : std::optional<bool>(g.flag != 0);
+        const auto copy = [&](const gpu::Buffer& from, const gpu::Buffer& to, uint64_t perSplat) {
+            uint64_t at = 0;
+            for (const Run& run : g.runs) {
+                e->copyBuffer(to.rhi(), at * perSplat, from.rhi(), uint64_t{run.offset} * perSplat,
+                              run.count * perSplat);
+                at += run.count;
+            }
+        };
+        copy(lod.splats.positions, part.cloud.positions, 16);
+        copy(lod.splats.shape, part.cloud.shape, 16);
+        copy(lod.splats.sh, part.cloud.sh, 4 * uint64_t{lod.splats.shWords});
+        if (lod.splats.hasNormals()) {
+            copy(lod.splats.normals, part.cloud.normals, 4);
+        }
+        if (lod.splats.hasEmission()) {
+            copy(lod.splats.emission, part.cloud.emission, 4);
+        }
+        for (const Extra& x : extrasOf(lod.splats)) {
+            copy(lod.splats.*x.member, part.cloud.*x.member, 4 * uint64_t{x.words});
+        }
+        clouds.push_back(&part.cloud);
+        drawn += g.count;
+    }
+    if (drawn > 0) {
+        batch.markDirty();
+        ATHENEA_TRY(batch.submit());
+    }
+    return drawn;
+}
 
 Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Projection& projection,
                                                                std::span<const LodInstance> instances,
@@ -682,7 +787,25 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         }
         const LodCloud& lod = *instance.cloud;
         if (lod.levels.empty()) {
-            return Error(ErrorCode::InvalidArgument, lod.splats.source + ": a cut needs a merged level");
+            if (!lod.streamed) {
+                return Error(ErrorCode::InvalidArgument, lod.splats.source + ": a cut needs a merged level");
+            }
+            // A live stream's: nothing to cut to, its chunks on the device
+            // copied as they are into the frame's cloud.
+            Frame& frame = *frames_[k];
+            std::vector<const scene::GpuSplats*> clouds;
+            auto drawn = copyChunks(lod, frame, clouds);
+            if (!drawn) return std::move(drawn).error();
+            if (stats != nullptr) {
+                CutStats s;
+                s.splats = *drawn;
+                s.available = *drawn;
+                stats->push_back(std::move(s));
+            }
+            for (const scene::GpuSplats* cloud : clouds) {
+                out.push_back({cloud, instance.objectToWorld, instance.edit});
+            }
+            continue;
         }
         Work w;
         w.instance = &instance;
@@ -899,6 +1022,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
             }
             frame.cloud.source = lod.splats.source;
             frame.cloud.linear = lod.splats.linear;
+            frame.cloud.antialiased = lod.splats.antialiased;
             // Gathered anew: whatever was kept of the last cut's gaussians (a
             // TX cloud's view-independent terms, keyed on the revision) is not
             // this cut's, even where the count is the same.
@@ -1155,6 +1279,7 @@ Result<LodCloud> Decimator::prune(const LodCloud& lod, const gpu::Buffer& score,
     out.splats.restPerColour = lod.splats.restPerColour;
     out.splats.shWords = shWords;
     out.splats.linear = lod.splats.linear;
+    out.splats.antialiased = lod.splats.antialiased;
     out.splats.bounds = lod.splats.bounds;
     auto positions = make(kept, 16, "prune.positions");
     auto shape = make(uint64_t{kept} * 4, 4, "prune.shape");
@@ -1290,6 +1415,7 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
         p["highlightCone"].setData(settings.highlightCone);
         p["mergeGlass"].setData(uint32_t{settings.mergeGlass || relaxed ? 1u : 0u});
         p["maxAspect"].setData(relaxed ? 1.0e30F : settings.maxAspect);
+        p["maxGrowth"].setData(relaxed ? 0.0F : settings.maxGrowth);
         p["maxPixels"].setData(relaxed ? 0.0F : settings.maxPixels);
         p["histogramBins"].setData(kHistogramBins);
         p["histogramLo"].setData(kHistogramLo);
@@ -1556,6 +1682,8 @@ Result<DecimateResult> Decimator::decimatePairs(const LodCloud& lod, const gpu::
         if (!out) return std::move(out).error();
         out->source = lod.splats.source;
         out->linear = lod.splats.linear;
+    out->antialiased = lod.splats.antialiased;
+        out->antialiased = lod.splats.antialiased;
         out->count = outputs;
         out->declared = outputs;
         out->bounds = lod.splats.bounds;
@@ -1899,6 +2027,7 @@ Result<DecimateResult> Decimator::decimate(const LodCloud& lod, const gpu::Buffe
     if (!ranges) return std::move(ranges).error();
     out->source = lod.splats.source;
     out->linear = lod.splats.linear;
+    out->antialiased = lod.splats.antialiased;
     out->count = kept;
     out->declared = kept;
     out->bounds = lod.splats.bounds;

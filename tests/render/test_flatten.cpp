@@ -149,6 +149,11 @@ TEST_CASE("a flattened cloud written as PLY and as SPZ renders alike", "[render]
     REQUIRE(fromSpz);
     CHECK(fromPly->degree() == 3);
     CHECK(fromSpz->degree() == 3);
+    // The flattened SPZ says it was drawn antialiased, as the engine draws a
+    // cloud that says nothing (the PLY): re-read, it looks as it was made.
+    REQUIRE(spzRaw->antialiased.has_value());
+    CHECK(*spzRaw->antialiased == render::RenderSettings{}.antialias);
+    CHECK(!fromPly->antialiased.has_value());
 
     auto raster = render::TileRasterizer::create(*gpu->library);
     REQUIRE(raster);
@@ -178,5 +183,15 @@ TEST_CASE("a flattened cloud written as PLY and as SPZ renders alike", "[render]
         // 8-bit colour, 1/16-stop sizes and 8-bit harmonics: a few code
         // values; a wrong axis or sign is tens.
         CHECK(diff->p99 <= (degree == 0 ? 4u : 8u));
+        // And as its flag says it is the way a cloud that says nothing is
+        // drawn: the SPZ drawn by default is the SPZ drawn with the filter
+        // the stage drew it with.
+        render::RenderSettings asMade = settings;
+        asMade.antialiasOverride = render::RenderSettings{}.antialias;
+        render::RenderTargets c;
+        REQUIRE(raster->render(camera, spzInstance, asMade, c));
+        auto same = render::compareImages(*gpu->library, b.colour, c.colour, settings.width, settings.height);
+        REQUIRE(same);
+        CHECK(same->max == 0);
     }
 }

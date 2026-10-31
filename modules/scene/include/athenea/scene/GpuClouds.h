@@ -181,6 +181,13 @@ struct GpuSplats {
     uint32_t    revision = 0;
 
     [[nodiscard]] bool hasVolume() const noexcept { return volume.valid(); }
+    /// WHETHER IT WAS TRAINED WITH THE MIP-SPLATTING FILTER, where its file
+    /// said (io::RawSplats::antialiased): the rasteriser then draws it with the
+    /// 2D filter's compensation or without, whatever the frame's default
+    /// (render::RenderSettings::antialias); unset, the default decides, and
+    /// RenderSettings::antialiasOverride decides over both.
+    std::optional<bool> antialiased;
+
     [[nodiscard]] bool hasPbr() const noexcept { return pbr.valid(); }
     [[nodiscard]] bool hasCrypto() const noexcept { return crypto.valid(); }
     [[nodiscard]] bool hasNormals() const noexcept { return normals.valid(); }
@@ -359,6 +366,31 @@ public:
     /// The same decode, read back as float records, for what consumes records
     /// on the host side (the USD export).
     [[nodiscard]] Result<io::RawSplats> records(const io::RawSog& sog, uint32_t maxDegree = 3);
+    /// THE PIECES, recorded into a batch the caller submits: what a live
+    /// stream's frame thread places an SPZ page with, without a wait or a
+    /// readback. `packed` holds SPZ streams at `streams`' offsets plus
+    /// `byteBase` (a staging slot); `n` records go into `into`.
+    void recordSpz(gpu::CommandBatch& batch, const gpu::Buffer& packed, const io::SpzStreams& streams,
+                   uint64_t byteBase, const io::SplatEncoding& encoding, uint32_t n, const gpu::Buffer& into);
+    /// Scratch for decodeInto, `n` splats at least: a valid flag, a
+    /// destination and a total.
+    struct DecodeScratch {
+        gpu::Buffer valid, dest, total;
+    };
+    [[nodiscard]] Result<DecodeScratch> decodeScratch(uint32_t n);
+    /// Validates and decodes `n` records into `splats` from `base`, compacted
+    /// as any upload is; what validation drops leaves the end of the range as
+    /// it was (the caller clears it). Recorded, not submitted.
+    [[nodiscard]] Result<void> decodeInto(gpu::CommandBatch& batch, const gpu::Buffer& raw,
+                                          const io::SplatEncoding& encoding, uint32_t n, uint32_t base,
+                                          uint32_t keep, GpuSplats& splats, const DecodeScratch& scratch,
+                                          uint32_t recordBase = 0);
+
+    /// Float records of any RawSplats: as they are, or -- SPZ's packed
+    /// streams, a file's packed records -- widened on the device
+    /// (spz_records.slang, packed_records.slang) and read back, for what
+    /// consumes records on the host side.
+    [[nodiscard]] Result<io::RawSplats> records(const io::RawSplats& raw);
     /// `detail` keeps that fraction of the points, the same ones every time.
     [[nodiscard]] Result<GpuPoints> upload(const io::RawPoints& raw, float detail = 1.0F);
     /// Arrays uploaded as they are and interleaved into records on the device.
@@ -401,6 +433,14 @@ public:
     [[nodiscard]] Result<Bounds> boundsOf(const gpu::Buffer& positions, uint32_t count);
 
 private:
+    /// SPZ's packed streams or a file's packed records on the device, once,
+    /// as words.
+    [[nodiscard]] Result<gpu::Buffer> spzOnDevice(const io::RawSplats& raw);
+    /// Records `first` .. `first + n` of them into `into`: spz_records or
+    /// packed_records.
+    [[nodiscard]] Result<void> spzSlice(const io::RawSplats& raw, const gpu::Buffer& packed, uint32_t first,
+                                        uint32_t n, const gpu::Buffer& into);
+
     struct SogOnDevice;
     [[nodiscard]] Result<SogOnDevice> sogOnDevice(const io::RawSog& sog, uint32_t maxDegree);
     [[nodiscard]] Result<void> sogSlice(const SogOnDevice& on, uint32_t first, uint32_t n, const gpu::Buffer& into);
@@ -425,6 +465,8 @@ private:
 
     gpu::Device*       device_ = nullptr;
     gpu::ComputeKernel sogDecode_;
+    gpu::ComputeKernel spzRecords_;
+    gpu::ComputeKernel packedRecords_;
     gpu::PrefixSum     prefix_;
     gpu::ComputeKernel splatValidate_;
     gpu::ComputeKernel splatDecode_;

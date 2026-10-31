@@ -68,7 +68,7 @@ endif()
 
 athenea_test(athenea_render_tests
     SOURCES render/test_splat_render.cpp render/test_points.cpp render/test_ray_tracing.cpp
-            render/test_splat_motion.cpp render/test_splat_lens.cpp
+            render/test_splat_motion.cpp render/test_splat_lens.cpp render/test_ply_qa.cpp
             $<$<BOOL:${ATHENEA_HAVE_SPZ}>:render/test_spz.cpp>
             $<$<BOOL:${ATHENEA_HAVE_SPZ}>:render/test_flatten.cpp>
             $<$<BOOL:${ATHENEA_HAVE_WEBP}>:render/test_sog.cpp>
@@ -100,8 +100,16 @@ athenea_test(athenea_technique_tests
 target_compile_definitions(athenea_technique_tests PRIVATE ATHENEA_MATERIALX_ROOT="${ATHENEA_USD_ROOT}")
 
 athenea_test(athenea_lod_tests
-    SOURCES lod/test_lod.cpp
+    SOURCES lod/test_lod.cpp lod/test_stream.cpp $<$<BOOL:${ATHENEA_HAVE_SPZ}>:lod/test_stream_spz.cpp> $<$<BOOL:${ATHENEA_HAVE_SPZ}>:lod/test_stream_qa.cpp>
     LIBS athenea::lod)
+if(ATHENEA_HAVE_SPZ)
+    # Niantic's packer writes the SPZ pages a live stream is fed.
+    target_link_libraries(athenea_lod_tests PRIVATE athenea_spz)
+endif()
+
+athenea_test(athenea_video_tests
+    SOURCES video/test_video.cpp
+    LIBS athenea::video athenea::scene athenea::render)
 
 athenea_test(athenea_volume_tests
     SOURCES volume/test_volume.cpp
@@ -110,8 +118,15 @@ set_target_properties(athenea_volume_tests PROPERTIES BUILD_RPATH "${SLANG_ROOT}
 
 athenea_test(athenea_usd_tests
     SOURCES usd/test_usd.cpp usd/test_migrate.cpp usd/test_cloud_shadow.cpp usd/test_lights.cpp usd/test_shadow_catcher.cpp usd/test_tree_leaves.cpp usd/test_glass_shadows.cpp usd/test_glass_tint.cpp usd/test_mesh_lights.cpp usd/test_mesh_lights_raster.cpp usd/test_mesh_lights_tx.cpp usd/test_mesh_lights_groups.cpp usd/test_mesh_lights_bake.cpp usd/test_volumes.cpp usd/test_volume_splats.cpp
+            usd/test_validate_frames.cpp $<$<BOOL:${ATHENEA_HAVE_SPZ}>:usd/test_live.cpp> $<$<BOOL:${ATHENEA_HAVE_SPZ}>:usd/test_live_qa.cpp>
     LIBS athenea::usd)
 add_dependencies(athenea_usd_tests hdAthenea)
+if(ATHENEA_HAVE_SPZ)
+    # Niantic's packer writes the SPZ pages the live stream's producer pushes.
+    target_link_libraries(athenea_usd_tests PRIVATE athenea_spz)
+endif()
+# What a measure's frames leave out is the athenea app's (ValidateFrames.h).
+target_include_directories(athenea_usd_tests PRIVATE ${ATHENEA_ROOT}/apps/athenea/src)
 target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="${ATHENEA_HYDRA_PLUGIN_DIR}"
                            ATHENEA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
                            ATHENEA_EMISSIVE_DIR="${CMAKE_CURRENT_BINARY_DIR}/emissive"
@@ -143,8 +158,11 @@ set_target_properties(athenea_storm_oracle_tests PROPERTIES CXX_VISIBILITY_PRESE
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
 athenea_test(athenea_mcp_tests
-    SOURCES mcp/test_mcp.cpp
+    SOURCES mcp/test_mcp.cpp mcp/test_mcp_live_qa.cpp $<$<BOOL:${ATHENEA_HAVE_SPZ}>:mcp/test_mcp_live.cpp>
     LIBS athenea::mcp nlohmann_json::nlohmann_json)
+if(ATHENEA_HAVE_SPZ)
+    target_link_libraries(athenea_mcp_tests PRIVATE athenea_spz)
+endif()
 target_compile_options(athenea_mcp_tests PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-old-style-cast;-Wno-shadow;-Wno-deprecated-declarations;-Wno-double-promotion;-Wno-cast-align>")
 set_target_properties(athenea_mcp_tests PROPERTIES CXX_VISIBILITY_PRESET default VISIBILITY_INLINES_HIDDEN OFF
                       BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")

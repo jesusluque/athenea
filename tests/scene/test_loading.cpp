@@ -121,6 +121,7 @@ TEST_CASE("a 3DGS PLY decodes opacity, scale, rotation, colour and harmonics exa
     auto raw = io::readSplats(path);
     REQUIRE(raw);
     CHECK(raw->count == 4);
+    CHECK(raw->encoding.record == io::SplatEncoding::Record::PackedRecords);
     CHECK(raw->encoding.restPerColour == 3);
     auto loader = scene::CloudLoader::create(*gpu->library);
     if (!loader) {
@@ -180,6 +181,8 @@ TEST_CASE("a .splat file decodes byte-encoded opacity, colour and rotation", "[s
     }
     auto raw = io::readSplats(path);
     REQUIRE(raw);
+    CHECK(raw->encoding.record == io::SplatEncoding::Record::PackedRecords);
+    CHECK(raw->records.empty());
     auto loader = scene::CloudLoader::create(*gpu->library);
     REQUIRE(loader);
     auto splats = loader->upload(*raw);
@@ -192,6 +195,66 @@ TEST_CASE("a .splat file decodes byte-encoded opacity, colour and rotation", "[s
     CHECK(v[10] == Approx(1.0).margin(1e-2));   // w from byte 255 -> 0.992, normalised
     CHECK(v[11] == Approx(1.0).margin(1e-3));
     CHECK(v[13] == Approx(0.2).margin(1e-3));
+}
+
+TEST_CASE("a PLY of mixed types widens its values on the device, as an all-float one is read",
+          "[scene][io][gpu]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    // x y z as doubles, opacity as a short, scales and rotation as floats,
+    // DC as uchar-coded floats would not be a 3DGS file: the DC stay float,
+    // and an unused uchar sits between them, so every offset is unaligned.
+    const fs::path path = scratchFile("mixed.ply");
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << "ply\nformat binary_little_endian 1.0\nelement vertex 2\n"
+            << "property double x\nproperty double y\nproperty double z\nproperty short opacity\n"
+            << "property uchar unused\n"
+            << "property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+            << "property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
+            << "property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\nend_header\n";
+        const auto put = [&](const auto& v) { out.write(reinterpret_cast<const char*>(&v), sizeof v); };
+        for (int k = 0; k < 2; ++k) {
+            put(1.5 + k);
+            put(-2.25);
+            put(1.0e-3 * (k + 1));   // not a float: rounded to the nearest one
+            put(static_cast<int16_t>(k == 0 ? 0 : 2));
+            put(static_cast<uint8_t>(7));
+            put(0.0F); put(0.6931472F); put(-0.6931472F);
+            put(1.0F); put(0.0F); put(0.0F); put(0.0F);
+            put(0.0F); put(1.0F); put(-1.0F);
+        }
+    }
+    auto raw = io::readSplats(path);
+    if (!raw) FAIL(raw.error().toString());
+    // The vertex block as the file has it: nothing widened on the CPU.
+    CHECK(raw->encoding.record == io::SplatEncoding::Record::PackedRecords);
+    CHECK(raw->records.empty());
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    REQUIRE(loader);
+    auto splats = loader->upload(*raw, 3);
+    if (!splats) FAIL(splats.error().toString());
+    REQUIRE(splats->count == 2);
+    const auto a = inspect(*gpu, *splats, 0);
+    const auto b = inspect(*gpu, *splats, 1);
+    CHECK(a[0] == 1.5F);
+    CHECK(a[1] == -2.25F);
+    CHECK(a[2] == static_cast<float>(1.0e-3));   // the double rounded as the CPU rounds it
+    CHECK(b[0] == 2.5F);
+    CHECK(b[2] == static_cast<float>(2.0e-3));
+    CHECK(a[3] == Approx(0.5).margin(1e-6));        // logit 0
+    CHECK(b[3] == Approx(0.8807971).margin(1e-5));   // logit 2
+    CHECK(a[5] == Approx(2.0).epsilon(2e-3));
+
+    // The records a host-side consumer reads are the same widened values.
+    auto records = loader->records(*raw);
+    REQUIRE(records);
+    CHECK(records->encoding.record == io::SplatEncoding::Record::Floats);
+    auto again = loader->upload(*records, 3);
+    REQUIRE(again);
+    const auto c = inspect(*gpu, *again, 1);
+    CHECK(c[0] == b[0]);
+    CHECK(c[2] == b[2]);
+    CHECK(c[3] == b[3]);
 }
 
 #ifdef ATHENEA_TEST_SPZ

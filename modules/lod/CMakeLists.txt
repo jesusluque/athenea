@@ -3,6 +3,7 @@ athenea_add_module(lod
     SOURCES
         src/Lod.cpp
         src/Athc.cpp
+        src/SplatStream.cpp
     PUBLIC_LIBS
         athenea::core
         athenea::gpu

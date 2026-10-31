@@ -53,6 +53,12 @@ TF_DEFINE_PRIVATE_TOKENS(_assetTokens,
     ((asset, "athenea:asset"))
     ((threshold, "athenea:lod:threshold"))
     ((budget, "athenea:stream:budget"))
+    ((live, "athenea:live:stream"))
+    ((liveChunks, "athenea:live:chunks"))
+    ((liveChunkSplats, "athenea:live:chunkSplats"))
+    ((liveDegree, "athenea:live:degree"))
+    ((liveSync, "athenea:live:sync"))
+    ((liveLoaders, "athenea:live:loaders"))
 );
 
 float floatOf(VtValue const& value, float fallback) {
@@ -162,7 +168,47 @@ athenea::usd::StreamedAsset assetOf(HdSceneDelegate* delegate, SdfPath const& id
         path = value.UncheckedGet<VtArray<SdfAssetPath>>()[0];
     }
     asset.path = !path.GetResolvedPath().empty() ? path.GetResolvedPath() : path.GetAssetPath();
-    if (asset.path.empty()) {
+    // AtheneaLiveSourceAPI: only the name and the stream's shape are read
+    // here (Sync, any thread); the render thread opens it.
+    const VtValue live = delegate->Get(id, _assetTokens->live);
+    if (live.IsHolding<std::string>()) {
+        asset.live = live.UncheckedGet<std::string>();
+    } else if (live.IsHolding<TfToken>()) {
+        asset.live = live.UncheckedGet<TfToken>().GetString();
+    } else if (live.IsHolding<VtStringArray>() && !live.UncheckedGet<VtStringArray>().empty()) {
+        asset.live = live.UncheckedGet<VtStringArray>()[0];
+    }
+    const auto count = [&](const TfToken& name, uint32_t fallback) {
+        const VtValue v = delegate->Get(id, name);
+        if (v.IsHolding<int>()) return static_cast<uint32_t>(std::max(v.UncheckedGet<int>(), 0));
+        if (v.IsHolding<int64_t>()) return static_cast<uint32_t>(std::max<int64_t>(v.UncheckedGet<int64_t>(), 0));
+        if (v.IsHolding<VtIntArray>() && !v.UncheckedGet<VtIntArray>().empty()) {
+            return static_cast<uint32_t>(std::max(v.UncheckedGet<VtIntArray>()[0], 0));
+        }
+        return fallback;
+    };
+    if (!asset.live.empty()) {
+        // The bounds until an epoch is shown: the prim's extent, where authored.
+        const GfRange3d extent = delegate->GetExtent(id);
+        if (!extent.IsEmpty()) {
+            asset.hasExtent = true;
+            for (size_t k = 0; k < 3; ++k) {
+                asset.extent[k] = static_cast<float>(extent.GetMin()[k]);
+                asset.extent[k + 3] = static_cast<float>(extent.GetMax()[k]);
+            }
+        }
+        const VtValue sync = delegate->Get(id, _assetTokens->liveSync);
+        if (sync.IsHolding<TfToken>()) {
+            asset.liveSync = sync.UncheckedGet<TfToken>().GetString();
+        } else if (sync.IsHolding<std::string>()) {
+            asset.liveSync = sync.UncheckedGet<std::string>();
+        }
+        asset.liveChunks = count(_assetTokens->liveChunks, asset.liveChunks);
+        asset.liveChunkSplats = count(_assetTokens->liveChunkSplats, asset.liveChunkSplats);
+        asset.liveDegree = std::min(count(_assetTokens->liveDegree, asset.liveDegree), 3u);
+        asset.liveLoaders = std::clamp(count(_assetTokens->liveLoaders, asset.liveLoaders), 1u, 64u);
+    }
+    if (asset.path.empty() && asset.live.empty()) {
         return asset;
     }
     asset.threshold = std::max(floatOf(delegate->Get(id, _assetTokens->threshold), asset.threshold), 0.0F);

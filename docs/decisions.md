@@ -14924,6 +14924,27 @@ Measurements (the pawn and the Corvette under the baked sky and under
 table_mountain, flatten times, file sizes) are queued for the GPU and not in
 yet.
 
+**A measure narrowed to one material frames the whole stage.** What a frame
+leaves out -- the meshes kept out of a material's conversion, and the meshes
+switched off where the written file stands in for the stage -- is worked out
+over every material group of the stage, and `--validate-material` only
+chooses which groups are measured (`apps/athenea/src/ValidateFrames.h`). It
+used to be worked out over the chosen groups alone, so a flattened set
+measured on its back wall's LED material was drawn with every other mesh of
+the set still standing among the gaussians: the panels and the back wall came
+out black, and the side walls striped where meshes and gaussians fought for
+depth. That read as the SPZ (and the PLY) coming back wrong. It was not: the
+same file read by `athenea render` and through `athenea convert` into a
+ParticleField stage draws the panels and the wall as the bake does, and its
+streams decode, by the format's own definitions, to the set's geometry (each
+wall's gaussians flat across it, all of them opaque). `mesh2splat --validate
+--validate-material` had the same fault the other way: the other materials'
+meshes were converted along with the one measured. `athenea_usd_tests
+"[validate]"` holds both on a stage of two meshes and two materials. Measured
+on the set (M_led_fondo, 16 paths a pixel, 1063 x 525): relMSE 0.522 before,
+0.380 after; the mean over the material's pixels 1.17 before and 1.96 after,
+against 6.88 path traced.
+
 ### Not done
 
 - The convention battery of proposal 070 §7.3 (one coefficient a gaussian, in
@@ -16561,7 +16582,90 @@ finished without a wait.
   calls on set A; the instances' tree takes half of them when the camera moves.
 - `TextureStore::bind` rebinds every slot and sampler at each dispatch that reads textures.
 - The ray route's TLAS (`RayTracingScene`) is still rebuilt and waited for every frame where the device traces
-  inline; CUDA does not take that route.
+  inline; CUDA does not take that route. (Done: see "What a frame still waited for", 24 Oct.)
+
+## What a frame still waited for (24 Oct)
+
+An inventory, from the code, of every place the host waits for the device on the per-frame path of
+`StageRenderer::draw` -> `Engine::render`, for the mesh routes lit and unlit, after "A frame waits for the device
+once": a batch submitted with `submit(true)`, a buffer read back (`Buffer::read`, which waits for idle), a
+`waitIdle`, a count read to size a later dispatch. `ATHENEA_SYNC_TRACE=1` confirmed it on a one-quad stage unlit, the
+same quad lit under a dome and a sphere light, and a 37-mesh set, on the rays and the compute BVH routes, still and
+with a camera that moves (`stage --drift`).
+
+| where | when | waits a frame | now |
+|---|---|---|---|
+| `StageRenderer::execute`, `waitIdle` | every frame | 1 | kept: the frame's one, where a host takes the image |
+| `RayTracingScene::build`: the instance descriptors, then the top level (its scratch freed on return) | the rays route; and lit frames where shading's shadow rays are inline (Metal) | 2 | 0: the top level stands while the instances' world placement does, and is built without a wait |
+| `RayTracingScene::build`: a deformed mesh's bottom level refit | a mesh deformed this frame | 1 a mesh | 0 |
+| `MaterialShading`: the copy screen-space reflections read | `athenea:screenSpaceReflections` on | 2 | 0 |
+| `GpuScene::update`: positions lerped for a deforming mesh; the bucket records; the instancers' records | under motion blur; any point instancer | 1 each | 0 |
+| `GpuScene::refresh` | a mesh deformed in place (same topology) | 1 a mesh | 0 |
+| `Engine::writeAov`: the conversion, then the read | each render buffer a host maps | 2 | 1, the read |
+| `BvhScene::refit`: a deformed mesh's tree, a readback every eight passes | the BVH route, a mesh deformed | 1-4 a mesh | kept (below) |
+| `TileRasterizer`: the visible and pair counts | a frame with splats | 1 | kept (below) |
+| `ATHENEA_STAGES` | when asked | one a stage | kept: it waits to time |
+
+Steady-frame waits counted by the trace, before and after, at 640x360:
+
+| stage | route | before, still / moving | after |
+|---|---|---|---|
+| one quad, unlit | compute BVH | 1 / 1 | 1 / 1 |
+| one quad, unlit | rays | 3 / 3 | 1 / 1 |
+| one quad, lit (dome, sphere) | compute BVH (shadows by inline rays) | 3 / 3 | 1 / 1 |
+| one quad, lit | rays | 3 / 3 | 1 / 1 |
+| 37 lightmapped meshes, moving | either | 3 | 1 |
+
+The images are the same: the top level built from the same records is the same structure, and the waits removed
+were between passes the one queue already orders.
+
+**The top level stands.** `GpuScene::placementRevision()` counts the frames whose instance records differ from the
+last's in anything but the view and the normal matrix -- the world transform, the mesh, the flags, the mask -- or
+that the device wrote (instancers, motion buckets), and `RayTracingScene` keeps its top level while that, the pools'
+generation and the meshes' positions revision do. A camera that moves changes only the records' view, so it rebuilds
+nothing; the compute BVH's tree over the instances is in view space and is still rebuilt (one batch, no wait) when
+the camera moves. The scratch the build used to free on return is kept, and the structure replaced is kept one build
+longer, for a frame the device may still be tracing.
+
+**A test counts them.** `athenea_usd_tests "[sync]"` draws a quad unlit, and lit under a dome, on every route the
+device has, still and moving, and checks that each steady frame adds exactly one to `Device::syncs()`. A pass that
+starts waiting again fails it, with no timing.
+
+**What the trace does not see.** slang-rhi's CUDA backend waits in places the engine does not call a wait: a buffer
+made with more than 16 MiB of data (noted, loading only), a texture copy (`cuMemcpy3D`, device to array, which does
+not wait for the host by CUDA's rules), an indirect dispatch, which reads its arguments back (the engine has none).
+None is on a steady frame of these stages.
+
+**On CUDA these stages already waited once.** CUDA takes the compute BVH route, and shading's shadow rays are inline
+only, so a CUDA frame built no top level: the waits removed here are Metal's, and CUDA's under motion, instancers and
+reflections. A profile of a frame on CUDA with about nine `cuStreamSynchronize` is what the build before "A frame
+waits for the device once" did (ten on the quad); one from a build after it has one. What remains of the gap between
+a frame's kernels and its time on CUDA is the host's: recording and launching some forty dispatches.
+
+**On an L4 the engine's draw is about 2.9 ms.** A set of unlit lightmapped meshes at 1920x1080, drawn and not read back,
+300 frames on the base of this work (Linux, CUDA 12.8): median 2.89 ms, 3.84 ms with `athenea:meshAntialias` 4;
+`ATHENEA_STAGES`: visibility 1.0 ms, shading 0.6, the mesh layer 2.2. A render that costs a host three times that is
+spending it outside `StageRenderer::draw` -- reading the image back, or setting a frame up per call.
+
+**A frame of no splats counts nothing.** The same `ATHENEA_STAGES` gave the splat stages 0.6 ms with no splat in the
+frame: two prefix sums over one element, the tiles' ranges cleared, and the blend that composites the mesh layer.
+The sums are skipped where the frame has no splats or points and no panel counts it, and the ranges are cleared only
+where a frame of pairs wrote them: a frame of none leaves them empty for the next. The blend stays -- it is what puts
+the background and the depth convention on the mesh layer -- and a frame drawn after a frame of splats is the frame
+a rasteriser that never drew one draws, to the bit (`athenea_render_tests`, "a frame of no splats over a layer").
+
+### Not done
+
+- A frame of meshes alone still runs the splat blend over the whole image (0.4 ms of the 0.6 on an L4). The mesh
+  layer could be the frame's targets where no splat or point is drawn, if the background and the depth it writes
+  were the blend's.
+- `BvhScene::refit` of a deformed mesh still reads a count back every eight passes. One group's dispatch
+  (`bvhRefitGroup`, what the instances' tree uses) would walk a mesh of a million triangles on 256 threads; a fixed
+  number of passes needs the tree's depth, read once when it is built.
+- The splat rasteriser's visible and pair counts (unchanged from "A frame waits for the device once").
+- The host's recording cost per dispatch on CUDA (the constant data copied per launch, `TextureStore::bind`
+  rebinding every slot): measured on a CUDA device, not here.
+- The compute BVH's tree over the instances is built in view space and rebuilt when the camera moves.
 
 ## Mesh edges antialiased from the neighbourhood's triangles (23 Oct)
 
@@ -17414,3 +17518,1028 @@ path traces E1b's (a normalized sun alone, 4096 paths, 512², masked where the o
 The path traces are a little closer than before on the same fits (the references are of the merged path
 tracer, which reads the trilinear medium); the fit's times are what they were within the run-to-run spread of
 the earlier single runs.
+## Live splat streams, phase 1: a chunk source, a staging ring, epochs (24 Oct)
+
+A streamed cloud's chunks used to come from one place, a `.athc` file, read by `StreamingPool` itself. A live
+stream -- a capture sent over the network, another process writing pages, a file played back -- pushes chunks
+instead, and a frame must never show half of a change. Phase 1 makes the pool take its chunks from a
+`lod::ChunkSource`, moves the loaders' bytes into a mapped upload ring, caps what an update places, and adds the
+live source.
+
+### The threading rule
+
+Exactly one thread calls the device: the frame thread, the one that opened the pool. Nobody else uploads, decodes
+or submits.
+
+- **Frame thread.** `StreamingPool::open`, `want`, `update`, `cloud`, `chunkBounds`, and through `update` the
+  source's `openCloud` and `poll`. `update` asks `FrameThread::require` first (`core/FrameThread.h`, one
+  comparison of thread ids, on in every build) and refuses any other thread with `InvalidArgument`; `want`
+  ignores one.
+- **Loader threads** (the pool's own, `loaders`). `ChunkSource::fetch` copies a chunk's bytes into a staging
+  slot the frame thread handed out; no device call.
+- **Producers** (anyone). `PageQueue::push`, and `LiveSource::check` to validate a page before pushing it.
+- `status()` may be called from any thread: it reads a snapshot the last `update` left under the pool's lock.
+- slang-rhi has only `QueueType::Graphics`, no copy queue, so uploads go on the one queue, ordered with the
+  frame's work, under a per-frame byte budget. Shared fences (`FenceDesc::isShared`) exist on Vulkan, CUDA and
+  Metal and are not needed yet: nothing outside the process waits on the pool.
+
+### `ChunkSource`
+
+`lod/ChunkSource.h`: the format every chunk holds (`ChunkFormat`, the `.athc` chunk block's element layout),
+the chunk count, a chunk's bounds, `openCloud` (the device part that is not chunks: the merged levels and the
+finest groups' starts), `request(chunk)` and `fetch(request, staging)`, and for a live source `poll`, which
+hands over the changes of every epoch now complete. A request carries a ticket (0 for a file, whose chunks have
+one version; a page's for a live source), so a loader fetches the version an epoch asked for.
+
+`AthcSource` is the file: the header parsed and the file mapped at `open` (any thread, no device), a chunk's
+bytes copied off the mapping in `fetch`. `StreamingPool::open(device, path, settings)` is now
+`open(device, AthcSource::open(path), settings)`; the placement policy -- most wanted first, a free slot, then
+the least recently wanted, then one wanted less than half as much -- is unchanged.
+
+### Staging: a mapped upload ring
+
+Loaders used to copy a chunk into a `std::vector`, and `update` handed the vector to `uploadBufferData`, which
+copied it again into slang-rhi's staging heap on the frame thread. Now the pool makes one `Memory::Upload` buffer
+of `stagingChunks` whole chunks (default `2 * loaders + 4`), maps it once at open and keeps it mapped. A loader
+takes a free slot of it before it takes a request (so a loader that has a request always finishes), `fetch`
+writes the chunk there, and `update` records device copies out of it (`copyBuffer`, one an array) into the store.
+The frame thread does no memcpy. A slot goes back to the loaders when the pool's fence passes the submit that
+read it.
+
+Whether another thread may write a mapped upload buffer while the frame thread records: in slang-rhi
+(`e17f6d7`), `mapBuffer` of an upload buffer returns
+- Metal: `MTLBuffer::contents()` of a shared, write-combined buffer -- the same pointer for the buffer's life;
+  `unmapBuffer` does nothing.
+- CUDA: the host pointer of a pinned host allocation (`m_hostMemHeap`); `unmapBuffer` does nothing.
+- Vulkan: `vkMapMemory` over `HOST_VISIBLE | HOST_COHERENT` memory; one map held for the buffer's life is
+  legal, and coherent memory needs no flush.
+
+So the pointer is plain memory on all three, and writing it from another thread is safe as long as no copy is
+reading the same bytes: the ring's slots and the fence give that. The writes are made visible to the frame thread
+by the pool's mutex (a loader publishes the slot under it), and to the device by the submit that follows. The
+debug layer's map validation (`SLANG_RHI_DEBUG_ENABLE_BUFFER_MAP_VALIDATION`) is compiled out; with it on it
+would only check map/unmap pairing, which one map for the buffer's life keeps.
+
+One exception: slang-rhi's CUDA fence takes its value when the host submits, not when the device gets there (see
+"A frame waits for the device once"). On CUDA a batch that read staging is therefore submitted and waited for, as
+every `update` was before; on Metal and Vulkan `update` no longer waits for the device at all, and an update that
+placed nothing submits nothing.
+
+### The frame's budget
+
+`StreamingSettings::bytesPerFrame` (default 0, no limit) caps the chunk bytes one `update` places; a loaded chunk
+past it stays in staging, still in flight, for the next frame. The first chunk of a frame is always placed, so a
+chunk bigger than the cap still comes. `update(true)` waits for the loads, round after round while the staging
+is full, but not past the budget. `Status::placedBytes` and `deferred` say what the last update did.
+
+### Live streams (`lod/SplatStream.h`)
+
+- **`PageUpdate`** `{stream, epoch, chunk, op add|replace|remove, bytes, bounds, ptpTime, pages}`. The bytes are
+  the `.athc` chunk block of the stream's format, 1 to `chunkSplats` splats, so no new reader was needed; SPZ
+  pages come later. `pages` is how many pages the epoch has, on every page of it: completeness is a count, not an
+  end marker, so several producers may write one epoch in any order.
+- **`PageQueue`**: many producers, one consumer; a mutex and a vector a stream, drained whole.
+- **`LiveSource`**: gathers a stream's pages into epochs (a later page of a chunk in the same epoch replaces the
+  earlier), refuses pages that fail `check` (wrong stream, chunk, size) and pages of an epoch already handed
+  over (late), and hands the pool every complete epoch in order. When a later epoch is complete while an earlier
+  one is not, the earlier is dropped and counted: a stream's pages of epoch N are all pushed before any of
+  N + 1. The page bytes wait in the source until a loader fetches them, once.
+- **In the pool**: an epoch is built beside the one shown. Each add or replace takes a slot the shown epoch does
+  not use, and its chunk's entry in a second slot table (`nextSlots`) points there; a remove clears the entry.
+  Only when every page of the epoch is placed are the tables swapped: `cloud().slots`, the per-chunk counts and
+  the resident flags become the new epoch's, and the slots only the old one used are free. The cut runs between
+  updates, so it only ever sees a whole epoch, and the device copies that placed it come before anything the
+  frame records after them on the one queue. A live store therefore holds two epochs (`budgetSplats` up to twice
+  the chunks); an epoch that does not fit beside the shown one is dropped -- a warning, once, and
+  `Status::droppedNoRoom` -- its pages' bytes freed unfetched (`ChunkSource::discard`), the shown epoch stays, and
+  the next epoch that fits is shown. A live stream wants the latest frame, not every one.
+- **Drawing**: a live cloud has no merged levels. `CutSelector::select` copies its shown chunks as they are, in
+  chunk order, into the frame's cloud (device copies, no cut, no readback), and `LodCloud::chunkCounts` carries
+  each page's own count. `Status::epoch` and `ptpTime` are the epoch shown.
+
+### How it is checked
+
+`athenea_lod_tests "[stream]"`, Metal (M5 Pro), clouds of 6000 splats in 6 chunks of 1000; every image is
+compared on the device (`compareImages`) and only counts are read back:
+
+- **`AthcSource` is today's pool.** Opened over an explicit `AthcSource` with a single staging slot, updated
+  without waiting, the pool settles on the cloud read whole: at threshold 0 in 13 frames, 6000 splats, max 0; at
+  24 px in 5 frames, 105 splats + 2596 merged, the same counts as the cloud in memory, max 0. Opened by path and
+  waited for, as before, max 0.
+- **The budget.** One chunk's bytes a frame (the cap at 1.5 chunks): every update places at most one chunk and
+  `placedBytes` never passes the cap; all of it in 7 updates where the uncapped pool took 3, and the image the
+  uncapped one settles on, max 0.
+- **Whole epochs.** A producer thread pushes 8 epochs of 6 pages (each chunk A's, B's or removed, every epoch a
+  different image -- each pair of consecutive references differs), 3 ms apart; the frame thread updates with a
+  budget of one page a frame and renders after every update. Over 1984 frames, 32 of them drawn while an epoch was
+  being built, every frame equals the reference of the epoch `status()` names (a cloud uploaded straight from
+  that epoch's chunk blocks, in chunk order), max 0, never a mismatch; epochs never go back; all 8 shown, 48
+  pages, none refused or dropped.
+- **Replace and remove.** Epoch by epoch -- all six added, one replaced and one removed, the removed one added
+  back and another removed, then ten epochs replacing everything in a store of exactly two epochs -- the pool
+  shows the expected chunks, max 0 each time, and `resident` follows. An epoch that never comes whole is dropped
+  when a later one does (counted, logged), its late page is counted late, and a page of the wrong size is refused
+  and changes nothing. A store with room for one epoch drops a second that replaces everything
+  (`droppedNoRoom` 1) and keeps showing the first, whole; the next epochs, which fit (a removal, then one
+  replace), are shown.
+- **The thread check.** `update` from another thread is refused with `InvalidArgument` naming the frame thread;
+  so is `update` from inside a loader's `fetch` (a source that calls it on its first fetch), and the pool still
+  settles on the whole cloud, max 0.
+
+The existing lod tests (`"a .athc reads back as it was built, and a stream settles on the same image"`, whose
+pool now opens through `AthcSource` and fills through the staging ring) and the USD test that streams a `.athc`
+through Hydra run unchanged: all 16 lod test cases (6663 assertions) and the USD one pass.
+
+### Not done
+
+- Hydra and USD: done in phase 1d below.
+- SPZ pages (after phase 0): a page is the `.athc` chunk block.
+- Shared fences: nothing outside the process waits on or signals the pool.
+- Merged levels for live content: a live cloud is drawn whole, without a cut; its pages' bounds are kept per
+  chunk (`chunkBounds`) for a later cull.
+- A CUDA fence that the device signals, which would let CUDA place without waiting as Metal and Vulkan now do.
+- A copy queue: slang-rhi has none, so uploads share the graphics queue under the byte budget.
+
+## SPZ as the input contract (phase 0 of live streams, 25 Oct)
+
+SPZ is how splats come in, from a file or, a page at a time, from a live stream. Four changes make it the
+contract rather than one reader among several.
+
+- **Bytes, not only paths.** `io::readSpz(std::span<const uint8_t>, source)` over
+  `spz::loadSpzPacked(data, size)`; the path version maps the file and calls it. A loader thread decompresses a
+  live page with it.
+- **The packed streams reach the device as they are.** `SplatEncoding::Record::SpzPacked`: `RawSplats::packed`
+  holds the six streams (each on a word), `RawSplats::spz` their offsets. `CloudLoader::upload` uploads them once
+  and `spz_records.slang` writes, a slice at a time, the float records the validate and decode already read. The
+  CPU expansion to 14 + 45 floats a splat (a `tbb::parallel_for` over every splat) is gone: the host holds 65
+  bytes a splat at degree 3 instead of 236. `CloudLoader::records(RawSplats)` reads the device's records back
+  for the host-side consumers (the USD export, `readSplatRecords`). The kernel only widens bytes and the 24-bit
+  integers; the dequantising is the decode's SPZ modes, as before.
+- **The file's axes.** nianticlabs/spz's extensions are vendored (`splat-extensions`,
+  `coordinate-system-adobe`, `safe-orbit-camera-adobe`, from 21715c3, the same commit the rest of
+  third_party/spz is) and built in, `SPZ_BUILD_EXTENSIONS` PUBLIC since it changes `PackedGaussians`' layout.
+  `flipYZ` comes from `getPackedCoordinateSystem` (right-up-back without the extension) instead of being always
+  true. Right-up-back and right-down-front are read; a system that would need another axis flipped or turned is
+  refused by name -- the decode turns y and z, nothing else. `io::writeSpz` writes the extension saying
+  right-up-back (after the streams inside the gzip for version 3, between the header and the table for 4).
+- **Antialiasing a cloud at a time.** The Mip-Splatting compensation was a frame setting
+  (`RenderSettings::antialias`). The SPZ header's `antialiased` flag now goes to `GpuSplats::antialiased`
+  (through the LOD, its cuts and its streams), and each projection dispatch sets `params.antialias` for its own
+  cloud (`setCloudSpace`): `antialiasOverride`, else the file's flag, else the frame's default. `athenea render
+  --no-antialias` is the override. An `.spz` saying it was not trained antialiased -- Niantic's packer's default
+  -- is now drawn without the compensation where it was drawn with it.
+- **SPZ live pages.** `ChunkFormat::Payload::Spz`: a page is an SPZ file. The loader thread decompresses it
+  (`readSpz` on the bytes) and stages a header -- count, offsets, fixed point, axes, flag -- and the six streams.
+  The frame thread reads the header back from staging (bookkeeping), clears the slot's positions, and records
+  `spz_records` from the staging buffer and the validate and decode into the slot
+  (`CloudLoader::recordSpz`, `decodeInto`: recorded into the update's batch, no wait, no readback). What
+  validation drops is left at opacity 0; the slot's count is the page's. The records and the decode's scratch
+  are one set a staging slot, free when its fence passes. The pool needs the shader library for this payload
+  (`StreamingSettings::library`).
+- **A page that cannot be read drops its epoch.** A live page a loader cannot fetch (an SPZ page that does not
+  decompress) drops its epoch as one without room does: a warning, `Status::droppedCorrupt`, its other pages
+  discarded, the shown epoch kept, the next epoch shown.
+- **Flatten's flag.** `athenea flatten` writes `antialiased` as the engine's default (`RenderSettings::antialias`,
+  on): the stage's clouds say nothing, so that is how they were drawn when flattened, and a re-read file is drawn
+  the same way.
+
+### How it is checked
+
+`athenea_render_tests "[spz]"`, `athenea_scene_tests "[io]"` and `athenea_lod_tests "[spz]"`, Metal (M5 Pro):
+
+- **From memory, packed.** An SPZ read from its bytes keeps `Record::SpzPacked`, no float records, 65 bytes a
+  splat; uploaded, it draws as the same file read from its path, max 0 (versions 3 and 4), and the records read
+  back through `CloudLoader::records` draw the same again, max 0.
+- **Axes.** The same 1500 gaussians saved right-up-back and, with the extension, right-down-front, against the
+  PLY they came from: p99 4 and 4 without harmonics, 13 and 12 at degree 3, versions 3 and 4 (the bounds of the
+  test above, 4 and 16). Before `flipYZ` came from the file, the right-down-front one was p99 161 and 173 (it was
+  turned when it should not have been). The same run found that a version 3 file read from memory lost its
+  extensions: third_party/spz's `membuf` could not seek, and `tryParseExtension` measures what remains with
+  `tellg`; the vendored copy now seeks (marked `athenea:` in load-spz.cc).
+- **The writer's axes.** `io::writeSpz` versions 3 and 4 read back through `spz::loadSpzPacked` with the
+  coordinate-system extension saying right-up-back, and `readSplats` turns them.
+- **Antialiasing.** Two files of the same gaussians, one saying antialiased: drawn as they say they differ (max
+  64); the one saying it, drawn by default, equals the other with the filter forced on (max 0), and forced off
+  the reverse (max 0), with the frame's default either way.
+- **SPZ live pages.** Three chunks of 450 to 560 gaussians, three epochs (all A; one replaced by B and one
+  removed; all B): each epoch's image equals the SPZ files loaded alone and drawn in chunk order, max 0. A fourth
+  epoch with a page that is no SPZ is dropped (`droppedCorrupt` 1, epoch 3 still shown, max 0) and a fifth is
+  shown, max 0.
+- **Flatten.** The flattened SPZ says `antialiased`, as the engine's default, and drawn by default it equals
+  itself drawn with the filter forced to that default, max 0 (versions 3 and 4).
+- **Unchanged.** `athenea_scene_tests "[io]"` (the hand-made version 2 and 3 files, now expanded on the device)
+  and the whole lod suite (17 cases) pass. `athenea_render_tests "[flatten]"` fails its roughness floor and the
+  flattened SPZ's p99 (5 against 4) exactly as the base branch does, measured on the same run.
+
+### Not done
+
+- Coordinate systems other than right-up-back and right-down-front: the decode would need per-axis signs (and a
+  turn for the rotated families) on positions, rotations and each harmonic band.
+- The packed streams' offsets are 32-bit in the kernel: a cloud's streams past 4 GiB are refused.
+- The rest of the readers (PLY, `.splat`) still expand on the CPU.
+
+## A live stream named by a stage (phase 1d, 25 Oct)
+
+`AtheneaLiveSourceAPI` (codeless, beside `AtheneaStreamedAssetAPI`): a ParticleField whose gaussians come from a
+live stream of SPZ pages. `primvars:athenea:live:stream` names it; `chunks`, `chunkSplats` and `degree` give its
+shape, and `primvars:athenea:stream:budget` its store (0: two epochs of every chunk full).
+
+- **The meeting point.** `lod::PageQueue::named(name)`: a queue a name stands for, made on first use and shared
+  for the process's life. A producer pushes to it without knowing the stage; the engine finds it by the name the
+  prim gives.
+- **Threads.** Sync only records the name and the shape in the cloud's `StreamedAsset` (`ParticleField.cpp`),
+  as it does an `.athc` path. The render thread's commit opens a `StreamingPool` over a `LiveSource` on the named
+  queue, and on every frame, before the cut, updates it without waiting: the frame draws the last complete
+  epoch, never one this frame half placed. A new epoch raises `revision_`, so an accumulation (a path-traced
+  frame) starts again from it. The pool is left out of the cut's `want`/`update`, which serve on-demand pools.
+- **Drawn** by the rasteriser, as a cut of a cloud without levels (every shown chunk as it is), as any streamed
+  asset is.
+
+### How it is checked
+
+`athenea_usd_tests "a live stream a stage names is drawn through Hydra a whole epoch at a time"` (Metal, M5
+Pro): a stage names a stream of three chunks; a producer thread pushes five epochs of SPZ pages (a chunk
+removed in each, the rest new gaussians), 15 ms apart, while `StageRenderer` draws frame after frame. Each frame
+is compared with every epoch drawn directly from its pages' clouds: over 228 frames every frame is one whole
+epoch (p99 1, max 2 or closer, as Hydra and a direct draw are elsewhere), the epochs never go back, all six
+states (none, 1 to 5) are seen, and the last is reached. The `.athc` Hydra test and the schema registry test
+(which now lists `AtheneaLiveSourceAPI`) pass.
+
+### Not done
+
+- A producer in another binary image reaches a stream only through the MCP server's tools (below); a host that
+  loads the plugin as its own library has its own named queues.
+- Path tracing a live stream: the rasteriser alone draws it, as with any streamed asset.
+
+## Live streams from another process, and their bounds (25 Oct)
+
+- **Bounds.** A live cloud's bounds are the union of its shown pages' (`PageUpdate::bounds`, what the producer
+  says; a page that says none, all zeros, is left out) -- CPU bookkeeping at each publish -- and, before an
+  epoch is shown, the prim's authored `extent`. Framing and `bounds` queries see them.
+- **Across processes.** The pages are compressed SPZ, decompressed by the pool's loader threads on the CPU, so
+  the page path needs no GPU interop. Three MCP tools: `stream_open {name, chunks, ringBytes}` makes a ring of
+  shared memory (`platform::SharedMemory`: POSIX `shm_open` on macOS and Linux, a named file mapping on
+  Windows, the only OS calls, in core's Platform) and answers its name; the producer writes SPZ files into it
+  and `stream_commit {name, epoch, epochPages, pages}` names where each lies; the server copies them out onto
+  `lod::PageQueue::named(name)` before it answers, so the ring is the producer's again at once. `stream_close`
+  removes it. The server's thread only enqueues; the render thread is still the one that reaches the device.
+- **Example.** `scripts/examples/live_producer.py`, the Python standard library alone (`subprocess`,
+  `json`, `multiprocessing.shared_memory`), drives `athenea-mcp`: a stage naming the stream, files committed
+  as chunks epoch after epoch, a PNG rendered after each.
+
+### How it is checked
+
+- `athenea_mcp_tests "a producer that speaks JSON-RPC and shared memory feeds a stage whole epochs"` (Metal,
+  M5 Pro): a producer thread with a server of its own, as another process would have, opens the ring by the
+  name `stream_open` answered, writes two SPZ pages an epoch into it and commits four epochs, 40 ms apart, while
+  `StageRenderer` draws the stage that names the stream: over 72 frames every frame is one whole epoch (p99 1,
+  max 2 or closer against the epoch drawn directly), the epochs never go back, the last is reached, no commit is
+  refused.
+- `"shared memory a name stands for is seen by whoever opens the name"`: what the creator writes the opener
+  reads; a name taken, or with a '/', is refused.
+- The Hydra live test now authors `extent` on the prim: before any epoch the stage's bounds are the extent
+  exactly; after the last, the union of its shown pages' bounds exactly (over 263 frames, every one a whole
+  epoch).
+- `scripts/examples/live_producer.py` against `athenea-mcp` (Python 3.9, two SPZ files, three epochs) writes
+  three frames. Its first run found that third_party/spz logged to standard output, which broke the server's
+  protocol on the first SPZ page decompressed; the vendored `SpzLog` writes to standard error now (marked
+  `athenea:` in load-spz.h).
+
+### Not done
+
+- A commit's pages are copied once on the server's thread (the ring to the queue); a ring the loaders read in
+  place would need the producer to know when a range is free again.
+- A frame after a commit may show the epoch before: the loaders decompress while the frame is drawn, and the
+  example renders twice.
+
+## PLY and .splat widened on the device (25 Oct)
+
+The last CPU loops over splats in the readers are gone. `io::readSplatPly` and `io::readDotSplat` keep the
+file's own records (`SplatEncoding::Record::PackedRecords`): `RawSplats::packed` is the vertex block (or the
+whole `.splat`) as bytes, and `RawSplats::fields` says, a float of the record each, at what byte of a record the
+value lies and of which type (f32, f64, u8, i8, u16, i16, u32, i32). `packed_records.slang` writes the float
+records validate and decode read, a slice at a time, as `spz_records.slang` does for SPZ's streams: values are
+converted, not decoded. A double is rounded to the nearest float, ties to even, from its bits (Metal has no
+doubles), as the C++ cast rounded it; a value below the floats' normal range is computed as a float. Before, an
+all-float32 PLY was one memcpy and any other a `readPlyValue` a value on the CPU (`tbb::parallel_for`); TBB is no
+longer used by the readers. `CloudLoader::records` widens and reads back for the host-side consumers.
+
+### How it is checked
+
+`athenea_scene_tests "[io]"` (Metal, M5 Pro): a PLY whose positions are doubles, opacity a short and an unused
+uchar between them -- every later value at an unaligned offset -- decodes as the values say: the doubles to the
+very floats the CPU cast gives (1e-3 and 2e-3 included), the short's logits to their opacities; its records read
+back draw the same. The float PLY and `.splat` decode tests, now through the device, pass unchanged and check
+the records stay packed. `athenea_render_tests "[spz],[flatten],[io]"` passes but for the flatten test's two
+known failures, and `athenea_usd_tests "[points]"` (Blender's points against the PLY they came from, the PLY
+exported through `CloudLoader::records`) passes.
+
+### Not done
+
+- The packed bytes are copied twice on the way (the file into `packed`, then into whole words with one past the
+  end for the upload); a reader that pads would let the mapping be uploaded as it is.
+- Packed records past 4 GiB are refused: the kernel's byte offsets are 32-bit.
+
+## A live epoch chosen by the frame's instant (25 Oct)
+
+`athenea:live:sync = clock` (and `stream_open`'s `sync`, for a stage that does not say): a frame shows the newest
+complete epoch whose `ptpTime` has come by the instant it renders, where `latest` shows the newest complete one as
+soon as it is placed.
+
+- **Held, not placed.** Epochs ahead of the clock wait in the pool's queue of complete epochs, their pages still
+  in the source, unfetched; at the frame whose instant reaches one, it and every one before it are built and
+  shown in order -- an epoch is a change on the one before, so none due is skipped, and the last shown is the
+  newest due. `StreamingSettings::heldEpochs` (8) caps the queue: past it the oldest is dropped
+  (`Status::droppedHeld`, a warning), its pages discarded. Nothing is placed early, so a due epoch still takes
+  its loads' time to appear (a frame or a few); placing ahead, in a store of more than two epochs, is not done.
+- **The clock.** `StreamingPool::setClock(ptpNs)`, frame thread, before `update`. The engine reads it once a
+  frame from `Engine::setLiveClock` (`StageRenderer::setLiveClock`): a genlocked host's FrameClock -- sched is
+  optional and not linked by the engine -- and without one the system clock in nanoseconds, which a producer
+  stamping with the same clock agrees with (no TAI offset is applied).
+- **A jump back** leaves the shown epoch: it is not undone, and the held ones wait for the clock to come round.
+  **A jump forward** applies every epoch due in one update, in order.
+
+### How it is checked
+
+`athenea_lod_tests "a clock-synced live stream shows the newest epoch whose instant has come"` (Metal, M5 Pro):
+five whole-state epochs 40 ms apart pushed at once; at half a step nothing is shown, at the first's instant the
+first, at 2.5 steps the second with three held, at 4 steps + 1 ns the fourth (the third applied on the way), back
+at the first's instant still the fourth, at 5 steps the fifth -- each image the epoch's own, max 0. Ten more ahead
+of the clock with six held at most: four dropped (`droppedHeld` 4), and at 10 steps the tenth, max 0.
+`athenea_usd_tests "a clock-synced live stream a stage names shows the epoch of the frame's instant"`: the same
+through Hydra with the stage's `sync = clock` and `StageRenderer::setLiveClock`, each instant held until eight
+frames agree: nothing, the second, the second after a jump back, the fourth after a jump forward. The other live
+tests pass as before.
+
+### Not done
+
+- Interpolating the camera's pose to the instant.
+- Placing held epochs ahead of their instant: done next, below.
+
+## Clock-synced epochs placed ahead: shown in the frame they are due (25 Oct)
+
+By the clock, epochs are now started as soon as they are complete -- in order, ahead of their instant -- into
+slots no table in use holds, each with its own slot table made from the one before it (`Built`). Showing one is
+then a table swap: at each update the newest epoch whose pages, and the pages of every epoch before it, are all
+placed and whose instant has come becomes the shown table, and the slots only older tables used are free again.
+An epoch that does not fit beside the tables in use waits for the next swap (room comes when the one ahead of it
+is shown); one that would not fit even beside the shown table alone is dropped (`droppedNoRoom`), as before.
+`Status::lateEpochs` counts the epochs not shown in the frame their instant came: their pages not all placed by
+then (the loads, `bytesPerFrame`), or not started for want of room. `heldEpochs` now caps the epochs not yet
+started. A page that cannot be read drops its epoch and every one started after it (their tables were made on
+its), each counted in `droppedCorrupt`. By the latest, epochs still start one at a time, as before.
+
+### How it is checked
+
+`athenea_lod_tests "a clock-synced live stream shows each epoch in the very frame its instant comes"` (Metal, M5
+Pro): five whole-state epochs 40 ms apart pushed ahead of the clock, a store of two epochs (the shown one and one
+ahead), frames a millisecond apart from 20 ms before the first instant: every frame's epoch is the one of its
+instant -- the first frame at or after each instant included, and its image the epoch's own, max 0 -- with no
+budget and with a page a frame (`bytesPerFrame` one chunk); no epoch late. Frames 20 ms apart under a page a
+frame (two frames an epoch, fewer than its six pages take): the epochs come late, counted (5), never out of
+order or ahead of their instant, and the last is reached whole. The whole lod suite (19 cases) and the Hydra and
+MCP live tests pass.
+
+## Live streams under adversarial producers, and the sparrow as an animation over one (25 Oct)
+
+### What was tried, and what holds
+
+`tests/lod/test_stream_qa.cpp` and `tests/usd/test_live_qa.cpp` (`[qa]`; the soak `[.soak]`), Metal (M5 Pro),
+release and debug builds under ThreadSanitizer and AddressSanitizer with UBSan:
+
+| Case | Result |
+|---|---|
+| pages out of order, epochs interleaved | whole and in order |
+| pages a stream cannot hold (chunk past the stream, no splats, too many, epoch 0, no page count, odd size, a remove with bytes, page counts that disagree) | refused, nothing changes |
+| 8 streams x 4 producers x 300 epochs, polled while they push | every epoch whole, none dropped, late or refused; ThreadSanitizer finds no race in the source, the queue or the pool |
+| 3652 damaged SPZ files (truncated, bits flipped, version 4's header patched) read and fetched into an exactly-sized staging slot | no overrun (ASan), no stream past its bytes |
+| eight kinds of unreadable page (truncated, one byte, past a chunk, wrong magic, unknown version, a count of 2^31) | the epoch dropped as corrupt, the shown one kept whole, the next shown |
+| budgets 0, 1 and 2^64-1 gaussians | one slot, one slot, two epochs of every chunk |
+| forty pools closed with pages in flight; a producer stopping mid-epoch | nothing outlives its pool; the shown epoch stays |
+| 30 min soak: 30 epochs a second, the page count changing every epoch, a stage drawing | 206083 frames, 53996 epochs, every frame its epoch's image (p99 1, max 2), none dropped; process RSS flat (326 MB after load, 61 MB at the end, compressed by the system) |
+| leaks(1) at exit over the lod stream suite | 120 leaks, all in shader library and kernel creation (the test device lives for the process); none in a pool, source or queue |
+
+### Defects found (each a failing `[qa]` case)
+
+1. **A resent page completes an epoch.** `LiveSource::poll` counts every page towards `pages`; a page sent twice
+   for one chunk stands in for a chunk that never came, the epoch is handed over without it, and the missing page,
+   arriving after, is late and never shown.
+2. **The epoch being built changes how the shown one is drawn.** `placeSpz` sets `cloud.splats.antialiased` when
+   a page is placed, before the epoch is shown (max 232 against the shown epoch's own pages); one flag a cloud
+   cannot hold an epoch whose pages disagree.
+3. **A backlog is played a frame an epoch.** Complete epochs are built one at a time, one an update at most: 60
+   waiting take 61 updates; a producer at an epoch a millisecond against 4 ms frames leaves 297 to 375 waiting.
+   In the soak, a stall of the process left 5015 waiting, played back over 90 s.
+4. **Two prims naming one stream.** Both pools drain the one named queue: one prim takes every page and the
+   other draws nothing.
+5. **A stream no prim reads keeps its pages.** Pushed while the prim is removed (a variant switched off), they
+   stay in the named queue; named again, the stream replays them (39 frames to the latest).
+6. **An SPZ fixed point past 31 bits is read.** `spzEncoding` shifts by the header's fractional bits unchecked
+   (UBSan: shift exponent 76).
+7. **A page the pool cannot place wedges the stream.** `placeLoaded` failing (an unreadable staged header, an
+   allocation that fails) returns from `updateLive` with the epoch still being built, drops the other loaded
+   pages of that update with their staging slots, and no later update finishes or abandons it: no epoch is
+   shown again.
+
+8. **A commit of epoch -1 kills the stream.** `stream_commit` reads `epoch` as unsigned: -1 is 2^64-1, queued,
+   and every later epoch of the stream is late for good. It also takes an op it does not know (as replace), an
+   `epochPages` smaller than the pages sent, and one chunk twice in a commit (which defect 1 then counts twice).
+9. **Two sessions on one stream.** A second server opens its own ring on a name another has open, and both push
+   into the one queue.
+10. **A crashed server's ring blocks the stream (POSIX).** Rings are `athlive-<hash>-<serial>`, the serial from 1
+    in each process, created `O_EXCL`; a server killed with a stream open leaves its ring, and the next server
+    cannot open that stream until it is unlinked by hand (reproduced with two `athenea-mcp` processes). A
+    Windows mapping goes with its last process.
+
+Passing beside them: every malformed MCP call is answered and a refused commit queues nothing (31 calls:
+names of the wrong type, offsets and sizes past the ring, wrapping offsets, chunks past the stream, bounds of
+text or NaN); a commit's pages are the bytes written even when the producer overwrites the ring and closes at
+once. Device-widened PLY: 24 files of random property types (all sixteen type names, unused properties between,
+every offset unaligned) decode word for word as their float32 twins, and 423 damaged PLYs (truncated, counts that
+lie or overflow, other formats, unknown types, lists, 4096 properties, 400 bit flips) are refused or read
+within the file. A degree-0 cloud's harmonic words are left unwritten by the upload (a comparison of them
+differs between any two uploads; nothing reads them).
+
+Cross-backend, ixwin (RTX 3070 laptop): native Windows builds without SPZ (no zstd there), so the Athc paths
+ran: `athenea_lod_tests "[stream]"` and `"[lod]"`, `athenea_scene_tests "[io]"` (the mixed-type PLY included)
+pass on Vulkan and on CUDA. The Windows `SharedMemory` branch compiles and passes the MCP QA cases (create,
+open, the copy, the ring gone after close), with defects 8 and 9 as on macOS.
+
+And beside the stream: `athenea flatten` wrote its wrapper layer at USD's default 24 time codes a second, so a
+stage at 30 composed through it was posed at 30/24 of the time asked (the sparrow's flattened frame t was frame
+1.25 t); the wrapper now carries the source's rate.
+
+Not defects, measured: a live prim's defaults (64 chunks of 65536, degree 3) hold a store of two epochs, 8.4 M
+gaussians, about 1 GiB of device memory, whatever the stream sends; the engine's live pool has 2 loaders.
+
+### The sparrow as an animation over a live stream
+
+`athenea flatten --range` poses the skinned cloud at each time code, flattens it under the stage's light,
+orders the frame's gaussians along a Morton curve of its box (`flatten_chunks.slang`, the radix sort) and cuts
+them into pages; `athenea stream` pushes a frame's pages as one epoch at the sequence's rate and draws the stage
+that names the stream (§3.7 of the manual). SparrowBird.usda, `mesh2splat --skinned --transfer --resolution
+256` (300862 gaussians, 609 joints, bake 192 paths), frames 1 to 61, flattened `--baked` under the dome,
+pages of 32768: 10 pages, 9.55 MB an epoch (median; SPZ version 4, degree 3), 1.6 s a frame to flatten.
+
+- **Against the skinned cloud drawn directly**, every frame of the 61, 1024 x 1024, lockstep: p99 median 15
+  (worst 20), max median 51 (worst 66), 2.4 % of pixels past 2 code values (worst 3.2 %) -- the fit to degree
+  3 (feather highlights are softer) and SPZ's quantisation, through the stream and Hydra. The stream itself
+  adds nothing: frames are the epoch's pages drawn as they are (the `[live]` cases, max 2).
+- **Playback** (same run, `ATHENEA_STAGES=1` for the commit): a frame draws in 19 ms (median; p95 27), the
+  commit takes 0.7 ms (p95 2.5), but an epoch takes about four frames to be placed (lockstep: 89.5 ms from push
+  to shown), and one epoch is built at a time -- 13 epochs a second. 30 and 24 a second do not hold: 128 of 183
+  and 152 of 183 epochs shown, the rest skipped, shown 2.0 s and 1.7 s after they were due (median). The pool
+  needs the next epoch's pages decompressing while one is placed (and the backlog fix above), not a faster
+  frame.
+
+### Not done
+
+- The defects above are reported with their failing cases; none is fixed here.
+- SPZ pages on Windows: the native build there has no zstd.
+- Loaders beyond two for a live pool, and pages loaded ahead of the epoch being built.
+
+## The live-stream QA defects, fixed (25 Oct)
+
+Each of the ten defects of the QA section above has its `[qa]` case passing (`athenea_lod_tests`,
+`athenea_mcp_tests`, `athenea_usd_tests "[qa],[live]"`, Metal, M5 Pro):
+
+1. **Distinct chunks complete an epoch.** `LiveSource::poll` counts an epoch whole when it holds a page for as
+   many distinct chunks as it says; a resent page replaces and is not counted twice.
+2. **A page's antialiasing is its own, shown with its epoch.** The flag is kept a chunk (`LodCloud::
+   chunkAntialiased`), set in the epoch's table when its page is placed and made the shown one by the swap; the
+   cut copies runs of chunks that agree into a cloud each, in chunk order, each its own instance -- so an epoch
+   whose pages disagree draws each as its page says (max 0 against its pages drawn alone), and the epoch being
+   built changes nothing shown (max 232 for the flag alone; 0 frames off).
+3. **A backlog jumps; the next epoch loads while one is placed.** By the latest, the epochs waiting are collapsed
+   into one, the newest -- each chunk's last change; the pages it replaces are never fetched (60 waiting: shown
+   after 2 updates, where it took 61) -- and, as by the clock, every epoch starts as soon as the store has room,
+   so its pages load while the one before is placed. A producer an epoch a millisecond against 4 ms frames: 1 to
+   3 epochs waiting at most, where it was 297 to 375. `Status::epochs` counts the epochs a collapse stood for.
+4. **Prims that name one stream share its pool.** The engine keeps a pool a stream name (`livePools_`); every
+   prim naming it cuts the same cloud and shows the same epoch every frame (0 frames drawn by one prim alone).
+   The queue fans out besides: every reader of a stream (`PageQueue::subscribe`) gets every page.
+5. **A stream nobody reads keeps its newest complete epoch.** Pushed with no reader, pages are kept but only
+   those of the newest complete epoch and later; a reader that subscribes takes them (named again: the latest in
+   2 frames, where it replayed 39). A clock-synced stage that should see earlier epochs must read the stream
+   before they are pushed.
+6. **An SPZ fixed point of 32 bits or more is refused** (`readSpz`), and the shift is never past 31.
+7. **A page the pool cannot place drops its epoch.** `placeLoaded` failing is a page that cannot be read: its
+   epoch and those started on it are dropped (`droppedCorrupt`), its staging slot goes back by the fence, and the
+   other pages of the update are placed; the next epoch is shown.
+8. **`stream_commit` checks what it takes**: an `epoch` an integer from 1 to 2^62, an op of add, replace or
+   remove, no chunk twice, `epochPages` at least the pages sent, numbers where numbers are meant (0 of 21 bad
+   commits queue anything; 31 malformed calls answered).
+9. **One producer a stream.** `PageQueue::claim`: a second session (or server) opening a stream another holds is
+   refused; the claim goes with the stream's close or the session.
+10. **Rings that never collide.** `al-<hash>-<pid>-<random>`; on Linux, rings of processes that are gone are
+    removed when a stream opens (`platform::removeStaleSharedMemory`, /dev/shm); macOS lists no regions, and a
+    Windows mapping goes with its last process.
+
+And the findings: **a live prim's store follows what is sent** (`StreamingSettings::growStore`, the engine's
+default when `stream:budget` is 0): it starts at one chunk and grows -- room for the shown epoch and two more,
+copied on the device -- up to three epochs of every chunk; **the loaders are a prim's** (`athenea:live:loaders`,
+4 by default).
+
+### The sparrow at 24 and 30 a second, after the fixes
+
+The QA's pages (61 frames of 10 SPZ pages, 9.56 MB an epoch), the same stage, 1024 x 1024, M5 Pro under the GPU
+guard (`taskpolicy -b`), three loops each:
+
+| run | epochs shown | late (median, p95) | frame (median) |
+|---|---|---|---|
+| lockstep (before: 89.5 ms an epoch) | 61 of 61, p99 15 against the skinned cloud as before | 64.3 ms push to shown | -- |
+| 30 a second, frame thread pushing | 174 of 183 (before: 128) | 74.5 ms, 98.2 (before: 2013, 3652) | 30.0 ms |
+| 24 a second, frame thread pushing | 182 of 183 (before: 152) | 69.3 ms, 93.9 (before: 1696, 3126) | 25.6 ms |
+| 30 a second, producer thread | 42 of 183 | 90.9 ms, 200.1 | 16.9 ms |
+| 24 a second, producer thread | 40 of 183 | 85.9 ms, 180.0 | 16.7 ms |
+
+The pool keeps up: traced (`ATHENEA_STREAM_TRACE`), an epoch is started, loaded, placed and shown within one or
+two frames of coming whole, and the store grew to two epochs (20 slots). What a producer thread runs into is the
+guard: at background priority its sleeps wake up to 200 ms late, and it pushes six or seven epochs at once,
+which a live stream rightly collapses into the newest -- shown on time, the others never drawn. With the frame
+thread pushing what is due (`athenea stream --frame-producer`), the rate holds within a few epochs at 30 and
+within one at 24; the frame then costs the epoch's placing (25-30 ms against 17), and the seconds of lateness
+the backlog caused are gone. A frame that draws the newest epoch about 70 ms after it is due is two frames of
+loading and placing and the frame itself. The lockstep frames are `sparrow-live/live-stream/png` and
+`sparrow_live_stream.mp4`.
+
+## Video planes: gaussians through the hardware video codec (research 101 §4.2-4.4, 25 Oct)
+
+Gaussian streams carried as ordinary HEVC, encoded and decoded by the platform's hardware codec, which is taken
+as fixed-function input and output like a file read (the reading of the rule research 101 §4.3 left to the user,
+who approved it). Everything before the encoder and after the decoder is a Slang kernel. The route is the one 101
+calls safe: every attribute in luma, 8 bits (or 10), the position split into an exact high part and a low part,
+the splats in Morton order; 4:4:4 is not used. Module `video` (after `lod`), `.athv` as the container.
+
+### Planes and the encoder
+
+- **Layout** (`shaders/athenea/scene/video_planes_common.slang`, `video/Planes.h`). A frame's splats sorted by
+  30-bit Morton code over the position ranges (radix sort). Each attribute is a 512-wide luma tile of one mosaic:
+  splat i lies in 64 x 64 blocks of 4096 Morton-ordered splats, eight blocks a row, Z order inside a block, so a
+  chunk of 32768 splats is a band of 64 rows -- what a live page is. Attributes: position xyz, opacity, log scale
+  (clamped to [-20, 20]), rotation xyzw with w >= 0, base colour, the rest coefficients rgb per basis: 59 planes
+  at degree 3. Spare tiles are mid grey; samples past the last splat repeat it.
+- **Quantisation.** Each attribute over its range: 8 or 10 bits a sample, the position 16 or 20 bits as a high
+  and a low part; on odd high parts the low part is stored mirrored, so the low plane has no saw teeth at the
+  high part's steps. The ranges are a group of pictures' (from a key frame to the next: their union, a kernel),
+  so what stays put keeps its samples and the codec can predict it; `--ranges frame` keeps each frame's.
+- **The high parts** go beside the video, deflated, chunk by chunk, axis by axis (`--hi side`, the default): exact
+  by construction. `--hi video` makes them planes 0-2 instead (measured below: not exact).
+- **The encoder** (`video/Codec.h`, `src/VideoToolbox.mm`): VideoToolbox HEVC, hardware required, Main or
+  Main 10, full-range 4:2:0 ('420f' / 'xf20'), chroma at mid grey, frame reordering off, constant quality or an
+  average rate, a key frame every `--keyint` (a second by default). Each frame is finished before the next goes
+  in, so a picture's bytes are its own. The CPU copies the read-back mosaic into the encoder's buffer: no value
+  is touched on the processor (the kernels lay, quantise and range everything).
+- **Sizes.** The encoder took up to 8192 x 8192 and 16384 x 2048 and refused 10240 x 9600 (-12903); a picture is
+  held to 8192^2 in area and 16384 a side. A frame whose planes need more is cut into slices -- runs of its Morton
+  order, a picture each, every one a key frame -- and stays one epoch. Every picture of a stream is the first
+  frame's size (tiles sized for the most a picture holds).
+- **`.athv`** (`video/Athv.h`, its specification): a 64-byte header and a record a picture, each whole in itself
+  (what a network sender would cut into packets): source frame and first splat, key or not, PTP time, time code,
+  timecode label, ranges, deflated high parts, parameter sets on a key picture, the access unit as
+  length-prefixed NAL units. Written under a partial name and renamed. `--hevc` writes the same pictures as Annex
+  B, which `ffprobe` reads as HEVC Main / Main 10, `yuvj420p` full range.
+
+### The decoder
+
+- VideoToolbox's HEVC decoder (hardware required) writes the picture into an IOSurface-backed CVPixelBuffer;
+  CVMetalTextureCache makes its luma plane an R8Unorm (R16Unorm at 10 bits) Metal texture over the same memory,
+  and slang-rhi adopts it (`createTextureFromNativeHandle`): no copy. `video_planes_decode.slang` reads each
+  splat's samples there (`Load`, never a sampler), the ranges and high parts from a buffer, dequantises,
+  renormalises the rotation and writes the store's packed layout (positions, smallest-three rotation, f16 log
+  scale and colour, f16 rest), a thread a splat; rest coefficients past the planes' degree are written zero.
+- `video_planes_decode.slang`'s `videoPlanesCompare` measures a decoded slice against its source through the
+  Morton order, attribute by attribute, in steps of its own quantisation (largest, mean in 1/16 steps), and
+  counts the splats whose position high part differs from the source's: what `video-encode --check` prints.
+- **Hooks.** `createHardwareDecoder` / `createLumaTextures` are the platform's: elsewhere they answer
+  `Unsupported` (`src/CodecNone.cpp`). NVDEC goes there (the frame mapped in device memory, its luma adopted as a
+  CUDA texture), and WebCodecs (`VideoFrame.copyTo` plane by plane: `GPUExternalTexture` converts to RGB).
+
+### How it is checked
+
+`athenea_video_tests` (Metal, M5 Pro): a random 70000-splat degree-1 cloud through the mosaic with no codec
+between, uploaded as the texture the decoder would leave, at 8 and 10 bits, high parts beside and as planes:
+every attribute back within half a step plus what packing adds (0.75 steps at 8 bits, 1.25 at 10, rotations 2.5
+and 4 after renormalising), no high part wrong. The same cloud through the hardware encoder and decoder at
+quality 0.9: no high part wrong, every attribute's mean error under 8 steps. `.athv` written and read back,
+slices and Annex B included.
+
+### Into a live stream
+
+- **Device pages** (`lod/DevicePages.h`). A page of a live stream of SPZ pages whose bytes start with "ATVP" is a
+  64-byte header (producer key, its frame ticket, chunk, first splat, count, antialiasing) and the producer's
+  payload -- here the frame's ranges and the chunk's high parts, ~100 KB -- staged as it is by the loader. When the
+  pool places it, it asks the producer (found by key in a process-wide registry) to record what writes the
+  chunk's splats into the slot, from what the producer holds; it tells the producer which of those batches its
+  fence has passed (`retired`). Nothing else in the pool changes: epochs, held epochs, the clock and the counts
+  are the SPZ pages' own, so any stage under `AtheneaLiveSourceAPI` with chunks of 32768 and degree 3 plays a
+  video unchanged.
+- **`video::VideoStream`** is that producer: it reads a frame's records, has the hardware decoder decode its
+  pictures (the producer's thread, or the frame thread with `--frame-producer`), keeps each decoded picture until
+  every pool that placed its pages retired them (or 16 newer frames came, for an epoch that was dropped), and
+  pushes a page a chunk; a frame of slices is one epoch. At placement the luma plane is wrapped as a texture once
+  a picture and `videoPlanesDecode` writes the chunk straight into the store.
+- **`athenea stream STAGE VIDEO.athv`** plays it, lockstep or by the clock, with `--reference` and `-o` as for
+  pages, and prints the decoder's ms a frame and the pages placed.
+
+### Measured (Metal, M5 Pro; jobs at background priority under the guard)
+
+**The sparrow**: the 61 flattened SPZ frames of the live-stream work (`sparrow-live/work/pages`, 300847 splats a
+frame, degree 3), 59 planes in a 4608 x 4480 mosaic, a key picture a second, Morton order a frame, group ranges,
+high parts beside. Drawn through `sparrow_live.usda` at 1024 x 1024 in lockstep: against the SPZ pages drawn the
+same way (the codec's own loss; every frame at quality 0.5, frames 1, 11, .. 61 otherwise) and against the
+skinned source (`--reference`, the whole path, as the pages were measured). Decode and kernel ms are
+`video-decode`'s medians a picture (the kernel submitted and waited for).
+
+| frames as | MB a frame (video + side) | Mbit/s at 24 / 30 | HW decode ms | planes -> gaussians ms | vs SPZ: p99 / max / relMSE / PSNR | vs skinned: p99 / max / over2 |
+|---|---:|---:|---:|---:|---|---|
+| SPZ pages (v4) | 9.56 | 1835 / 2294 | -- | -- | -- | 15 / 51 / 2.44 % |
+| quality 0.3 | 0.81 (0.60 + 0.21) | 155 / 193 | 8.9 | 2.5 | 12 / 102 / 4.3e-4 / 42.1 dB | 20 / 106 / 2.78 % |
+| **quality 0.5** | **1.89 (1.68 + 0.21)** | **362 / 453** | **15.8** | **2.3** | **7 / 93 / 1.6e-4 / 46.8 dB** | **17 / 109 / 2.65 %** |
+| quality 0.7 | 6.10 (5.89 + 0.21) | 1172 / 1465 | 45.1 | 2.7 | 2 / 96 / 5.0e-5 / 52.0 dB | 16 / 114 / 2.53 % |
+| 10 bit, quality 0.5 | 3.76 (3.10 + 0.66) | 723 / 903 | 28.2 | 2.5 | 4 / 33 / 4.4e-5 / 52.9 dB | 16 / 56 / 2.57 % |
+| quality 0.5, high parts in the video | 1.68 | 323 / 404 | 16.6 | 2.7 | 23 / 137 / 2.7e-3 / 35.8 dB | 29 / 138 / 2.99 % |
+
+athz layer K carries the same bird in 107.6 MB in all, 1.76 MB a frame over these 61 -- but as a rest cloud and a
+rig sent once and 15 KB of joints a frame, which a capture (no rig) does not have; per frame of non-rigged
+content the video's 0.8-1.9 MB is the comparable figure, SPZ's 9.56 the baseline.
+
+- **The protected byte.** With the high parts beside the video every position high part came back exact in every
+  setting and frame (`--check`: 0 of 55 M splat axes). Through the codec as planes, 45.0 M of 55.1 M (82 %) were
+  wrong at quality 0.5: the mean sample error is ~9 steps there, so a high part cannot ride in a lossy
+  plane. Positions' low parts: mean 9.4, max 70 steps of the 16-bit
+  position at 0.5; the other attributes mean 7-10, max 90-140 steps of 8 bits (3 / 2 / 0.6 at 0.7 / 0.9).
+- **What the order and the ranges are worth** (quality 0.5, MB a frame): the first frame's Morton order kept
+  for every frame 2.52 (its high parts deflate to 0.53, the bird having moved), a Morton order a frame 1.89
+  (0.21); each frame's own ranges instead of the group's 2.69 with the kept order; every picture a key frame
+  2.88. A predicted picture is only ~11 % smaller than a key one (1.67 against 1.88 MB): the planes of a moving,
+  relit bird change everywhere, and the per-frame sort moves splats between pixels.
+- **The live path.** Lockstep: an epoch shown 62 ms after it was pushed (median; SPZ pages 60 ms). By the clock,
+  three loops (183 epochs), the decoder on the frame thread (`--frame-producer`): at 30 a second 52 shown at
+  quality 0.5 (frames 56 ms) and 92 at 0.3 (31 ms), against 171 for the SPZ pages, whose decompression is on the
+  pool's loader threads; at 24, 91 / 121 / 181. With a producer thread of its own, decoding off the frame thread:
+  99 shown at 30 and 100 at 24 for the video, 39 and 43 for the pages (the guard's background priority wakes a
+  sleeping producer late, as the live-stream runs found). The hardware decode is the price: 16 ms a picture of
+  20.6 Mpx at quality 0.5, growing with the bit rate.
+
+**The pawn** (`example-pawn/pawn_gs.usda` flattened under its workshop sky into SPZ pages, 1 615 489 splats):
+one frame in two slices of 7680 x 8704, every picture a key frame, drawn through `pawn_live.usda` (the same
+pages through the same live stage as the reference) at 1024 x 1024:
+
+| as | MB | HW decode ms a picture | kernel ms a picture | vs SPZ: p99 / max / relMSE / PSNR |
+|---|---:|---:|---:|---|
+| SPZ pages | 26.96 | -- | -- | -- |
+| quality 0.5 | 6.58 | 145 | 13.7 | 6 / 65 / 1.7e-4 / 48.3 dB |
+| quality 0.7 | 13.74 | 172 | 17.2 | 3 / 20 / 2.4e-5 / 56.6 dB |
+| quality 0.9 | 29.23 | 250 | 15.9 | 1 / 7 / 3.6e-6 / 65.2 dB |
+| 10 bit, quality 0.7 | 22.74 | 182 | 18.0 | 1 / 12 / 6.6e-6 / 62.5 dB |
+
+The pawn's `.athz` with CPCA is 48.7 MB, but that is the TX cloud -- merged levels and the transfer that relights
+it; the video carries the flattened, unrelightable cloud, so the comparable figure is SPZ's 26.96 MB.
+
+Side-by-side frames (SPZ | video | difference x 8), full frames: `athenea-renders/video-planes/`
+`sparrow_<setting>_epoch{1,31}_spz_video_diff.png`, `pawn_<setting>_spz_video_diff.png`.
+
+### Not done
+
+- **NVDEC and WebCodecs.** `createHardwareDecoder` / `createLumaTextures` answer `Unsupported` off Apple; the
+  planes, the container and the live path do not change for them. The CUDA box is where NVDEC is measured.
+- **4:4:4.** Not used: VideoToolbox gave 4:2:0 for the AYUV input tried; luma only is the portable route.
+- **A network transport**: the example producer is below ("For the web"); SRT itself was not measured.
+- **Decoding off the frame thread without a producer thread** (a decoder thread the pool's loaders hand to), and
+  a deeper lead: by the clock with `--frame-producer` the decode is what drops epochs.
+- **Better prediction**: a stable order across frames with spatial coherence (sort once per group), P pictures
+  that predict a slice from the same slice; the high parts as deltas.
+- **The TX transfer** as planes: the video carries a flattened cloud, not a relightable one.
+- Frames of very different sizes in one stream (every picture is the first frame's size).
+
+## Video planes for the web: a phone's decoder, a ladder of renditions (25 Oct)
+
+The sparrow's 61 flattened frames as video a phone's browser plays: WebCodecs hands the decoded picture's planes to a
+WebGPU decoder that ports `video_planes_decode.slang` (another session's player). What changed here is what that
+needs, measured on the Mac (M5 Pro) through athenea's own decode and drawn in lockstep against the degree-3 SPZ
+pages, full frames, 1024 x 1024.
+
+### The format and the stream
+
+- **`.athv` version 2.** Every record starts with a fixed 28-byte prefix -- magic, record type, rendition, the
+  presentation frame, PTP time, its bytes, version, flags -- so a relay routes on it alone; the header (128 bytes)
+  carries the rendition, the rate as a fraction, the loop's frames, the quality, how positions are sent and whether
+  colour is in chroma. Version 1 is still read.
+- **`scripts/examples/athv_stream.py`** writes one `.athv` per rendition to stdout, frame-aligned, length-prefixed,
+  with a JSON manifest (`ATVM`) every second and ancillary data (`ATVA`, the environment the frames were drawn under)
+  after it; the presentation frame and the PTP time are rewritten as it sends. A sleeping process is woken up to
+  ~10 ms late: sleeping to 3 ms before a frame and spinning left 7 ms of jitter, 12 ms leaves 0.15-0.5 ms.
+  `athv_read.py` reads such a stream and describes a file (profile, tier, level, codec string, hvcC, PPS chroma QP
+  offsets). Ten seconds through a pipe, four renditions at 218.6 Mbit/s: 30.00 frames a second, no record broken or
+  missing.
+- **Pictures held to a size** (`--max-picture`): a frame goes as slices of whole chunks. At 1920 x 1080 the
+  pictures are 1536 x 960/1024, level 4 (L120), Main, Main tier, full range -- what Safari's hardware decoder takes
+  and copies out bit for bit (it does not for video range: athenea's decoder now refuses a stream whose SPS says
+  so). The same bytes and quality as one large picture (1.013 against 1.010 MB a frame at quality 0.5).
+
+### What a frame costs
+
+**Positions over blocks** (`--position-block`, `--position-high-bits`): quantised over the box of each run of N
+Morton-ordered splats (six halves at the head of each chunk's side data) rather than the frame's range. Within a box
+the high bits are noise and deflate poorly, so the side data shrinks only when none are sent: 300k splats, degree 0,
+quality 0.5, frames 0-9:
+
+| positions | MB a frame (video + side) | mean / max error, 16-bit frame steps | PSNR vs SPZ |
+|---|---:|---|---:|
+| frame range, 8 high bits (before) | 1.479 (1.201 + 0.279) | 7.5 / 59 | 44.6 |
+| 256-splat boxes, 8 high bits | 2.118 (1.204 + 0.913) | 0.5 / 37 | 44.7 |
+| 256-splat boxes, 4 high bits | 1.555 (1.202 + 0.354) | 8.9 / 565 | 44.7 |
+| 256-splat boxes, none | 1.011 (0.998 + 0.013) | 154 / 8738 | 42.0 |
+| 1024-splat boxes, none | 0.904 (0.900 + 0.004) | 243 / 10306 | 40.9 |
+| 4096-splat boxes, none | 0.842 (0.840 + 0.002) | 348 / 8470 | 40.0 |
+
+Every high part came back exact. The web renditions take 256-splat boxes and no high part.
+
+**Colour in chroma** (`--chroma`): each colour quantity -- the base colour and each harmonic basis -- as YCoCg
+(lifting steps, exact in floats), Y a luma plane, Co and Cg the Cb and Cr of that tile, one sample a 2 x 2 block.
+The tiles' Z order already puts splats 4k .. 4k + 3 in a quad, so a chroma sample is four Morton neighbours; the
+encoder is given NV12 as laid. Planes a gaussian: 12 / 15 / 27 at degree 0 / 1 / 3 (14 / 23 / 59 without). 300k,
+quality 0.3, frames 0-29, frame 15:
+
+| | MB a frame | PSNR | | MB a frame | PSNR |
+|---|---:|---:|---|---:|---:|
+| degree 0, luma only | 0.441 | 38.66 | chroma | 0.428 | 38.51 |
+| degree 1, luma only | 0.457 | 39.04 | chroma | 0.439 | 38.89 |
+| degree 3, luma only (4608 x 4480, High tier) | 0.548 | 39.17 | chroma (3072 x 3200) | 0.477 | 39.60 |
+
+Weighing a block's chroma by opacity x area changed nothing (0.428 MB, 38.50 dB). VideoToolbox sets no chroma QP
+offset (the PPS says 0). The colour channels' mean against the SPZ frame: 0.998-0.999.
+
+**The quality setting is the lever**; the rest is a few percent. 300k, degree 0, 256-splat boxes: quality 0.5 1.010
+MB a frame (41.28 dB at frame 15), 0.3 0.441 (38.66), 0.2 0.219 (37.22). Groups of pictures with P pictures (an IDR
+every 8, 15 or 30) saved 9-11 % (0.400 / 0.396 / 0.394 MB at quality 0.3): the renditions stay all-intra, so a
+player joins or drops at any record.
+
+### Fewer gaussians
+
+Half the gaussians was the larger loss. The codec taken out (10-bit planes at quality 1.0, 20-bit positions), the
+300k cloud was 50.78 dB against the SPZ pages (p99 5, max 15) and the 150k NanoGS merge 44.18 (p99 9, max 101):
+the merge widens what it merges (`opacityRule` 0 holds the opacity under 0.99 and widens instead), the largest log
+scale up from -5.75 to -4.75 (median over frames). Ways to the count, frames 0-29, degree 1, codec out:
+
+| at 150k / 75k | PSNR (worst) | max | largest log scale, median |
+|---|---|---|---|
+| pairs (NanoGS) | 44.58 (42.61) / 42.17 | 100 / 107 | -4.79 / -4.63 |
+| pairs, no merge 1.5x wider than its wider member (`--merge-growth`, new in `lod::PairSettings`) | 44.69 / 42.40 | 99 / 107 | -5.19 / -5.13 |
+| pruned by opacity x area (`video_reduce.slang`) | 44.99 / 39.99 | 123 / 135 | -5.75 / -5.94 |
+| half the excess pruned, then capped pairs (`mix`) | 46.43 (44.73) / **43.75** (42.14) | 93 / 107 | -5.25 / -5.20 |
+| `mix`, merges keeping their mass, opacity up to 5 (`--merge-opacity 3`) | **47.34** (46.37) / 42.47 | 101 / 120 | -5.75 / -5.75 |
+| the octree's cut by error, tolerances bisected to the count | 32.25 / 30.96 | 117 / 118 | -3.55 / -3.27 |
+
+The renditions take `mix` with the growth cap: at 150k with merges keeping their mass, at 75k and 40k without.
+
+### The ladder
+
+Nine renditions of the 61 frames (`web-sparrow/ladder/`, ids 0-8), all colour in chroma, all-intra, pictures at
+most 1920 x 1080, 256-splat boxes and no high part; against the degree-3 SPZ pages, every frame, medians:
+
+| id | gaussians | SH | quality | pictures a frame | MB a frame | Mbit/s at 30 / 24 | PSNR (worst) | p99 / max |
+|---|---:|---:|---:|---|---:|---|---|---|
+| 0 | 300847 | 1 | 0.25 | 4 x 1536 x 960 | 0.325 | 77.9 / 62.3 | 38.36 (36.41) | 15 / 126 |
+| 1 | 300847 | 1 | 0.2 | 4 x 1536 x 960 | 0.223 | 53.4 / 42.8 | 37.74 (35.88) | 16 / 126 |
+| 2 | 150k | 1 | 0.4 | 2 x 1536 x 960 | 0.327 | 78.6 / 62.9 | 38.77 (37.17) | 14 / 130 |
+| 3 | 150k | 1 | 0.3 | 2 x 1536 x 960 | 0.204 | 48.9 / 39.1 | 37.51 (35.83) | 16 / 134 |
+| 4 | 150k | 0 | 0.2 | 2 x 1536 x 1024 | 0.084 | 20.2 / 16.1 | 35.60 (34.19) | 20 / 137 |
+| 5 | 75k | 1 | 0.3 | 1 x 1536 x 960 | 0.109 | 26.2 / 21.0 | 36.63 (35.00) | 20 / 129 |
+| 6 | 75k | 0 | 0.2 | 1 x 1536 x 768 | 0.043 | 10.3 / 8.2 | 35.31 (33.67) | 24 / 134 |
+| 7 | 40k | 0 | 0.2 | 1 x 1024 x 768 | 0.024 | 5.7 / 4.6 | 34.88 (32.94) | 27 / 136 |
+| 8 | 40k | 0 | 0.1 | 1 x 1024 x 768 | 0.010 | 2.4 / 1.9 | 33.97 (32.05) | 30 / 139 |
+
+Every picture is Main, Main tier, 8-bit 4:2:0 full range, level 4 (L120) or 3.1 (L93 at 1024 x 768). The 150k rung at
+quality 0.4 is as good as the 300k one at 0.25 for the same bits. The whole ladder streamed for ten seconds through
+a pipe: 324.5 Mbit/s, 30.00 frames a second, inter-frame jitter 0.44 ms, nothing broken or missing.
+
+### A stable order and an exact geometry layer
+
+The phone smooths a gaussian's colour over frames by its index (`stableOrder`), which needs the same gaussian at
+the same index in every frame: `flatten --keep-order` cuts each frame's pages in the stage's own order (the old
+pages were sorted along a Morton curve every frame), `--reduce keep` keeps the first frame's highest scored records
+in every frame, `--order stable` keeps the first frame's Morton order. 150k (134 306 kept), degree 1, chroma, quality
+0.3, 61 frames, against the SPZ pages; flicker is `video-flicker` (the change of the error from frame to frame,
+sRGB codes, mean / p99), the tail a rectangle on it:
+
+| | MB a frame | PSNR reference / 3x closer | flicker reference | tail reference | flicker close | tail close |
+|---|---:|---|---|---|---|---|
+| r3 (pairs each frame, sorted each frame) | 0.204 | 37.51 / 28.15 | 0.77 / 23 | -- | 6.38 / 64+ | -- |
+| stable, ranges a frame | 0.188 | 37.55 / 28.32 | 0.75 / 23 | -- | 6.06 / 64+ | -- |
+| stable, ranges over the sequence | 0.181 | 37.59 / 28.38 | 0.73 / 22 | 10.5 / 85 | 5.95 / 76 | 13.8 / 89 |
+| + boxes held over the sequence | 0.158 | 34.67 / 26.17 | 1.15 / 37 | -- | 8.69 / 64+ | -- |
+| geometry layer, 12-bit positions, 8-bit log scales | 0.692 | **41.48 / 31.67** | **0.35 / 13** | **5.6 / 39** | **3.29 / 32** | **7.5 / 47** |
+
+Held boxes cost more than they save: the union over the sequence is wide where the wings move. The geometry layer
+(`--geometry`: position, scale and rotation exact beside the video, the planes only opacity and colour, one 1024 x
+960 picture of 0.030 MB) is the quality, and its bytes are the price: deflated byte planes of the 134 306 gaussians,
+MB a frame (largest record):
+
+| keys | 16-bit positions, 10-bit scales | 12-bit, 8-bit |
+|---|---|---|
+| every frame | 1.350 (1.40 MB) | 1.130 (1.17 MB) |
+| every 30, residuals from the frame before | 0.889 (1.39 MB) | **0.662** (1.17 MB) |
+| every 30, the frame before's motion carried on | -- | 0.683 |
+| every 15, motion carried on | -- | 0.697 |
+| staggered over 30, motion carried on | -- | 0.678 (0.78 MB) |
+
+The residuals are noise-like: each frame's flatten fits its gaussians anew, so neighbours do not move together
+(predicting a block's residuals from its first gaussian's made them larger) and carrying the motion on does not
+help. Rotation is half of a residual frame (0.35 of 0.59 MB), the positions' low bytes most of the rest; deflate
+beats an order-0 entropy coder (an rANS stand-in) on every plane (0.59 against 0.71 MB). 12-bit positions (56 um)
+draw the same as 16-bit (41.48 against 41.49 dB).
+
+### Motion: a cluster's rigid fit, rotation turns by shape, holds and keys that hold (order 3)
+
+For 150k at 60 Mbit/s with no visible flicker, on any content and with no rig. Residuals from the frame before
+cost 3 B a gaussian per frame, and holding a field unless it moved (`--geometry-hold`, conditional replenishment
+against the frame before) saved little: 122.5 -> 118.3 Mbit/s at one step, 109.2 at two, because almost every
+rotation moves every frame. A closed-loop simulation of the decoder's state on the rig-merged 150k (10-bit
+positions, 7-bit scales, the 7-bit component step 1.28 deg; KB a frame, deflate 9) gave the order:
+
+| step | KB a frame | positions | rotation | scales | motion |
+|---|---:|---:|---:|---:|---:|
+| residual from the frame before, smallest three | 465 | 141 | 263 | 61 | -- |
+| rotation as a turn (log map) in the gaussian's own frame | 416 | 141 | 214 | 61 | -- |
+| + steps by shape | 262 | 141 | 60 | 61 | -- |
+| + a rigid fit for each 256 of the stable order | 226 | 114 | 44 | 61 | 7 |
+| + holds of a step against the prediction | **127** | 51 | 21 | 48 | 7 |
+
+- **Where the rotation's bytes go.** In the smallest-three residual, the 9.5 % of gaussians whose dropped index
+  changes between frames carry 20.8 % of the rotation's bytes. The steps by shape remove most of the rest. A
+  rotation about an axis moves the ellipsoid by the angle times the other two axes' difference, so the step on
+  that axis is widened until the move is half a position step. Where it would pass pi, nothing is sent. The
+  rotation's error as a move of the ellipsoid stays under a position step (p99 0.86).
+- **Clusters of 64 and 1024.** 136 and 147 KB.
+- **Rice coding.** Rice coding in blocks of 32 was 30 % larger than deflate on every row, so the layer stays
+  deflated, now at level 9 (6 % smaller than 6).
+
+The motion (`--geometry-predict 3`, video_geometry.slang) is that last row:
+- **Fit.** Each run of 256 gaussians (a staggered key's block) gets a Kabsch fit from the state the decoder holds
+  to the frame's source, on the GPU: centroids, cross-covariance, Horn's quaternion, a workgroup a run. It is sent
+  in 32 bytes after its chunk's planes and applied to positions in integer arithmetic only.
+- **Exactness.** The rotation's steps are float. The encoder runs the decoder's own kernel on its packed planes, so
+  the two hold the same words. Computing the state in the encoding kernel instead left one word in 280 000 apart, a
+  10-bit rounding taken the other way.
+- **Keys** send the held words, not the source again, so a key changes nothing on screen.
+- **A looping file** is run twice before it is written, so its last frame leads into its first. The frame after
+  the wrap measures like the others (30.15 against 29.98 and 29.97 for the next two, close camera).
+
+Measured on the second pass of a two-loop play (`--loops 2`; a staggered stream needs `interval` frames before
+every block has had its key). The references are upright, from the 300k pages: PSNR reference / close camera,
+flicker close mean / p99, the tail of the close camera mean / p99, open pixels over the ring. All rows use keys
+staggered over 60, 10-bit positions, 7-bit scales, the 7-bit rotation step, degree 1, chroma, quality 0.4:
+
+| cloud | geometry | Mbit/s at 30 (24) | PSNR | flicker close | tail close | ring |
+|---|---|---:|---|---|---|---:|
+| rig-merged 150k | residuals | 122.5 (98.0) | 44.20 / 34.13 | 3.08 / 28 | 6.37 / 35 | 36 |
+| rig-merged 150k | motion, holds 1,1,1 | 61.9 (49.5) | 44.30 / 33.80 | 3.12 / 29 | 6.69 / 37 | 194 |
+| rig-merged 150k | motion, holds 2,1,1 | 57.0 (45.6) | 43.97 / 33.47 | 3.25 / 30 | 7.14 / 41 | 414 |
+| mesh2splat 155 793 | residuals | 122.3 (97.8) | 40.51 / 30.49 | 3.30 / 32 | 7.04 / 43 | 4698 |
+| mesh2splat 155 793 | motion | 84.9 (67.9) | 40.45 / 30.45 | 3.35 / 33 | 7.08 / 43 | 4742 |
+| mesh2splat 155 793 | motion, holds 1,1,1 | 64.2 (51.3) | 40.33 / 30.26 | 3.41 / 33 | 7.33 / 45 | 4541 |
+| mesh2splat 155 793 | **motion, holds 2,1,1** | **59.4 (47.5)** | 40.14 / 30.15 | 3.48 / 34 | 7.53 / 47 | 4654 |
+| rig-merged 113 050 | motion, holds 2,1,1 | 42.4 (33.9) | 39.54 / 29.58 | 4.37 / 43 | 9.48 / 58 | 3587 |
+| mesh2splat 85 004 | motion, holds 1,1,1 | 38.0 (30.4) | 39.59 / 29.65 | 3.72 / 37 | 8.14 / 50 | 18209 |
+| mesh2splat 85 004 | motion, holds 2,1,1 | 35.4 (28.3) | 39.50 / 29.57 | 3.78 / 37 | 8.32 / 52 | 18435 |
+| rig-merged 75 094, growth 1.25 | motion, holds 2,1,1 | 33.0 (26.4) | 38.53 / 28.77 | 4.76 / 46 | 10.72 / 63 | 55 |
+
+- **Cost of each step.** On one cloud, the motion costs about 0.1 dB, and each hold step about 0.1-0.2 dB and 0.05
+  in the close camera's mean flicker.
+- **Key frames.** The flicker around frame 31 (where whole keys would land) is above frames 20-22 in every row,
+  the residuals' too. It is the bird's motion there, not a key.
+- **Reference bias.** The 300k pages are the references, so they favour the clouds merged from them: 44 against 40
+  dB for the same count. The mesh2splat clouds' silhouette is their own, which is the ring's 4.7k and 18k
+  pixels (the ring's source alpha is the 300k cloud's).
+- **Per field** (mesh2splat 155 793, holds 2,1,1, KB a frame, deflate 9 of each group): positions 49, log scales
+  42, rotation 32, motion 11.
+- **Scale.** Scales are now the largest share left: they are held, not predicted.
+
+### Checked against the player
+
+- `video-decode --dump-compare` takes another decoder's gaussians of a frame (a CSV) and compares them with this
+  decode on the device; it found the player's samples squeezed to 16-235 (Chrome on the Mac reports Annex B
+  pictures as video range), which the player then undid; on the 300k sample the two decodes then agree to 4 um
+  in position, 0.004 in opacity, 0.023 in log scale and 0.003 in colour (the halves' rounding). `--luma-histogram`: athenea's own decode spans 0-255 on
+  every picture measured, so no measurement here went through a squeezed decode.
+- No-background references (`web-sparrow/ref_noback/`) and the dome's latlong with a worked example (FORMAT.md):
+  athenea keeps an authored plain `DomeLight` on a Z-up stage as USD reads it, its pole on world +Y.
+
+### Not done
+
+- Chroma for anything but colour; the chroma under geometric tiles is mid grey.
+- A reduction that keeps the merges' mass at 75k as well as it does at 150k; the merge's growth cap measured at
+  1.25, 1.5 and 2.
+- The motion's float rotation steps on another GPU (WGSL on the phone): a word whose rounding falls the other way
+  is one code off until its key. Prediction of the scales, and a fit weighted by opacity and area. References from
+  a path trace of the mesh, which neither cloud's pages favour.
+- SRT itself (the producer writes to stdout; the player's server forwards it over a WebSocket).
+- P pictures for slices (each slice would need its own encoder session).
+
+## Geometry in the video: everything in the HEVC picture (30 Oct)
+
+The sparrow's web ladder with nothing beside the video: position, scale and rotation, which ladder2 sends as an
+exact deflated layer (§8c of FORMAT.md), go into luma planes of the same picture as opacity and colour
+(`video-encode --geometry-video`, FORMAT.md §8e). Lossless HEVC (x265 `--lossless`, transquant bypass, Main
+profile) was measured once before the choice of this route: VideoToolbox's decoder (through ffmpeg) gave it back
+bit for bit, and the ladder2 r0 geometry as 13 byte planes with P pictures every 30 took 0.600 MB a frame, the
+same as the deflated layer (0.59). It was not taken further.
+
+### What the codec does to geometry planes
+
+- **Positions are smooth, the rest is noise.** The mean change between consecutive gaussians of the stable order,
+  in 8-bit codes over each attribute's range (r0, frame 0): positions 0.6-1.7, log scales 12-32, quaternion
+  components 37-51 (uniform noise would be 85). A shape's parameters are not continuous along the surface, and
+  neither its covariance's logarithm (15-29) nor a frame of each run of 256 fitted rigidly to frame 0 (positions'
+  change between frames 13.9 -> 1.6 steps, rotations' only 7.7 -> 5.9 deg) made them so.
+- **VideoToolbox has no QP**, only a quality for the whole picture. On noise-like planes its error at quality
+  0.4-0.5 (ladder2's colour quality) is 4-9 codes mean, so an 8-bit rotation component is several degrees off and
+  a hi/lo byte split of a position breaks wherever the high byte moves by one. Quality 1.0 is not lossless.
+- **Folds, and why two waves.** A position goes as a coarse 8-bit plane over the sequence's range and a fine value
+  of N = 255 x 255 / K levels sent as a triangle wave of period 510 levels (no saw teeth: a smooth position stays a
+  smooth image). One wave fails near its turns: a value and its mirror are close there, and a coarse error of 3
+  codes picked the wrong one (p99 38 levels on x). Two waves a quarter period apart -- the one on its slope is read
+  -- bring that to p99 4 levels, the fine sample's own error.
+- **Canonical rotation.** Of the four quaternions of an ellipsoid (q and q times a half turn about each own axis)
+  the one with the largest w, w >= 0: three components in [-0.87, 0.87] are sent, w is rebuilt. One plane fewer,
+  no sign flips at w = 0, and a smaller range for the same codes.
+
+### Measured on r0 (150k, degree 1, 61 frames)
+
+Geometry error against the source pages from `video-encode --check` (`videoPlanesGeometryError`: distance,
+rotation angle up to the ellipsoid's half turns, largest axis' scale ratio; median / p99), and the frame-to-frame
+move of the position error. Drawn as webrig_t.sh draws ladder2 (lockstep, 1024 x 1024, against the SPZ pages; flicker
+is `video-flicker`, sRGB codes mean / p99). All with P pictures, a key every 30:
+
+| setting | Mbit/s at 30 | position um | rotation deg | scale % | error's move um | PSNR ref / close | flicker close |
+|---|---:|---|---|---|---:|---|---|
+| ladder2 r0 (geometry layer, quality 0.4 all-intra) | 148.9 | 47 / 79 | 0.39 / 0.72 | 0.82 / 0.82 | 61 | 44.23 / 34.17 | 3.06 / 28 |
+| folds 8,8,8, quality 0.4 | 68.5 | 1787 / 16998 | 21.0 / 76.9 | 28.6 / 136 | 819 | -- | -- |
+| folds 8,8,8, quality 0.6 | 143.5 | 447 / 11022 | 7.4 / 24.9 | 12.0 / 37.1 | 447 | -- | -- |
+| folds 8,8,8, quality 0.5, all-intra | 243.0 | 974 / 13107 | 13.6 / 32.3 | 22.0 / 74.2 | 893 | -- | -- |
+| one wave (before quadrature), folds 16,8,8, quality 0.95 | 473.4 | 43 / 1263 | 0.0 / 2.2 | 0.0 / 3.6 | 56 | -- | -- |
+| one wave, folds 16,8,8, quality 1.0 | 465.5 | 26 / 632 | 0.0 / 0.85 | 0.0 / 1.26 | 36 | -- | -- |
+| folds 32,0,0, quality 0.8 | 111.6 | 290 / 751 | 2.2 / 8.1 | 4.3 / 12.0 | 145 | 45.74 / 35.55 | 2.63 / 27 |
+| folds 16,0,0, quality 0.85 | 162.0 | 112 / 290 | 1.7 / 5.7 | 3.0 / 9.3 | 86 | 46.55 / 36.61 | 2.28 / 22 |
+| **folds 16,0,0, quality 0.9** | **224.0** | **66 / 158** | **1.0 / 3.4** | **1.6 / 5.1** | **61** | **46.82 / 37.18** | **2.15 / 21** |
+| folds 16,32,32, quality 0.85 | 369.8 | 112 / 290 | 0.23 / 0.60 | 0.41 / 1.26 | 86 | 46.61 / 36.63 | 2.27 / 22 |
+| folds 16,16,16, quality 0.85 | 400.5 | 112 / 290 | 0.16 / 0.36 | 0.0 / 0.82 | 86 | -- | -- |
+
+(The rows from 8,8,8 to the one-wave ones precede the canonical rotation and the second wave: four rotation planes,
+one fine plane an attribute.)
+
+- **Folding scale and rotation buys geometry, not pixels.** Folds 16,32,32 bring rotation to 0.23 deg and scale to
+  0.4 % (ladder2: 0.39 deg, 0.82 %) at 1.65x the bytes, and draw no better than folds 16,0,0 (the coarse planes:
+  rotation 1.0 deg, scale 1.6 % median) -- 46.61 against 46.82 dB, flicker 2.27 against 2.15. The ladder takes
+  16,0,0.
+- **The picture beats ladder2 on screen** at every setting from quality 0.85 up, with less flicker. Part of that is
+  the colour: ladder2's colour was quality 0.4 all-intra, here the one quality is 0.85-0.9 and P pictures hold a
+  still colour still. The geometry is not as exact: positions 66 um median against 47.
+- **Predicted pictures are what keep it still.** All-intra at quality 0.5 cost 1.01 MB a frame against 0.32 with P
+  pictures (folds 16,16,16) and its geometry error moves every frame; with P pictures the error's frame-to-frame
+  move is about its size (61 um median at quality 0.9).
+
+### The ladder (quality 0.9, folds 16,0,0, a key every 30, pictures up to 4K)
+
+| rung | gaussians | picture (level) | Mbit/s at 30: video / ladder2 | PSNR reference: video / ladder2 | PSNR close: video / ladder2 | flicker reference | flicker close: video / ladder2 | position um | rotation deg | scale % |
+|---|---:|---|---|---|---|---|---|---|---|---|
+| r0 | 149 714 | 2048 x 1600 (5.0) | 224.0 / 148.9 | 46.82 / 44.23 | 37.18 / 34.17 | 0.23 / 0.32 | 2.15 / 21 vs 3.06 / 28 | 66 / 158 | 1.0 / 3.4 | 1.6 / 5.1 |
+| r1 | 74 691 | 1536 x 1344 (4.0) | 116.3 / 76.6 | 40.95 / 39.76 | 30.26 / 29.34 | 0.46 / 0.53 | 4.34 / 56 vs 4.89 / 57 | 66 / 158 | 1.0 / 3.1 | 2.1 / 6.6 |
+| r2 | 40 042 | 1024 x 1280 (4.0) | 69.8 / 44.9 | 39.85 / 38.81 | 29.19 / 28.37 | 0.52 / 0.59 | 4.77 / 61 vs 5.32 / 63 | 66 / 158 | 1.0 / 3.1 | 2.1 / 6.6 |
+| r3 | 19 889 | 1024 x 640 (3.1) | 41.9 / 25.9 | 38.83 / 37.75 | 28.21 / 27.27 | 0.54 / 0.60 | 4.93 / 62 vs 5.47 / 63 | 66 / 158 | 1.0 / 3.1 | 2.3 / 6.6 |
+| r4 | 15 576 | 1024 x 640 (3.1) | 35.1 / 21.7 | 37.55 / 36.21 | 27.16 / 26.02 | 0.56 / 0.62 | 5.05 / 63 vs 5.62 / 64 | 66 / 158 | 1.0 / 3.1 | 2.5 / 6.6 |
+
+PSNR is the median over the 61 frames against the SPZ pages; flicker is mean / p99 (reference: mean); geometry
+is median / p99 from `--check`. Every rung is better on screen than ladder2's and flickers less, at 1.5-1.6x its
+bytes. The pictures stay under 4K at this count (r0 2048 x 1600, 20 planes); the area left is what folds of scale
+and rotation would take (32 planes, 3072 x 1920 at r0). Files: `web-sparrow/ladder-video/` (`.athv`, `.hvcC`,
+triplets SPZ | video | difference x 8 at epochs 1 and 31 for both cameras), segmented in
+`athenea-web-drop/sparrow/athv/ladder-video/` (two segments, cut at the keys at 0 and 30).
+
+ladder2's geometry error is its quantisation (11-bit positions, 8-bit log scales and rotation components), the same
+on every rung: positions 47 / 72-79 um, rotation 0.39 / 0.72 deg, scale 0.82 / 0.82-1.26 %, the error's move 61 um
+(its settings encoded again with `--check`). The video's positions are 1.4x and its p99 2x ladder2's; rotation and
+scale (coarse planes) 2.6x and 2-5x.
+
+### The player
+
+`athv-player.js` reads header bit 7 and the folds (offset 84), decodes the planes as the engine does (WGSL
+`unfold`, the canonical rotation rebuilt), and decodes predicted pictures after their key (`type: "delta"`); a
+dropped or failed picture waits for the next key. Chrome on the Mac (WebCodecs, Annex B) decoded the 2048 x 1600
+level 5.0 pictures and their P pictures: no picture dropped, decode 11-12 ms and copy 7 ms a picture (r0 as a file);
+the ladder over HTTP played and switched rungs at the segment boundaries (2 switches, 0 stalls), desktop and in the
+iPhone 15 Pro emulation, which is Chrome's own decoder. The ABR ladder mode is unchanged (segments start at keys, which the
+segmenter already required).
+
+### Not done
+
+- Safari on an iPhone itself (only Chrome's iPhone emulation here). Recent iPhones decode HEVC up to level 5.1
+  (4K at 30) in hardware; r0's pictures are 2048 x 1600, level 5.0. Chrome on the Mac hands Annex B pictures over
+  as video range, which the player undoes at a level of the coarse or fine sample; an hvcC configuration (full range
+  as coded) was not tried.
+- Per-plane quality: VideoToolbox's one quality spends the same on colour as on geometry. Two pictures a frame (a
+  geometry stream and a colour stream) would let colour go back to 0.4.
+- Positions in each run's own fitted frame (still planes between keys) and the covariance's logarithm, measured
+  in a prototype only: neither paid for its complexity at these settings.

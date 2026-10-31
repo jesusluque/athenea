@@ -4,6 +4,7 @@
 #include <bit>
 #include <cstring>
 #include <string_view>
+#include "athenea/lod/SplatStream.h"
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/pxOsd/tokens.h>
 #include <pxr/base/gf/vec4f.h>
@@ -131,7 +132,7 @@ std::string Engine::relieveMemory() {
         // Every streamed asset opened again, at the budget this level allows.
         const std::lock_guard<std::mutex> held(guard_);
         for (auto& [id, entry] : splats_) {
-            if (!entry.asset.path.empty() && !entry.assetPending.has_value()) {
+            if (!entry.asset.path.empty() && entry.asset.live.empty() && !entry.assetPending.has_value()) {
                 entry.assetPending = entry.asset;
                 entry.asset = StreamedAsset{};
                 entry.lodCloud.reset();
@@ -148,6 +149,11 @@ std::string Engine::relieveMemory() {
     ++reliefs_;
     lastRelief_ = did;
     return did;
+}
+
+void Engine::setLiveClock(std::function<uint64_t()> nowPtpNs) {
+    const std::lock_guard<std::mutex> held(guard_);
+    liveClock_ = std::move(nowPtpNs);
 }
 
 uint64_t Engine::streamBudget(const pxr::SdfPath& id, const StreamedAsset& asset) const {
@@ -900,6 +906,17 @@ void Engine::removeVolumeField(const pxr::SdfPath& id) {
     ++volumesVersion_;
 }
 
+std::vector<Engine::LiveStatus> Engine::liveStatus() const {
+    const std::lock_guard<std::mutex> held(guard_);
+    std::vector<LiveStatus> out;
+    for (const auto& [id, entry] : splats_) {
+        if (entry.pool != nullptr && !entry.asset.live.empty()) {
+            out.push_back({id.GetString(), entry.asset.live, entry.pool->status()});
+        }
+    }
+    return out;
+}
+
 void Engine::remove(const pxr::SdfPath& id) {
     const std::lock_guard<std::mutex> held(guard_);
     splats_.erase(id);
@@ -1420,28 +1437,71 @@ Result<size_t> Engine::commit() {
         entry.pendingEnd = pxr::VtValue();
         ++uploaded;
     }
+    std::set<const lod::StreamingPool*> updatedLive;   // a pool two prims share is updated once a frame
     for (auto& [id, entry] : splats_) {
         if (entry.assetPending.has_value()) {
             StreamedAsset asset = std::move(*entry.assetPending);
             entry.assetPending.reset();
-            if (asset.path != entry.asset.path || asset.budget != entry.asset.budget) {
+            if (!asset.sameSource(entry.asset)) {
                 entry.lodCloud.reset();
                 entry.pool.reset();
-                if (!asset.path.empty()) {
+                entry.liveEpoch = 0;
+                if (!asset.live.empty() && livePools_[asset.live].lock() != nullptr) {
+                    // Another prim names this stream: the same pool, so both
+                    // draw the same epoch in every frame.
+                    entry.pool = livePools_[asset.live].lock();
+                } else if (!asset.live.empty()) {
+                    // A LIVE STREAM: the queue its name stands for, a
+                    // LiveSource over it, and a pool this thread -- the only
+                    // one that calls the device -- updates every frame.
+                    lod::LiveSettings live;
+                    live.stream = 0;
+                    live.chunks = std::max(asset.liveChunks, 1u);
+                    live.name = asset.live;
+                    if (asset.hasExtent) {
+                        std::copy(asset.extent.begin(), asset.extent.begin() + 3, live.bounds.min.begin());
+                        std::copy(asset.extent.begin() + 3, asset.extent.end(), live.bounds.max.begin());
+                    }
+                    live.format.payload = lod::ChunkFormat::Payload::Spz;
+                    live.format.chunkSplats = std::max(asset.liveChunkSplats, 1u);
+                    static constexpr uint32_t kPerDegree[] = {0, 3, 8, 15};
+                    live.format.restPerColour = kPerDegree[std::min(asset.liveDegree, 3u)];
+                    live.format.shWords = live.format.restPerColour == 0 ? 1 : (live.format.restPerColour * 3 + 1) / 2;
+                    auto source = lod::LiveSource::create(lod::PageQueue::named(asset.live), live);
+                    lod::StreamingSettings settings;
+                    // Unbudgeted, the store follows what is sent (one chunk to
+                    // start, grown as epochs need room) up to three epochs of
+                    // every chunk; budgeted, it is its budget from the start.
+                    settings.growStore = asset.budget == 0;
+                    settings.budgetSplats = asset.budget != 0 ? asset.budget
+                                                              : uint64_t{3} * live.chunks * live.format.chunkSplats;
+                    settings.loaders = std::max(asset.liveLoaders, 1u);
+                    // Staging for two epochs of every chunk, at least: the next
+                    // epoch's pages load while one is placed.
+                    settings.stagingChunks = std::max(2 * settings.loaders + 4, 2 * live.chunks);
+                    settings.library = library_.get();
+                    // The stage's word, else the producer's (stream_open), else the latest.
+                    const uint8_t hint = lod::PageQueue::named(asset.live)->syncHint();
+                    settings.sync = asset.liveSync == "clock" || (asset.liveSync.empty() && hint == 2)
+                                        ? lod::LiveSync::Clock
+                                        : lod::LiveSync::Latest;
+                    auto pool = source ? lod::StreamingPool::open(
+                                             *device_, std::unique_ptr<lod::ChunkSource>(std::move(*source)), settings)
+                                       : Result<std::unique_ptr<lod::StreamingPool>>(source.error());
+                    if (pool) {
+                        entry.pool = std::shared_ptr<lod::StreamingPool>(std::move(*pool));
+                        livePools_[asset.live] = entry.pool;
+                    } else {
+                        log::warn("hdAthenea: {}: {}", id.GetString(), pool.error().toString());
+                    }
+                } else if (!asset.path.empty()) {
                     // Held to the device's budget (streamBudget), which may
                     // stream a file asked to be read whole.
                     if (const uint64_t budget = streamBudget(id, asset); budget > 0) {
-                        // Into the store the other streamed prims share
-                        // (lod::StreamingShare); a file laid out unlike
-                        // theirs keeps a store of its own.
-                        if (!streamShare_) {
-                            streamShare_ = lod::makeStreamingShare(*device_);
-                        }
-                        auto pool = lod::StreamingPool::open(*device_, asset.path, {budget, 2}, streamShare_);
-                        if (!pool) {
-                            log::info("hdAthenea: {}: {}", id.GetString(), pool.error().toString());
-                            pool = lod::StreamingPool::open(*device_, asset.path, {budget, 2});
-                        }
+                        // A store of its own: the store streamed prims share
+                        // (lod::StreamingShare) is not in this branch's
+                        // StreamingPool, which the live sources reshaped.
+                        auto pool = lod::StreamingPool::open(*device_, asset.path, {budget, 2});
                         if (pool) {
                             entry.pool = std::move(*pool);
                         } else {
@@ -1467,7 +1527,26 @@ Result<size_t> Engine::commit() {
             }
             entry.asset = std::move(asset);
         }
-        if (!entry.asset.path.empty()) {
+        if (entry.pool != nullptr && !entry.asset.live.empty() && updatedLive.insert(entry.pool.get()).second) {
+            // The epochs placed since the last frame, before this frame's
+            // cut: it draws the last one whole. A new one is a change any
+            // accumulation must start again from.
+            entry.pool->setClock(liveClock_ ? liveClock_()
+                                            : static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                  std::chrono::system_clock::now().time_since_epoch())
+                                                                        .count()));
+            auto placed = entry.pool->update(false);
+            if (!placed) {
+                log::warn("hdAthenea: {}: {}", id.GetString(), placed.error().toString());
+            } else if (const uint64_t epoch = entry.pool->status().epoch; epoch != entry.liveEpoch) {
+                entry.liveEpoch = epoch;
+                revision_.fetch_add(1);
+                ++uploaded;
+            }
+        } else if (entry.pool != nullptr && !entry.asset.live.empty()) {
+            entry.liveEpoch = entry.pool->status().epoch;   // the prim before it updated the pool they share
+        }
+        if (entry.asset.any()) {
             // The asset stands in for the prim's own arrays.
             entry.pending.reset();
             entry.gpu.reset();
@@ -2053,8 +2132,9 @@ Result<void> Engine::writeAov(const render::RenderTargets& targets, AovSource ao
         p["p23"].setData(static_cast<float>(projection[11]));
         p["p33"].setData(static_cast<float>(projection[15]));
     });
-    ATHENEA_TRY(batch.submit(true));
-    // A readback for a host that maps the buffer: output IO, the only copy.
+    ATHENEA_TRY(batch.submit());
+    // A readback for a host that maps the buffer: output IO, the only copy,
+    // and the one wait -- the read waits for the conversion before it.
     return out->read(*device_, 0, bytes, into.data());
 }
 
@@ -2699,7 +2779,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             // cell may span: a coarser cut, fewer splats.
             cuts.push_back({cloud, entry.objectToWorld, entry.edit,
                             entry.asset.threshold * static_cast<float>(1u << lodBias_)});
-            poolOf.push_back(entry.pool.get());
+            // A live pool is updated before the cut (commit), not by what it wants.
+            poolOf.push_back(entry.asset.live.empty() ? entry.pool.get() : nullptr);
             cutPrims.push_back(id.GetString());
             cutEntries.push_back(&entry);
         }

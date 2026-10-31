@@ -1,9 +1,9 @@
 // Copyright (c) 2026 jesus luque.
 #include <algorithm>
 #include <cstring>
+#include <optional>
 #include <string>
 
-#include <tbb/parallel_for.h>
 
 #include "athenea/core/Log.h"
 #include "athenea/core/Platform.h"
@@ -12,13 +12,13 @@
 
 #ifdef ATHENEA_HAVE_SPZ
 #include "load-spz.h"
+#include "splat-extensions.h"
 #endif
 
 namespace athenea::io {
 namespace {
 
 constexpr size_t kHeaderProbe = 1 << 16;
-constexpr size_t kGrain = 1 << 16;   // records per parallel block
 
 std::string lowerExtension(const std::filesystem::path& path) {
     std::string ext = path.extension().string();
@@ -97,17 +97,24 @@ Result<RawSplats> readSplatPly(const std::filesystem::path& path) {
         }
     }
 
-    // Every property becomes one float in the record, in the file's order.
-    // When the file is all float32 that is the file's own bytes, copied; when
-    // it is not (a double here, a uchar there) each value is converted to a
-    // float -- a type conversion, not a decode.
-    const bool allFloat32 = std::all_of(
-        vertex->properties.begin(), vertex->properties.end(),
-        [](const PlyProperty& p) { return p.type == "float" || p.type == "float32"; });
+    // Every property becomes one float in the record, in the file's order --
+    // widened on the device from the file's own bytes, whatever its types.
     const uint32_t floats = static_cast<uint32_t>(vertex->properties.size());
     const auto indexOf = [&](const char* name) -> uint32_t {
         const PlyProperty* p = vertex->find(name);
         return static_cast<uint32_t>(p - vertex->properties.data());
+    };
+    const auto typeOf = [](const std::string& t) -> std::optional<PackedFields::Type> {
+        using T = PackedFields::Type;
+        if (t == "float" || t == "float32") return T::F32;
+        if (t == "double" || t == "float64") return T::F64;
+        if (t == "uchar" || t == "uint8") return T::U8;
+        if (t == "char" || t == "int8") return T::I8;
+        if (t == "ushort" || t == "uint16") return T::U16;
+        if (t == "short" || t == "int16") return T::I16;
+        if (t == "uint" || t == "uint32") return T::U32;
+        if (t == "int" || t == "int32") return T::I32;
+        return std::nullopt;
     };
 
     RawSplats raw;
@@ -175,24 +182,21 @@ Result<RawSplats> readSplatPly(const std::filesystem::path& path) {
     enc.colour = SplatEncoding::Colour::ShDc;
     enc.rotation = SplatEncoding::Rotation::Float;
 
-    raw.records.resize(size_t{raw.count} * floats);
-    const char* const base = reinterpret_cast<const char*>(bytes.data()) + *start;
-    const size_t stride = vertex->stride;
-    tbb::parallel_for(tbb::blocked_range<size_t>(0, raw.count, kGrain),
-                      [&](const tbb::blocked_range<size_t>& range) {
-        if (allFloat32) {
-            std::memcpy(raw.records.data() + range.begin() * floats, base + range.begin() * stride,
-                        (range.end() - range.begin()) * stride);
-            return;
+    // The vertex block as the file has it: bytes copied, nothing read out
+    // of them here.
+    raw.encoding.record = SplatEncoding::Record::PackedRecords;
+    raw.fields.stride = static_cast<uint32_t>(vertex->stride);
+    for (const PlyProperty& p : vertex->properties) {
+        const auto type = typeOf(p.type);
+        if (!type) {
+            return Error::make(ErrorCode::Unsupported, "'{}': property '{}' of type '{}'", path.string(), p.name,
+                               p.type);
         }
-        for (size_t i = range.begin(); i < range.end(); ++i) {
-            const char* record = base + i * stride;
-            float* out = raw.records.data() + i * floats;
-            for (uint32_t k = 0; k < floats; ++k) {
-                out[k] = static_cast<float>(readPlyValue(record, vertex->properties[k]));
-            }
-        }
-    });
+        raw.fields.offsets.push_back(static_cast<uint32_t>(p.offset));
+        raw.fields.types.push_back(*type);
+    }
+    const auto* base = reinterpret_cast<const uint8_t*>(bytes.data()) + *start;
+    raw.packed.assign(base, base + vertex->stride * vertex->count);
     return raw;
 }
 
@@ -223,37 +227,80 @@ Result<RawSplats> readDotSplat(const std::filesystem::path& path) {
     enc.colour = SplatEncoding::Colour::Byte;
     enc.rotation = SplatEncoding::Rotation::Byte;
 
-    raw.records.resize(size_t{raw.count} * enc.floatsPerRecord);
-    const auto* data = reinterpret_cast<const unsigned char*>(bytes.data());
-    tbb::parallel_for(tbb::blocked_range<size_t>(0, raw.count, kGrain),
-                      [&](const tbb::blocked_range<size_t>& range) {
-        for (size_t i = range.begin(); i < range.end(); ++i) {
-            const unsigned char* record = data + i * kRecord;
-            float* out = raw.records.data() + i * enc.floatsPerRecord;
-            std::memcpy(out, record, 24);   // six float32, as stored
-            for (int k = 0; k < 8; ++k) {
-                out[6 + k] = static_cast<float>(record[24 + k]);   // bytes as values
-            }
-        }
-    });
+    // The records as the file has them, widened on the device: six floats,
+    // then eight bytes as values.
+    enc.record = SplatEncoding::Record::PackedRecords;
+    raw.fields.stride = kRecord;
+    for (uint32_t k = 0; k < 14; ++k) {
+        raw.fields.offsets.push_back(k < 6 ? 4 * k : 24 + (k - 6));
+        raw.fields.types.push_back(k < 6 ? PackedFields::Type::F32 : PackedFields::Type::U8);
+    }
+    const auto* data = reinterpret_cast<const uint8_t*>(bytes.data());
+    raw.packed.assign(data, data + bytes.size());
     return raw;
 }
 
+SplatEncoding spzEncoding(uint32_t shDim, uint32_t fractionalBits, bool smallestThree, bool flipYZ) {
+    SplatEncoding enc;
+    // Up to degree 3 kept: the engine evaluates no further, and a degree-4
+    // file's fourth band is 27 floats a splat for nothing.
+    enc.record = SplatEncoding::Record::SpzPacked;
+    enc.floatsPerRecord = 14 + std::min(shDim, uint32_t{15}) * 3;
+    enc.x = 0; enc.y = 1; enc.z = 2;
+    enc.opacity = 3;
+    enc.scale0 = 4; enc.scale1 = 5; enc.scale2 = 6;
+    enc.dc0 = 7; enc.dc1 = 8; enc.dc2 = 9;
+    enc.rotX = 10; enc.rotY = 11; enc.rotZ = 12; enc.rotW = 13;
+    enc.restBase = 14;
+    enc.restPerColour = std::min(shDim, uint32_t{15});
+    enc.restColourOuter = 0;   // rgb per basis
+    enc.opacity_ = SplatEncoding::Opacity::Byte;
+    enc.scale_ = SplatEncoding::Scale::SpzByte;
+    enc.colour = SplatEncoding::Colour::SpzByte;
+    enc.rotation = smallestThree ? SplatEncoding::Rotation::SmallestThree : SplatEncoding::Rotation::FirstThree;
+    enc.rest = SplatEncoding::Rest::Byte;
+    enc.positionScale = 1.0F / static_cast<float>(uint64_t{1} << std::min(fractionalBits, 31u));
+    enc.flipYZ = flipYZ;
+    return enc;
+}
+
 Result<RawSplats> readSpz(const std::filesystem::path& path) {
+    auto file = platform::MappedFile::open(path);
+    if (!file) return std::move(file).error();
+    const std::span<const std::byte> bytes = file->bytes();
+    return readSpz(std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()),
+                   path.string());
+}
+
+Result<RawSplats> readSpz(std::span<const uint8_t> bytes, const std::string& source) {
 #ifndef ATHENEA_HAVE_SPZ
-    return Error::make(ErrorCode::Unsupported, "'{}': this build reads no .spz (zstd was not found)",
-                       path.string());
+    (void)bytes;
+    return Error::make(ErrorCode::Unsupported, "'{}': this build reads no .spz (zstd was not found)", source);
 #else
-    const spz::PackedGaussians packed = spz::loadSpzPacked(path.string());
+    spz::PackedGaussians packed = spz::loadSpzPacked(bytes.data(), bytes.size());
     if (packed.numPoints <= 0) {
-        return Error::make(ErrorCode::IoFailure, "'{}': not a readable SPZ file", path.string());
+        return Error::make(ErrorCode::IoFailure, "'{}': not a readable SPZ file", source);
     }
     if (packed.usesFloat16()) {
         return Error::make(ErrorCode::Unsupported, "'{}': SPZ float16 positions (a format never released)",
-                           path.string());
+                           source);
     }
-    if (packed.hadSkippedExtensions) {
-        log::warn("'{}': SPZ extensions ignored; its coordinates are read as right-up-back", path.string());
+    // A fixed point past 31 bits is no fixed point a word holds (SPZ stores
+    // 24-bit positions; trainers write 12): the file is broken.
+    if (packed.fractionalBits < 0 || packed.fractionalBits >= 32) {
+        return Error::make(ErrorCode::IoFailure, "'{}': SPZ fixed point of {} fractional bits", source,
+                           packed.fractionalBits);
+    }
+    // The axes the data is stored in: the coordinate-system extension's, and
+    // the format's right-up-back without one. The engine reads right-down-
+    // front (PLY's); the decode turns right-up-back by changing the sign of
+    // y and z, and nothing else is turned.
+    const spz::CoordinateSystem stored = spz::getPackedCoordinateSystem(packed.extensions);
+    if (stored != spz::CoordinateSystem::RUB && stored != spz::CoordinateSystem::RDF) {
+        return Error::make(ErrorCode::Unsupported,
+                           "'{}': SPZ data stored in coordinate system {}; this reader reads right-up-back (4) and "
+                           "right-down-front (6)",
+                           source, static_cast<uint32_t>(stored));
     }
     const auto n = static_cast<size_t>(packed.numPoints);
     const uint32_t shDim = packed.shDegree >= 4 ? 24 : packed.shDegree == 3 ? 15 : packed.shDegree == 2 ? 8
@@ -262,68 +309,35 @@ Result<RawSplats> readSpz(const std::filesystem::path& path) {
     if (packed.positions.size() < n * 9 || packed.alphas.size() < n || packed.colors.size() < n * 3 ||
         packed.scales.size() < n * 3 || packed.rotations.size() < n * (smallestThree ? 4 : 3) ||
         packed.sh.size() < n * shDim * 3) {
-        return Error::make(ErrorCode::IoFailure, "'{}': SPZ attribute streams shorter than {} points",
-                           path.string(), n);
+        return Error::make(ErrorCode::IoFailure, "'{}': SPZ attribute streams shorter than {} points", source, n);
     }
 
     RawSplats raw;
-    raw.source = path.string();
+    raw.source = source;
     raw.count = static_cast<uint32_t>(n);
-    SplatEncoding& enc = raw.encoding;
-    // Up to degree 3 kept: the engine evaluates no further, and a degree-4
-    // file's fourth band is 27 floats a splat for nothing.
-    enc.floatsPerRecord = 14 + std::min(shDim, uint32_t{15}) * 3;
-    enc.x = 0; enc.y = 1; enc.z = 2;
-    enc.opacity = 3;
-    enc.scale0 = 4; enc.scale1 = 5; enc.scale2 = 6;
-    enc.dc0 = 7; enc.dc1 = 8; enc.dc2 = 9;
-    enc.rotX = 10; enc.rotY = 11; enc.rotZ = 12; enc.rotW = 13;
-    enc.restBase = 14;
-    enc.restPerColour = std::min(shDim, uint32_t{15});   // the engine keeps up to degree 3
-    enc.restColourOuter = 0;                               // rgb per basis
-    enc.opacity_ = SplatEncoding::Opacity::Byte;
-    enc.scale_ = SplatEncoding::Scale::SpzByte;
-    enc.colour = SplatEncoding::Colour::SpzByte;
-    enc.rotation = smallestThree ? SplatEncoding::Rotation::SmallestThree : SplatEncoding::Rotation::FirstThree;
-    enc.rest = SplatEncoding::Rest::Byte;
-    enc.positionScale = 1.0F / static_cast<float>(1 << packed.fractionalBits);
-    enc.flipYZ = true;
+    raw.antialiased = packed.antialiased;
+    raw.encoding = spzEncoding(shDim, static_cast<uint32_t>(packed.fractionalBits), smallestThree,
+                               stored == spz::CoordinateSystem::RUB);
 
-    raw.records.assign(n * enc.floatsPerRecord, 0.0F);
-    tbb::parallel_for(tbb::blocked_range<size_t>(0, n, kGrain), [&](const tbb::blocked_range<size_t>& range) {
-        for (size_t i = range.begin(); i < range.end(); ++i) {
-            float* out = raw.records.data() + i * enc.floatsPerRecord;
-            const uint8_t* p = packed.positions.data() + i * 9;
-            for (int k = 0; k < 3; ++k) {
-                // A little-endian 24-bit signed integer: parsed, not scaled.
-                int32_t fixed = p[k * 3] | (p[k * 3 + 1] << 8) | (p[k * 3 + 2] << 16);
-                if ((fixed & 0x800000) != 0) {
-                    fixed |= static_cast<int32_t>(0xFF000000u);
-                }
-                out[k] = static_cast<float>(fixed);
-            }
-            out[3] = packed.alphas[i];
-            for (int k = 0; k < 3; ++k) {
-                out[4 + k] = packed.scales[i * 3 + static_cast<size_t>(k)];
-                out[7 + k] = packed.colors[i * 3 + static_cast<size_t>(k)];
-            }
-            if (smallestThree) {
-                const uint8_t* r = packed.rotations.data() + i * 4;
-                out[10] = static_cast<float>(r[0] | (r[1] << 8));
-                out[11] = static_cast<float>(r[2] | (r[3] << 8));
-            } else {
-                const uint8_t* r = packed.rotations.data() + i * 3;
-                out[10] = r[0];
-                out[11] = r[1];
-                out[12] = r[2];
-            }
-            // Only the first 15 bases (degree 3): the file's own count says
-            // where the next point starts.
-            for (uint32_t k = 0; k < enc.restPerColour * 3; ++k) {
-                out[14 + k] = packed.sh[i * shDim * 3 + k];
-            }
-        }
-    });
+    // The six streams one after another, as they came out of the
+    // decompressor: bytes copied, nothing read out of them here.
+    SpzStreams& at = raw.spz;
+    at.shDim = shDim;
+    at.fractionalBits = static_cast<uint32_t>(packed.fractionalBits);
+    at.smallestThree = smallestThree;
+    const std::vector<uint8_t>* streams[6] = {&packed.positions, &packed.alphas, &packed.colors,
+                                              &packed.scales, &packed.rotations, &packed.sh};
+    uint64_t* offsets[6] = {&at.positions, &at.alphas, &at.colours, &at.scales, &at.rotations, &at.sh};
+    uint64_t total = 0;
+    for (const auto* stream : streams) {
+        total += (stream->size() + 3) / 4 * 4;
+    }
+    raw.packed.reserve(total);
+    for (size_t k = 0; k < 6; ++k) {
+        *offsets[k] = raw.packed.size();
+        raw.packed.insert(raw.packed.end(), streams[k]->begin(), streams[k]->end());
+        raw.packed.resize((raw.packed.size() + 3) / 4 * 4, 0);   // each stream on a word
+    }
     return raw;
 #endif
 }

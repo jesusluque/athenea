@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <map>
@@ -473,6 +474,10 @@ public:
     /// pixel rather than sampled at its middle. On by default; off is what
     /// two frames compared pixel by pixel need.
     void setAntialias(bool on);
+    /// The instant, PTP nanoseconds, a clock-synced live stream's frame shows
+    /// (athenea:live:sync = clock): a genlocked host's FrameClock. Empty, the
+    /// system clock. Applies from the next frame.
+    void setLiveClock(std::function<uint64_t()> nowPtpNs);
 
     /// Bakes the per-part visibility of the ParticleField at `prim` (a cloud
     /// a skeleton carries), commits the stage first so it is on the device,
@@ -592,6 +597,16 @@ public:
         uint64_t failed = 0;   ///< grids that could not be read, each said once and kept as such
     };
     [[nodiscard]] VolumeCacheCounts volumeCacheCounts() const;
+    /// THE LIVE STREAMS THE STAGE NAMES (AtheneaLiveSourceAPI), as the last
+    /// frame's commit left them: the prim, the stream, and its pool's state --
+    /// the epoch shown and its PTP time, epochs shown, waiting and dropped,
+    /// and the chunk bytes the last update placed.
+    struct LiveStream {
+        std::string prim, stream;
+        uint64_t    epoch = 0, ptpTime = 0, epochs = 0, droppedNoRoom = 0, droppedCorrupt = 0, placedBytes = 0;
+        uint32_t    pendingEpochs = 0, resident = 0;
+    };
+    [[nodiscard]] std::vector<LiveStream> liveStreams() const;
 
     /// WHAT THE LAST FRAME HELD: splats handed over, splats a tile kept, the
     /// pairs the blend walked, the scene's instances and the frame's lights.

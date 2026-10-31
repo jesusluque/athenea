@@ -47,9 +47,10 @@ static void SpzLog(const char *fmt, Args &&...args) {
 #else
 template <class... Args>
 static void SpzLog(const char *fmt, Args &&...args) {
-  printf(fmt, std::forward<Args>(args)...);
-  printf("\n");
-  fflush(stdout);
+  // athenea: to standard error. On standard output the messages broke the
+  // MCP server's stdio protocol, whose stdout carries JSON-RPC alone.
+  fprintf(stderr, fmt, std::forward<Args>(args)...);
+  fprintf(stderr, "\n");
 }
 #endif  // ANDROID
 

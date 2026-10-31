@@ -91,6 +91,8 @@ Result<CloudLoader> CloudLoader::create(gpu::ShaderLibrary& library) {
     };
     ATHENEA_TRY(make(loader.splatValidate_, "athenea/scene/splat_validate", "splatValidate"));
     ATHENEA_TRY(make(loader.sogDecode_, "athenea/scene/sog_decode", "sogDecode"));
+    ATHENEA_TRY(make(loader.spzRecords_, "athenea/scene/spz_records", "spzRecords"));
+    ATHENEA_TRY(make(loader.packedRecords_, "athenea/scene/packed_records", "packedRecords"));
     ATHENEA_TRY(make(loader.splatDecode_, "athenea/scene/splat_decode", "splatDecode"));
     ATHENEA_TRY(make(loader.splatKept_, "athenea/scene/splat_kept", "splatKept"));
     ATHENEA_TRY(make(loader.splatKeptScatter_, "athenea/scene/splat_kept", "splatKeptScatter"));
@@ -251,29 +253,21 @@ Result<GpuSplats> CloudLoader::startSplats(const std::string& source, uint32_t d
     return splats;
 }
 
-Result<uint32_t> CloudLoader::decodeSlice(const gpu::Buffer& raw, const io::SplatEncoding& e, uint32_t n,
-                                          uint32_t written, uint32_t keep, GpuSplats& splats,
-                                          uint32_t recordBase) {
-    auto valid = deviceBuffer(*device_, n, 4, "splats.valid");
-    if (!valid) return std::move(valid).error();
-    auto dest = deviceBuffer(*device_, n, 4, "splats.dest");
-    if (!dest) return std::move(dest).error();
-    auto total = deviceBuffer(*device_, 1, 4, "splats.total");
-    if (!total) return std::move(total).error();
-
-    gpu::CommandBatch batch(*device_);
+Result<void> CloudLoader::decodeInto(gpu::CommandBatch& batch, const gpu::Buffer& raw, const io::SplatEncoding& e,
+                                     uint32_t n, uint32_t written, uint32_t keep, GpuSplats& splats,
+                                     const DecodeScratch& scratch, uint32_t recordBase) {
     splatValidate_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
         cursor["raw"].setBinding(raw.rhi());
-        cursor["valid"].setBinding(valid->rhi());
+        cursor["valid"].setBinding(scratch.valid.rhi());
         setDecodeParams(cursor, e, n, written, keep, splats.shWords, recordBase);
     });
-    ATHENEA_TRY(prefix_.apply(batch, *valid, *dest, *total, n));
+    ATHENEA_TRY(prefix_.apply(batch, scratch.valid, scratch.dest, scratch.total, n));
     // The decode does not need the total, so it is queued now: `base` is
     // this slice's start, known from the slices before it.
     splatDecode_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
         cursor["raw"].setBinding(raw.rhi());
-        cursor["valid"].setBinding(valid->rhi());
-        cursor["dest"].setBinding(dest->rhi());
+        cursor["valid"].setBinding(scratch.valid.rhi());
+        cursor["dest"].setBinding(scratch.dest.rhi());
         cursor["positions"].setBinding(splats.positions.rhi());
         cursor["shape"].setBinding(splats.shape.rhi());
         cursor["sh"].setBinding(splats.sh.rhi());
@@ -283,7 +277,7 @@ Result<uint32_t> CloudLoader::decodeSlice(const gpu::Buffer& raw, const io::Spla
         cursor["crypto"].setBinding(splats.hasCrypto() ? splats.crypto.rhi() : splats.shape.rhi());
         cursor["transfer"].setBinding(splats.hasTransfer() ? splats.transfer.rhi() : splats.shape.rhi());
         cursor["shadowBits"].setBinding(splats.hasShadowBits() ? splats.shadowBits.rhi() : splats.shape.rhi());
-        cursor["origin"].setBinding(splats.origin.rhi());
+        cursor["origin"].setBinding(splats.origin.valid() ? splats.origin.rhi() : scratch.dest.rhi());
         cursor["normals"].setBinding(splats.hasNormals() ? splats.normals.rhi() : splats.shape.rhi());
         // A cloud allocated without normals reads none, whatever the
         // encoding says: the buffer bound in their place is the shape.
@@ -301,9 +295,19 @@ Result<uint32_t> CloudLoader::decodeSlice(const gpu::Buffer& raw, const io::Spla
         }
         setDecodeParams(cursor, decoded, n, written, keep, splats.shWords, recordBase);
     });
+    return ok();
+}
+
+Result<uint32_t> CloudLoader::decodeSlice(const gpu::Buffer& raw, const io::SplatEncoding& e, uint32_t n,
+                                          uint32_t written, uint32_t keep, GpuSplats& splats,
+                                          uint32_t recordBase) {
+    auto scratch = decodeScratch(n);
+    if (!scratch) return std::move(scratch).error();
+    gpu::CommandBatch batch(*device_);
+    ATHENEA_TRY(decodeInto(batch, raw, e, n, written, keep, splats, *scratch, recordBase));
     ATHENEA_TRY(batch.submit(true));
     uint32_t kept = 0;
-    ATHENEA_TRY(total->read(*device_, 0, sizeof(kept), &kept));
+    ATHENEA_TRY(scratch->total.read(*device_, 0, sizeof(kept), &kept));
     return kept;
 }
 
@@ -468,11 +472,142 @@ Result<void> CloudLoader::finishSplats(GpuSplats& splats, uint32_t written) {
     return ok();
 }
 
+Result<gpu::Buffer> CloudLoader::spzOnDevice(const io::RawSplats& raw) {
+    if (raw.packed.empty() || raw.packed.size() > UINT32_MAX - 8) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': no packed records, or past 4 GiB of them", raw.source);
+    }
+    // Whole words, and one past the end: a value read at any byte offset
+    // reads the word after it.
+    std::vector<uint8_t> words((raw.packed.size() + 3) / 4 * 4 + 4, 0);
+    std::copy(raw.packed.begin(), raw.packed.end(), words.begin());
+    return deviceBuffer(*device_, words.size() / 4, 4, "splats.packed", words.data());
+}
+
+void CloudLoader::recordSpz(gpu::CommandBatch& batch, const gpu::Buffer& packed, const io::SpzStreams& at,
+                            uint64_t byteBase, const io::SplatEncoding& e, uint32_t n, const gpu::Buffer& into) {
+    spzRecords_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["packed"].setBinding(packed.rhi());
+        cursor["records"].setBinding(into.rhi());
+        rhi::ShaderCursor p = cursor["params"];
+        p["count"].setData(n);
+        p["first"].setData(uint32_t{0});
+        p["stride"].setData(e.floatsPerRecord);
+        p["keep"].setData(e.restPerColour);
+        p["shDim"].setData(at.shDim);
+        p["smallestThree"].setData(uint32_t{at.smallestThree ? 1u : 0u});
+        p["positions"].setData(static_cast<uint32_t>(byteBase + at.positions));
+        p["alphas"].setData(static_cast<uint32_t>(byteBase + at.alphas));
+        p["colours"].setData(static_cast<uint32_t>(byteBase + at.colours));
+        p["scales"].setData(static_cast<uint32_t>(byteBase + at.scales));
+        p["rotations"].setData(static_cast<uint32_t>(byteBase + at.rotations));
+        p["sh"].setData(static_cast<uint32_t>(byteBase + at.sh));
+    });
+}
+
+Result<void> CloudLoader::spzSlice(const io::RawSplats& raw, const gpu::Buffer& packed, uint32_t first, uint32_t n,
+                                   const gpu::Buffer& into) {
+    if (raw.encoding.record == io::SplatEncoding::Record::PackedRecords) {
+        const io::PackedFields& f = raw.fields;
+        if (f.offsets.size() != raw.encoding.floatsPerRecord || f.types.size() != f.offsets.size() ||
+            uint64_t{raw.count} * f.stride > raw.packed.size()) {
+            return Error::make(ErrorCode::InvalidArgument, "'{}': packed records that do not match their fields",
+                               raw.source);
+        }
+        std::vector<uint32_t> table;
+        for (size_t k = 0; k < f.offsets.size(); ++k) {
+            table.push_back(f.offsets[k]);
+            table.push_back(static_cast<uint32_t>(f.types[k]));
+        }
+        auto fields = deviceBuffer(*device_, table.size() / 2, 8, "splats.fields", table.data());
+        if (!fields) return std::move(fields).error();
+        gpu::CommandBatch batch(*device_);
+        packedRecords_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["packed"].setBinding(packed.rhi());
+            cursor["fields"].setBinding(fields->rhi());
+            cursor["records"].setBinding(into.rhi());
+            rhi::ShaderCursor p = cursor["params"];
+            p["count"].setData(n);
+            p["first"].setData(first);
+            p["stride"].setData(f.stride);
+            p["fields"].setData(static_cast<uint32_t>(f.offsets.size()));
+        });
+        return batch.submit(true);   // the field table lives only as long as this call
+    }
+    const io::SpzStreams& at = raw.spz;
+    gpu::CommandBatch batch(*device_);
+    spzRecords_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["packed"].setBinding(packed.rhi());
+        cursor["records"].setBinding(into.rhi());
+        rhi::ShaderCursor p = cursor["params"];
+        p["count"].setData(n);
+        p["first"].setData(first);
+        p["stride"].setData(raw.encoding.floatsPerRecord);
+        p["keep"].setData(raw.encoding.restPerColour);
+        p["shDim"].setData(at.shDim);
+        p["smallestThree"].setData(uint32_t{at.smallestThree ? 1u : 0u});
+        p["positions"].setData(static_cast<uint32_t>(at.positions));
+        p["alphas"].setData(static_cast<uint32_t>(at.alphas));
+        p["colours"].setData(static_cast<uint32_t>(at.colours));
+        p["scales"].setData(static_cast<uint32_t>(at.scales));
+        p["rotations"].setData(static_cast<uint32_t>(at.rotations));
+        p["sh"].setData(static_cast<uint32_t>(at.sh));
+    });
+    return batch.submit();
+}
+
+Result<CloudLoader::DecodeScratch> CloudLoader::decodeScratch(uint32_t n) {
+    DecodeScratch s;
+    auto valid = deviceBuffer(*device_, n, 4, "splats.valid");
+    if (!valid) return std::move(valid).error();
+    auto dest = deviceBuffer(*device_, n, 4, "splats.dest");
+    if (!dest) return std::move(dest).error();
+    auto total = deviceBuffer(*device_, 1, 4, "splats.total");
+    if (!total) return std::move(total).error();
+    s.valid = std::move(*valid);
+    s.dest = std::move(*dest);
+    s.total = std::move(*total);
+    return s;
+}
+
+Result<io::RawSplats> CloudLoader::records(const io::RawSplats& raw) {
+    if (raw.encoding.record == io::SplatEncoding::Record::Floats) {
+        return raw;
+    }
+    auto packed = spzOnDevice(raw);
+    if (!packed) return std::move(packed).error();
+    io::RawSplats out;
+    out.source = raw.source;
+    out.count = raw.count;
+    out.linear = raw.linear;
+    out.antialiased = raw.antialiased;
+    out.encoding = raw.encoding;
+    out.encoding.record = io::SplatEncoding::Record::Floats;
+    const uint32_t stride = raw.encoding.floatsPerRecord;
+    out.records.resize(size_t{raw.count} * stride);
+    const uint64_t recordBytes = uint64_t{stride} * 4;
+    const uint32_t perSlice = static_cast<uint32_t>(std::max<uint64_t>(1, kSliceBytes / recordBytes));
+    for (uint32_t first = 0; first < raw.count; first += perSlice) {
+        const uint32_t n = std::min(perSlice, raw.count - first);
+        auto buffer = deviceBuffer(*device_, uint64_t{n} * stride, 4, "spz.records");
+        if (!buffer) return std::move(buffer).error();
+        ATHENEA_TRY(spzSlice(raw, *packed, first, n, *buffer));
+        ATHENEA_TRY(buffer->read(*device_, 0, uint64_t{n} * recordBytes, out.records.data() + size_t{first} * stride));
+    }
+    return out;
+}
+
 Result<GpuSplats> CloudLoader::upload(const io::RawSplats& raw, uint32_t maxDegree) {
     const io::SplatEncoding& e = raw.encoding;
+    const bool packedSpz = e.record != io::SplatEncoding::Record::Floats;   // SPZ streams or packed records
     if (raw.count == 0 || e.floatsPerRecord == 0 ||
-        raw.records.size() < size_t{raw.count} * e.floatsPerRecord) {
+        (!packedSpz && raw.records.size() < size_t{raw.count} * e.floatsPerRecord)) {
         return Error::make(ErrorCode::InvalidArgument, "'{}': no splat records", raw.source);
+    }
+    gpu::Buffer packed;
+    if (packedSpz) {
+        auto onDevice = spzOnDevice(raw);
+        if (!onDevice) return std::move(onDevice).error();
+        packed = std::move(*onDevice);
     }
     static constexpr uint32_t kPerDegree[] = {0, 3, 8, 15};
     const uint32_t keep = std::min(e.restPerColour, kPerDegree[std::min(maxDegree, 3u)]);
@@ -487,15 +622,20 @@ Result<GpuSplats> CloudLoader::upload(const io::RawSplats& raw, uint32_t maxDegr
                               e.lobes != io::SplatEncoding::kNoField);
     if (!splats) return std::move(splats).error();
     splats->linear = raw.linear || e.colour == io::SplatEncoding::Colour::LinearLight;
+    splats->antialiased = raw.antialiased;
 
     const uint64_t recordBytes = uint64_t{e.floatsPerRecord} * 4;
     const uint32_t perSlice = static_cast<uint32_t>(std::max<uint64_t>(1, kSliceBytes / recordBytes));
     uint32_t written = 0;
     for (uint32_t first = 0; first < raw.count; first += perSlice) {
         const uint32_t n = std::min(perSlice, raw.count - first);
-        auto rawBuffer = deviceBuffer(*device_, uint64_t{n} * e.floatsPerRecord, 4, "splats.raw",
-                                      raw.records.data() + size_t{first} * e.floatsPerRecord);
+        auto rawBuffer = packedSpz ? deviceBuffer(*device_, uint64_t{n} * e.floatsPerRecord, 4, "splats.raw")
+                                   : deviceBuffer(*device_, uint64_t{n} * e.floatsPerRecord, 4, "splats.raw",
+                                                  raw.records.data() + size_t{first} * e.floatsPerRecord);
         if (!rawBuffer) return std::move(rawBuffer).error();
+        if (packedSpz) {
+            ATHENEA_TRY(spzSlice(raw, packed, first, n, *rawBuffer));
+        }
         auto kept = decodeSlice(*rawBuffer, e, n, written, keep, *splats, first);
         if (!kept) return std::move(kept).error();
         written += *kept;
@@ -1280,7 +1420,9 @@ Result<io::RawSplats> readSplatRecords(CloudLoader& loader, const std::filesyste
         if (!sog) return std::move(sog).error();
         return loader.records(*sog, maxDegree);
     }
-    return io::readSplats(path);
+    auto raw = io::readSplats(path);
+    if (!raw) return std::move(raw).error();
+    return loader.records(*raw);
 }
 
 }   // namespace athenea::scene

@@ -64,6 +64,7 @@ relative to themselves. Under WSL2 a bake is refused: WSL2 does not load OptiX.
 | `AOFX_PLUGIN_PATH` | extra directories of AOFX bundles, searched before the system path and before `--path`. After those come `aofx/` beside the executable's folder (a release's layout) and the build tree's bundles. |
 | `ATHENEA_MCP` | the server the OpenFX plugin starts (§6.1), in place of the `athenea-mcp` its bundle carries in `Contents/Resources/bin`, and of one on the `PATH`. |
 | `ATHENEA_OFX_DEBUG` | set to anything: the OpenFX plugin prints each frame's request and the server's answer (its time) on standard error. |
+| `ATHENEA_STREAM_TRACE` | set to anything: each live pool logs, at every update, the epoch shown, the pages placed, the epochs waiting and being built (pages left), the loads queued and in flight, the free staging and its source's counters. |
 | `ATHENEA_BACKEND` | which device to open, as a comma-separated order: `metal,cuda,vulkan,d3d12`. Unknown words warn and are skipped. |
 | `ATHENEA_GPU_VALIDATION` | any value: the graphics API's validation and debug layers (D3D12's needs Windows' Graphics Tools), for a failure the driver otherwise gives no reason for, such as a pipeline it cannot make. Slow. |
 | `ATHENEA_GPU_BUDGET` | the device memory this run may hold, in MiB. Without it the budget is Metal's recommended working set (`recommendedMaxWorkingSetSize`); on CUDA and Vulkan there is none unless this sets one. The device prints the one in use (`GPU memory budget: N MiB`). An allocation past it fails as `OutOfMemory` before it is made, streaming budgets and splat shadows are sized against what it leaves (§3.3, §9), and it is how a run is held below what other jobs on the same GPU leave. On Apple silicon an allocation must also fit the physical memory the system has free less 1.5 GiB kept for the rest of the machine -- free counting what it hands back on demand (inactive, purgeable and speculative pages, and the file cache) -- whatever the budget says: past it the machine swaps the GPU's memory and stops drawing its windows. |
@@ -176,7 +177,7 @@ athenea info
 | `--degree` | 0..3 | `3` | cap on the harmonics evaluated |
 | `--lod` | number | `0` | pixels a merged cell may span; 0 draws every splat |
 | `--stream-budget` | integer | `0` | `.athc`: splats kept on the device; 0 reads the file whole |
-| `--no-antialias` | flag | off | drop the Mip-Splatting 2D filter compensation |
+| `--no-antialias` | flag | off | drop the Mip-Splatting 2D filter compensation for every cloud, over what an `.spz` says |
 | `-o`, `--output` | path | `out.exr` | half RGBA plus a `Z` channel |
 
 Checked while it runs, not while it parses:
@@ -256,6 +257,7 @@ athenea convert car_tx.usdc car_tx.athc
 | `--ratio` | 1..10000 | off | merge by pairs instead of cutting the octree, until this many times fewer gaussians; the four tolerances above are not read then |
 | `--edge` | 0..2 | `0.15` | `--ratio`: a colour difference, sRGB-encoded, never merged across |
 | `--max-angle` | degrees, 0..180 | `60` | `--ratio`: normals further apart are never merged |
+| `--merge-growth` | factor | `0`: none | `--ratio`: no merge wider (the square root of its covariance's trace) than this times the wider of the two it merges; the ratio is then the most it goes to |
 | `--max-aspect` | 1..1000 | `1000` (off) | `--ratio`: a merge whose plane comes out longer than this against its width (or than 1.25 times its members' already were) is refused -- a chain of discs along a trim would merge into a needle that smears |
 | `--merge-glass` | flag | off | `--ratio`: transmitting gaussians (glass) merge among themselves too; off, glass is kept as it is |
 | `--no-surfels` | flag | off | `--ratio`: a flat merge stays a thin gaussian rather than a surfel |
@@ -267,6 +269,9 @@ athenea convert car_tx.usdc car_tx.athc
 | `--max-cost` | > 0 | `0` (off) | `--ratio`: no merge costs more than this; `--ratio` is then the most it goes to, and where every pair left costs more it stops short of it (on the Corvette's pieces 0.25 left a door 6x, a grille 2x) |
 | `--max-pixels` | > 0 | `0` (off) | `--ratio`: no merge wider than this many pixels on `--camera`'s screen: one that wide cannot hold an edge, and its tails stand out past the panel as hairs. On the Corvette (baked a gaussian a pixel of its camera) 3 left 2.14M of the 2.90M seen, 46 dB from the full cloud and no hairs; with none, the 1.07M of 5x had them |
 | `--merge-opacity` | `mean`, `mass`, `mass-tight`, `falloff` | `mean` | `--ratio`: a merge's opacity: its members', area weighted, the merge widened as far as they overlapped; or its mass over that widened area; or its mass over the area its moments give, not widened; or that mass unheld up to 5 -- Spark's harder kernel, where an opacity D over 1 draws as 1 - (1 - g)^A, A = exp((D² - 1)/e), a flat top as solid as the members were. Measured on the Corvette's pieces: `mass` is `mean` on opaque surfaces, `mass-tight` leaves gaps; on the whole car, see `--hardness` |
+| `--prune-share` | 0 to 1 | `0.5` | `mix`: the share of the excess pruned before the merges |
+| `--prune-score` | `area` or `edge` | `area` | `prune`, `mix`: what a gaussian is kept for -- opacity x the area of its two widest axes, or opacity x the square root of that area x its widest over its middle axis, so thin gaussians (an edge, a feather's barb) are not the first to go |
+| `--merge-aspect` | ratio | `1000`: none | `pairs`, `mix`: no merge longer than this against its width (or 1.25 times its members' own) |
 | `--hardness` | flag | off | `--ratio`: a merge written as a surfel is drawn exp(-(\|u\|^p + \|v\|^p)/2) in its own axes, p from its members' kurtosis (an even patch a box, a peaked one the gaussian), written as `primvars:athenea:splat:hardness`; it keeps its moments, unwidened, so a reader that knows no p draws the gaussian they give. With `--merge-opacity falloff --max-pixels 4` the Corvette came out 1.85M of 5.38M with no hairs, 42.8 / 44.7 / 46.7 dB (day front, day rear, night), where gaussian merges needed 3 px and 2.14M; at 5 px (1.24M) the front bumper frays |
 | `--max-hardness` | 2 to 32 | `16` | `--hardness`: the largest p |
 | `--no-light-bands` | flag | off | `--ratio`: merge across a lamp group's light changing fourfold (`primvars:athenea:splat:lightLayer:<group>`); off, a lit and an unlit gaussian are kept apart, so a merged disc does not spread a headlight at night |
@@ -468,6 +473,149 @@ genlock (`ATHENEA_WITH_GENLOCK`, on when `third_party/genlock` is checked out).
 Every frame written carries its timecode and rate as EXR attributes, along
 with the TAI instant, the frame index, the USD time and how late the wake was.
 
+### 2.7.1 `athenea stream` — a sequence of pages into a live stream
+
+Plays the SPZ pages `athenea flatten --range` wrote into the live stream a
+stage names (`AtheneaLiveSourceAPI`, §4.3) and draws the stage while it plays,
+in the same process: a producer thread pushes each frame's pages as one epoch,
+with its PTP time, and the frame draws the last epoch whose every page is on
+the device.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `stage` | path, required | — | a stage with a ParticleField under `AtheneaLiveSourceAPI`; its `chunks` at least the sequence's pages a frame, its `chunkSplats` at least `--chunk-splats`, `degree` 3 |
+| `pages` | directory or `.athv`, required | — | holds `stream.txt` and the pages; or a video `athenea video-encode` wrote (§2.7.2), each frame decoded by the hardware decoder as it is pushed |
+| `--stream` | name | the one the stage names | |
+| `--camera` | prim path | the stage's first | |
+| `--size` | `WIDTHxHEIGHT` | `960x540` | |
+| `--rate` | epochs a second | the sequence's (`stream.txt`, the stage's time codes a second) | |
+| `--loops` | integer | `1` | the sequence played again, epochs counting on |
+| `--lockstep` | flag | by the clock | each frame pushes its epoch and draws until the stage shows it: every epoch drawn once |
+| `--reference` | stage path | none | with `--lockstep`: drawn at each frame's time code and compared with the frame on the device (p99, max, pixels past 2 code values) |
+| `--frame-producer` | flag | a producer thread | by the clock: the frame thread pushes the epochs due before each frame -- for a run at background priority, where a sleeping producer thread wakes late and pushes in bursts |
+| `--splat-display-blend` | flag | linear blend | the live cloud blended as a standard viewer blends, which is what flatten's colours are fitted for |
+| `-o`, `--output` | directory | none | each frame shown as `frame_NNNNN.exr` (and `reference_NNNNN.exr`), carrying `athenea:timecode`, `athenea:ptpTime` (seconds) and `athenea:epoch` |
+
+By the clock it prints the frames drawn, the epochs shown and skipped, how
+late an epoch was shown after it was due, and whether the rate held (every
+epoch drawn). The producer is in this process: the named queues are the
+engine's own (`lod::PageQueue::named`).
+
+A `.athv` plays into the same stage: a video frame is an epoch, its chunks
+the pages, and the stage's `chunks` must be at least those of the video's
+largest frame (`chunkSplats` 32768, `degree` 3). The decoded picture stays
+where the decoder wrote it; the device reads it there and writes the splats
+into the store. The run also prints how long the hardware decoder took a
+frame (median and p95) and how many pages were placed. macOS only for now.
+
+### 2.7.2 `athenea video-encode` — splat frames as hardware video
+
+Lays each frame's gaussians into planes on the device -- sorted by Morton
+code, each attribute a luma tile of one mosaic, quantised over its group of
+pictures' range (`shaders/athenea/scene/video_planes_encode.slang`) -- and
+has the hardware HEVC encoder encode the mosaic. Positions are twice
+`--bits`: the high half goes beside the video, deflated and exact, the low
+half through the codec. Chroma is held at mid grey, so the 4:2:0 every
+decoder takes loses nothing. The file is a `.athv` (§8.2).
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `input` | directory, or splat files, required | — | a pages directory (`stream.txt`, every frame), or files read as one frame |
+| `-o`, `--output` | path, required | — | the `.athv`; written under a partial name and renamed when complete |
+| `--bits` | `8` or `10` | `8` | HEVC Main or Main 10; a position is 16 or 20 bits |
+| `--range` | `FIRST:LAST` | every frame | the sequence's frames by index from 0, both included |
+| `--quality` | 0 to 1 | `0.5` | the encoder's constant quality |
+| `--megabits` | Mbit/s | by quality | an average bit rate instead |
+| `--keyint` | pictures | the rate (a second) | between key frames: where a player can start |
+| `--intra` | flag | off | every picture a key frame |
+| `--hi` | `side` or `video` | `side` | the position high parts beside the video (exact) or as planes of their own (through the codec, and not exact: `docs/decisions.md`, "Video planes") |
+| `--order` | `frame`, `first` or `stable` | `frame` | each frame sorted by Morton code, or the first frame's order kept while the count is the same; `stable` is `first` for frames that list the same gaussians in the same order (`flatten --keep-order`), every frame the same count, and says so in the file (`stableOrder`): index i is one gaussian throughout |
+| `--range-group` | frames | the key interval | frames whose attribute ranges are one union: the whole sequence's keeps a still value's quantised step put |
+| `--hold-boxes` | flag | off | with `--order stable`, `--position-block` and group ranges: each block's box the union over its range group, so its position steps do not jump |
+| `--position-target` | metres | `0`: off | with `--position-block`: adaptive precision -- each block's own high bits (a byte after the chunk's boxes): none where its box is no wider than this, else enough that a step is no wider than this over 255 |
+| `--geometry` | flag | off | position, scale and rotation exact beside the video (16-bit positions, 10-bit log scales over the sequence's ranges, the store's rotation word), the planes only opacity and colour |
+| `--geometry-key` | frames | `0`: every frame absolute | with `--geometry`: frames from one geometry key to the next; the frames between send each gaussian's difference from the frame before (needs `--order stable` and `--range-group` of the whole sequence) |
+| `--geometry-stagger` | flag | off | with `--geometry-key`: no whole key frames; blocks of 256 gaussians refreshed in turn, each once an interval |
+| `--geometry-position-bits` | 10 to 16 | `16` | with `--geometry`: a position axis over the sequence's range (the sparrow's 0.23 m: 12 bits are 56 um) |
+| `--geometry-scale-bits` | 6 to 10 | `10` | with `--geometry`: a log scale over its range |
+| `--geometry-rotation-bits` | 5 to 10 | `10` | with `--geometry`: each component of the store's smallest-three rotation, rounded (the word keeps 10 bits, the low ones zero) |
+| `--geometry-predict` | 1, 2 or 3 | `1` | with `--geometry-key`: the residual from the frame before, from its motion carried on (2 b - c), or 3, motion: each run of 256 gaussians' rigid motion fitted from what the decoder holds (sent, 32 bytes a run), the rotation sent as a turn in the gaussian's own frame in steps widened by its shape (none where its extent cannot show it), and keys that send what the decoder would hold, so a key does not jump. 3 runs the loop twice before writing so its last frame leads into its first |
+| `--geometry-hold` | P,S,R, each 0 to 64 | off | with `--geometry-key` and `--geometry-predict` 1 or 3: between keys, a position axis within P of its steps of the value the decoder holds (with 3: of its prediction), a log scale within S, or a rotation whose three components are each within R (its index unchanged) keeps the held value and is sent as no change. The file is unchanged in format: a decoder needs no option. A held value is never more than P, S or R steps from the source |
+| `--geometry-video` | flag | off | position, log scale and rotation as luma planes of the video, nothing beside it but the record's ranges: a coarse plane each (8 bits over the sequence's range), and for a folded group two fine planes (FORMAT.md §8e). The rotation goes as x, y, z of its canonical form (w >= 1/2 rebuilt). 8 bits only; not with `--geometry`, `--position-block` or `--hi video`; meant with `--order stable`, `--range-group` of the whole sequence and a `--keyint` (predicted pictures keep the geometry's codec error still from frame to frame) |
+| `--geometry-fold` | P,S,R, each 0 to 255 | `16,16,16` | with `--geometry-video`: the fold K of position, log scale and rotation. A folded attribute is sent at 255 x 255 / K levels (K 16: 4064, 60 um a level over the sparrow's 0.245 m) as two triangle waves a quarter period apart, which the coarse plane places while its codec error is under K / 4 of its codes; 0 sends the coarse plane alone. Each folded group adds six planes |
+| `--ranges` | `group` or `frame` | `group` | each attribute's range over a group of pictures (from one key frame to the next), or each frame's own |
+| `--sh-degree` | 0 to 3 | `3` | at most the source's |
+| `--columns` | tiles a row | the squarest mosaic | |
+| `--max-picture` | `WIDTHxHEIGHT` | 16384 a side | the largest picture, for a decoder that takes less (a phone's); a frame that needs more goes as slices |
+| `--position-block` | splats | `0`: the frame's range | a power of two from 64 to 32768: each run of that many splats of the Morton order quantised over its own box (six halves at the head of each chunk's side data) |
+| `--position-high-bits` | 0 to `--bits` | `--bits` | a position's bits past the sample, sent exact beside the video; 0 sends none (with `--position-block`, the box is what keeps it near) |
+| `--chroma` | flag | off | colours as YCoCg: each colour's Y a luma plane, its Co and Cg the Cb and Cr of that tile, one sample a 2 x 2 block of four consecutive Morton splats; 8 bits only |
+| `--chroma-weight` | `mean` or `area` | `mean` | a block's chroma: the plain mean of its splats, or weighed by opacity x the area of their two largest axes |
+| `--reduce` | `pairs`, `prune`, `mix`, `cut`, `keep` | `pairs` | with `--gaussians`: merged by pairs; the least contributing (opacity x the area of the two widest axes) dropped; half the excess dropped, then merged; or the octree's cut by error, its tolerances scaled to the count. Whatever a capped merge leaves above the count is dropped. `keep`: the first frame's highest scored, the same records every frame (what `--order stable` needs) |
+| `--merge-growth` | factor | `0`: none | `pairs`, `mix`: no merge wider (the square root of its covariance's trace) than this times the wider of the two |
+| `--merge-opacity` | 0 to 3 | `0` | `pairs`, `mix`: 0 the members' mean, the merge widened, under 0.99; 1 their mass over the widened area; 2 their mass, not widened; 3 their mass, not widened, up to 5 (drawn with Spark's harder kernel) |
+| `--gaussians` | count | the frame's | about this many a frame: each frame merged by pairs where merging loses least (the decimation's NanoGS merge, `docs/decisions.md`), never dropped; no surfels |
+| `--rendition` | 0..65535 | `0` | the id every record carries, one a rendition of a ladder (`athv_stream.py`) |
+| `--rate` | frames a second | the sequence's, or 30 | stored in the file; `athenea stream` plays at it |
+| `--hevc` | path | none | the video alone as Annex B, for `ffprobe`; its pictures are planes, not an image |
+| `--check` | flag | off | each picture decoded again by the hardware decoder, turned back into splats on the device and measured against its source |
+
+**Sizes.** A picture is at most 8192 x 8192 in area and 16384 a side (the
+hardware encoder refused 10240 x 9600). A frame whose planes need more is cut
+into slices -- runs of its Morton order, a picture each, every one a key
+frame -- and a frame is still one epoch. Every picture is the size of the
+first frame's; a frame needs a tile of 512 x 64 rows for every 32768 splats,
+and a plane for each attribute: 59 at degree 3 (62 with `--hi video`). With `--max-picture` the picture is held
+to that size as well: 1920 x 1080 takes three columns of tiles, so a
+300847-splat frame goes as four pictures of 1536 x 960 at degree 0 (14
+planes) and five of 1536 x 1024 at degree 1 (23); degree 3 (59 planes) does
+not fit 1080 rows. The level the encoder writes in the SPS follows the
+picture's size.
+
+**What it prints.** The mosaic and the slices; MB a frame (the video and the
+side data apart) and Mbit/s at 24 and 30 a second; a key picture's size
+against a predicted one's. With `--check`, for each group of attributes
+(position, opacity, log scale, rotation, base colour, rest) the largest and
+the mean error in steps of its own quantisation (a position's of the 16 or 20
+bit one), whether every position high part came back exact, and the hardware
+decode and the planes -> gaussians kernel in ms (medians, the kernel
+submitted and waited for).
+
+macOS (VideoToolbox) only for now; elsewhere the encoder is refused
+(`Unsupported`).
+
+### 2.7.3 `athenea video-decode` — a video's frames decoded and timed
+
+Every picture of a `.athv` through the hardware decoder and the planes ->
+gaussians kernel (`video_planes_decode.slang`), into a cloud on the device,
+nothing drawn. Prints, per picture, the medians of the record's read, the
+hardware decode (and its p95) and the kernel, submitted and waited for as
+`ATHENEA_STAGES` times a kernel.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `input` | `.athv`, required | — | |
+| `--frames` | pictures | all | |
+| `--frame` | source frame, from 0 | `0` | with `--dump-compare` |
+| `--dump-compare` | CSV path | none | another decoder's gaussians of `--frame`, a row a splat in the frame's order (`i,x,y,z,opacity,lnsx,lnsy,lnsz,r,g,b,...`, a header line first): each group's largest and mean difference from this decode and the rows past a tolerance (1 mm, 0.02, 0.1, 0.02), and this decode's opacity and widest log scale |
+| `--luma-histogram` | flag | off | each picture's plane 0 as the decoder left it: lowest and highest sample, and the share at 128, under 16 and over 235 (a full-range picture spans 0-255) |
+
+### 2.7.4 `athenea video-flicker` — how much a decode's error moves
+
+Two directories of `frame_NNNNN.exr` (`athenea stream -o`): frames drawn from
+a video and the same frames drawn from its source. Per pixel, the largest
+channel of |(video_k - source_k) - (video_k-1 - source_k-1)| in sRGB code
+values -- the error's change from one frame to the next, which is what reads
+as flicker; an error that holds still adds nothing. Prints the mean, p99 and
+p99.9 over every pixel of every pair (a kernel; the host reads its histogram).
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `video` | directory, required | — | |
+| `source` | directory, required | — | the same frame numbers and size |
+| `--first`, `--last` | frame numbers | `1`, `61` | |
+| `--rect` | `X0 Y0 X1 Y1` | the whole image | only these pixels, top row 0, the ends past the last (a part of the frame: a tail, a wing) |
+
 ### 2.8 `athenea mesh2splat` — a model into gaussians
 
 The conversion itself, and the light bake that follows it. What each stage
@@ -530,7 +678,7 @@ recipe is §3.1 below.
 | `--validate-size` | W H | `960 540` | the frames, in pixels |
 | `--validate-paths` | integer | `512` | paths a pixel the GT holds |
 | `--validate-bounces` | integer | `6` | bounces of the GT's paths |
-| `--validate-material` | prim path or name | every material | only this one (repeatable) |
+| `--validate-material` | prim path or name | every material | only this one measured (repeatable); the frames still leave every other material's meshes out of the conversion, and `flatten` still draws its file with every mesh of the stage off |
 | `--validate-sky` | `white` or an image file | the stage's lights | every frame under another sky -- a constant of radiance one, or that image on the stage's domes -- with its other lights off; the GT is kept as `gt_<sky>.exr` |
 | `--shadow-catcher` | flag | off | convert the shadow `--prim` casts on its ground instead of `--prim`: a patch of gaussians on the ground under and around it, baked as a TX transfer (the object and the ground are what its rays meet), written with `primvars:athenea:splat:catcher` and drawn black, covering what the object takes of the light. Implies `--transfer`, one cell everywhere and `--transfer-cells 32` unless that is given (a sun's shadow edge under the object is narrower than 16 x 16 cells) |
 | `--catcher-ground` | prim path | found | with `--shadow-catcher` or `--light-catcher`: the ground; found as the largest flat mesh outside `--prim` whose top is at its bottom and which reaches under it |
@@ -611,6 +759,9 @@ kept beside the files).
 | `--spz-version` | `3` \| `4` | `3` | 3 is gzip and what Spark reads; 4 is ZSTD and needs it in the build |
 | `--spz-sh1-bits`, `--spz-sh-rest-bits` | 1..8 | `8`, `8` | bits SPZ keeps of band 1, and of bands 2 and 3 |
 | `--time` | number | `0` | USD time code |
+| `--range` | `START:END[:STEP]` | unset | a sequence: every time code flattened and cut into SPZ pages, one epoch of a live stream a frame (§3.7); forces `--format spz` and makes `-o` a directory |
+| `--chunk-splats` | integer | `65536` | with `--range`: the most gaussians a page holds; a frame's gaussians are ordered along a Morton curve of its box and cut into runs of this many, so a page is a part of the model |
+| `--keep-order` | flag | off | with `--range`: each frame cut into pages in the order the stage lists its gaussians, not along a Morton curve: a skinned cloud's gaussian keeps its index in every frame (what `video-encode --order stable` needs) |
 | `--validate` | directory | none | measure a written file against the meshes path traced, material by material (§3.1, *A conversion measured*) |
 | `--validate-stage` | path | the input | the stage of meshes the GT is traced from |
 | `--validate-format` | `ply` \| `spz` | `spz` | which file is read back and measured |
@@ -1497,6 +1648,34 @@ light per unit of the group's radiance: the group's material at
 Rules and time curves are not evaluated (a state and levels are what a frame
 takes), and only the rasteriser adds the layers.
 
+### 3.7 An animation over a live stream
+
+A skinned cloud played as a live stream of pages: each frame posed, flattened
+under the stage's light and cut into pages that lie together, then pushed an
+epoch a frame onto the stream a stage names. What a viewer is sent is
+standard SPZ, a frame at a time; the stage shows only whole frames.
+
+```sh
+athenea mesh2splat SparrowBird.usda --skinned --transfer --resolution 256 -o sparrow_tx.usdc
+# sparrow.usda: the cloud, a camera and a dome (the light flatten bakes in)
+athenea flatten sparrow.usda --range 1:61 --chunk-splats 32768 --spz-version 4 -o pages
+# live.usda: a ParticleField under AtheneaLiveSourceAPI, stream "sparrow",
+# chunks = the manifest's, chunkSplats 32768, degree 3, turned 270 degrees
+# about x on a Z-up stage (the pages are Y up, and SPZ's axes are turned)
+athenea stream live.usda pages --lockstep --reference sparrow.usda --splat-display-blend -o frames
+athenea stream live.usda pages --rate 30 --loops 3 --splat-display-blend
+# the same frames as hardware video: a fifth of the pages' bytes at quality 0.5
+athenea video-encode pages -o sparrow.athv --check
+athenea stream live.usda sparrow.athv --rate 30 --loops 3 --splat-display-blend --frame-producer
+```
+
+`pages/stream.txt` lists the rate, the most pages a frame (`chunks`),
+`chunkSplats` and a line a frame: index, time code, pages, gaussians, bytes;
+the pages are `f<index>_c<page>.spz`. A frame of fewer pages than the most
+removes the rest. `--reference` measures the whole path -- the fit to degree
+3, SPZ's quantisation, the stream and Hydra -- against the skinned cloud as it
+moves.
+
 ## 4. Authoring for this engine in USD
 
 ### 4.1 Pointing an application at the plugin
@@ -1923,6 +2102,43 @@ capture graded here does not match the same numbers applied to its sRGB.
 | `primvars:athenea:asset` | asset | — |
 | `primvars:athenea:lod:threshold` | float | `1` |
 | `primvars:athenea:stream:budget` | int64 | `0`, read whole |
+
+**`AtheneaLiveSourceAPI`** — a cloud drawn from a live stream of SPZ pages that
+producers in the same process push, an epoch at a time, onto the stream of
+this name (`lod::PageQueue::named`). A frame draws the last epoch whose every
+page is on the device, never half of one; an epoch without room beside the
+one shown, or with a page that does not decompress, is dropped with a warning.
+Drawn by the rasteriser only, without levels of detail. Prims that name one
+stream share it and show the same epoch. By the latest, epochs waiting are
+collapsed into the newest (each chunk's last page) and the next loads while
+one is placed. A stream nobody reads keeps only its newest complete epoch: a
+stage that names it later starts from there. An epoch is whole when it has a
+page for as many distinct chunks as it says; each page is drawn with the
+antialiasing its own SPZ says.
+
+With `sync = clock` a frame shows the newest complete epoch whose `ptpTime`
+(nanoseconds) has come by the frame's instant -- the host's genlocked clock
+(`StageRenderer::setLiveClock`), or the system clock without one -- and later
+complete epochs wait, eight at most: past that the oldest is dropped with a
+warning. Every epoch due is applied in order, so a clock that jumps forward
+shows the newest due. One that jumps back leaves the shown epoch as it is: an
+epoch is a change on the one before and is not undone; the next waits for the
+clock to reach it again. Epochs are placed on the device ahead of their instant
+as the store has room (`primvars:athenea:stream:budget`: the default, two
+epochs, holds one ahead), so each shows in the very frame its instant comes;
+one that could not be placed in time shows as soon as it is, and is counted
+late.
+
+| Attribute | Type | Default |
+|---|---|---|
+| `primvars:athenea:live:stream` | string | —, nothing drawn |
+| `primvars:athenea:live:chunks` | int | `64`; page chunk ids are 0 to this less one |
+| `primvars:athenea:live:chunkSplats` | int | `65536`; the most gaussians a page holds |
+| `primvars:athenea:live:degree` | int 0..3 | `3`; harmonics kept |
+| `primvars:athenea:live:sync` | token `latest` \| `clock` | unauthored: what `stream_open` asked, else `latest` |
+| `primvars:athenea:live:loaders` | int 1..64 | `4`; threads that read and decompress pages |
+| `primvars:athenea:stream:budget` | int64 ‹gaussians› | `0`: the store grows with what is sent (room for the shown epoch and two more), up to three times `chunks` × `chunkSplats` |
+| `extent` | float3[2] | —; the stream's bounds until an epoch is shown, whose pages' bounds then are |
 
 **Levels of detail of a ParticleField** — the same cloud converted at several
 cells (`athenea mesh2splat --lod-levels`).
@@ -2448,6 +2664,42 @@ Standard output carries protocol only; logging goes to standard error.
 | `convert` | a splat capture into a USD stage |
 | `timings` | several frames of the open stage, and their median |
 | `settings` | what the session holds: the stage, the last frame, what a render can be asked for |
+| `stream_open` | a live stream another process feeds; answers `{"ring", "bytes"}`, the shared memory to write pages into |
+| `stream_commit` | one epoch's pages, each named by where it lies in the ring |
+| `stream_close` | closes the stream and removes its ring |
+
+**A live stream from another process.** A stage names the stream in an
+`AtheneaLiveSourceAPI` prim (§4.3); a producer that is not in the server's
+process -- a Python script, a host application -- feeds it through three tools:
+- `stream_open` `{name, chunks, ringBytes, sync}` makes a ring of shared memory
+  (POSIX shared memory on macOS and Linux, a named file mapping on Windows;
+  64 MiB by default) and answers its name, which Python's
+  `multiprocessing.shared_memory.SharedMemory(name=...)` opens as it is.
+  `sync` (`latest`, `clock`) is what a stage that does not say shows.
+- The producer writes SPZ files into the ring, then `stream_commit`
+  `{name, epoch, epochPages, pages: [{chunk, op: add|replace|remove, offset, bytes, bounds, ptpTime}]}`:
+  `offset` and `bytes` say where each page lies; `epochPages` is the epoch's
+  pages in all (this call's by default), so an epoch may come over several
+  calls. The pages are copied out of the ring before the answer: the ring may
+  be written over as soon as it comes. A call is refused whole for a page past
+  `chunks` or outside the ring, an `epoch` that is not an integer from 1 (at
+  most 2^62), an op other than add, replace or remove, one chunk twice, or an
+  `epochPages` below the pages sent.
+- One session at a time feeds a stream: a second `stream_open` of a name open
+  elsewhere in the server's process is refused. A ring is named
+  `al-<hash>-<pid>-<random>`, so a crashed server's ring never blocks a new
+  one; on Linux the rings of processes that are gone are removed when a stream
+  opens.
+- `bounds` (min xyz, max xyz) is what the page covers; the stream's bounds are
+  the union of its shown pages' -- and, before any epoch is shown, the prim's
+  `extent`.
+- A frame draws the last epoch whose pages are all on the device: the render
+  that follows a commit may still show the epoch before.
+
+`scripts/examples/live_producer.py` does all of it with the standard library:
+`live_producer.py --mcp <build>/bin/athenea-mcp --epochs 6 --out <dir> a.spz b.spz`
+writes a stage naming the stream (or takes `--stage`), commits the files as
+chunks epoch after epoch, and renders a PNG after each.
 
 **`render`'s `output` writes two different files.** A name ending in `.exr`
 gets the beauty's own numbers, linear. Any other name gets the frame **as it
@@ -2647,6 +2899,18 @@ running it; they are listed in [development.md §3](development.md#3-working-in-
 or a bare `meta.json` (PlayCanvas, needs libwebp), `.athc` (this engine's
 chunked container).
 
+An `.spz` (versions 2 to 4) is the engine's input contract for splats:
+- **Axes.** The file's coordinate-system extension says what its data is
+  stored in; without one it is right-up-back, the format's default. Right-up-back
+  and right-down-front are read; any other system is refused.
+- **Antialiasing.** The header's `antialiased` flag decides whether the cloud
+  is drawn with the Mip-Splatting filter's compensation, whatever the frame's
+  default; formats that do not say take the default (on). `--no-antialias`
+  turns it off for every cloud.
+- **Memory.** The six quantised streams stay packed until the device turns
+  them into records (65 bytes a splat at degree 3, against 236 as
+  floats).
+
 **Points read.** `.ply`, `.xyz`, `.txt`, `.pts`, `.csv`, and COLMAP's
 `points3D.txt` and `points3D.bin`.
 
@@ -2660,6 +2924,72 @@ and 4; 4 needs zstd), glTF `.glb` with `KHR_gaussian_splatting`, and USD
 
 **Volumes written.** `athenea vdb2splat --back` and `--make-fixture` write
 `.vdb` float grids, fog volumes, through OpenVDB.
+and 4; 4 needs zstd; each carries the coordinate-system extension saying
+right-up-back), glTF `.glb` with `KHR_gaussian_splatting`, and USD
+(§2.8.1).
+
+**Pages written.** `athenea flatten --range` writes a directory of SPZ pages
+and its `stream.txt` (§3.7), which `athenea stream` reads.
+
+**Video written.** `athenea video-encode` writes a `.athv`, version 2: a
+128-byte header (codec, bits, rest coefficients, chunk size, mosaic columns,
+the most splats a picture holds, whether the position high parts are planes,
+the source's antialiasing, whether colour is in chroma, the rendition id, the
+rate and the rate as a fraction, the source frames, the quality, the position
+block and high bits) and a record a picture, each whole
+in itself. A record starts with a fixed prefix -- magic `ATVF`, record type
+(u16, 0), rendition (u16), presentation frame (u32), PTP time (u64 ns at
+offset 12), the record's bytes, version and flags (bit 0 a key picture) -- so
+a relay routes on its first 28 bytes; then its index, the source frame and
+which of its slices it is, where its splats start in the frame, its splats,
+time code and timecode label, the ranges (two floats an attribute), the
+side data deflated (zlib: each chunk's blocks' boxes, then its position high
+parts), the HEVC parameter sets on a key picture
+and the access unit as length-prefixed NAL units. Little endian; version 1
+files are still read. `modules/video/include/athenea/video/Athv.h` is its
+specification.
+
+**Video sent as a stream.** `scripts/examples/athv_stream.py` (Python
+standard library) reads one `.athv` per rendition -- the same frames at
+other sizes and qualities, each encoded with its own `--rendition` -- and
+writes their records to standard output at the files' rate, looping, for a
+transport to carry (a WebSocket server that forwards stdout, or
+`srt-live-transmit file://con "srt://HOST:9000?mode=caller&latency=120"`).
+Each message is a u32 little-endian length and that many bytes: a manifest
+(magic `ATVM`, record type 1, rendition 0xFFFF, the same fixed prefix, then a
+u32 length and JSON: the rate as a fraction, the loop's frames and, per
+rendition, its id, gaussians, SH degree, quality, pictures a frame and their
+size, mean Mbit/s, codec string and hvcC), first and then once a second; and
+every record, byte for byte as the file holds it but for the presentation
+frame (offset 8: counts on across loops, the same for the same instant in
+every rendition) and the PTP time (offset 12: `CLOCK_REALTIME` in ns when
+sent); and, with `--anc` or `--env`, ancillary data (magic `ATVA`, record
+type 2, rendition 0xFFFF, the manifest's layout: JSON such as the
+environment the frames were drawn under) right after each manifest. Frame k
+of every rendition goes before frame k + 1, at start + k / rate
+on the monotonic clock, so the rate does not drift.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `athv` | paths, required | — | one a rendition; the same frames at the same rate, distinct rendition ids |
+| `--rate` | frames a second | the files' | |
+| `--loops` | count | `0`: forever | |
+| `--manifest-every` | frames | the rate (a second) | |
+| `--anc` | JSON path | none | ancillary data (record type 2, magic `ATVA`, the manifest's layout): sent right after every manifest and again when the file changes |
+| `--env` | URL | none | an environment block naming that URL: the sparrow's dome, its latlong turned into the cloud's space (`toWorld`) |
+| `--spin-ms` | ms | `12` | how long before a frame's time it stops sleeping and spins: a sleeping process wakes up to ~10 ms late (3 ms left 7 ms of jitter, 12 ms 0.5 ms) |
+| `--stats` | flag | off | a line a second on stderr: frames a second, Mbit/s, how late the latest frame went out |
+
+`scripts/examples/athv_read.py` is the other end: it reads the messages from
+standard input for `--seconds` (default 10) and prints frames a second,
+Mbit/s in all and per rendition, the gaps between frames as they arrive and as
+the sender stamped them (median and the largest departure from the rate) and
+the frames missing; a message with another magic is counted and the stream
+resynchronised on the next `ATVF`. With `--info FILE` it describes a `.athv`
+(version 2) instead: the header and the mosaic it implies, the records'
+sizes, the first record, the SPS's profile, tier and level, and the WebCodecs
+codec string and `hvcC` record built from that record's VPS, SPS and PPS
+(`--hvcc OUT` writes it).
 
 **Images written.** OpenEXR, linear premultiplied, bottom row first inside the
 engine and written top row first as the format wants. A frame is half by
@@ -2677,6 +3007,9 @@ Cryptomatte layer is always float. PNG is written only as the MCP preview.
 | `athenea stage` | one EXR; or, with `--render-settings`, one per product |
 | `athenea view` | nothing, or one EXR with `--snapshot` |
 | `athenea live` | one EXR a frame, numbered, each with its timecode |
+| `athenea stream` | nothing, or with `-o` one EXR a frame shown |
+| `athenea video-encode` | a `.athv`, and with `--hevc` the video alone as Annex B |
+| `athenea video-decode` | nothing; timings on standard output |
 | `athenea mesh2splat` | a USD stage holding the cloud |
 | `athenea vdb2splat` | a USD stage holding the gaussians; with `--back`, a `.vdb`; with `--make-fixture`, a `.vdb` and nothing else |
 | `athenea flatten` | `.ply`, `.spz`, `.glb` and USD files of the flattened clouds, the composed stage beside them, and with `--validate` what `mesh2splat --validate` writes |
@@ -2716,6 +3049,8 @@ A script's own header says what it needs and where it puts things.
 | `measure: an empty window` | `athenea compare --window` (or the effect's `window`) holds no pixel | give X0 < X1 and Y0 < Y1 inside the image |
 | a shader compile error naming a path | the shaders on disk do not match the binary | rebuild, or point `ATHENEA_SHADER_DIR` at this build's `shaders` |
 | `this build reads no .spz` | zstd was missing when this binary was built | rebuild with zstd, or convert the capture elsewhere |
+| `video: the stream's SPS says video range (16-235); video planes are full range` | an HEVC stream whose VUI does not set full range was given to the planes decoder | encode with `athenea video-encode` (full range, '420f'), or re-encode the stream full range |
+| `SPZ data stored in coordinate system N; this reader reads right-up-back (4) and right-down-front (6)` | the file's coordinate-system extension names another system | re-export it right-up-back or right-down-front |
 | `.sog` refused | libwebp was missing | install it and rebuild |
 | `a .athc is drawn through its levels of detail: give --lod` | a container was given to a plain render | add `--lod`, and use `--technique raster` |
 | `mesh visibility by rays: the device has no ray tracing` | `--visibility rays` on a device without it | use `automatic`, which picks what the device has |

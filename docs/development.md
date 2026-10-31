@@ -55,9 +55,18 @@ document, the header is right.
 | 18 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
 | 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — the ABI, copied verbatim from its own repository |
 | 20 | view | `view/Viewer.h` — the window's options |
+| 13 | light | `light/LightTable.h` — a light on the device |
+| 14 | world | `world/GpuScene.h` — the scene as every technique reads it |
+| 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h` |
+| 16 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `lod/ChunkSource.h` (where a streamed cloud's chunks come from, and which thread may do what), `lod/SplatStream.h` (live streams: pages pushed in epochs); `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
+| 17 | video | `video/Planes.h` (a cloud as video planes, and the kernels' host side: `shaders/athenea/scene/video_planes_*.slang`), `video/Athv.h` — **the only specification of the `.athv` format**, `video/Codec.h` (the hardware codec as input and output, and where each platform stands), `video/VideoStream.h` (a video played into a live stream through `lod/DevicePages.h`) |
+| 18 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`), `usd/ShadowCatcher.h` (where a shadow catcher stands: the ground found, the patch on it -- a light catcher's too), `usd/LightGroups.h` (a car's lamps: the stage's groups and states, their weights a frame, and `athenea lights merge`) |
+| 19 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
+| 20 | aofx | `aofx/Features.h`, `aofx/Version.h` — the ABI, copied verbatim from its own repository |
+| 21 | view | `view/Viewer.h` — the window's options |
 
 One thing that looks like a violation and is not: `render` (10) links
-`aofx::aofx` (19). That target is headers only, an `INTERFACE` library, and
+`aofx::aofx` (20). That target is headers only, an `INTERFACE` library, and
 what `render` takes from it is `Mat4` and `Vec3`. The ordering rule is about
 compiled libraries.
 
@@ -78,6 +87,17 @@ slang-rhi view of a gpe buffer, a gpe handle on a slang-rhi buffer -- is
 three free functions in `gpu_host/Views.h`, on the bare device and pool; the
 context's methods call them, and so does a program that has a GPU thread and
 a pool of its own and wants only the crossing.
+
+The same rule holds inside the engine wherever threads meet: **one thread
+calls the device, the frame thread**. A `lod::StreamingPool` is the model.
+Its frame thread is the one that opened it (`core/FrameThread.h`), and every
+call that records a command asks first and refuses any other thread with an
+error, in every build. Its loader threads read and decompress, and copy into
+a staging buffer the frame thread mapped once at open; they never reach the
+device. Producers -- a network receiver, another process, a file played --
+only push `lod::PageUpdate`s onto a `lod::PageQueue`. A new function that
+belongs to one of these says which in its comment (frame thread, loader
+threads, any thread), and a test calls it from the wrong one.
 
 ### 1.3 A frame, rasterised
 
@@ -128,7 +148,11 @@ a pool of its own and wants only the crossing.
    inside a frame is what reads a number back to decide what comes next --
    a splat frame's visible and pair counts, which size its buffers -- and
    `ATHENEA_STAGES`, which waits to time. `ATHENEA_SYNC_TRACE=1` names every
-   wait by its line.
+   wait by its line, and `athenea_usd_tests "[sync]"` counts a steady frame's
+   waits on every mesh route (`Device::syncs()`): a pass that adds one fails
+   there. A structure built in world space -- the ray tracing top level --
+   stands while `GpuScene::placementRevision()` does, so a camera that moves
+   rebuilds nothing of it.
 
 ### 1.4 A frame, path traced
 
@@ -211,7 +235,11 @@ boundary and turned into an `Error`.
 
 **The operating system lives in `core/Platform`.** Every OS call the engine
 makes outside its dependencies is behind one header, so the Windows port has
-one file to start from rather than a search. A file a command writes for
+one file to start from rather than a search. The one other place a framework is called
+is the hardware video codec (`modules/video/src/VideoToolbox.mm` on Apple):
+the encoder and the decoder are fixed-function input and output, like a file
+read, and the decoded picture is handed to the device as a texture where the
+decoder left it; nothing there computes on a value. A file a command writes for
 another step to read is written through `platform::writeAtomically`: under a
 partial name beside it, renamed when complete, so a failure leaves no half
 file under the name asked for.
@@ -520,6 +548,7 @@ Nineteen binaries, one per area, all under `tests/`.
 | `athenea_material_tests` | the texture store, the lobes, the MaterialX compiler |
 | `athenea_technique_tests` | visibility, display, materials, lights, splat shadows and visibility |
 | `athenea_lod_tests` | building levels, cut selection, `.athc` |
+| `athenea_video_tests` | video planes through a mosaic and through the hardware codec (skipped where there is none), `.athv` |
 | `athenea_volume_tests` | volumes |
 | `athenea_usd_tests` | the delegate end to end |
 | `athenea_storm_oracle_tests` | Storm as the geometry oracle; its own process and device, and `HDX_MSAA_SAMPLE_COUNT=1` |

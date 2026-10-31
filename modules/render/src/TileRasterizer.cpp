@@ -162,6 +162,7 @@ void TileRasterizer::releaseScratch() {
                               &offsets_, &totalPairs_, &ranges_buffer_, &shadowFactors_}) {
         *held = gpu::Buffer();
     }
+    rangesEmpty_ = 0;
     depthSort_ = gpu::SortBuffers();
     tileSort_ = gpu::SortBuffers();
 }
@@ -229,6 +230,7 @@ Result<void> TileRasterizer::reserveTargets(RenderTargets& targets, uint32_t wid
         if (!made) return std::move(made).error();
         ranges_buffer_ = *made;
         tileCapacity_ = tiles;
+        rangesEmpty_ = 0;
     }
     if (targets.width != width || targets.height != height || !targets.colour.valid()) {
         auto colour = buffer(*device_, uint64_t{width} * height, 16, "target.colour");
@@ -645,7 +647,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             // way, and `hasPbr` is what says whether it is read.
             cursor["params"]["hasPbr"].setData(uint32_t{cloud->hasPbr() ? 1u : 0u});
             cursor["params"]["litBody"].setData(uint32_t{instance.litBody ? 1u : 0u});
-            setCloudSpace(cursor, *cloud);
+            setCloudSpace(cursor, *cloud, *common.settings);
             cursor["pbr"].setBinding(cloud->hasPbr() ? cloud->pbr.rhi() : cloud->shape.rhi());
             // The shading normal a conversion kept apart from the frame,
             // where the cloud has one: bound either way, read by `hasNormals`.
@@ -814,8 +816,12 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     stats.projectMs = *ms;
 
     const uint32_t all = std::max(splatCount, 1u);
-    ATHENEA_TRY(prefix_.apply(batch, visible_, visibleOffsets_, visibleTotal_, all));
-    ATHENEA_TRY(prefix_.apply(batch, tilesTouched_, touchedOffsets_, touchedTotal_, all));
+    // A FRAME OF NO SPLATS -- meshes alone, composited by the blend below --
+    // has nothing to count: its sums are skipped, unless a panel counts it.
+    if (splatCount > 0 || settings.countSplats) {
+        ATHENEA_TRY(prefix_.apply(batch, visible_, visibleOffsets_, visibleTotal_, all));
+        ATHENEA_TRY(prefix_.apply(batch, tilesTouched_, touchedOffsets_, touchedTotal_, all));
+    }
     // The totals are read back below, and a read waits for the device: a
     // frame without splats reads nothing and waits for nothing.
     ATHENEA_TRY(batch.submit());
@@ -880,10 +886,16 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     if (pairs > 1) {
         ATHENEA_TRY(sort_.sort(batch, tileSort_, pairs, bitsFor(tiles)));
     }
-    clear_.dispatch(batch, {tiles, 1, 1}, [&](rhi::ShaderCursor cursor) {
-        cursor["ranges"].setBinding(ranges_buffer_.rhi());
-        setFrame(cursor, common);
-    });
+    // The tiles' ranges, cleared where a frame of pairs left them written:
+    // after a frame of none they stay empty, and the next such frame of no
+    // more tiles leaves them as they are.
+    if (pairs > 0 || rangesEmpty_ < tiles) {
+        clear_.dispatch(batch, {tiles, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["ranges"].setBinding(ranges_buffer_.rhi());
+            setFrame(cursor, common);
+        });
+        rangesEmpty_ = pairs > 0 ? 0u : tiles;
+    }
     if (pairs > 0) {
         ranges_.dispatch(batch, {pairs, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["pairTiles"].setBinding(tileSort_.keysLo.rhi());

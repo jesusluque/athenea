@@ -36,6 +36,7 @@ void addDecimate(CLI::App& app) {
         float ratio = 0.0F;
         float edge = 0.15F;
         float maxAspect = 1000.0F;
+        float mergeGrowth = 0.0F;
         float maxAngle = 60.0F;
         float highlightCone = 1.0F;
         float surfelFlatness = -1.0F;
@@ -129,6 +130,9 @@ void addDecimate(CLI::App& app) {
                     "--ratio: a merge of discs whose thinnest axis is under this fraction of its middle one is "
                     "written a surfel (default 0.12)")
         ->check(CLI::Range(0.0F, 1.0F));
+    cmd->add_option("--merge-growth", o->mergeGrowth,
+                    "--ratio: no merge wider (the square root of its covariance's trace) than this times the wider of "
+                    "the two it merges (0: no limit); the ratio is then the most it goes to");
     cmd->add_option("--max-aspect", o->maxAspect,
                     "--ratio: a merge longer than this against its width (or 1.25 times its members) is refused")
         ->check(CLI::Range(1.0F, 1000.0F));
@@ -292,6 +296,7 @@ void addDecimate(CLI::App& app) {
         options.pairSettings.surfels = !o->noSurfels;
         options.pairSettings.mergeGlass = o->mergeGlass;
         options.pairSettings.maxAspect = o->maxAspect;
+        options.pairSettings.maxGrowth = o->mergeGrowth;
         options.camera = o->camera;
         options.cameraPixels = o->cameraPixels;
         options.treeOutput = o->tree;

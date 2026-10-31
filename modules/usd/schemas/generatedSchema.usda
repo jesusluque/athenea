@@ -88,6 +88,46 @@ ParticleField itself."""
     )
 }
 
+class "AtheneaLiveSourceAPI" (
+    doc = """A Gaussian splat cloud drawn from a live stream: SPZ pages that a
+producer -- a network receiver, another process, a player -- pushes onto the
+stream of this name (lod::PageQueue::named), an epoch at a time, each page
+one chunk. The frame draws the last epoch whose every page is on the device,
+never half of one; the ParticleField's own arrays may be left empty. Its
+properties are constant primvars; author them on the ParticleField itself."""
+)
+{
+    string primvars:athenea:live:stream = "" (
+        doc = "The stream's name: what its producers push to."
+        interpolation = "constant"
+    )
+    int primvars:athenea:live:chunks = 64 (
+        doc = "Chunk ids a page may name, 0 to this less one."
+        interpolation = "constant"
+    )
+    int primvars:athenea:live:chunkSplats = 65536 (
+        doc = "The most gaussians a page holds."
+        interpolation = "constant"
+    )
+    token primvars:athenea:live:sync (
+        allowedTokens = ["latest", "clock"]
+        doc = "Which epoch a frame shows: the newest complete one (latest), or the newest whose ptpTime has come by the frame's instant (clock), later ones held. Unauthored, what the producer asked at stream_open, else latest."
+        interpolation = "constant"
+    )
+    int primvars:athenea:live:degree = 3 (
+        doc = "Harmonics kept of the pages', 0 to 3."
+        interpolation = "constant"
+    )
+    int primvars:athenea:live:loaders = 4 (
+        doc = "Threads that read and decompress the pages."
+        interpolation = "constant"
+    )
+    int64 primvars:athenea:stream:budget = 0 (
+        doc = "Gaussians the device holds for the stream (0: as the epochs sent need -- room for the one shown and two more -- up to three epochs of every chunk full)."
+        interpolation = "constant"
+    )
+}
+
 class "AtheneaPointStyleAPI" (
     doc = """How athenea draws a UsdGeomPoints: widths are world units
 unless sizeInPixels says otherwise, with optional eye-dome lighting and

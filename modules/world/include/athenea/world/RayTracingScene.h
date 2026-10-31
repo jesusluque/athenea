@@ -7,6 +7,8 @@
 // come to the host.
 #pragma once
 
+#include <array>
+#include <cstdint>
 #include <vector>
 
 #include <slang-rhi.h>
@@ -29,7 +31,9 @@ public:
 
     /// The bottom levels are rebuilt when the scene's pools were repacked and
     /// refit in place when a mesh was deformed (GpuScene::meshRevision); the
-    /// top level is rebuilt every call. `refit` false leaves a deformed
+    /// top level is rebuilt when either was, or when an instance's place in
+    /// the world changed (GpuScene::placementRevision). Nothing waits for the
+    /// device: what traces against it is submitted after it. `refit` false leaves a deformed
     /// mesh's structure as it was -- for a check that the refit matters.
     [[nodiscard]] Result<void> build(const GpuScene& scene, bool refit = true);
 
@@ -45,6 +49,9 @@ private:
     gpu::Buffer updateScratch_;   ///< the largest refit scratch among the bottom levels
     std::vector<rhi::ComPtr<rhi::IAccelerationStructure>> bottom_;
     rhi::ComPtr<rhi::IAccelerationStructure>              topLevel_;
+    rhi::ComPtr<rhi::IAccelerationStructure>              previousTop_;   ///< kept one build longer
+    gpu::Buffer                                           topScratch_;
+    std::array<uint64_t, 5>                               topKey_{};
     gpu::Buffer                                           handles_;
     gpu::Buffer                                           instanceDescs_;
 };

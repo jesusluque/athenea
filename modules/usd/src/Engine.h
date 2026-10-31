@@ -19,6 +19,7 @@
 #include <array>
 #include <map>
 #include <set>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <atomic>
@@ -69,12 +70,32 @@
 
 namespace athenea::usd {
 
-/// AtheneaStreamedAssetAPI: a .athc drawn with its levels of detail.
+/// AtheneaStreamedAssetAPI: a .athc drawn with its levels of detail; or
+/// AtheneaLiveSourceAPI: a live stream of SPZ pages, named, that producers push
+/// onto lod::PageQueue::named(live). Sync records them; the render thread
+/// opens the pool.
 struct StreamedAsset {
     std::string path;              ///< resolved; empty when the prim has none
     float       threshold = 1.0F;  ///< px a merged cell may span
-    uint64_t    budget = 0;        ///< splats on the device; 0 reads the file whole
+    uint64_t    budget = 0;        ///< splats on the device; 0 reads the file whole (a stream: two epochs' room)
+    std::string live;              ///< the stream's name; empty when the prim names none
+    uint32_t    liveChunks = 64;   ///< chunk ids 0 .. liveChunks - 1
+    uint32_t    liveChunkSplats = 65536;
+    uint32_t    liveDegree = 3;    ///< harmonics kept, 0..3
+    std::string liveSync;          ///< "latest", "clock", or empty: what the producer asked (stream_open)
+    uint32_t    liveLoaders = 4;   ///< threads that read and decompress the pages
+    /// The prim's authored `extent` (min xyz, max xyz): the stream's bounds
+    /// until an epoch is shown, whose pages' bounds then say.
+    bool                 hasExtent = false;
+    std::array<float, 6> extent{};
 
+    [[nodiscard]] bool any() const noexcept { return !path.empty() || !live.empty(); }
+    /// The same pool, whatever the threshold.
+    [[nodiscard]] bool sameSource(const StreamedAsset& o) const noexcept {
+        return path == o.path && budget == o.budget && live == o.live && liveChunks == o.liveChunks &&
+               liveChunkSplats == o.liveChunkSplats && liveDegree == o.liveDegree && liveSync == o.liveSync &&
+               liveLoaders == o.liveLoaders;
+    }
     bool operator==(const StreamedAsset&) const = default;
 };
 
@@ -149,7 +170,8 @@ struct SplatEntry {
     std::optional<StreamedAsset>        assetPending;
     StreamedAsset                       asset;
     std::unique_ptr<lod::LodCloud>      lodCloud;   ///< the asset read whole
-    std::unique_ptr<lod::StreamingPool> pool;       ///< or streamed
+    std::shared_ptr<lod::StreamingPool> pool;       ///< or streamed, or live (shared by the prims naming one stream)
+    uint64_t                            liveEpoch = 0;   ///< the live pool's epoch last drawn
     /// AtheneaSplatSkinningAPI. The cloud on the device is the bind pose; `posed`
     /// is the same cloud with the skeleton's transforms in it, and is what a
     /// frame draws. Its buffers outlive the frame, so the cloud a renderer
@@ -368,6 +390,13 @@ public:
     /// which is what `create(why)` does. Every call still comes from one
     /// thread; the host's thread is that thread.
     static std::unique_ptr<Engine> create(std::shared_ptr<gpu::Device> device, std::string& why);
+
+    /// THE INSTANT A CLOCK-SYNCED LIVE STREAM SHOWS (athenea:live:sync =
+    /// clock): PTP nanoseconds, read once a frame on the render thread. Unset,
+    /// the system clock's (TAI is not applied: a producer stamping with the
+    /// same clock agrees). A genlocked host gives its FrameClock's instant.
+    /// Any thread.
+    void setLiveClock(std::function<uint64_t()> nowPtpNs);
 
     // --- from Sync (any thread) ---
     void setSplats(const pxr::SdfPath& id, std::optional<ParticleFieldArrays> raw,
@@ -688,6 +717,13 @@ public:
                                                     meshLights_->headerWrites(), meshLights_->clusters()}
                                        : std::tuple<uint64_t, uint64_t, uint64_t, uint32_t>{0, 0, 0, 0};
     }
+    /// The live pools (AtheneaLiveSourceAPI) as the last commit left them:
+    /// the prim, the stream it names, and its pool's status.
+    struct LiveStatus {
+        std::string                 prim, stream;
+        lod::StreamingPool::Status  status;
+    };
+    [[nodiscard]] std::vector<LiveStatus> liveStatus() const;
     [[nodiscard]] const std::map<std::string, uint32_t>& cryptoManifest() const noexcept {
         return cryptoManifest_;
     }
@@ -728,7 +764,6 @@ private:
     std::optional<lod::CutSelector>           cutter_;      ///< made on first use
     /// One store every streamed prim of a layout shares, its slots given to
     /// the chunks the view wants most whichever prim they are of.
-    std::shared_ptr<lod::StreamingShare>      streamShare_;
     std::optional<gpu::ComputeKernel>         aovConvert_;  ///< made on first use
     /// What `writeAov` converts into, kept between frames: a host that maps
     /// every frame (Blender's viewport) allocated two buffers a frame before.
@@ -974,6 +1009,10 @@ private:
         }
     };
     PathState                                 pathState_;
+    std::function<uint64_t()>                 liveClock_;   ///< under guard_
+    /// The live pool each stream name has: prims that name one stream share
+    /// it, so they show the same epoch in every frame.
+    std::map<std::string, std::weak_ptr<lod::StreamingPool>> livePools_;
     std::atomic<uint64_t>                     revision_{1};   ///< raised by anything a path would see
     /// Frames still to draw before what is gathered is the shutter's: a
     /// shutter changed after the prims synced is answered by dirtying them
