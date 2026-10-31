@@ -16498,5 +16498,9 @@ support, where k is C2 only. Probes whose stencil may cross one are set apart, b
 largest inverse half-axis): a third of them on both layers, since a probe sees some ten blobs. Of the rest,
 none is off.
 
+**On CUDA** (Windows, an RTX 3070, the release preset): the same checks pass, and the whole lod suite with
+them (21 cases). The gradient's worst is 1.3e-4 on the sphere and 3.6e-4 on the cube (of 22808 and 20228
+probes tested), the grid's 1e-6 on both; every other count is the same as on Metal.
+
 **Not done:** smooth-min between anchors in the field itself (the function and its check are here; anchors
-that meet at an edge come with phase 2); CUDA (nothing on the L4 without the user's word).
+that meet at an edge come with phase 2).
