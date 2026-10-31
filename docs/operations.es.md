@@ -2075,22 +2075,39 @@ por gaussiana (lo que escribe `athenea vdb2splat`, §2.8.3). El raster lo dibuja
 como un medio participante: el alfa de cada gaussiana en un píxel es
 1 − exp(−τ), con τ la profundidad óptica exacta del rayo del píxel a través de
 ella (la cuerda que cortan sus 3,5 desviaciones, recortada en la cámara y en
-la capa opaca bajo los splats), y su color (1 − albedo) por la emisión del
-medio: emisión y absorción, todavía sin luz dispersada. Sus gaussianas se
-ordenan y se mezclan con todos los demás splats. Las `opacities` del fichero
-no se leen. Las constantes del medio son primvars del field, con los nombres
-del Volume donde un Volume tiene lo mismo:
+la capa opaca bajo los splats), y su color la radiancia que un frame hornea
+para ella. Sus gaussianas se ordenan y se mezclan con todos los demás splats.
+Las `opacities` del fichero no se leen. Las constantes del medio son primvars
+del field, con los nombres del Volume donde un Volume tiene lo mismo:
 
 | Atributo | Tipo | Por defecto | Significado |
 |---|---|---|---|
 | `primvars:athenea:densityScale` | float | `1` | de densidad a extinción por unidad de mundo: lo que multiplica la sigma de cada gaussiana |
 | `primvars:athenea:albedo` | color3f | `(0.8, 0.8, 0.8)` | el albedo de scattering, por el de cada gaussiana (`primvars:athenea:volume:albedo`, 1 donde el fichero no tiene) |
+| `primvars:athenea:anisotropy` | float | `0` | la g de Henyey-Greenstein |
 | `primvars:athenea:volume:emission` | color3f | `(0, 0, 0)` | radiancia de la parte que absorbe: el medio emite (1 − albedo) por ella, como el `uniform_edf` de un Volume |
+| `primvars:athenea:volume:emissionScale` | float | `0` (sin fuego) | una gaussiana brilla como un cuerpo negro a su temperatura por esto |
+| `primvars:athenea:volume:temperatureScale` | float | `1` | kelvin por unidad de la temperatura del fichero |
+| `primvars:athenea:volume:temperatureOffset` | float | `0` | kelvin que se le suman |
+| `primvars:athenea:volume:octaves` | int, de 1 a 16 | `4` | las octavas del scattering múltiple, la primera el simple; 1 es solo scattering simple |
 
-El medio se dibuja solo a través de una cámara pinhole (una ortográfica lo
-deja fuera, dicho una vez), y un frame trazado solo de splats (`rt` sin mallas
-ni Volume) lo deja fuera, dicho una vez; con mallas, `rt` lo compone como
-compone cualquier nube. Todavía no proyecta sombra.
+El cuerpo negro es el color CIE de la ley de Planck a luminancia uno por
+σ_SB T⁴ / π · 10⁻⁶ (la convención del Principled Volume de Cycles): unos 0,09
+a 1500 K y 0,7 a 2500 K. Un frame hornea la radiancia de cada gaussiana: la
+emisión; el scattering simple de cada luz, con la transmitancia hacia la luz
+leída del mapa de sombras de nubes en el centro de la gaussiana (el medio
+proyecta en el mapa y lo lee, con tres pares de Fourier; el mapa es el que
+leen las mallas y las nubes TX, así que el medio les hace sombra y ellas a
+él); el color de una cúpula por la transmitancia media de las direcciones de
+cúpula del mapa; y `octaves` de scattering múltiple (Wrenninge: la extinción
+hacia la luz, la energía y la anisotropía a la mitad en cada una). La
+transmitancia de una luz distante es la media de tres lecturas a lo largo de
+ella a través de la gaussiana.
+Una cúpula con textura ilumina un medio con su color, no con su imagen. El
+medio se dibuja solo a través de una cámara pinhole (una ortográfica lo deja
+fuera, dicho una vez), y un frame trazado solo de splats (`rt` sin mallas ni
+Volume) lo deja fuera, dicho una vez; con mallas, `rt` lo compone como compone
+cualquier nube.
 
 **Grupos de luces**, que todavía no declara ningún schema. Las lámparas de una
 nube son un primvar por grupo en su field, y sus grupos y estados son

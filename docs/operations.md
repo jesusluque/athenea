@@ -2011,22 +2011,39 @@ a gaussian (what `athenea vdb2splat` writes, §2.8.3). The raster draws it as
 a participating medium: each gaussian's alpha at a pixel is 1 − exp(−τ), τ
 the exact optical depth of the pixel's ray through it (the chord its 3.5
 deviations cut, clipped at the camera and at the opaque layer under the
-splats), and its colour (1 − albedo) times the medium's emission: emission
-and absorption, no light scattered yet. Its gaussians are sorted and blended
-with every other splat. The file's `opacities` are not read. The medium's
-constants are primvars on the field, the Volume's names where a Volume has
-the same thing:
+splats), and its colour the radiance a frame bakes for it. Its gaussians are
+sorted and blended with every other splat. The file's `opacities` are not
+read. The medium's constants are primvars on the field, the Volume's names
+where a Volume has the same thing:
 
 | Attribute | Type | Default | Meaning |
 |---|---|---|---|
 | `primvars:athenea:densityScale` | float | `1` | density to extinction a world unit: what each gaussian's sigma is multiplied by |
 | `primvars:athenea:albedo` | color3f | `(0.8, 0.8, 0.8)` | the scattering albedo, times each gaussian's (`primvars:athenea:volume:albedo`, 1 where the file has none) |
+| `primvars:athenea:anisotropy` | float | `0` | Henyey-Greenstein g |
 | `primvars:athenea:volume:emission` | color3f | `(0, 0, 0)` | radiance of the absorbing part: the medium gives off (1 − albedo) times it, as a Volume's `uniform_edf` |
+| `primvars:athenea:volume:emissionScale` | float | `0` (no fire) | a gaussian glows as a black body at its temperature times this |
+| `primvars:athenea:volume:temperatureScale` | float | `1` | kelvin a unit of the file's temperature |
+| `primvars:athenea:volume:temperatureOffset` | float | `0` | kelvin added to it |
+| `primvars:athenea:volume:octaves` | int, 1 to 16 | `4` | multiple scattering's octaves, the first being single scattering; 1 is single scattering alone |
 
-The medium is drawn through a pinhole camera only (an orthographic one
-leaves it out, said once), and a traced frame of splats alone (`rt` with no
-mesh and no Volume) leaves it out, said once; with meshes, `rt` composites
-it as it composites every cloud. It casts no shadow yet.
+The black body is the CIE colour of Planck's law at luminance one times
+σ_SB T⁴ / π · 10⁻⁶ (Cycles' Principled Volume convention): about 0.09 at
+1500 K and 0.7 at 2500 K. A frame bakes each gaussian's radiance: the
+emission; each light's single scattering, with the transmittance towards the
+light read from the cloud shadow map at the gaussian's centre (the medium
+casts into the map and reads it, with three Fourier pairs; the map is the
+one meshes and TX clouds read, so the medium shadows them and they shadow
+it); a dome's colour times the mean transmittance of the map's dome
+directions; and `octaves` of multiple scattering (Wrenninge: the extinction
+towards the light, the energy and the anisotropy halved at each). A distant
+light's transmittance is the mean of three readings along it through the
+gaussian.
+A textured dome lights a medium by its colour, not its image. The medium is
+drawn through a pinhole camera only (an orthographic one leaves it out, said
+once), and a traced frame of splats alone (`rt` with no mesh and no Volume)
+leaves it out, said once; with meshes, `rt` composites it as it composites
+every cloud.
 
 **Light groups**, which no schema declares yet. A cloud's lamps are a primvar
 a group on its field, and its groups and states are attributes on Scope prims

@@ -39,6 +39,11 @@ Result<SplatShadowMap> SplatShadowMap::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(map.box_, "shadowMapBox"));
     ATHENEA_TRY(make(map.frame_, "shadowMapFrame"));
     ATHENEA_TRY(make(map.splat_, "shadowMapSplat"));
+    {
+        auto kernel = gpu::ComputeKernel::create(library, "athenea/technique/splat_shadow_volume", "shadowMapSplatVolume");
+        if (!kernel) return std::move(kernel).error();
+        map.splatVolume_.emplace(std::move(*kernel));
+    }
     ATHENEA_TRY(make(map.mean_, "shadowMapMean"));
     ATHENEA_TRY(make(map.probe_, "shadowMapProbe"));
     ATHENEA_TRY(make(map.header_, "shadowMapHeader"));
@@ -61,12 +66,18 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
     const uint32_t resolution = std::max(job.resolution, 16u);
     // One, three, five or seven: a total, and Fourier pairs after it.
     const uint32_t coefficients = std::max(job.coefficients | 1u, 1u);
+    // A medium's own: none where no caster is one.
+    const bool anyMedium = std::any_of(job.casters.begin(), job.casters.end(), [](const ShadowMapCaster& c) {
+        return c.volume && c.cloud != nullptr && c.cloud->hasVolume();
+    });
+    const uint32_t medium = anyMedium ? std::min(std::max(job.mediumCoefficients | 1u, 1u), 7u) : 0u;
     // A texel keeps its coefficients and two words more, for the depths of
-    // the nearest caster in it and of the farthest.
-    const uint32_t stride = coefficients + 2;
+    // the nearest caster in it and of the farthest, and a medium's terms.
+    const uint32_t stride = coefficients + 2 + medium;
     const uint64_t plane = uint64_t{resolution} * resolution * stride;
     const uint64_t words = kHeaderWords + plane * slots;
-    if (!map_.valid() || map_.count() < words || resolution_ != resolution || coefficients_ != coefficients) {
+    if (!map_.valid() || map_.count() < words || resolution_ != resolution || coefficients_ != coefficients ||
+        medium_ != medium) {
         gpu::BufferDesc desc;
         desc.bytes = words * 4;
         desc.elementBytes = 4;
@@ -122,6 +133,7 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
     }
     resolution_ = resolution;
     coefficients_ = coefficients;
+    medium_ = medium;
     lights_ = lights;
 
     // What every dispatch of this pass is told about the map itself.
@@ -131,6 +143,7 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
         p["words"].setData(static_cast<uint32_t>(words));
         p["resolution"].setData(resolution);
         p["coefficients"].setData(coefficients);
+        p["mediumCoefficients"].setData(medium);
         p["margin"].setData(job.margin);
         p["density"].setData(job.density);
         p["selfBias"].setData(job.selfBias);
@@ -183,9 +196,14 @@ Result<void> SplatShadowMap::build(gpu::CommandBatch& batch, const ShadowMapJob&
             if (caster.cloud == nullptr || caster.cloud->count == 0) {
                 continue;
             }
-            splat_->dispatch(batch, {caster.cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            const bool isMedium = caster.volume && caster.cloud->hasVolume() && medium > 0;
+            (isMedium ? *splatVolume_ : *splat_).dispatch(batch, {caster.cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
                 setCommon(cursor, k);
                 setCaster(cursor, caster);
+                if (isMedium) {
+                    cursor["shadowVolume"].setBinding(caster.cloud->volume.rhi());
+                    cursor["shadowParams"]["volumeDensity"].setData(caster.volumeDensity);
+                }
             });
         }
     }

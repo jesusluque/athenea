@@ -125,7 +125,7 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
     // A MEDIUM HAS NO OPACITY: what its file writes there is a hint for a
     // viewer that draws plain gaussians, and validation would drop the faint
     // ones a smoke is made of. Opacity 1, and the medium's own arrays.
-    if (a.volume) {
+    if (a.volume && !streamOf(a.volumeSigma).empty()) {
         s.opacities = {};
         s.volume = true;
         s.volumeSigma = streamOf(a.volumeSigma);

@@ -3024,6 +3024,124 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         pathState_.traced = false;
         pathAuxValid_ = false;
     }
+    // WHAT THE CLOUDS OF THIS FRAME STOP, SEEN FROM THE LIGHTS, as a lambda:
+    // the mesh layer builds it before its shading, and a frame of splats
+    // alone builds it where a medium among them reads it (proposal 105 §4).
+    const auto buildCloudShadowMap = [&]() -> Result<void> {
+        // WHAT THE CLOUDS OF THIS FRAME STOP, SEEN FROM THE LIGHTS.
+        //
+        // One pass a light over the gaussians, no ray and no sort, into a map
+        // a mesh's shading reads. It is what shadows a floor under a bird in
+        // the raster route -- which had no cloud shadow of any kind -- and it
+        // is the only kind a device without ray tracing can have.
+        meshShadowMapMs_ = 0.0;
+        if (cloudShadows_.load() && !splats.empty() && lightTable_.has_value() && lightTable_->count() > 0) {
+            if (!cloudShadowMap_.has_value()) {
+                auto made = technique::SplatShadowMap::create(*library_);
+                if (!made) return std::move(made).error();
+                cloudShadowMap_.emplace(std::move(*made));
+            }
+            technique::ShadowMapJob job;
+            job.lights = &lightTable_->records();
+            job.lightCount = lightTable_->count();
+            job.resolution = cloudShadowTexels_.load();
+            // A gaussian standing inside the cloud cannot be answered with
+            // the total -- it would read the whole cloud's shadow and the
+            // cloud would go flat -- so a frame with a relit cloud that has
+            // no baked field of its own gets the Fourier terms as well.
+            const bool cloudReceives =
+                std::any_of(frameClouds_.begin(), frameClouds_.end(),
+                            [](const SlottedCloud& c) { return c.relight && !c.hasField; });
+            const uint32_t asked = cloudShadowTerms_.load();
+            job.coefficients = asked != 0 ? asked : (cloudReceives ? 5u : 1u);
+            // A medium's gaussians stand inside it and read their own depth
+            // in it: its own total and three Fourier pairs (proposal 105 §4).
+            job.mediumCoefficients = 7u;
+            job.density = cloudShadowDensity_.load();
+            // A dome among the lights casts too, along six of its directions
+            // (its zenith and a ring forty degrees up), in the slots the
+            // lights leave: the car on the ground under a sky (task TX).
+            job.domeSlots = 6;
+            for (const render::SplatInstance& instance : splats) {
+                // A shadow catcher is a shadow already: cast into the map, it
+                // laid its own patch's outline on the ground beneath it once
+                // more along each of the dome's directions -- the straight-
+                // edged blocks under goegap's sun, and the mesh car's frame a
+                // third dark.
+                // A light catcher is light on the ground: it casts nothing.
+                if (instance.splats == nullptr || instance.splats->count == 0 || instance.catcher ||
+                    instance.lightCatcher) {
+                    continue;
+                }
+                technique::ShadowMapCaster caster;
+                // A MEDIUM casts its optical depth (proposal 105 §4).
+                caster.volume = instance.splats->hasVolume();
+                caster.volumeDensity = instance.volume.densityScale;
+                caster.cloud = instance.splats;
+                caster.positions = &instance.splats->positions;
+                caster.objectToWorld = instance.objectToWorld.rows3x4();
+                caster.categories = instance.categories;
+                caster.restBounds = instance.splats->restBounds.value_or(instance.splats->bounds);
+                job.casters.push_back(caster);
+            }
+            // A MAP IS THE CASTERS' AND THE LIGHTS', NOT THE CAMERA'S: a frame
+            // whose clouds, poses, transforms, lights and settings are what the
+            // last map was built from reads that map again (task PLAY-G: seven
+            // passes over the Corvette's 14.7 M gaussians were 77 ms a frame of
+            // a car that does not move). The key is bookkeeping the host holds:
+            // which clouds, their revision (a pose counts it up), where they
+            // stand, the lights' records and the job. A frame with levels of
+            // detail always builds -- its cut's clouds are the camera's.
+            std::vector<uint64_t> key;
+            const auto keyBytes = [&key](const void* data, size_t bytes) {
+                const size_t at = key.size();
+                key.resize(at + (bytes + 7) / 8, 0);
+                std::memcpy(key.data() + at, data, bytes);
+            };
+            for (const technique::ShadowMapCaster& caster : job.casters) {
+                const uint64_t ids[4] = {reinterpret_cast<uintptr_t>(caster.cloud),
+                                         reinterpret_cast<uintptr_t>(caster.cloud->positions.rhi()),
+                                         caster.cloud->count, caster.cloud->revision};
+                keyBytes(ids, sizeof(ids));
+                keyBytes(caster.objectToWorld.data(), sizeof(float) * 12);
+                keyBytes(&caster.categories, sizeof(caster.categories));
+                keyBytes(&caster.volumeDensity, sizeof(caster.volumeDensity));
+                keyBytes(&caster.cloud->bounds, sizeof(caster.cloud->bounds));
+                keyBytes(&*caster.restBounds, sizeof(scene::Bounds));
+            }
+            for (const light::Light& lamp : lamps) {
+                const light::LightRecord record = light::LightTable::recordOf(lamp);
+                keyBytes(&record, sizeof(record));
+            }
+            const uint32_t settingsKey[5] = {job.resolution, job.coefficients, job.domeSlots, job.lightCount,
+                                             job.mediumCoefficients};
+            keyBytes(settingsKey, sizeof(settingsKey));
+            keyBytes(&job.density, sizeof(job.density));
+            const bool sameMap = cuts.empty() && cloudShadowMap_->valid() && key == cloudShadowKey_;
+            if (!job.casters.empty() && !sameMap) {
+                const auto castStart = std::chrono::steady_clock::now();
+                gpu::CommandBatch casting(*device_);
+                ATHENEA_TRY(cloudShadowMap_->build(casting, job));
+                ATHENEA_TRY(casting.submit(true));
+                meshShadowMapMs_ =
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - castStart).count();
+                cloudShadowKey_ = std::move(key);
+            }
+            if (cloudShadowMap_->valid()) {
+                if (std::getenv("ATHENEA_SHADOW_DEBUG") != nullptr) {
+                    auto mean = cloudShadowMap_->meanTransmittance(0);
+                    if (mean) {
+                        log::info("cloud shadow: {} casters, {} lights, {} texels, mean transmittance {:.4f}",
+                                  job.casters.size(), job.lightCount, job.resolution, *mean);
+                    }
+                }
+            }
+        } else if (cloudShadowMap_.has_value()) {
+            cloudShadowMap_.reset();   // nothing casts: the kernel goes back to the one without a map
+            cloudShadowKey_.clear();
+        }
+        return ok();
+    };
     const auto meshLayerStart = std::chrono::steady_clock::now();
     if (meshLayer) {
         // A light that moves cuts the frame into shutter slices as geometry
@@ -3187,112 +3305,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 meshSplatShadows = &*splatShadowScene_;
             }
         }
-        // WHAT THE CLOUDS OF THIS FRAME STOP, SEEN FROM THE LIGHTS.
-        //
-        // One pass a light over the gaussians, no ray and no sort, into a map
-        // a mesh's shading reads. It is what shadows a floor under a bird in
-        // the raster route -- which had no cloud shadow of any kind -- and it
-        // is the only kind a device without ray tracing can have.
-        meshShadowMapMs_ = 0.0;
-        if (cloudShadows_.load() && !splats.empty() && lightTable_.has_value() && lightTable_->count() > 0) {
-            if (!cloudShadowMap_.has_value()) {
-                auto made = technique::SplatShadowMap::create(*library_);
-                if (!made) return std::move(made).error();
-                cloudShadowMap_.emplace(std::move(*made));
-            }
-            technique::ShadowMapJob job;
-            job.lights = &lightTable_->records();
-            job.lightCount = lightTable_->count();
-            job.resolution = cloudShadowTexels_.load();
-            // A gaussian standing inside the cloud cannot be answered with
-            // the total -- it would read the whole cloud's shadow and the
-            // cloud would go flat -- so a frame with a relit cloud that has
-            // no baked field of its own gets the Fourier terms as well.
-            const bool cloudReceives =
-                std::any_of(frameClouds_.begin(), frameClouds_.end(),
-                            [](const SlottedCloud& c) { return c.relight && !c.hasField; });
-            const uint32_t asked = cloudShadowTerms_.load();
-            job.coefficients = asked != 0 ? asked : (cloudReceives ? 5u : 1u);
-            job.density = cloudShadowDensity_.load();
-            // A dome among the lights casts too, along six of its directions
-            // (its zenith and a ring forty degrees up), in the slots the
-            // lights leave: the car on the ground under a sky (task TX).
-            job.domeSlots = 6;
-            for (const render::SplatInstance& instance : splats) {
-                // A shadow catcher is a shadow already: cast into the map, it
-                // laid its own patch's outline on the ground beneath it once
-                // more along each of the dome's directions -- the straight-
-                // edged blocks under goegap's sun, and the mesh car's frame a
-                // third dark.
-                // A light catcher is light on the ground: it casts nothing.
-                // A medium has no opacity to cast with: what it stops is its
-                // own optical depth, which the map does not take yet.
-                if (instance.splats == nullptr || instance.splats->count == 0 || instance.catcher ||
-                    instance.lightCatcher || instance.splats->hasVolume()) {
-                    continue;
-                }
-                technique::ShadowMapCaster caster;
-                caster.cloud = instance.splats;
-                caster.positions = &instance.splats->positions;
-                caster.objectToWorld = instance.objectToWorld.rows3x4();
-                caster.categories = instance.categories;
-                caster.restBounds = instance.splats->restBounds.value_or(instance.splats->bounds);
-                job.casters.push_back(caster);
-            }
-            // A MAP IS THE CASTERS' AND THE LIGHTS', NOT THE CAMERA'S: a frame
-            // whose clouds, poses, transforms, lights and settings are what the
-            // last map was built from reads that map again (task PLAY-G: seven
-            // passes over the Corvette's 14.7 M gaussians were 77 ms a frame of
-            // a car that does not move). The key is bookkeeping the host holds:
-            // which clouds, their revision (a pose counts it up), where they
-            // stand, the lights' records and the job. A frame with levels of
-            // detail always builds -- its cut's clouds are the camera's.
-            std::vector<uint64_t> key;
-            const auto keyBytes = [&key](const void* data, size_t bytes) {
-                const size_t at = key.size();
-                key.resize(at + (bytes + 7) / 8, 0);
-                std::memcpy(key.data() + at, data, bytes);
-            };
-            for (const technique::ShadowMapCaster& caster : job.casters) {
-                const uint64_t ids[4] = {reinterpret_cast<uintptr_t>(caster.cloud),
-                                         reinterpret_cast<uintptr_t>(caster.cloud->positions.rhi()),
-                                         caster.cloud->count, caster.cloud->revision};
-                keyBytes(ids, sizeof(ids));
-                keyBytes(caster.objectToWorld.data(), sizeof(float) * 12);
-                keyBytes(&caster.categories, sizeof(caster.categories));
-                keyBytes(&caster.cloud->bounds, sizeof(caster.cloud->bounds));
-                keyBytes(&*caster.restBounds, sizeof(scene::Bounds));
-            }
-            for (const light::Light& lamp : lamps) {
-                const light::LightRecord record = light::LightTable::recordOf(lamp);
-                keyBytes(&record, sizeof(record));
-            }
-            const uint32_t settingsKey[4] = {job.resolution, job.coefficients, job.domeSlots, job.lightCount};
-            keyBytes(settingsKey, sizeof(settingsKey));
-            keyBytes(&job.density, sizeof(job.density));
-            const bool sameMap = cuts.empty() && cloudShadowMap_->valid() && key == cloudShadowKey_;
-            if (!job.casters.empty() && !sameMap) {
-                const auto castStart = std::chrono::steady_clock::now();
-                gpu::CommandBatch casting(*device_);
-                ATHENEA_TRY(cloudShadowMap_->build(casting, job));
-                ATHENEA_TRY(casting.submit(true));
-                meshShadowMapMs_ =
-                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - castStart).count();
-                cloudShadowKey_ = std::move(key);
-            }
-            if (cloudShadowMap_->valid()) {
-                if (std::getenv("ATHENEA_SHADOW_DEBUG") != nullptr) {
-                    auto mean = cloudShadowMap_->meanTransmittance(0);
-                    if (mean) {
-                        log::info("cloud shadow: {} casters, {} lights, {} texels, mean transmittance {:.4f}",
-                                  job.casters.size(), job.lightCount, job.resolution, *mean);
-                    }
-                }
-            }
-        } else if (cloudShadowMap_.has_value()) {
-            cloudShadowMap_.reset();   // nothing casts: the kernel goes back to the one without a map
-            cloudShadowKey_.clear();
-        }
+        ATHENEA_TRY(buildCloudShadowMap());
         technique::MaterialFrame frame;
         frame.programs = &*materialPrograms_;
         frame.alphaDither = technique == Technique::RayTraced ? 0u : 1u;
@@ -3924,6 +3937,14 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
     // stands under painted behind it, which is the same table.
     if (!meshLayer && !lamps.empty()) {
         ATHENEA_TRY(prepareSplatLights(lamps, splats));
+        // A MEDIUM in a frame of splats alone reads the cloud shadow map for
+        // what reaches its gaussians, and casts into it: built here, as the
+        // mesh layer builds it for itself.
+        if (std::any_of(splats.begin(), splats.end(), [](const render::SplatInstance& s) {
+                return s.splats != nullptr && s.splats->hasVolume();
+            })) {
+            ATHENEA_TRY(buildCloudShadowMap());
+        }
     }
     const bool pointLayer = !points.empty() && pointRasterizer_.has_value();
     if (pointLayer) {
@@ -4025,6 +4046,49 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         splatLights.shadowColours = scene.colours;
         splatLights.shadowInstanceData = scene.instanceData;
         splatLights.shadowInstanceIndices = scene.instanceIndices;
+    }
+    // WHAT A MEDIUM'S GAUSSIANS SEND TOWARDS THE CAMERA, baked for this
+    // frame (proposal 105 §3): the lights, the cloud shadow map with the
+    // medium among its casters, the eye. A buffer a medium, kept while the
+    // medium is drawn.
+    {
+        std::unordered_map<const scene::GpuSplats*, gpu::Buffer> kept;
+        std::optional<gpu::CommandBatch> shading;
+        for (render::SplatInstance& instance : splats) {
+            if (instance.splats == nullptr || !instance.splats->hasVolume()) {
+                continue;
+            }
+            if (!volumeShading_.has_value()) {
+                auto made = technique::VolumeSplatShading::create(*library_);
+                if (!made) return std::move(made).error();
+                volumeShading_.emplace(std::move(*made));
+            }
+            if (!shading.has_value()) {
+                shading.emplace(*device_);
+            }
+            gpu::Buffer& radiance = kept[instance.splats];
+            if (const auto had = volumeRadiance_.find(instance.splats); had != volumeRadiance_.end()) {
+                radiance = std::move(had->second);
+            }
+            technique::VolumeShadeJob job;
+            job.cloud = instance.splats;
+            job.objectToWorld = instance.objectToWorld.rows3x4();
+            job.look = instance.volume;
+            job.categories = instance.categories;
+            job.lights = splatLights.records;
+            job.lightCount = splatLights.count;
+            job.shadowMap = cloudShadowMap_.has_value() ? &*cloudShadowMap_ : nullptr;
+            job.eye = {static_cast<float>(projection.eyeWorld.x), static_cast<float>(projection.eyeWorld.y),
+                       static_cast<float>(projection.eyeWorld.z)};
+            ATHENEA_TRY(volumeShading_->shade(*shading, job, radiance));
+            instance.volume.radiance = &radiance;
+        }
+        if (shading.has_value()) {
+            ATHENEA_TRY(shading->submit());
+        }
+        volumeRadiance_ = std::move(kept);
+        // The pointers above are into `kept`'s values, which moved with the
+        // map's nodes: an unordered_map's elements stay where they are.
     }
     // The matte is the blend's to build, so the setting reaches it here: one
     // copy, since the frame's settings are the caller's.

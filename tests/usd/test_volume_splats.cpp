@@ -158,7 +158,8 @@ fs::path rasterStage(const Mixture& m, const char* name, float density, const ch
         << "@</World/Splats>\n)\n{\n"
         << "    float primvars:athenea:densityScale = " << density << "\n"
         << "    color3f primvars:athenea:albedo = " << albedo << "\n"
-        << "    color3f primvars:athenea:volume:emission = " << emission << "\n}\n";
+        << "    color3f primvars:athenea:volume:emission = " << emission << "\n"
+        << "    int primvars:athenea:volume:octaves = 1\n}\n";
     return path;
 }
 
@@ -257,4 +258,72 @@ TEST_CASE("a medium's gaussians drawn by their optical depth glow as the path tr
     CHECK(statsTruth->mean[0] > 0.02);
     CHECK(std::abs(stats->mean[0] - statsTruth->mean[0]) < 0.02 * statsTruth->mean[0] + 1.0e-3);
     CHECK(hdr->relMse < 5.0e-3);
+}
+
+// LIT BY A SUN, OVER A GROUND: the medium scatters a normalized sun once
+// (`octaves` 1), through the transmittance the cloud shadow map gives each
+// gaussian at its centre -- its own Fourier terms -- and its shadow falls on
+// the ground through the same map. Against the path tracer with no bounce
+// after the first hit, which is single scattering and the ground's direct
+// light.
+TEST_CASE("a lit medium of gaussians and its shadow on the ground follow the path traced grid",
+          "[usd][volume][vdb2splat][raster][shadow]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const Mixture m = makeMixture(*gpu, 12, 4u);
+    const fs::path raster = rasterStage(m, "lit_raster.usda", 4.0F, "(0.8, 0.8, 0.8)", "(0, 0, 0)", true, true);
+    const fs::path traced = tracedStage(m, "lit_traced.usda", 4.0F, "(0.8, 0.8, 0.8)", nullptr, true, true);
+    const fs::path bare = scratch("lit_bare.usda");
+    {
+        std::ofstream out(bare);
+        out << sceneHead(true, true);
+    }
+    const uint32_t w = 160;
+    const uint32_t h = 120;
+    auto rasterRenderer = usd::StageRenderer::open(raster);
+    if (!rasterRenderer) FAIL(rasterRenderer.error().toString());
+    auto drawn = (*rasterRenderer)->render(boxCamera(), 0.0, w, h, "raster");
+    if (!drawn) FAIL(drawn.error().toString());
+    auto bareRenderer = usd::StageRenderer::open(bare);
+    if (!bareRenderer) FAIL(bareRenderer.error().toString());
+    auto unshadowed = (*bareRenderer)->render(boxCamera(), 0.0, w, h, "raster");
+    if (!unshadowed) FAIL(unshadowed.error().toString());
+    auto tracedRenderer = usd::StageRenderer::open(traced);
+    if (!tracedRenderer) FAIL(tracedRenderer.error().toString());
+    (*tracedRenderer)->setPathSamples(256);
+    // No bounce after the first hit: single scattering, and the ground's
+    // direct light.
+    (*tracedRenderer)->setPathBounces(0);
+    (*tracedRenderer)->setPathTotal(2048);
+    auto truth = (*tracedRenderer)->render(boxCamera(), 0.0, w, h, "rt");
+    if (!truth) FAIL(truth.error().toString());
+    const gpu::Buffer a = upload(*gpu, *drawn);
+    const gpu::Buffer b = upload(*gpu, *truth);
+    const gpu::Buffer c = upload(*gpu, *unshadowed);
+    auto stats = render::imageStats(*gpu->library, a, w, h);
+    auto statsTruth = render::imageStats(*gpu->library, b, w, h);
+    auto statsBare = render::imageStats(*gpu->library, c, w, h);
+    REQUIRE(stats);
+    REQUIRE(statsTruth);
+    REQUIRE(statsBare);
+    auto hdr = render::compareHdr(*gpu->library, a, b, w, h);
+    auto codes = render::compareImages(*gpu->library, a, b, w, h);
+    REQUIRE(hdr);
+    REQUIRE(codes);
+    std::printf("  lit: raster mean %.5f, path traced %.5f, ground alone %.5f; relMSE %.5f, p99 relative %.4f; "
+                "8-bit p99 %u max %u, %llu of %llu over 2\n",
+                stats->mean[1], statsTruth->mean[1], statsBare->mean[1], hdr->relMse, hdr->p99Relative, codes->p99,
+                codes->max, static_cast<unsigned long long>(codes->over2),
+                static_cast<unsigned long long>(codes->pixels));
+    // The medium and its shadow changed the frame, and as the path tracer
+    // says they do.
+    CHECK(std::abs(statsTruth->mean[1] - statsBare->mean[1]) > 0.005);
+    CHECK(std::abs(stats->mean[1] - statsTruth->mean[1]) < 0.1 * std::abs(statsTruth->mean[1] - statsBare->mean[1]) + 0.01);
+    CHECK(hdr->relMse < 0.03);
 }

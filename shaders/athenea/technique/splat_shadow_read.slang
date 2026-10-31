@@ -54,15 +54,24 @@ public uint shadowHeaderWords() { return kShadowBoxAt + kShadowBoxWords; }
 /// soft shadow's penumbra is measured from (shadowMapReadSoft). Measured from
 /// the nearest, every point under the Corvette was a metre from its blocker
 /// and the contact shadow went as soft as the rest.
-public uint shadowStrideOf(uint coefficients) { return coefficients + 2; }
+///
+/// AND A MEDIUM'S OWN TERMS, `medium` words more where a medium cast into the
+/// map (splat_shadow_volume.slang, proposal 105 §4): its total optical depth
+/// and its Fourier pairs, apart from the surfaces'. A medium is smooth along
+/// the light and a surface is a step; in one series a smoke in front of a
+/// surface took the surface's lit side away (its nearest caster was the
+/// smoke) and the step's ringing darkened it. Apart, a receiver takes the
+/// surfaces' transmittance as it always did and multiplies it by the
+/// medium's at its depth.
+public uint shadowStrideOf(uint coefficients, uint medium) { return coefficients + 2 + medium; }
 
 /// The texture layer of light `light`'s value `which` (0 the total, 1.. the
 /// Fourier terms, `coefficients` the nearest depth). Layer zero is the
 /// header's. The transmittance chain is a texture of its own, a layer a
 /// light: mips of every layer here would have cost a third more of the whole
 /// map, where only the total wants them.
-public uint shadowLayerOf(uint light, uint coefficients, uint which) {
-    return 1 + light * shadowStrideOf(coefficients) + which;
+public uint shadowLayerOf(uint light, uint coefficients, uint medium, uint which) {
+    return 1 + light * shadowStrideOf(coefficients, medium) + which;
 }
 
 public static const float kShadowPi = 3.14159265358979;
@@ -77,6 +86,10 @@ public struct ShadowMapFrame {
     public float  texelsPerUnit;   ///< how many texels a world unit is
     public uint   resolution;
     public uint   coefficients;
+    /// A medium's words after the depths: 0 where no medium cast, else its
+    /// total and its Fourier pairs (1, 3, 5, 7). Kept in the header word the
+    /// coefficients are, in its second byte.
+    public uint   medium;
     public uint   offset;      ///< first word of this light's texels, in the buffer
     public uint   valid;       ///< 0: this light has no map, and nothing shadows
     /// How far behind the nearest caster a receiver still stands on it, in
@@ -184,11 +197,39 @@ public ShadowMapFrame shadowFrameOf<S : IShadowMapSource>(uint light) {
     f.axisZ = float3(S.headerReal(at + 12), S.headerReal(at + 13), S.headerReal(at + 14));
     f.texelsPerUnit = S.headerReal(at + 15);
     f.resolution = S.headerCount(at + 16);
-    f.coefficients = S.headerCount(at + 17);
+    const uint terms = S.headerCount(at + 17);
+    f.coefficients = terms & 0xFFu;
+    f.medium = (terms >> 8) & 0xFFu;
     f.offset = S.headerCount(at + 18);
     f.valid = S.headerCount(at + 19);
     f.bias = S.headerReal(at + 20);
     return f;
+}
+
+/// A MEDIUM'S TRANSMITTANCE at depth `z` through texel (x, y): its own total
+/// behind it, its Fourier terms' reconstruction inside it, held between none
+/// and that total; 1 where no medium cast into the map. No lit side: a
+/// medium is not a step.
+public float shadowMediumOf<S : IShadowMapSource>(ShadowMapFrame f, uint light, int x, int y, float z) {
+    if (f.medium == 0) {
+        return 1.0;
+    }
+    const uint at = f.coefficients + 2;
+    const float total = max(S.texel(f, light, x, y, at), 0.0);
+    if (!(total > 0.0) || z <= 0.0) {
+        return 1.0;
+    }
+    float optical = total;
+    if (f.medium > 1 && z < 1.0) {
+        float sum = total * z;
+        const uint pairs = (f.medium - 1) / 2;
+        for (uint k = 1; k <= pairs; ++k) {
+            sum += shadowOpticalOf(total, S.texel(f, light, x, y, at + k * 2 - 1), S.texel(f, light, x, y, at + k * 2),
+                                   k, z);
+        }
+        optical = clamp(sum, 0.0, total);
+    }
+    return exp(-optical);
 }
 
 /// One tap: the transmittance a receiver at depth `z` reads through texel
@@ -197,9 +238,10 @@ public float shadowTap<S : IShadowMapSource>(ShadowMapFrame f, uint light, int x
     if (x < 0 || y < 0 || x >= int(f.resolution) || y >= int(f.resolution)) {
         return 1.0;
     }
+    const float medium = shadowMediumOf<S>(f, light, x, y, z);
     const float lit = shadowLitOf(S.texel(f, light, x, y, f.coefficients), f.bias, z);
     if (lit >= 1.0) {
-        return 1.0;
+        return medium;
     }
     const float total = S.texel(f, light, x, y, 0);
     float optical = total;
@@ -212,7 +254,7 @@ public float shadowTap<S : IShadowMapSource>(ShadowMapFrame f, uint light, int x
         }
         optical = clamp(sum, 0.0, max(total, 0.0));
     }
-    return lerp(exp(-max(optical, 0.0)), 1.0, lit);
+    return lerp(exp(-max(optical, 0.0)), 1.0, lit) * medium;
 }
 
 /// Bilinear weights over the four texels about (u, v), whose centres are at

@@ -14,6 +14,7 @@ athenea_add_module(technique
         src/Environment.cpp
         src/PathTracer.cpp
         src/SplatShadowMap.cpp
+        src/VolumeSplatShading.cpp
         src/SplatShadows.cpp
         src/SplatVisibility.cpp
         src/Visibility.cpp

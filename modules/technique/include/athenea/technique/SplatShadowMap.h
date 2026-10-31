@@ -44,6 +44,12 @@ struct ShadowMapCaster {
     /// sized from them changed its texels with every flap of a wing. Empty:
     /// the cloud's `restBounds`, or its `bounds` where it has none.
     std::optional<scene::Bounds> restBounds;
+    /// A MEDIUM (`cloud->hasVolume()`): its gaussians put in the optical
+    /// depth they have along the light (splat_shadow_volume.slang), the
+    /// extinction's peak times `volumeDensity` (its densityScale), rather
+    /// than what an opacity would.
+    bool                    volume = false;
+    float                   volumeDensity = 1.0F;
 };
 
 struct ShadowMapJob {
@@ -55,6 +61,10 @@ struct ShadowMapJob {
     /// receiver behind it (a ground plane). 3, 5, 7: one, two or three
     /// Fourier pairs as well, which resolve the depth a receiver stands at.
     uint32_t                     coefficients = 1;
+    /// A MEDIUM's own terms (proposal 105 §4): 0 where no caster is one, else
+    /// 1, 3, 5 or 7 -- its total and Fourier pairs, kept apart from the
+    /// surfaces' (splat_shadow_read.slang's shadowStrideOf says why).
+    uint32_t                     mediumCoefficients = 0;
     /// How much wider than the casters' rest sphere the map is drawn, since a
     /// skinned cloud is posed away from the box it was bound in. The extent is
     /// then rounded up to a quarter octave, so a pose that reaches a little
@@ -145,6 +155,7 @@ private:
     std::optional<gpu::ComputeKernel> box_;
     std::optional<gpu::ComputeKernel> frame_;
     std::optional<gpu::ComputeKernel> splat_;
+    std::optional<gpu::ComputeKernel> splatVolume_;
     std::optional<gpu::ComputeKernel> mean_;
     std::optional<gpu::ComputeKernel> probe_;
     std::optional<gpu::ComputeKernel> header_;
@@ -161,6 +172,7 @@ private:
     std::vector<rhi::ComPtr<rhi::ITextureView>> chainLevels_;   ///< one a level, for writing
     uint32_t                          resolution_ = 0;
     uint32_t                          coefficients_ = 0;
+    uint32_t                          medium_ = 0;
     uint32_t                          lights_ = 0;
     bool                              valid_ = false;
 };

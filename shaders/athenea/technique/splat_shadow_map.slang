@@ -71,8 +71,12 @@ public struct ShadowMapParams {
     /// and a ring forty degrees up. 0: none.
     public uint  domeSlots;
     public uint  slots;        ///< the lights' and the dome's together
-    public uint  pad5;
-    public uint  pad6;
+    /// A MEDIUM's density to extinction (shadowMapSplatVolume, in
+    /// splat_shadow_volume.slang): what its gaussians' sigma is multiplied by.
+    public float volumeDensity;
+    /// A medium's words a texel after the depths (shadowStrideOf): 0 where no
+    /// medium casts, else its total and Fourier pairs.
+    public uint  mediumCoefficients;
 };
 
 public ConstantBuffer<ShadowMapParams> shadowParams;
@@ -84,26 +88,28 @@ public StructuredBuffer<uint>          shadowShape;       ///< 4 words a gaussia
 /// The pass's own buffer as a source the read understands: the gaussian
 /// receivers and the probe read it through this, a floor through the
 /// texture, and the two through the same `shadowMapRead`.
-struct ShadowBufferSource : IShadowMapSource {
-    static float headerReal(uint word) { return asfloat(shadowMap[word]); }
-    static uint headerCount(uint word) { return shadowMap[word]; }
-    static float texel(ShadowMapFrame f, uint light, int x, int y, uint which) {
-        const uint word = f.offset + (uint(y) * f.resolution + uint(x)) * shadowStrideOf(f.coefficients) + which;
+public struct ShadowBufferSource : IShadowMapSource {
+    public static float headerReal(uint word) { return asfloat(shadowMap[word]); }
+    public static uint headerCount(uint word) { return shadowMap[word]; }
+    public static float texel(ShadowMapFrame f, uint light, int x, int y, uint which) {
+        const uint word = f.offset + (uint(y) * f.resolution + uint(x)) * shadowStrideOf(f.coefficients, f.medium) + which;
         const uint raw = shadowMap[word];
-        // The total is unsigned, every Fourier term is signed, and the last
-        // word of a texel is a depth stored as an ordered key.
-        return which >= f.coefficients ? shadowOrderedFloat(raw)
-               : which == 0            ? float(raw) / kShadowFixedScale
-                                       : float(int(raw)) / kShadowFixedScale;
+        // The totals are unsigned, every Fourier term is signed, and the two
+        // words after the surfaces' terms are depths stored as ordered keys.
+        const bool mediumWord = which >= f.coefficients + 2;
+        const uint term = mediumWord ? which - (f.coefficients + 2) : which;
+        return !mediumWord && which >= f.coefficients ? shadowOrderedFloat(raw)
+               : term == 0                            ? float(raw) / kShadowFixedScale
+                                                      : float(int(raw)) / kShadowFixedScale;
     }
     // The buffer has no chain: a receiver read from it is a point.
-    static uint levels(ShadowMapFrame f) { return 1u; }
-    static float transmittanceAt(ShadowMapFrame f, uint light, uint level, int x, int y) {
+    public static uint levels(ShadowMapFrame f) { return 1u; }
+    public static float transmittanceAt(ShadowMapFrame f, uint light, uint level, int x, int y) {
         return exp(-max(texel(f, light, x, y, 0), 0.0));
     }
 };
 
-float3 toWorld(float3 p) {
+public float3 toWorld(float3 p) {
     const ShadowMapParams s = shadowParams;
     return float3(dot(float3(s.w00, s.w01, s.w02), p) + s.w03,
                   dot(float3(s.w10, s.w11, s.w12), p) + s.w13,
@@ -127,7 +133,7 @@ void shadowMapClear(uint3 tid: SV_DispatchThreadID) {
     bool largest = tid.x >= kShadowBoxAt + 3 && tid.x < kShadowBoxAt + kShadowBoxWords;
     if (tid.x >= header) {
         // A texel's nearest caster is a minimum and its farthest a maximum.
-        const uint stride = shadowStrideOf(shadowParams.coefficients);
+        const uint stride = shadowStrideOf(shadowParams.coefficients, shadowParams.mediumCoefficients);
         smallest = (tid.x - header) % stride == shadowParams.coefficients;
         largest = (tid.x - header) % stride == shadowParams.coefficients + 1;
     }
@@ -304,8 +310,9 @@ void shadowMapFrame(uint3 tid: SV_DispatchThreadID) {
     shadowMap[at + 14] = asuint(axisZ.z);
     shadowMap[at + 15] = asuint(texels);
     shadowMap[at + 16] = s.resolution;
-    shadowMap[at + 17] = s.coefficients;
-    shadowMap[at + 18] = shadowHeaderWords() + k * s.resolution * s.resolution * shadowStrideOf(s.coefficients);
+    shadowMap[at + 17] = s.coefficients | (s.mediumCoefficients << 8);
+    shadowMap[at + 18] =
+        shadowHeaderWords() + k * s.resolution * s.resolution * shadowStrideOf(s.coefficients, s.mediumCoefficients);
     // 2 marks a dome's direction, which a reader picks by the way it looks.
     shadowMap[at + 19] = domeDirection ? 2u : 1u;
     shadowMap[at + 20] = asuint(bias);
@@ -392,7 +399,7 @@ void shadowMapSplat(uint3 tid: SV_DispatchThreadID) {
             // Optical depth, which is what adds: transmittances multiply, and
             // their logarithms are what a sum may hold.
             const float sigma = -log(1.0 - texelAlpha) * shadowParams.density;
-            const uint stride = shadowStrideOf(f.coefficients);
+            const uint stride = shadowStrideOf(f.coefficients, f.medium);
             const uint at = f.offset + (uint(ty) * f.resolution + uint(tx)) * stride;
             InterlockedAdd(shadowMap[at], uint(sigma * kShadowFixedScale));
             // And how near the light the nearest caster in this texel is: what
@@ -425,7 +432,11 @@ void shadowMapMean(uint3 tid: SV_DispatchThreadID) {
     if (f.valid == 0 || texel >= f.resolution * f.resolution) {
         return;
     }
-    const float optical = float(shadowMap[f.offset + texel * shadowStrideOf(f.coefficients)]) / kShadowFixedScale;
+    const uint at = f.offset + texel * shadowStrideOf(f.coefficients, f.medium);
+    float optical = float(shadowMap[at]) / kShadowFixedScale;
+    if (f.medium > 0) {
+        optical += float(shadowMap[at + f.coefficients + 2]) / kShadowFixedScale;
+    }
     InterlockedAdd(shadowTotal[0], uint(exp(-optical) * 65536.0));
 }
 
@@ -490,23 +501,30 @@ void shadowMapResolve(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint coefficients = shadowParams.coefficients;
+    const uint medium = shadowParams.mediumCoefficients;
     const uint slice = tid.z;
-    if (slice >= shadowParams.slots * shadowStrideOf(coefficients)) {
+    if (slice >= shadowParams.slots * shadowStrideOf(coefficients, medium)) {
         return;
     }
-    const uint stride = shadowStrideOf(coefficients);
+    const uint stride = shadowStrideOf(coefficients, medium);
     const uint light = slice / stride;
     const uint which = slice % stride;
     const uint offset = shadowHeaderWords() + light * resolution * resolution * stride;
-    const uint word = offset + (tid.y * resolution + tid.x) * stride + which;
-    // The total is unsigned, every Fourier term is signed, and the last two
-    // words of a texel are depths stored as ordered keys.
-    const float value = which >= coefficients ? shadowOrderedFloat(shadowMap[word])
-                        : which == 0          ? float(shadowMap[word]) / kShadowFixedScale
-                                              : float(int(shadowMap[word])) / kShadowFixedScale;
-    shadowOut[uint3(tid.x, tid.y, shadowLayerOf(light, coefficients, which))] = value;
+    const uint texelWord = offset + (tid.y * resolution + tid.x) * stride;
+    const uint word = texelWord + which;
+    // The totals are unsigned, every Fourier term is signed, and the two
+    // words after the surfaces' terms are depths stored as ordered keys.
+    const bool mediumWord = which >= coefficients + 2;
+    const uint term = mediumWord ? which - (coefficients + 2) : which;
+    const float value = !mediumWord && which >= coefficients ? shadowOrderedFloat(shadowMap[word])
+                        : term == 0                          ? float(shadowMap[word]) / kShadowFixedScale
+                                                             : float(int(shadowMap[word])) / kShadowFixedScale;
+    shadowOut[uint3(tid.x, tid.y, shadowLayerOf(light, coefficients, medium, which))] = value;
     if (which == 0) {
-        shadowChainOut[uint3(tid.x, tid.y, light)] = exp(-max(value, 0.0));
+        // The chain is what a floor behind everything reads: the surfaces'
+        // total and a medium's together.
+        const float mediumTotal = medium > 0 ? float(shadowMap[texelWord + coefficients + 2]) / kShadowFixedScale : 0.0;
+        shadowChainOut[uint3(tid.x, tid.y, light)] = exp(-max(value, 0.0) - max(mediumTotal, 0.0));
     }
 }
 

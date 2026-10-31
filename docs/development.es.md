@@ -49,7 +49,7 @@ coinciden, la cabecera tiene razón.
 | 12 | material | `material/MaterialCompiler.h` — MaterialX a Slang |
 | 13 | light | `light/LightTable.h` — una luz en el dispositivo; la región de las luces de malla al principio de sus palabras de luz, dispuesta en `shaders/athenea/light/mesh_lights.slang`; `light/LtcTable.h` — la tabla LTC, ajustada en el dispositivo (`ltc_fit.slang`), y `ltc.slang`, el factor de forma y la integral LTC de un polígono |
 | 14 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica; `world/VolumeSplats.h` — las gaussianas volumétricas y las grids de las que vienen y a las que vuelven (§6.13) |
-| 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h`, `technique/MeshLights.h` (mallas emisoras como luces: un rebuild que las agrupa en clusters, un refit por frame, y sus rectángulos y cortes por celda como texturas que leen los splats reiluminados, `render::SplatLights::meshRects`) |
+| 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h`, `technique/MeshLights.h` (mallas emisoras como luces: un rebuild que las agrupa en clusters, un refit por frame, y sus rectángulos y cortes por celda como texturas que leen los splats reiluminados, `render::SplatLights::meshRects`), `technique/VolumeSplatShading.h` (lo que las gaussianas de un medio mandan a la cámara, §6.14) |
 | 16 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
 | 17 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`), `usd/ShadowCatcher.h` (dónde se pone un shadow catcher: el suelo encontrado, el parche sobre él -- también el de un light catcher), `usd/LightGroups.h` (las lámparas de un coche: los grupos y estados de la escena, sus pesos por frame, y `athenea lights merge`) |
 | 18 | mcp | `mcp/Server.h` — el transporte JSON-RPC y qué es una herramienta |
@@ -1546,7 +1546,7 @@ gaussianas por hoja o por rayo.
 
 ### 6.14 Un medio de gaussianas en el raster
 
-Propuesta 105 §3: las gaussianas que escribe `athenea vdb2splat`, dibujadas
+Propuesta 105 §3–§4: las gaussianas que escribe `athenea vdb2splat`, dibujadas
 por el raster como el medio que son. Las piezas, en el orden en que las
 encuentra un frame:
 
@@ -1574,12 +1574,34 @@ encuentra un frame:
   desviaciones, recortada en t = 0 y en la capa bajo los splats, con erf. Un
   registro de un medio detrás de esa capa no para el recorrido: su cuerda
   puede llegar por delante de ella.
+- **Sombreado** (`technique::VolumeSplatShading`,
+  `technique/volume_splat_shade.slang`), un dispatch por medio y frame, antes
+  del raster: la emisión (una constante, y el cuerpo negro de la tabla de
+  `volume_blackbody.slang`, construida en el dispositivo una vez), el
+  scattering simple de cada luz a través de la transmitancia que da el mapa
+  de sombras de nubes en el centro de la gaussiana (para una luz distante,
+  tres lecturas a lo largo de la luz a través de la gaussiana, Gauss-Hermite),
+  un término de cúpula con las direcciones de cúpula del mapa, y las octavas
+  de Wrenninge.
+- **Sombras** (`technique/splat_shadow_volume.slang`). La gaussiana de un
+  medio suma al mapa su propia profundidad óptica a lo largo de la luz, con
+  la huella 2D que tiene ahí la gaussiana de una superficie y el pico de la
+  integral de línea, en un total y tres pares de Fourier propios del medio
+  tras las palabras de las superficies (`shadowStrideOf` de
+  `splat_shadow_read.slang`, `ShadowMapJob::mediumCoefficients`): la
+  transmitancia de un receptor es la de las superficies leída como antes por
+  la del medio a su profundidad, así que el mapa sombrea las mallas y las
+  nubes con el medio y el medio con ellas y consigo mismo, y una superficie
+  detrás de un humo conserva su lado iluminado. Un frame solo de splats
+  construye el mapa donde hay un medio entre ellos; el alcance del medio (la
+  caja de sus centros ensanchada 3,5 desviaciones, `restBounds`) es de lo que
+  se dimensiona el mapa.
 
-Lo que no hace: la luz dispersada en el medio y sus sombras (la radiancia es
-(1 − albedo) por la emisión), el §2b de la propuesta (las gaussianas como
-medio del path tracer), los momentos para un blend independiente del orden
-(§3, b), las ediciones sobre un medio, un medio en un `.athc` o bajo niveles
-de detalle, y `UsdVol` convertido en medio al cargar (§5).
+Lo que no hace: el §2b de la propuesta (las gaussianas como medio del path
+tracer), los momentos para un blend independiente del orden (§3, b), la
+imagen de una cúpula con textura, la luz que rebota en el suelo hacia el
+medio, las ediciones sobre un medio, un medio en un `.athc` o bajo niveles de
+detalle, y `UsdVol` convertido en medio al cargar (§5).
 
 ## 7. Dependencias y toolchain
 

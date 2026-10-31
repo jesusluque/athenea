@@ -75,7 +75,7 @@ struct DomeCloudShadow : IShadowMapSource {
     static float headerReal(uint word) { return cloudShadow.Load(shadowHeaderTexel(word)); }
     static uint headerCount(uint word) { return uint(cloudShadow.Load(shadowHeaderTexel(word))); }
     static float texel(ShadowMapFrame f, uint light, int x, int y, uint which) {
-        return cloudShadow.Load(int4(x, y, int(shadowLayerOf(light, f.coefficients, which)), 0));
+        return cloudShadow.Load(int4(x, y, int(shadowLayerOf(light, f.coefficients, f.medium, which)), 0));
     }
     static uint levels(ShadowMapFrame f) { return shadowChainLevels(f.resolution); }
     static float transmittanceAt(ShadowMapFrame f, uint light, uint level, int x, int y) {

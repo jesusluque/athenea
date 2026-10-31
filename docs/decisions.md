@@ -17026,3 +17026,90 @@ whatever its order, so the raster and the path tracer through the grid the same 
 `athenea_usd_tests "[vdb2splat][raster]"`, a 12-gaussian mixture inside a 32³ box, 160 × 120, the path tracer at
 2048 paths: mean 0.10486 against 0.10544, relMSE 9.1·10⁻⁴ over the frame (held to 5·10⁻³). The 8-bit p99 is 12
 codes, the paths' noise in faint pixels once sRGB-encoded, and is not held.
+
+### Light, shadows both ways, and the black body
+
+**The radiance is baked a gaussian a frame** (`technique::VolumeSplatShading`, one dispatch a medium before the
+raster, under a millisecond for 50k): the emission -- a constant, and a black body at the gaussian's temperature
+from a table built on the device (Planck through Wyman's fit of the CIE curves, normalised to luminance one, times
+σ_SB T⁴/π·10⁻⁶ as Cycles' Principled Volume scales it); each light's single scattering, Henyey-Greenstein at the
+eye's direction from the centre, through the transmittance the cloud shadow map gives at the centre; a dome's
+colour times the mean transmittance of the map's six dome directions; and Wrenninge's octaves for what scatters
+more than once (`athenea:volume:octaves`, 4 by default: extinction towards the light, energy and anisotropy halved
+at each). For a distant light the transmittance is the mean of three readings along the light through the
+gaussian (Gauss-Hermite at −√3, 0, √3 deviations): a transmittance is convex in the depth, and read at the centre
+alone a wide gaussian went dark.
+
+**The medium casts into the map and reads it, in terms of its own.** A medium's gaussian adds its line integral
+along the light into the texels of its 2D footprint -- the peak σ√(2π)√det Σ / √det Σ₂, the footprint the one a
+surface's gaussian has there -- and its Fourier terms with it (`splat_shadow_volume.slang`). First into the
+surfaces' words: the pawn behind the smoke then lost its lit side (the nearest caster in its texels was the smoke,
+2 % of the slab is a few units of a dense smoke, and the step its own body is rang through the series) and went
+dark, and the smoke's front was lit through the same bias. Now a texel keeps a medium's total and three Fourier
+pairs after the surfaces' words (`ShadowMapJob::mediumCoefficients`, the count in the header's coefficients word,
+second byte), a receiver's transmittance is the surfaces' read as before times the medium's at its depth, and the
+transmittance chain a far floor reads is of both totals. A frame of splats alone builds the map where a medium is
+among them. The medium's reach -- its centres' box widened by 3.5 widest deviations, reduced on the device -- is
+what the map is sized from: the centres' box alone cut the far edge of a small mixture's shadow.
+
+### Measured: E1 (proposal §6)
+
+`~/luc/athenea-gpu/volraster_e1.sh`, release build, Apple M5 Pro, one GPU job at a time under the shared lock
+(other sessions' jobs queued between ours; whether the Mac was in interactive use is not known). The same
+volume by three routes: (a) the path trace of the original grid, the truth; (b) the path trace of the grid its
+gaussians give back; (c) the raster drawing the gaussians as a medium. A grey ground (a mesh), a normalized sun
+of irradiance 3 at 40° and a dome of 0.1; the pawn twice beside it, as its meshes in (a) and (b) and as its TX
+cloud in (c) -- A in the volume's shadow, B between the sun and the volume's foot. 1024², the path traces at 1024
+paths and 8 bounces. The fits were made again after the export fix: smoke2 at 50k with splits and 300 Adam steps
+(density relative L2 0.038), density scale 80 (E1b's ×4); the explosion at 50k (0.037), density scale 0.5.
+Masked relMSE (`athenea compare`, PSNR in brackets): the smoke where the original, alone under the sun, has
+alpha ≥ 0.01; the shadow where (a) is under 0.9 of the scene without the volume, the pawns' and the volume's
+pixels left out.
+
+| | smoke2: smoke | shadow | explosion: smoke | shadow |
+|---|---|---|---|---|
+| (b) grid given back against (a) | 3.0·10⁻⁴ (45.8 dB) | 4.4·10⁻⁴ (44.4) | 2.4·10⁻⁴ (46.7) | 5.9·10⁻⁵ (52.6) |
+| (c) raster, 4 octaves, against (a) | 0.025 (25.1) | 0.0094 (30.5) | 0.031 (24.2) | 0.0084 (31.0) |
+| (c) single scattering, no dome, against (a) with no bounce | 0.012 (27.5) | 0.0010 (40.0) | 0.031 (23.0) | 8.2·10⁻⁴ (39.1) |
+| emission-absorption, (c) against (a) | 0.0047 (33.7) | -- | 0.0022 (36.6) | -- |
+| emission-absorption, (b) against (a) | 0.0068 (30.9) | -- | 0.0018 (36.6) | -- |
+
+Pawn A's mean with the volume over its mean without (the volume's shadow on it): 0.837 path traced, 0.787
+raster (smoke2); 0.752 and 0.711 (the explosion) -- the raster's is some 6 % darker, the TX cloud read through
+the medium's Fourier terms. Emission and absorption are where the raster is the exact route: against the
+original it is as close as the grid given back is (smoke2 nearer, 0.0047 against 0.0068: the grid samples the
+gaussians at its voxels, the raster integrates them). The lit smoke misses what the path tracer's 8 bounces carry
+off the ground and between the smoke's own gaussians beyond Wrenninge's octaves; its shadow on the ground is
+within 1 % relMSE. The proposal's bars (1 % emission-absorption, 3 % single scattering) are met but for the
+explosion's single scattering at 3.1 %.
+
+ms a frame (1024², medians; the raster of 30 frames with no readback, the path trace of 5 frames of 64 paths):
+
+| | raster, whole scene | raster, volume and ground alone | path trace, 64 paths, whole scene | the same, volume and ground alone |
+|---|---|---|---|---|
+| smoke2 | 135.7 | 18.1 | 14 829 | 4 236 |
+| explosion | 160.4 | 17.4 | 19 753 | 7 115 |
+
+The whole scene's raster is the two pawns' TX clouds (1.6 M gaussians each); the medium, its shading and the
+ground with the map are 17–18 ms, against 4.2–7.1 s for 64 paths of the path tracer (1024 paths are sixteen
+times that). Sizes: the clouds are 3.05 MB (smoke2) and 3.15 MB (the explosion) in usdc, against 29.1 and
+74.9 MB of `.vdb` and 22.6 and 23.0 MB of NanoVDB on the device; the cloud on the device is about 2 MB
+(positions, shape and the medium's two words, 40 B a gaussian).
+
+The test, `athenea_usd_tests "[vdb2splat][raster]"`: the 12-gaussian mixture under the sun over the ground,
+single scattering (`octaves` 1) against the path tracer with no bounce: mean 0.2171 against 0.2239 (the ground
+alone 0.2561), relMSE 0.013 over the frame (held to 0.03).
+
+### What is not done
+
+`UsdVol` turned into a medium on load (proposal §5: `HdAtheneaVolume` running vdb2splat, cached beside the
+`.vdb`); the path tracer's own medium of gaussians (§2b) -- a medium cloud in a traced frame of splats alone is
+left out, and composited by the raster where there are meshes; moments for an order-independent blend (§3, b) and
+the flicker of the sort in an orbit; light bounced off a ground or a cloud into the medium (the path tracer's 8
+bounces have it, and it is a large share of a smoke over a lit floor); a textured dome's image (a medium takes
+its colour); a medium's shadow into a TX cloud's baked transfer (it multiplies the direct term through the map,
+as an animated caster does); edits, levels of detail and `.athc` for a medium; the path tracer's emission from a
+temperature field, without which the explosion's fire has no truth to be measured against; an orthographic
+camera. A cloud drawn twice shares one radiance buffer, baked for the last instance's place. The [mips] case of
+`athenea_usd_tests` (a floor four texels a pixel from the map, p99 26 against 8) fails the same on the base's
+shadow-map code, built from this branch before the medium's terms: not this work's.

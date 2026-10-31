@@ -49,7 +49,7 @@ document, the header is right.
 | 12 | material | `material/MaterialCompiler.h` — MaterialX into Slang |
 | 13 | light | `light/LightTable.h` — a light on the device; the mesh lights' region at the front of its light words, laid out in `shaders/athenea/light/mesh_lights.slang`; `light/LtcTable.h` — the LTC table, fitted on the device (`ltc_fit.slang`), and `ltc.slang`, a polygon's form factor and LTC integral |
 | 14 | world | `world/GpuScene.h` — the scene as every technique reads it; `world/VolumeSplats.h` — volumetric gaussians and the grids they come from and go back to (§6.13) |
-| 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h`, `technique/MeshLights.h` (emitting meshes as lights: a rebuild that clusters them, a refit a frame, and their rectangles and per-cell cuts as textures the relit splats read, `render::SplatLights::meshRects`) |
+| 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h`, `technique/MeshLights.h` (emitting meshes as lights: a rebuild that clusters them, a refit a frame, and their rectangles and per-cell cuts as textures the relit splats read, `render::SplatLights::meshRects`), `technique/VolumeSplatShading.h` (what a medium's gaussians send to the camera, §6.14) |
 | 16 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
 | 17 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`), `usd/ShadowCatcher.h` (where a shadow catcher stands: the ground found, the patch on it -- a light catcher's too), `usd/LightGroups.h` (a car's lamps: the stage's groups and states, their weights a frame, and `athenea lights merge`) |
 | 18 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
@@ -1468,7 +1468,7 @@ which still visit every gaussian a leaf or a ray.
 
 ### 6.14 A medium of gaussians in the raster
 
-Proposal 105 §3: the gaussians `athenea vdb2splat` writes, drawn by the
+Proposal 105 §3–§4: the gaussians `athenea vdb2splat` writes, drawn by the
 raster as the medium they are. The pieces, in the order a frame meets them:
 
 - **Upload.** A ParticleField with `primvars:athenea:splat:volume` reaches
@@ -1494,12 +1494,31 @@ raster as the medium they are. The pieces, in the order a frame meets them:
   clipped at t = 0 and at the layer under the splats, in erf. A medium's
   record behind that layer does not stop the walk: its chord may reach in
   front of it.
+- **Shading** (`technique::VolumeSplatShading`,
+  `technique/volume_splat_shade.slang`), a dispatch a medium a frame, before
+  the raster: emission (a constant, and the black body of
+  `volume_blackbody.slang`'s table, built on the device once), each light's
+  single scattering through the transmittance the cloud shadow map gives at
+  the gaussian's centre (for a distant light, three readings along the light
+  through the gaussian, Gauss-Hermite), a dome's term from the map's dome
+  directions, and Wrenninge's octaves.
+- **Shadows** (`technique/splat_shadow_volume.slang`). A medium's gaussian
+  adds its own optical depth along the light into the map, the 2D footprint a
+  surface's gaussian has there with the line integral's peak, into a total
+  and three Fourier pairs of the medium's own after the surfaces' words
+  (`splat_shadow_read.slang`'s `shadowStrideOf`, `ShadowMapJob::
+  mediumCoefficients`): a receiver's transmittance is the surfaces' read as
+  before times the medium's at its depth, so the map shadows the meshes and
+  the clouds by the medium and the medium by them and by itself, and a
+  surface behind a smoke keeps its lit side. A frame of splats alone builds
+  the map where a medium is among them; the medium's reach (its centres' box
+  widened by 3.5 deviations, `restBounds`) is what the map is sized from.
 
-What it does not do: light scattered in the medium and its shadows (the
-radiance is (1 − albedo) times the emission), the proposal's §2b (the
-gaussians as the path tracer's medium), moments for an order-independent
-blend (§3, b), edits on a medium, a medium in a `.athc` or under levels of
-detail, and `UsdVol` turned into a medium on load (§5).
+What it does not do: the proposal's §2b (the gaussians as the path tracer's
+medium), moments for an order-independent blend (§3, b), a textured dome's
+image, light bounced off the ground into the medium, edits on a medium, a
+medium in a `.athc` or under levels of detail, and `UsdVol` turned into a
+medium on load (§5).
 
 ## 7. Dependencies and toolchain
 

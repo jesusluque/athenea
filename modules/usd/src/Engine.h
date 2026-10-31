@@ -57,6 +57,7 @@
 #include "athenea/technique/Denoiser.h"
 #include "athenea/technique/PathTracer.h"
 #include "athenea/technique/SplatShadowMap.h"
+#include "athenea/technique/VolumeSplatShading.h"
 #include "athenea/technique/SplatShadows.h"
 #include "athenea/technique/EmissiveTable.h"
 #include "athenea/technique/MeshLights.h"
@@ -789,6 +790,10 @@ private:
     /// read with no ray: how a mesh is shadowed by a cloud in the raster
     /// route, and on a device that cannot trace at all.
     std::optional<technique::SplatShadowMap>  cloudShadowMap_;
+    /// What a medium's gaussians send towards the camera, baked a frame
+    /// (proposal 105): the kernel, and a buffer a medium the frame draws.
+    std::optional<technique::VolumeSplatShading> volumeShading_;
+    std::unordered_map<const scene::GpuSplats*, gpu::Buffer> volumeRadiance_;
     std::optional<technique::PathTracer>      pathTracer_;   ///< made on first use
     technique::PathAux                        pathAux_;      ///< the last path traced frame's albedo and normal
     bool                                      pathAuxValid_ = false;
