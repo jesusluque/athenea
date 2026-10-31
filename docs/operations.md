@@ -1326,8 +1326,20 @@ open directions: bytes 0 to 2 the shape operator's uu, uv and vv, each bit 7
 its sign and bits 0 to 6 a step q of 16/127 of an octave over the 16 octaves
 under byte 3, which holds the largest's log2 rounded up as a signed byte
 (the size 2^(top - 16 + q 16/127); q 0 is flat); the extra header's fifth
-word is 1, and a merged group of more than one is flat (zero). Bit 3 is kept for
-proposal 009. A `flags` bit this build does not know (bit 3, or past bit 6)
+word is 1, and a merged group of more than one is flat (zero). A cloud with
+a solid layer (SSF: blobs bound to the zero set of a summed field, its
+gaussians then the residuals) keeps it under bit 7: a solid header of forty
+bytes at byte 136, after the extra header's place whether or not one is
+there -- its version (1), its blobs and anchors, 32 and 16 bytes each, and
+where they are -- and its section after the chunks, page-aligned: every
+blob's position and weight (float4), then every blob's four words of shape
+(f16 log of the two tangent radii, f16 base colour, theta over pi as unorm16,
+the anchor's index), then the anchors (float32 thickness and smooth-min k,
+the appearance's codebook entry or `0xFFFFFFFF`, flags). The layer is the
+cloud's as a whole, with no levels or chunks of its own; a stream reads it
+when it opens. A solid header of another version, or whose blobs or anchors
+would run past the end, is refused, file named, saying which. Bit 3 is kept for
+proposal 009. A `flags` bit this build does not know (bit 3, or past bit 7)
 is refused, file named: a later bit may add a block, and a reader that
 skipped it would read every block after it from the wrong place.
 

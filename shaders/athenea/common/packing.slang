@@ -474,3 +474,88 @@ public void atheneaPackTexel(RWStructuredBuffer<uint> packed, uint kind, uint in
         packed[index * 4 + 3] = asuint(texel.w);
     }
 }
+
+// --- the solid layer (SSF, docs/decisions.md "Solid splats (SSF)") -----------
+//
+// A solid blob is a compact polynomial kernel, k(r) = (1 - r^2)^3 for r < 1,
+// whose summed field F(x) = sum_i w_i k(r_i(x)) - tau has the surface as its
+// zero set. Its normal is the field's gradient, so it is not stored; its
+// frame turns about that normal by one angle; its thickness along the normal
+// and the edge's smooth-min are its anchor's, shared.
+//
+//   blobPositions  float4   xyz, weight w_i (float32)               16 bytes
+//   blobShape      uint * 4                                          16 bytes
+//     [0] f16 log(a) | f16 log(b) << 16    the tangent half-axes
+//     [1] f16 base colour r | f16 g << 16
+//     [2] f16 base colour b | unorm16 theta / pi << 16   (theta in [0, pi):
+//                                          a tangent ellipse is the same
+//                                          turned by pi)
+//     [3] the anchor's index
+//   anchors        uint * 4                                          16 bytes
+//     [0] float32 thickness c (the normal half-axis)
+//     [1] float32 smooth-min k of the edges (0: a plain sum)
+//     [2] the appearance's entry in the anchor codebook (kNoAppearance: none
+//         yet; the TX extras -- transfer, pbr, lobes -- by table, no network)
+//     [3] flags, 0: none defined
+//
+// Raw, 32 bytes a blob; the surface-bound codec (phase 4) is another layout.
+
+public static const uint kNoAppearance = 0xFFFFFFFFu;
+
+public struct SolidBlob {
+    public float3 position;
+    public float  weight;
+    public float2 radii;     ///< tangent half-axes a, b
+    public float  theta;     ///< the tangent frame's turn about the normal, [0, pi)
+    public float3 colour;    ///< base colour (DC)
+    public uint   anchor;
+};
+
+public struct SolidAnchor {
+    public float thickness;  ///< c, the normal half-axis
+    public float smoothK;    ///< smooth-min k of the edges
+    public uint  appearance; ///< codebook entry, or kNoAppearance
+    public uint  flags;
+};
+
+public uint packTheta(float theta) {
+    const float t = theta * (1.0 / 3.14159265358979);
+    const float wrapped = t - floor(t);   // [0, 1): theta modulo pi
+    return min(uint(round(wrapped * 65536.0)), 65536u) & 0xFFFFu;
+}
+
+public float unpackTheta(uint bits) {
+    return float(bits & 0xFFFFu) * (3.14159265358979 / 65536.0);
+}
+
+public void packSolidBlob(SolidBlob b, out float4 position, out uint4 shape) {
+    position = float4(b.position, b.weight);
+    shape.x = packHalves(halfSafe(log(max(b.radii.x, 1.0e-30))), halfSafe(log(max(b.radii.y, 1.0e-30))));
+    shape.y = packHalves(halfSafe(b.colour.r), halfSafe(b.colour.g));
+    shape.z = (f32tof16(halfSafe(b.colour.b)) & 0xFFFFu) | (packTheta(b.theta) << 16);
+    shape.w = b.anchor;
+}
+
+public SolidBlob unpackSolidBlob(float4 position, uint4 shape) {
+    SolidBlob b;
+    b.position = position.xyz;
+    b.weight = position.w;
+    b.radii = float2(exp(lowHalf(shape.x)), exp(highHalf(shape.x)));
+    b.colour = float3(lowHalf(shape.y), highHalf(shape.y), lowHalf(shape.z));
+    b.theta = unpackTheta(shape.z >> 16);
+    b.anchor = shape.w;
+    return b;
+}
+
+public uint4 packAnchor(SolidAnchor a) {
+    return uint4(asuint(a.thickness), asuint(a.smoothK), a.appearance, a.flags);
+}
+
+public SolidAnchor unpackAnchor(uint4 w) {
+    SolidAnchor a;
+    a.thickness = asfloat(w.x);
+    a.smoothK = asfloat(w.y);
+    a.appearance = w.z;
+    a.flags = w.w;
+    return a;
+}

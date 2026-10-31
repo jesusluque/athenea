@@ -50,6 +50,22 @@ struct LodLevel {
 /// the Morton order, the last holding the rest -- which need not be. A chunk
 /// on the device sits in a slot of the store (slot k: splats from
 /// k * chunkSplats); built in memory, chunk c is slot c and all are there.
+/// THE SOLID LAYER (SSF, docs/decisions.md "Solid splats (SSF)"): blobs bound
+/// to the zero set of a summed compact polynomial field, beside the cloud's
+/// gaussians, which are then the residual layer (hair, foliage, glass). Its
+/// words are common/packing.slang's packSolidBlob and packAnchor; a blob's
+/// normal is the field's gradient and is not stored. The layer is the
+/// cloud's as a whole: it has no levels or chunks of its own yet (phase 4).
+struct SolidLayer {
+    uint32_t    blobs = 0;
+    uint32_t    anchors = 0;
+    gpu::Buffer positions;   ///< float4 per blob: xyz, weight
+    gpu::Buffer shape;       ///< 4 uint per blob: log radii, colour, theta, anchor
+    gpu::Buffer anchorWords; ///< 4 uint per anchor: thickness, smooth-min k, appearance, flags
+
+    [[nodiscard]] bool present() const noexcept { return blobs > 0; }
+};
+
 struct LodCloud {
     uint32_t              count = 0;         ///< splats in the cloud
     uint32_t              chunkSplats = 0;   ///< splats per chunk
@@ -58,6 +74,7 @@ struct LodCloud {
     std::vector<int32_t>  slots;             ///< per chunk: its slot, or -1 when not on the device
     gpu::Buffer           resident;          ///< uint per chunk: 1 when on the device
     std::vector<LodLevel> levels;            ///< coarsest first, consecutive levels, never empty
+    SolidLayer            solid;             ///< SSF blobs and anchors; absent (no blobs) in most clouds
     gpu::Buffer           starts;            ///< uint per finest-level group: its first splat
     /// uint per store splat: which splat of the cloud it was built from --
     /// the Morton order, kept so that what the cloud carries beside its

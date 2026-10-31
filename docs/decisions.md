@@ -16400,3 +16400,61 @@ emitting triangles are still sampled from the flat table, which is no cheaper.
 - The lightmap's group atlases are not added at the groups' levels by anything in this engine.
 - A radiance-baked cloud (`litBody`) keeps its groups' light in its colours; the layers are for relit clouds.
 - The test the plan named on a pawn; the ball stands in for it.
+
+## Solid splats (SSF): a solid layer beside the gaussians (phase 0, 31 Oct)
+
+The aim is to "solidify" a trained gaussian cloud after the fact, without images: the gaussians that
+describe opaque surfaces become **blobs bound to the zero set of a summed scalar field**, and the rest --
+hair, foliage, glass, background -- stays as gaussians, the residual layer. Better surfaces (depth, normal,
+edge) than free gaussians, fewer parameters a primitive (the normal is implicit, the turn has one degree of
+freedom), and a cheap conversion of the assets already there. The primitive itself is published (Fuzzy
+Metaballs, Discretized SDF, GauSDF, Gaussian Wrapping); none of those converts a trained cloud without
+training from images again (the state of the art read on 31 Oct; G²ARD-GS, 2608.05704, distils a trained
+cloud but recovers appearance photometrically and gives plain gaussians), so SSF is a system: the post-hoc
+conversion, a surface-bound codec, levels by moments.
+
+### The field
+
+`F(x) = Σ w_i k(r_i(x)) − τ`, `k(r) = (1 − r²)³` for `r < 1` and 0 past it, `r_i² = (x − μ_i)ᵀ A_i (x − μ_i)`,
+`A_i = R(θ_i) diag(1/a_i², 1/b_i², 1/c²) R(θ_i)ᵀ` in the frame (t₁, t₂, n). A compact polynomial: no `exp`, a
+bounded support, so a blob's neighbours are those whose boxes overlap; the largest `|dk/dr|` is
+`6/√5 (4/5)² ≈ 1.72` (at `r = 1/√5`), so a blob's Lipschitz bound is `1.72 w_i √λmax(A_i)`. The normal is
+`∇F/|∇F|`, analytic, and feeds the path the shading normals (`kHasNormals`) feed. Distance is Taubin's
+`F/|∇F|`, the opacity derived from it. Sharp edges by a smooth minimum whose `k` is the anchor's.
+
+### Decisions (the user's, 31 Oct)
+
+- **Mode A first.** A solid layer is drawn by converting its blobs back to flat gaussians (`ssf2splat`, phase
+  2), so the render stays 3DGS only. A one-hit solid pass (root-finding the zero set a pixel, a G-buffer
+  without a sort) is a new primitive in the render and is deferred until phase 2 has numbers.
+- **Appearance is the TX extras**, carried or derived per blob or anchor and decoded by table or codebook:
+  no network at run time. An anchor's third word is its codebook entry, `kNoAppearance` until there is one.
+- **Metal first**; nothing on the L4 without the user's word.
+
+### Phase 0: the layer in a `.athc`
+
+`lod::SolidLayer` (on `LodCloud::solid`) holds three device buffers: a float4 a blob (position, weight), four
+words a blob (f16 log of the two tangent radii, f16 base colour, θ over π as unorm16 -- a tangent ellipse is
+the same turned by π --, the anchor's index) and four words an anchor (float32 thickness `c` and smooth-min
+`k`, the appearance's entry, flags). `common/packing.slang`'s `packSolidBlob`/`unpackSolidBlob` and
+`packAnchor`/`unpackAnchor` are its only definition. Raw, 32 bytes a blob; the codec of phase 4 is another
+layout.
+
+In the file it is **bit 7** of `flags`, a solid header of forty bytes at byte 136 (after the extra header's
+place, so it never moves with bits 4 to 6) and a section after the chunks. The plan first put a solid
+section in every level and chunk; it is the cloud's as a whole instead, because nothing yet says which
+chunk a blob belongs to -- blobs get their own hierarchy by the same moments (`lod_leaf_moments`,
+`lod_merge_moments`) in phase 4, and `solidify` runs before the `LodBuilder`, whose gaussians are then the
+residuals. The header has its own version for that change. A reader from before bit 7 refuses the file as
+any unknown bit ("unknown flag bits 7"), rather than drawing the residuals alone.
+
+**Checked** (`tests/lod/test_athc_solid.cpp`, `test/ssf_check.slang`): a layer generated on the device from
+a hash of each index -- every field varied -- packs and unpacks to itself (words a repack changes: 0) and
+within the packing's step of what was generated; written into a `.athc` and read back, whole and through a
+`StreamingPool`, it is the same word for word (`countDifferent`: 0 over positions, shapes and anchors), and
+the residual gaussians are unchanged; a file without a layer has no bit 7 and reads with none; a solid header
+of version 2, or with blobs past the end, is refused saying so; a flag bit past 7 is refused naming it.
+
+**Not done:** `solidify` and `ssf2splat` (phase 2, as AOFX bundles with subcommands, the `mesh2splat`
+pattern); the field and its checks (phase 1, neighbours from the Morton cells); the codec and levels
+(phase 4).

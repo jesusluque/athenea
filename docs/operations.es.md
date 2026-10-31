@@ -1364,9 +1364,21 @@ cada uno con su signo en el bit 7 y en los bits 0 a 6 un paso q de 16/127 de
 octava sobre las 16 octavas por debajo del byte 3, que guarda el log2 del
 mayor redondeado hacia arriba como byte con signo (el tamaño 2^(top - 16 +
 q 16/127); q 0 es plano); la quinta palabra de la cabecera extra es 1, y un
-grupo fundido de más de una es plano (cero). El bit 3 se guarda para la propuesta
+grupo fundido de más de una es plano (cero). Una nube con capa sólida (SSF:
+blobs ligados al conjunto cero de un campo sumado, y sus gaussianas entonces
+los residuales) la guarda bajo el bit 7: una cabecera sólida de cuarenta
+bytes en el byte 136, tras el sitio de la cabecera extra, la haya o no -- su
+versión (1), sus blobs y anclas, de 32 y 16 bytes cada uno, y dónde están --
+y su sección tras los chunks, alineada a página: la posición y el peso de
+cada blob (float4), luego las cuatro palabras de forma de cada blob (log f16
+de los dos radios tangentes, color base f16, theta entre pi como unorm16, el
+índice de su ancla), luego las anclas (grosor y k del smooth-min en float32,
+la entrada de la apariencia en el codebook o `0xFFFFFFFF`, flags). La capa es
+de la nube entera, sin niveles ni chunks propios; un stream la lee al abrir.
+Una cabecera sólida de otra versión, o cuyos blobs o anclas pasarían del
+final, se rechaza, nombrando el fichero y diciendo cuál. El bit 3 se guarda para la propuesta
 009. Un bit de los `flags` que esta compilación no conoce (el bit 3, o pasado
-el bit 6) se rechaza, nombrando el fichero: un bit posterior puede añadir un bloque, y un lector que lo saltara
+el bit 7) se rechaza, nombrando el fichero: un bit posterior puede añadir un bloque, y un lector que lo saltara
 leería cada bloque detrás de él desde el sitio equivocado.
 
 Cómo se ve un presupuesto corto: los grupos cuyos chunks no han llegado

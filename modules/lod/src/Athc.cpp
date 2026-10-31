@@ -51,8 +51,15 @@ constexpr uint32_t kHasTransfer = 32;
 /// (common/packing.slang's packCurvature); the extra header's
 /// `curvatureWords` is 1. A merged group of more than one is flat (zero).
 constexpr uint32_t kHasCurvature = 64;
+/// Bit 7: the cloud carries a solid layer (SSF, LodCloud::solid): the solid
+/// header after the extra header says how many blobs and anchors, and their
+/// section follows the chunks. The blocks themselves are unchanged -- their
+/// gaussians are the residual layer -- so a reader that skipped it would draw
+/// the residuals alone; it is refused instead, as any unknown bit.
+constexpr uint32_t kHasSolid = 128;
 constexpr uint32_t kExtraFlags = kHasMaterial | kHasTransfer | kHasCurvature;
-constexpr uint32_t kKnownFlags = kHasNormals | kLinear | kHasEmission | kHasMaterial | kHasTransfer | kHasCurvature;
+constexpr uint32_t kKnownFlags =
+    kHasNormals | kLinear | kHasEmission | kHasMaterial | kHasTransfer | kHasCurvature | kHasSolid;
 constexpr char     kMagic[4] = {'A', 'T', 'H', 'C'};
 /// Uploads staged before a submit: the staging heap holds them until then.
 constexpr uint64_t kStageBytes = uint64_t{256} << 20;
@@ -100,6 +107,26 @@ struct ExtraHeader {
 };
 static_assert(sizeof(ExtraHeader) == 32);
 constexpr uint64_t kExtraHeaderAt = sizeof(FileHeader);
+/// After the extra header's place (whether or not bit 4, 5 or 6 put one
+/// there), where bit 7 is set: the solid layer's counts and where it is.
+/// Blobs are 32 bytes (a float4 position and weight, then 4 words of shape),
+/// anchors 16 (common/packing.slang's packSolidBlob and packAnchor); the
+/// positions of all blobs come first, then all their shapes.
+struct SolidHeader {
+    uint32_t version;       // 1
+    uint32_t blobs;
+    uint32_t anchors;
+    uint32_t blobBytes;     // 32
+    uint32_t anchorBytes;   // 16
+    uint32_t pad;
+    uint64_t blobsAt;       // page-aligned: positions[blobs], then shape[blobs]
+    uint64_t anchorsAt;     // page-aligned: anchors[anchors]
+};
+static_assert(sizeof(SolidHeader) == 40);
+constexpr uint64_t kSolidHeaderAt = kExtraHeaderAt + sizeof(ExtraHeader);
+constexpr uint32_t kSolidVersion = 1;
+constexpr uint32_t kBlobBytes = 32;
+constexpr uint32_t kAnchorBytes = 16;
 
 /// A member of a cloud, as a pointer: named once, since MSVC does not parse
 /// `gpu::Buffer scene::GpuSplats::*` as a template argument.
@@ -152,6 +179,7 @@ bool keepsEmission(const FileHeader& h) {
 struct Layout {
     FileHeader              header{};
     ExtraHeader             extra{};
+    SolidHeader             solid{};   ///< zero where bit 7 is clear
     std::vector<LevelEntry> levels;
     std::vector<ChunkEntry> chunks;
 };
@@ -197,8 +225,8 @@ Result<Layout> parse(const platform::MappedFile& file, const std::filesystem::pa
             }
         }
         return bad(path, "unknown flag bits " + bits +
-                             "; this reads bits 0 (normals), 1 (linear), 2 (emission), 4 (material), 5 (transfer) and "
-                             "6 (curvature)");
+                             "; this reads bits 0 (normals), 1 (linear), 2 (emission), 4 (material), 5 (transfer), "
+                             "6 (curvature) and 7 (solid layer)");
     }
     const auto within = [&](uint64_t offset, uint64_t size) {
         return offset <= bytes.size() && size <= bytes.size() - offset;
@@ -211,6 +239,21 @@ Result<Layout> parse(const platform::MappedFile& file, const std::filesystem::pa
         !within(h.chunkTable, uint64_t{h.chunks} * sizeof(ChunkEntry)) ||
         !within(h.starts, uint64_t{h.finestGroups} * 4)) {
         return bad(path, "tables past the end");
+    }
+    if ((h.flags & kHasSolid) != 0) {
+        std::memcpy(&layout.solid, bytes.data() + kSolidHeaderAt, sizeof layout.solid);
+        const SolidHeader& sh = layout.solid;
+        if (sh.version != kSolidVersion) {
+            return bad(path, "solid layer version " + std::to_string(sh.version) + ", this reads " +
+                                 std::to_string(kSolidVersion));
+        }
+        if (sh.blobs == 0 || sh.anchors == 0 || sh.blobBytes != kBlobBytes || sh.anchorBytes != kAnchorBytes) {
+            return bad(path, "inconsistent solid header");
+        }
+        if (!within(sh.blobsAt, uint64_t{sh.blobs} * kBlobBytes) ||
+            !within(sh.anchorsAt, uint64_t{sh.anchors} * kAnchorBytes)) {
+            return bad(path, "solid layer past the end");
+        }
     }
     layout.levels.resize(h.levels);
     layout.chunks.resize(h.chunks);
@@ -343,6 +386,21 @@ Result<LodCloud> openCloud(gpu::Device& device, const platform::MappedFile& file
     auto starts = deviceBuffer(device, h.finestGroups, 4, "athc.starts", base + h.starts);
     if (!starts) return std::move(starts).error();
     lod.starts = std::move(*starts);
+    if ((h.flags & kHasSolid) != 0) {
+        const SolidHeader& sh = layout.solid;
+        const std::byte* blobs = base + sh.blobsAt;
+        auto positions = deviceBuffer(device, sh.blobs, 16, "athc.solid", blobs);
+        if (!positions) return std::move(positions).error();
+        auto shape = deviceBuffer(device, uint64_t{sh.blobs} * 4, 4, "athc.solid", blobs + uint64_t{sh.blobs} * 16);
+        if (!shape) return std::move(shape).error();
+        auto anchors = deviceBuffer(device, uint64_t{sh.anchors} * 4, 4, "athc.anchors", base + sh.anchorsAt);
+        if (!anchors) return std::move(anchors).error();
+        lod.solid.blobs = sh.blobs;
+        lod.solid.anchors = sh.anchors;
+        lod.solid.positions = std::move(*positions);
+        lod.solid.shape = std::move(*shape);
+        lod.solid.anchorWords = std::move(*anchors);
+    }
     return lod;
 }
 
@@ -435,6 +493,11 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
             return Error(ErrorCode::InvalidArgument, "writing a cloud whose chunks are not all on the device");
         }
     }
+    const SolidLayer& solid = cloud.solid;
+    if (solid.present() &&
+        (solid.anchors == 0 || !solid.positions.valid() || !solid.shape.valid() || !solid.anchorWords.valid())) {
+        return Error(ErrorCode::InvalidArgument, "a solid layer's blobs need their anchors and all three buffers");
+    }
     const uint32_t shWords = cloud.splats.shWords;
     // Normals are written only where every level keeps them as the splats do.
     const bool normals = cloud.splats.hasNormals() &&
@@ -471,7 +534,7 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
     h.version = kVersion;
     h.flags = (normals ? kHasNormals : 0u) | (cloud.splats.linear ? kLinear : 0u) |
               (emission ? kHasEmission : 0u) | (x.pbrWords ? kHasMaterial : 0u) | (x.transferWords ? kHasTransfer : 0u) |
-              (x.curvatureWords ? kHasCurvature : 0u);
+              (x.curvatureWords ? kHasCurvature : 0u) | (solid.present() ? kHasSolid : 0u);
     h.count = cloud.count;
     h.restPerColour = cloud.splats.restPerColour;
     h.shWords = shWords;
@@ -498,6 +561,20 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
     for (uint32_t c = 0; c < h.chunks; ++c) {
         chunks.push_back({at, cloud.chunkCount(c), 0});
         at = aligned(at + cloud.chunkCount(c) * per);
+    }
+    // The solid layer after the chunks: a stream that never wants it never
+    // faults it in.
+    SolidHeader sh{};
+    if (solid.present()) {
+        sh.version = kSolidVersion;
+        sh.blobs = solid.blobs;
+        sh.anchors = solid.anchors;
+        sh.blobBytes = kBlobBytes;
+        sh.anchorBytes = kAnchorBytes;
+        sh.blobsAt = at;
+        at = aligned(at + uint64_t{solid.blobs} * kBlobBytes);
+        sh.anchorsAt = at;
+        at = aligned(at + uint64_t{solid.anchors} * kAnchorBytes);
     }
 
     // Beside the destination first: a failed write never leaves a file that
@@ -529,6 +606,10 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
     put(&h, sizeof h);
     if ((h.flags & kExtraFlags) != 0) {
         put(&x, sizeof x);
+    }
+    if (solid.present()) {
+        padTo(kSolidHeaderAt);
+        put(&sh, sizeof sh);
     }
     padTo(h.levelTable);
     put(levels.data(), levels.size() * sizeof(LevelEntry));
@@ -571,6 +652,13 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
             ATHENEA_TRY(copy(cloud.splats.*member, first * 4 * words, n * 4 * words));
         }
     }
+    if (solid.present()) {
+        padTo(sh.blobsAt);
+        ATHENEA_TRY(copy(solid.positions, 0, uint64_t{solid.blobs} * 16));
+        ATHENEA_TRY(copy(solid.shape, 0, uint64_t{solid.blobs} * 16));
+        padTo(sh.anchorsAt);
+        ATHENEA_TRY(copy(solid.anchorWords, 0, uint64_t{solid.anchors} * 16));
+    }
     padTo(aligned(written));
     out.close();
     if (!out) {
@@ -582,8 +670,13 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
         return Error(ErrorCode::IoFailure, "cannot move " + partial.string() + " to " + path.string() + ": " +
                                              ec.message());
     }
-    log::info("{}: {} splats in {} chunks, {} levels, {:.1f} MB", path.string(), h.count, h.chunks, h.levels,
-              static_cast<double>(written) / (1 << 20));
+    if (solid.present()) {
+        log::info("{}: {} splats in {} chunks, {} levels, {} solid blobs on {} anchors, {:.1f} MB", path.string(),
+                  h.count, h.chunks, h.levels, solid.blobs, solid.anchors, static_cast<double>(written) / (1 << 20));
+    } else {
+        log::info("{}: {} splats in {} chunks, {} levels, {:.1f} MB", path.string(), h.count, h.chunks, h.levels,
+                  static_cast<double>(written) / (1 << 20));
+    }
     return ok();
 }
 

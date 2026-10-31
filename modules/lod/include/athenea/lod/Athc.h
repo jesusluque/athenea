@@ -8,6 +8,7 @@
 //   aligned       the finest level's group starts
 //   aligned       each level: positions, shape, SH, cells (per group)[, normals][, emission]
 //   aligned       each chunk: positions, shape, SH, finest group (per splat)[, normals][, emission]
+//   aligned       [bit 7] the solid layer: blob positions, blob shapes; aligned, anchors
 //
 // Version 2 adds the header's `flags`; bit 0 says every block ends with the
 // shading normals (one word an element, GpuSplats::normals), bit 1 that the
@@ -15,6 +16,9 @@
 // and bit 2 that the emitted radiance follows them (one RGB9E5 word an
 // element, GpuSplats::emission). Version 1 files, which have none, are still read.
 // A flag bit the reader does not know is refused: it may add a block.
+// Bit 7 says the cloud carries a solid layer (SSF, LodCloud::solid): a solid
+// header after the extra header's place gives its blobs and anchors, and its
+// section follows the chunks; the blocks' gaussians are then its residuals.
 //
 // Every block starts on a 4096-byte page, so a chunk maps and faults in alone.
 // Little-endian, the device's own packing (athenea/common/packing.slang).
