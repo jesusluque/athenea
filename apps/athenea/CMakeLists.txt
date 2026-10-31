@@ -9,6 +9,7 @@ add_executable(athenea
     src/CmdMigrate.cpp
     src/CmdAofx.cpp
     src/CmdMesh2Splat.cpp
+    src/CmdVdb2Splat.cpp
     src/Mesh2SplatValidate.cpp
     src/CmdFlatten.cpp src/CmdLightmap.cpp
     src/CmdVisibility.cpp
@@ -39,7 +40,7 @@ target_compile_definitions(athenea PRIVATE ATHENEA_AOFX_BUNDLE_DIR="${AOFX_BUNDL
 # `athenea --version` and `athenea info` print and what a release is tagged.
 target_compile_definitions(athenea PRIVATE ATHENEA_VERSION="${athenea_VERSION}")
 if(TARGET athenea_aofx_invert)
-    add_dependencies(athenea athenea_aofx_invert athenea_aofx_mesh2splat athenea_aofx_measure
+    add_dependencies(athenea athenea_aofx_invert athenea_aofx_mesh2splat athenea_aofx_vdb2splat athenea_aofx_measure
                      athenea_aofx_splatbakefilter)
 endif()
 target_include_directories(athenea PRIVATE src)

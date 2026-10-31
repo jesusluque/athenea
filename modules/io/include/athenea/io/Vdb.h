@@ -29,6 +29,8 @@ struct NanoGrid {
     /// Index to world, a row-vector 4x4 (v * M, translation in the last
     /// row), as OpenVDB's linear map holds it.
     std::array<double, 16> indexToWorld{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    /// Values a voxel: 1 for a float grid, 3 for a vec3 one (`readVdbVec3Grid`).
+    uint32_t              components = 1;
 };
 
 /// A box of voxels [min, max) at one value: what a fixture is made of.
@@ -46,6 +48,16 @@ struct VdbBox {
 
 /// One float grid of a .vdb, as NanoVDB. `name` empty takes the first.
 [[nodiscard]] Result<NanoGrid> readVdbGrid(const std::filesystem::path& path, const std::string& name = {});
+
+/// One vec3 grid of a .vdb (a `Cd`, a `vel`), as NanoVDB: the same re-layout
+/// as `readVdbGrid`, `components` 3.
+[[nodiscard]] Result<NanoGrid> readVdbVec3Grid(const std::filesystem::path& path, const std::string& name);
+
+/// Writes NanoVDB float grids back as a .vdb, each under its own name as a
+/// fog volume: the re-layout `readVdbGrid` makes, the other way. What a
+/// kernel wrote into a grid's values (athenea vdb2splat --back) leaves the
+/// device this way.
+[[nodiscard]] Result<void> writeNanoGrids(const std::filesystem::path& path, std::span<const NanoGrid> grids);
 
 /// Writes a fog grid of `boxes` filled at their values (a test's input; the
 /// count of voxels it holds is known by construction, not measured).

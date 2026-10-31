@@ -710,6 +710,61 @@ what the filter spread across the border.
 binding is stronger than the one written on its mesh, so a mesh with subsets
 shows its materials, not its atlas.
 
+### 2.8.3 `athenea vdb2splat` — a volume into volumetric gaussians, and back
+
+A `.vdb` fog volume fitted by a sum of 3D gaussians, μ_t(x) = Σ σ_i G_i(x)
+with each G_i of peak 1 (proposal 103): the density grid's extinction, and
+the temperature and Cd grids beside it, if the file holds them, as
+density-weighted means. The fit is the Vdb2Splat effect (§7.2) and every step
+of it runs on the device; development.md §6.13 says how. The gaussians are
+written as a ParticleField (below).
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `input` | path, required | — | a `.vdb`; with `--make-fixture`, the file written |
+| `-o`, `--output` | path | none | `.usda`, `.usdc`, `.usd`; nothing is written without it |
+| `--density` | grid name | `density` | a float grid; the fit refuses a file without it |
+| `--temperature` | grid name | `temperature` | a float grid, read where the file has it; its voxels are read at the density's |
+| `--colour` | grid name | `Cd` | a vec3 grid, read where the file has it, clamped to [0, 1] and kept as 8 bits a channel |
+| `-n`, `--target` | integer | `20000` | the most gaussians written |
+| `--em-iterations` | integer | `40` | EM steps on the geometry, first: each gaussian moved to the moments of the density it is responsible for |
+| `--iterations` | integer | `100` | Adam steps on the geometry, after them |
+| `--attribute-iterations` | integer | `20` | Jacobi steps on temperature and Cd, the geometry fixed; none without either grid |
+| `--max-block` | `8`, `16`, `32`, `64`, `128` | `64` | voxels a side of the largest block one gaussian starts from; a third of it is the largest deviation a gaussian may take |
+| `--emission-weight` | number ≥ 0 | `1` | what the temperature's spread in a block counts beside the density's error, the temperature scaled to the density's range |
+| `--init-fraction` | 0.01 to 1 | `0.6` | the share of the budget the first cut holds; the rest is born where the residual is largest |
+| `--densify-every` | integer | `20` | iterations between densify-and-prune rounds; none after 70 % of them |
+| `--learning-rate` | number | `0.1` | Adam's step, in log units for the peak and the factor's diagonal and in deviations for the centre; it decays tenfold over the run |
+| `--density-scale` | number | `1` | density to extinction a world unit: the opacity written for a standard viewer |
+| `--make-fixture` | `blob` | none | writes `input` and stops: a box of `--fixture-size` voxels a side, every voxel active, filled on the device with a smooth noise ball, with a temperature grid |
+| `--fixture-size` | integer | `96` | voxels a side |
+| `--voxel-size` | number | `0.05` | the fixture's voxel, world units |
+| `--seed` | integer | `1` | the fixture's |
+| `--path` | directory ‹repeatable› | none | bundle directories searched after `$AOFX_PLUGIN_PATH` |
+
+What the stage holds, on its `UsdVolParticleField3DGaussianSplat`, besides
+the schema's positions, orientations, scales and `radiance:base`:
+
+| Primvar | Type | Meaning |
+|---|---|---|
+| `primvars:athenea:splat:volume` | bool | `true`: the gaussians are a medium, not a surface |
+| `primvars:athenea:volume:sigma` | half[] ‹1 a gaussian› | the extinction's peak, in the grid's density units (the Volume's `densityScale` multiplies it) |
+| `primvars:athenea:volume:albedo` | color3h[] | Cd, 1 where the file has none |
+| `primvars:athenea:volume:temperature` | half[] | the temperature, where the file has one |
+
+The positions and scales are in the grid's world (its index-to-world map).
+`radiance:base` holds Cd and, as opacity, 1 − exp(−τ) through the gaussian's
+middle along its mean deviation, τ = σ · `--density-scale` · √(2π) · s: what
+a standard viewer draws, not what the raster of this engine is to draw for a
+medium (proposal 105). The budget counts the gaussians that are written;
+fewer are written where the coarsest blocks the volume holds are already
+more than `--init-fraction` of it.
+
+```sh
+athenea vdb2splat smoke.vdb -n 50000 -o smoke_gs.usdc
+athenea vdb2splat blob.vdb --make-fixture blob --fixture-size 128
+```
+
 ### 2.9 `athenea visibility` — what a skinned cloud casts, baked by part
 
 | Option | Value | Default | Notes |
@@ -2432,6 +2487,34 @@ host that divides in double, as `athenea compare` does. Two pictures of
 different sizes are refused (`measure compares pictures of one size`), and so
 is a window with nothing in it (`measure: an empty window`).
 
+### 7.2 Vdb2Splat — `rt.sparrow.aofx.vdb2splat`
+
+A sparse volume's extinction fitted by gaussians: what `athenea vdb2splat`
+runs (§2.8.3). Its one clip, `Grid`, is not a picture of colour but the
+grid's leaves laid out by the host, 513 entries a leaf: the leaf's origin in
+index space, then its 512 voxels in NanoVDB's order (x slowest, z fastest),
+each (density, temperature, Cd as rgba8 in a float's bits, active 0 or 1).
+Its rows must not be padded, and neither must the output's. The output holds
+four entries a gaussian in the grid's index space -- (centre, σ), (A00, A10,
+A11, A20), (A21, A22, temperature, Cd rgba8), (the half extents of its box at
+3.5 deviations, 1) -- where A is the lower Cholesky factor of the precision,
+G(x) = exp(−|Aᵀ(x − μ)|² / 2); its size is the budget's room, a quarter of its
+entries.
+
+| Parameter | Value | Default | Notes |
+|---|---|---|---|
+| `leaves` | integer | `0` | how many leaves `Grid` holds; the host sets it, and 0 is refused |
+| `target` | integer | `20000` | the budget, bounded by the output's room |
+| `emIterations`, `iterations`, `attributeIterations`, `maxBlock`, `emissionWeight`, `initFraction`, `densifyEvery`, `learningRate` | | as §2.8.3 | the options of the same names |
+| `minStd` | number, voxels | `0.35` | the smallest deviation a gaussian may take |
+| `pruneMass` | number | `1e-6` | a gaussian whose mass is under this share of the total goes |
+| `hasTemperature`, `hasColour` | boolean | `0` | whether `Grid` carries them (the host sets them) |
+
+It attaches `gaussians`: written, the budget, leaves, the fit's relative L2
+error over the active voxels, the gaussians the first cut held, the
+iterations, the coarsest block's level (2^level voxels a side), and the
+fewest gaussians the coarsest blocks allow.
+
 ## 8. Reference
 
 ### 8.1 Environment variables
@@ -2455,7 +2538,10 @@ so whatever that build reads.
 
 **Clouds written.** `athenea flatten` writes 3DGS `.ply`, `.spz` (versions 3
 and 4; 4 needs zstd), glTF `.glb` with `KHR_gaussian_splatting`, and USD
-(§2.8.1).
+(§2.8.1). `athenea vdb2splat` writes USD (§2.8.3).
+
+**Volumes written.** `athenea vdb2splat --make-fixture` writes
+`.vdb` float grids, fog volumes, through OpenVDB.
 
 **Images written.** OpenEXR, linear premultiplied, bottom row first inside the
 engine and written top row first as the format wants. A frame is half by
@@ -2474,6 +2560,7 @@ Cryptomatte layer is always float. PNG is written only as the MCP preview.
 | `athenea view` | nothing, or one EXR with `--snapshot` |
 | `athenea live` | one EXR a frame, numbered, each with its timecode |
 | `athenea mesh2splat` | a USD stage holding the cloud |
+| `athenea vdb2splat` | a USD stage holding the gaussians; with `--make-fixture`, a `.vdb` and nothing else |
 | `athenea flatten` | `.ply`, `.spz`, `.glb` and USD files of the flattened clouds, the composed stage beside them, and with `--validate` what `mesh2splat --validate` writes |
 | `athenea lightmap` | `lightmap_<atlas>.exr` (half, linear, bottom row first) and `lightmapped.usda`, which sublayers the source; its materials are under the one root prim every baked mesh shares (`/<root>/AtheneaLightmaps`), so referencing that prim keeps them |
 | `athenea visibility` | the cloud's file, edited in place or copied |

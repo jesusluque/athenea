@@ -12,6 +12,7 @@
 #include <nanovdb/NanoVDB.h>
 #include <nanovdb/util/GridChecksum.h>
 #include <nanovdb/util/GridStats.h>
+#include <nanovdb/util/NanoToOpenVDB.h>
 #include <nanovdb/util/OpenToNanoVDB.h>
 #include <openvdb/io/File.h>
 #include <openvdb/openvdb.h>
@@ -113,6 +114,83 @@ Result<NanoGrid> readVdbGrid(const std::filesystem::path& path, const std::strin
     return out;
 }
 
+Result<NanoGrid> readVdbVec3Grid(const std::filesystem::path& path, const std::string& name) {
+    initialiseOnce();
+    openvdb::io::File file(path.string());
+    openvdb::GridBase::Ptr base;
+    try {
+        file.open(false);
+        if (!file.hasGrid(name)) {
+            return Error::make(ErrorCode::NotFound, "'{}' has no grid '{}'", path.string(), name);
+        }
+        base = file.readGrid(name);
+        file.close();
+    } catch (const std::exception& e) {
+        return Error::make(ErrorCode::IoFailure, "cannot read '{}': {}", path.string(), e.what());
+    }
+    auto grid = openvdb::gridPtrCast<openvdb::Vec3SGrid>(base);
+    if (!grid) {
+        return Error::make(ErrorCode::Unsupported, "grid '{}' of '{}' is {}, not vec3s", base->getName(),
+                           path.string(), base->valueType());
+    }
+    if (!grid->transform().isLinear()) {
+        return Error::make(ErrorCode::Unsupported, "grid '{}': only linear transforms are read", base->getName());
+    }
+    grid->tree().voxelizeActiveTiles();
+    nanovdb::GridHandle<nanovdb::HostBuffer> handle;
+    try {
+        handle = nanovdb::openToNanoVDB(*grid, nanovdb::StatsMode::Disable, nanovdb::ChecksumMode::Disable);
+    } catch (const std::exception& e) {
+        return Error::make(ErrorCode::IoFailure, "grid '{}': cannot lay out as NanoVDB: {}", base->getName(),
+                           e.what());
+    }
+    NanoGrid out;
+    out.name = base->getName();
+    out.components = 3;
+    out.words.resize((handle.size() + 3) / 4, 0u);
+    std::memcpy(out.words.data(), handle.data(), handle.size());
+    out.leafCount = handle.gridMetaData() != nullptr ? handle.gridMetaData()->nodeCount(0) : 0;
+    out.voxelSize = grid->transform().voxelSize()[0];
+    const openvdb::math::Mat4d m = grid->transform().baseMap()->getAffineMap()->getMat4();
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            out.indexToWorld[static_cast<size_t>(r * 4 + c)] = m(r, c);
+        }
+    }
+    return out;
+}
+
+Result<void> writeNanoGrids(const std::filesystem::path& path, std::span<const NanoGrid> grids) {
+    initialiseOnce();
+    try {
+        openvdb::GridPtrVec out;
+        for (const NanoGrid& grid : grids) {
+            if (grid.components != 1) {
+                return Error::make(ErrorCode::Unsupported, "'{}': only float grids are written", grid.name);
+            }
+            // NanoVDB wants its buffer 32-byte aligned, which a vector of
+            // words does not promise: the words are copied into one that is.
+            auto buffer = nanovdb::HostBuffer::create(grid.words.size() * 4);
+            std::memcpy(buffer.data(), grid.words.data(), grid.words.size() * 4);
+            nanovdb::GridHandle<nanovdb::HostBuffer> handle(std::move(buffer));
+            const nanovdb::NanoGrid<float>* nano = handle.grid<float>();
+            if (nano == nullptr) {
+                return Error::make(ErrorCode::InvalidArgument, "'{}': not a NanoVDB float grid", grid.name);
+            }
+            openvdb::FloatGrid::Ptr back = nanovdb::nanoToOpenVDB(*nano);
+            back->setName(grid.name);
+            back->setGridClass(openvdb::GRID_FOG_VOLUME);
+            out.push_back(back);
+        }
+        openvdb::io::File file(path.string());
+        file.write(out);
+        file.close();
+        return ok();
+    } catch (const std::exception& e) {
+        return Error::make(ErrorCode::IoFailure, "cannot write '{}': {}", path.string(), e.what());
+    }
+}
+
 Result<void> writeVdbBoxes(const std::filesystem::path& path, const std::string& name, double voxelSize,
                            std::span<const VdbBox> boxes) {
     initialiseOnce();
@@ -143,6 +221,14 @@ Result<std::vector<std::string>> vdbGridNames(const std::filesystem::path& path)
 }
 
 Result<NanoGrid> readVdbGrid(const std::filesystem::path& path, const std::string&) {
+    return Error::make(ErrorCode::Unsupported, "'{}': built without OpenVDB", path.string());
+}
+
+Result<NanoGrid> readVdbVec3Grid(const std::filesystem::path& path, const std::string&) {
+    return Error::make(ErrorCode::Unsupported, "'{}': built without OpenVDB", path.string());
+}
+
+Result<void> writeNanoGrids(const std::filesystem::path& path, std::span<const NanoGrid>) {
     return Error::make(ErrorCode::Unsupported, "'{}': built without OpenVDB", path.string());
 }
 

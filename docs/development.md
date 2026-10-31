@@ -48,7 +48,7 @@ document, the header is right.
 | 11 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
 | 12 | material | `material/MaterialCompiler.h` — MaterialX into Slang |
 | 13 | light | `light/LightTable.h` — a light on the device; the mesh lights' region at the front of its light words, laid out in `shaders/athenea/light/mesh_lights.slang`; `light/LtcTable.h` — the LTC table, fitted on the device (`ltc_fit.slang`), and `ltc.slang`, a polygon's form factor and LTC integral |
-| 14 | world | `world/GpuScene.h` — the scene as every technique reads it |
+| 14 | world | `world/GpuScene.h` — the scene as every technique reads it; `world/VolumeSplats.h` — volumetric gaussians and the grids they come from and go back to (§6.13) |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h`, `technique/MeshLights.h` (emitting meshes as lights: a rebuild that clusters them, a refit a frame, and their rectangles and per-cell cuts as textures the relit splats read, `render::SplatLights::meshRects`) |
 | 16 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it) |
 | 17 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`), `usd/ShadowCatcher.h` (where a shadow catcher stands: the ground found, the patch on it -- a light catcher's too), `usd/LightGroups.h` (a car's lamps: the stage's groups and states, their weights a frame, and `athenea lights merge`) |
@@ -493,7 +493,9 @@ are one implementation. Its kernels are those three's, rewritten for binding
 by order -- the same sums in the same order, so the digits printed are the
 same -- and `athenea_aofx_tests "[measure]"` holds every number it attaches to
 theirs. A port of engine kernels into a bundle is held to the originals that
-way: the originals stay, as the tests' reference.
+way: the originals stay, as the tests' reference. `plugins/vdb2splat` is a fit run as
+many passes, its working buffers the host's scratch and its thresholds bisected on counts it reads back
+(§6.13): an effect may loop, as long as what it reads is counts.
 
 ## 5. The test suite
 
@@ -1377,6 +1379,76 @@ the frame's prepared sky, which a bundle cannot reach. Adding a format is a
 kernel in `flatten_pack.slang`, a method on `FlattenPack`, a writer in
 `io/SplatWriters.h`, and a line in `CmdFlatten.cpp`; the round trip through
 this engine's reader is what `athenea_render_tests "[flatten]"` checks.
+
+### 6.13 A volume into gaussians (`athenea vdb2splat`)
+
+Proposal 103: a fog volume's extinction as μ_t(x) = Σ σ_i G_i(x), G_i of peak
+one -- the model whose transmittance along a ray has a closed form (erf) and is
+a product that does not care what order its factors come in. The pieces:
+
+- **`io::readVdbGrid` / `readVdbVec3Grid`** read the density, the
+  temperature and Cd as NanoVDB; `io::writeNanoGrids` writes float grids
+  back as a `.vdb` (NanoVDB to OpenVDB, a re-layout).
+- **`world::VolumeSplats`** (`shaders/athenea/volume/vdb_splats.slang`) is
+  the engine's side: `packLeaves` lays the density grid's leaves out as the
+  picture the effect reads (513 entries a leaf, the other grids read at the
+  density's voxels through their own trees); `splatToGrid` is the way back,
+  the mixture evaluated at a topology's active voxels and written into the
+  grid's values in place (one group a leaf, every gaussian whose box meets the
+  leaf, submitted in slices); `fixture` and `randomMixture` make the tests'
+  and the measurements' volumes on the device; `compare` and `rays` are the
+  metrics; `exportRecords` turns the gaussians into a ParticleField's records
+  in the world (the covariance M Σ Mᵀ diagonalised by Jacobi rotations).
+- **The Vdb2Splat effect** (`plugins/vdb2splat`) is the fit, every pass a
+  kernel of `vdb2splat.slang`; its header lays the passes out:
+  1. *Moments by block.* One group a leaf reduces its 512 voxels (in Morton
+     order, so a 2³, 4³ and 8³ block is a run) into the raw moments of its 73
+     blocks -- mass, first and second moments, and the temperature's count,
+     sum and sum of squares; blocks of 16³ voxels and over sum their eight
+     children's, shifted to their own origin, since raw moments add.
+  2. *A block's error*: what its moment gaussian alone leaves of the density,
+     Σ (ρ − ρ̂)², plus `emissionWeight` times the temperature's spread in it in
+     density units -- decided by error, not by density, so a flame of thin
+     smoke gains gaussians.
+  3. *The cut*: the blocks whose error is under τ and every ancestor's over
+     it (a 2³ block is kept whatever). The host bisects τ on the count until
+     the cut holds `initFraction` of the budget; a single-group compaction
+     writes the cut in node order.
+  4. *Refinement*: EM steps first -- each gaussian moved to the moments of
+     the density it is responsible for, ρ w_i / ρ̂, gathered inside its stop
+     and divided by the share of mass and variance the stop keeps (0.99343
+     and 0.97489 at 3.5 deviations), a fixed point at a mixture that is the
+     grid -- then Adam on (μ, log σ, A) with A the precision's lower Cholesky
+     factor, its diagonal by its log and held between `minStd` and a third
+     of `maxBlock`, each off-diagonal within twice the geometric mean of the
+     diagonals beside it. The forward pass is one group a leaf over the
+     gaussians whose boxes meet it; the gradient is gathered by the gaussian,
+     one group each over the voxels of its box, reduced in group memory: no
+     atomics on floats anywhere.
+  5. *Densify and prune* every `densifyEvery` iterations until 70 % of them:
+     a gaussian of a negligible share of the mass is freed, and new ones are
+     born at the voxels the mixture leaves most under (the host bisects the
+     residual threshold on the count) into the free slots, in slot order.
+  6. *Attributes* last, the geometry fixed: a voxel's temperature and Cd are
+     Σ c_i w_i / Σ w_i with w_i = σ_i G_i(x), linear in c, fitted by
+     density-weighted least squares with damped Jacobi steps.
+
+  What crosses to the processor is counts: the leaves' box (to size the
+  scratch), how many blocks a τ keeps and how many voxels a threshold leaves
+  under (to bisect on), and a compaction's total. The output's order is the
+  slots', which no race decides.
+
+The way back and the fit share one evaluation -- G stopped at 3.5 deviations,
+the same box -- so the fit's own error is the way back's to the digits
+(`athenea_aofx_tests "[vdb2splat]"` holds them within 10⁻³). A grid that comes
+back is a grid like any other to `world::VolumeSet` and medium.slang: nothing
+in the path tracer knows it was gaussians.
+
+What it does not do yet: sequences (§3.5 of the proposal: advection by `vel`,
+slots kept from frame to frame); a topology of its own for the way back (the
+input's is reused); splitting a gaussian over the size cap (the cap is a
+clamp on the factor's diagonal); the forward pass visits every gaussian a
+leaf, culled by its box, so its cost is leaves × gaussians.
 
 ## 7. Dependencies and toolchain
 

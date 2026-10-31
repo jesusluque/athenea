@@ -46,6 +46,7 @@ int main(int argc, char** argv) {
     athenea::cli::addStage(app);
     athenea::cli::addAofx(app);
     athenea::cli::addMesh2Splat(app);
+    athenea::cli::addVdb2Splat(app);
     athenea::cli::addFlatten(app);
     athenea::cli::addLightmap(app);
     athenea::cli::addVisibility(app);

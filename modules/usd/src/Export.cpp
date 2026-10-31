@@ -363,6 +363,37 @@ Result<void> writeStage(gpu::ShaderLibrary& library, const io::SplatEncoding& e,
             .Set(VtValue(layer));
     }
 
+    // VOLUMETRIC GAUSSIANS: the extinction's peak, the albedo and the
+    // temperature, halves the device packed one to a word.
+    if (options.volumeHalves.size() >= size_t{count} * 5 && count > 0) {
+        const auto halfAt = [&](size_t i) {
+            GfHalf h;
+            h.setBits(static_cast<uint16_t>(options.volumeHalves[i] & 0xFFFFU));
+            return h;
+        };
+        VtHalfArray sigma(count), temperature(count);
+        VtVec3hArray albedo(count);
+        for (size_t g = 0; g < count; ++g) {
+            sigma[g] = halfAt(g * 5 + 0);
+            albedo[g] = GfVec3h(halfAt(g * 5 + 1), halfAt(g * 5 + 2), halfAt(g * 5 + 3));
+            temperature[g] = halfAt(g * 5 + 4);
+        }
+        UsdGeomPrimvarsAPI primvars(splats.GetPrim());
+        primvars.CreatePrimvar(TfToken("primvars:athenea:volume:sigma"), SdfValueTypeNames->HalfArray,
+                               UsdGeomTokens->vertex)
+            .Set(VtValue(sigma));
+        primvars.CreatePrimvar(TfToken("primvars:athenea:volume:albedo"), SdfValueTypeNames->Color3hArray,
+                               UsdGeomTokens->vertex)
+            .Set(VtValue(albedo));
+        if (options.volumeTemperature) {
+            primvars.CreatePrimvar(TfToken("primvars:athenea:volume:temperature"), SdfValueTypeNames->HalfArray,
+                                   UsdGeomTokens->vertex)
+                .Set(VtValue(temperature));
+        }
+        splats.GetPrim().CreateAttribute(TfToken("primvars:athenea:splat:volume"), SdfValueTypeNames->Bool, true)
+            .Set(true);
+    }
+
     // THE MATERIAL'S OWN ROUGHNESS, before `--specular-filter` widened the
     // stored one by the spread of normals under each gaussian.
     if (options.materialRoughness.size() >= count && count > 0) {

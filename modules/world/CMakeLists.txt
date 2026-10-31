@@ -8,6 +8,7 @@ athenea_add_module(world
         src/RayTracingScene.cpp
         src/BvhScene.cpp
         src/VolumeSet.cpp
+        src/VolumeSplats.cpp
     PUBLIC_LIBS
         athenea::core
         athenea::gpu

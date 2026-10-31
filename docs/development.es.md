@@ -48,7 +48,7 @@ coinciden, la cabecera tiene razón.
 | 11 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
 | 12 | material | `material/MaterialCompiler.h` — MaterialX a Slang |
 | 13 | light | `light/LightTable.h` — una luz en el dispositivo; la región de las luces de malla al principio de sus palabras de luz, dispuesta en `shaders/athenea/light/mesh_lights.slang`; `light/LtcTable.h` — la tabla LTC, ajustada en el dispositivo (`ltc_fit.slang`), y `ltc.slang`, el factor de forma y la integral LTC de un polígono |
-| 14 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica |
+| 14 | world | `world/GpuScene.h` — la escena tal como la lee cada técnica; `world/VolumeSplats.h` — las gaussianas volumétricas y las grids de las que vienen y a las que vuelven (§6.13) |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h`, `technique/MeshLights.h` (mallas emisoras como luces: un rebuild que las agrupa en clusters, un refit por frame, y sus rectángulos y cortes por celda como texturas que leen los splats reiluminados, `render::SplatLights::meshRects`) |
 | 16 | lod | `lod/Athc.h` — **la única especificación del formato `.athc`**, como un mapa de páginas; `shaders/athenea/lod/lod_decimate.slang` para lo que conserva un diezmado, `lod_attributes.slang` para lo que lleva (`usd::decimateStage` es todo el proceso) |
 | 17 | usd | `usd/MeshStage.h` (leer una escena sin Hydra), `src/Engine.h` (el frame), `usd/Migrate.h` (en qué se convirtieron los nombres de lucabRTrender, y `athenea migrate`), `usd/ShadowCatcher.h` (dónde se pone un shadow catcher: el suelo encontrado, el parche sobre él -- también el de un light catcher), `usd/LightGroups.h` (las lámparas de un coche: los grupos y estados de la escena, sus pesos por frame, y `athenea lights merge`) |
@@ -510,7 +510,10 @@ esas tres, reescritos para el binding por orden -- las mismas sumas en el
 mismo orden, así que los dígitos impresos son los mismos -- y
 `athenea_aofx_tests "[measure]"` sujeta cada número que adjunta a los suyos.
 Un port de kernels del motor a un bundle se sujeta así a los originales: los
-originales se quedan, como referencia de los tests.
+originales se quedan, como referencia de los tests. `plugins/vdb2splat` es un
+ajuste que corre en muchas pasadas, con sus buffers de trabajo en el scratch
+del host y sus umbrales bisecados sobre cuentas que lee de vuelta (§6.13): un
+efecto puede iterar, mientras lo que lea sean cuentas.
 
 ## 5. El banco de pruebas
 
@@ -1443,6 +1446,85 @@ un kernel en `flatten_pack.slang`, un método en `FlattenPack`, un escritor en
 `io/SplatWriters.h` y una línea en `CmdFlatten.cpp`; el viaje de ida y vuelta
 por el lector de este motor es lo que comprueba
 `athenea_render_tests "[flatten]"`.
+
+### 6.13 Un volumen en gaussianas (`athenea vdb2splat`)
+
+Propuesta 103: la extinción de un volumen de niebla como
+μ_t(x) = Σ σ_i G_i(x), con G_i de pico uno -- el modelo cuya transmitancia a lo
+largo de un rayo tiene forma cerrada (erf) y es un producto al que no le
+importa en qué orden llegan sus factores. Las piezas:
+
+- **`io::readVdbGrid` / `readVdbVec3Grid`** leen la densidad, la temperatura
+  y Cd como NanoVDB; `io::writeNanoGrids` escribe grids float de vuelta como
+  `.vdb` (de NanoVDB a OpenVDB, una redisposición).
+- **`world::VolumeSplats`** (`shaders/athenea/volume/vdb_splats.slang`) es
+  el lado del motor: `packLeaves` dispone las hojas de la grid de densidad
+  como la imagen que lee el efecto (513 entradas por hoja; las otras grids se
+  leen en los vóxeles de la densidad a través de sus propios árboles);
+  `splatToGrid` es la vuelta, la mezcla evaluada en los vóxeles activos de una
+  topología y escrita en los valores de la grid en su sitio (un grupo por
+  hoja, cada gaussiana cuya caja toca la hoja, enviado por tramos); `fixture`
+  y `randomMixture` hacen en el dispositivo los volúmenes de los tests y de
+  las medidas; `compare` y `rays` son las métricas; `exportRecords` convierte
+  las gaussianas en los registros de un ParticleField en el mundo (la
+  covarianza M Σ Mᵀ diagonalizada con rotaciones de Jacobi).
+- **El efecto Vdb2Splat** (`plugins/vdb2splat`) es el ajuste, cada pasada un
+  kernel de `vdb2splat.slang`; su cabecera describe las pasadas:
+  1. *Momentos por bloque.* Un grupo por hoja reduce sus 512 vóxeles (en orden
+     de Morton, así un bloque de 2³, 4³ y 8³ es una racha) a los momentos
+     brutos de sus 73 bloques -- masa, primeros y segundos momentos, y la
+     cuenta, la suma y la suma de cuadrados de la temperatura; los bloques de
+     16³ vóxeles en adelante suman los de sus ocho hijos, desplazados a su
+     propio origen, porque los momentos brutos se suman.
+  2. *El error de un bloque*: lo que su gaussiana de momentos deja sola de la
+     densidad, Σ (ρ − ρ̂)², más `emissionWeight` veces la dispersión de la
+     temperatura en él en unidades de densidad -- decidido por error, no por
+     densidad, así una llama de humo fino gana gaussianas.
+  3. *El corte*: los bloques cuyo error está por debajo de τ y el de cada
+     antecesor por encima (un bloque de 2³ se queda en cualquier caso). El host
+     biseca τ sobre la cuenta hasta que el corte tiene `initFraction` del
+     presupuesto; una compactación de un solo grupo escribe el corte en orden
+     de nodo.
+  4. *Refinado*: primero pasos de EM -- cada gaussiana se lleva a los
+     momentos de la densidad de la que es responsable, ρ w_i / ρ̂, recogidos
+     dentro de su corte y divididos por la parte de masa y de varianza que el
+     corte conserva (0,99343 y 0,97489 a 3,5 desviaciones), un punto fijo en
+     una mezcla que es la grid -- y luego Adam sobre (μ, log σ, A), con A el
+     factor de Cholesky inferior de la precisión, su diagonal por su
+     logaritmo y sujeta entre `minStd` y un tercio de `maxBlock`, y cada
+     término fuera de la diagonal dentro del doble de la media geométrica de
+     las diagonales que tiene al lado. La pasada hacia delante es un grupo
+     por hoja sobre las gaussianas cuyas cajas la tocan; el gradiente lo
+     recoge la gaussiana, un grupo cada una sobre los vóxeles de su caja,
+     reducido en memoria de grupo: en ningún sitio hay atómicos sobre floats.
+  5. *Densificar y podar* cada `densifyEvery` iteraciones hasta el 70 % de
+     ellas: se libera una gaussiana con una parte despreciable de la masa, y
+     nacen otras en los vóxeles que la mezcla deja más por debajo (el host
+     biseca el umbral del residuo sobre la cuenta) en los huecos libres, en
+     orden de hueco.
+  6. *Atributos* al final, con la geometría fija: la temperatura y el Cd de un
+     vóxel son Σ c_i w_i / Σ w_i con w_i = σ_i G_i(x), lineales en c,
+     ajustados por mínimos cuadrados ponderados por la densidad con pasos de
+     Jacobi amortiguados.
+
+  Lo que cruza al procesador son cuentas: la caja de las hojas (para
+  dimensionar el scratch), cuántos bloques deja un τ y cuántos vóxeles deja
+  por debajo un umbral (para bisecar), y el total de una compactación. El
+  orden de la salida es el de los huecos, que no lo decide ninguna carrera.
+
+La vuelta y el ajuste comparten una evaluación -- G cortada a 3,5
+desviaciones, la misma caja --, así que el error propio del ajuste es el de la
+vuelta hasta los dígitos (`athenea_aofx_tests "[vdb2splat]"` los mantiene a
+menos de 10⁻³). Una grid que vuelve es una grid como cualquier otra para
+`world::VolumeSet` y medium.slang: nada en el path tracer sabe que fueron
+gaussianas.
+
+Lo que aún no hace: secuencias (§3.5 de la propuesta: advección por `vel`,
+huecos conservados de un frame al siguiente); una topología propia para la
+vuelta (se reutiliza la de la entrada); partir una gaussiana que pasa del
+tope de tamaño (el tope es un recorte de la diagonal del factor); la pasada
+hacia delante visita todas las gaussianas por hoja, descartadas por su caja,
+así que su coste es hojas × gaussianas.
 
 ## 7. Dependencias y toolchain
 

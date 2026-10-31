@@ -729,6 +729,63 @@ isla y no lo que el filtro extendió por el borde.
 un GeomSubset es más fuerte que el que se escribe en su malla, así que una
 malla con subsets muestra sus materiales, no su atlas.
 
+### 2.8.3 `athenea vdb2splat` — un volumen en gaussianas volumétricas, y de vuelta
+
+Un volumen de niebla `.vdb` ajustado por una suma de gaussianas 3D,
+μ_t(x) = Σ σ_i G_i(x) con cada G_i de pico 1 (propuesta 103): la extinción de
+la grid de densidad y, si el fichero las tiene, las grids de temperatura y de
+Cd que la acompañan, como medias ponderadas por la densidad. El ajuste es el
+efecto Vdb2Splat (§7.2) y cada paso suyo corre en el dispositivo; cómo lo
+cuenta development.es.md §6.13. Las gaussianas se escriben como un
+ParticleField (abajo).
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `input` | ruta, obligatoria | — | un `.vdb`; con `--make-fixture`, el fichero que se escribe |
+| `-o`, `--output` | ruta | ninguna | `.usda`, `.usdc`, `.usd`; sin ella no se escribe nada |
+| `--density` | nombre de grid | `density` | una grid float; el ajuste rechaza un fichero sin ella |
+| `--temperature` | nombre de grid | `temperature` | una grid float, leída donde el fichero la tiene; sus vóxeles se leen en los de la densidad |
+| `--colour` | nombre de grid | `Cd` | una grid vec3, leída donde el fichero la tiene, recortada a [0, 1] y guardada con 8 bits por canal |
+| `-n`, `--target` | entero | `20000` | cuántas gaussianas se escriben como mucho |
+| `--em-iterations` | entero | `40` | pasos de EM sobre la geometría, primero: cada gaussiana se lleva a los momentos de la densidad de la que es responsable |
+| `--iterations` | entero | `100` | pasos de Adam sobre la geometría, después de ellos |
+| `--attribute-iterations` | entero | `20` | pasos de Jacobi sobre temperatura y Cd, con la geometría fija; ninguno sin una de las dos grids |
+| `--max-block` | `8`, `16`, `32`, `64`, `128` | `64` | vóxeles de lado del bloque mayor del que arranca una gaussiana; un tercio de él es la desviación mayor que puede tomar una gaussiana |
+| `--emission-weight` | número ≥ 0 | `1` | lo que cuenta la dispersión de la temperatura en un bloque junto al error de la densidad, con la temperatura escalada al rango de la densidad |
+| `--init-fraction` | de 0,01 a 1 | `0.6` | la parte del presupuesto que tiene el primer corte; el resto nace donde el residuo es mayor |
+| `--densify-every` | entero | `20` | iteraciones entre rondas de densificar y podar; ninguna después del 70 % de ellas |
+| `--learning-rate` | número | `0.1` | el paso de Adam, en unidades de log para el pico y la diagonal del factor y en desviaciones para el centro; decae diez veces a lo largo de la ejecución |
+| `--density-scale` | número | `1` | de densidad a extinción por unidad del mundo: la opacidad que se escribe para un visor estándar |
+| `--make-fixture` | `blob` | ninguno | escribe `input` y termina: una caja de `--fixture-size` vóxeles de lado, todos activos, rellena en el dispositivo con una bola de ruido suave, con una grid de temperatura |
+| `--fixture-size` | entero | `96` | vóxeles de lado |
+| `--voxel-size` | número | `0.05` | el vóxel del fixture, en unidades del mundo |
+| `--seed` | entero | `1` | el del fixture |
+| `--path` | directorio ‹repetible› | ninguno | directorios de bundles que se buscan después de `$AOFX_PLUGIN_PATH` |
+
+Lo que guarda el stage en su `UsdVolParticleField3DGaussianSplat`, además de
+las posiciones, orientaciones, escalas y `radiance:base` del esquema:
+
+| Primvar | Tipo | Significado |
+|---|---|---|
+| `primvars:athenea:splat:volume` | bool | `true`: las gaussianas son un medio, no una superficie |
+| `primvars:athenea:volume:sigma` | half[] ‹1 por gaussiana› | el pico de la extinción, en las unidades de densidad de la grid (el `densityScale` del Volume lo multiplica) |
+| `primvars:athenea:volume:albedo` | color3h[] | Cd, 1 donde el fichero no lo tiene |
+| `primvars:athenea:volume:temperature` | half[] | la temperatura, donde el fichero la tiene |
+
+Las posiciones y las escalas están en el mundo de la grid (su mapa de índice
+a mundo). `radiance:base` guarda Cd y, como opacidad, 1 − exp(−τ) a través
+del centro de la gaussiana a lo largo de su desviación media,
+τ = σ · `--density-scale` · √(2π) · s: lo que dibuja un visor estándar, no lo
+que ha de dibujar el raster de este motor para un medio (propuesta 105). El
+presupuesto cuenta las gaussianas que se escriben; se escriben menos donde los
+bloques más gruesos que tiene el volumen ya son más que `--init-fraction` de
+él.
+
+```sh
+athenea vdb2splat smoke.vdb -n 50000 -o smoke_gs.usdc
+athenea vdb2splat blob.vdb --make-fixture blob --fixture-size 128
+```
+
 ### 2.9 `athenea visibility` — lo que proyecta una nube con esqueleto, por partes
 
 | Opción | Valor | Por defecto | Notas |
@@ -2505,6 +2562,35 @@ están para un host que divide en double, como hace `athenea compare`. Dos
 imágenes de tamaños distintos se rechazan (`measure compares pictures of one
 size`), y también una ventana sin nada dentro (`measure: an empty window`).
 
+### 7.2 Vdb2Splat — `rt.sparrow.aofx.vdb2splat`
+
+La extinción de un volumen disperso ajustada por gaussianas: lo que ejecuta
+`athenea vdb2splat` (§2.8.3). Su único clip, `Grid`, no es una imagen de
+color sino las hojas de la grid dispuestas por el host, 513 entradas por
+hoja: el origen de la hoja en espacio de índices y luego sus 512 vóxeles en
+el orden de NanoVDB (x el más lento, z el más rápido), cada uno (densidad,
+temperatura, Cd como rgba8 en los bits de un float, activo 0 o 1). Sus filas
+no pueden llevar relleno, ni las de la salida. La salida guarda cuatro
+entradas por gaussiana en el espacio de índices de la grid -- (centro, σ),
+(A00, A10, A11, A20), (A21, A22, temperatura, Cd rgba8), (las semiextensiones
+de su caja a 3,5 desviaciones, 1) --, donde A es el factor de Cholesky
+inferior de la precisión, G(x) = exp(−|Aᵀ(x − μ)|² / 2); su tamaño es el hueco
+del presupuesto, un cuarto de sus entradas.
+
+| Parámetro | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `leaves` | entero | `0` | cuántas hojas tiene `Grid`; lo pone el host, y 0 se rechaza |
+| `target` | entero | `20000` | el presupuesto, acotado por el hueco de la salida |
+| `emIterations`, `iterations`, `attributeIterations`, `maxBlock`, `emissionWeight`, `initFraction`, `densifyEvery`, `learningRate` | | como en §2.8.3 | las opciones del mismo nombre |
+| `minStd` | número, vóxeles | `0.35` | la desviación menor que puede tomar una gaussiana |
+| `pruneMass` | número | `1e-6` | se va una gaussiana cuya masa es menor que esta parte del total |
+| `hasTemperature`, `hasColour` | booleano | `0` | si `Grid` las lleva (las pone el host) |
+
+Adjunta `gaussians`: las escritas, el presupuesto, las hojas, el error L2
+relativo del ajuste sobre los vóxeles activos, las gaussianas que tenía el
+primer corte, las iteraciones, el nivel del bloque más grueso (2^nivel
+vóxeles de lado) y las menos gaussianas que permiten los bloques más gruesos.
+
 ## 8. Referencia
 
 ### 8.1 Variables de entorno
@@ -2529,7 +2615,10 @@ imagen de OpenUSD, así que lo que lea esa compilación.
 
 **Nubes que se escriben.** `athenea flatten` escribe `.ply` de 3DGS, `.spz`
 (versiones 3 y 4; la 4 necesita zstd), `.glb` de glTF con
-`KHR_gaussian_splatting`, y USD (§2.8.1).
+`KHR_gaussian_splatting`, y USD (§2.8.1). `athenea vdb2splat` escribe USD (§2.8.3).
+
+**Volúmenes que se escriben.** `athenea vdb2splat --make-fixture` escribe
+grids float `.vdb`, volúmenes de niebla, por OpenVDB.
 
 **Imágenes que se escriben.** OpenEXR, lineal premultiplicado, con la fila de
 abajo primero dentro del motor y escrito con la de arriba primero como quiere
@@ -2549,6 +2638,7 @@ solo se escribe como la vista previa de MCP.
 | `athenea view` | nada, o un EXR con `--snapshot` |
 | `athenea live` | un EXR por frame, numerado, cada uno con su timecode |
 | `athenea mesh2splat` | una escena USD con la nube |
+| `athenea vdb2splat` | una escena USD con las gaussianas; con `--make-fixture`, un `.vdb` y nada más |
 | `athenea flatten` | ficheros `.ply`, `.spz`, `.glb` y USD de las nubes aplanadas, la escena compuesta junto a ellos, y con `--validate` lo que escribe `mesh2splat --validate` |
 | `athenea lightmap` | `lightmap_<atlas>.exr` (half, lineal, la fila de abajo primero) y `lightmapped.usda`, que pone el original como sublayer; sus materiales van bajo el prim raíz que comparten todas las mallas horneadas (`/<raíz>/AtheneaLightmaps`), así que referenciar ese prim los conserva |
 | `athenea visibility` | el fichero de la nube, editado en el sitio o copiado |

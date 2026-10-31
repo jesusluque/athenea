@@ -46,6 +46,7 @@ void addMigrate(CLI::App& app);
 void addStage(CLI::App& app);
 void addAofx(CLI::App& app);
 void addMesh2Splat(CLI::App& app);
+void addVdb2Splat(CLI::App& app);
 void addFlatten(CLI::App& app);
 void addLightmap(CLI::App& app);
 void addVisibility(CLI::App& app);

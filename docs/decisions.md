@@ -16400,3 +16400,53 @@ emitting triangles are still sampled from the flat table, which is no cheaper.
 - The lightmap's group atlases are not added at the groups' levels by anything in this engine.
 - A radiance-baked cloud (`litBody`) keeps its groups' light in its colours; the layers are for relit clouds.
 - The test the plan named on a pawn; the ball stands in for it.
+
+## A volume into volumetric gaussians, and back (VOL103, 31 Oct)
+
+Proposal 103: M9 reads a `.vdb` and only the path tracer draws it; nothing carried a smoke onto the gaussian
+route. `athenea vdb2splat` fits a fog volume's extinction with a sum of 3D gaussians, μ_t = Σ σ_i G_i (G_i
+of peak one, Condor et al.'s and RayGauss's model), and gives it back onto a grid the path tracer renders
+unchanged, which is how the fit is measured today without touching the renderer (proposal 105 §2a).
+
+### The design
+
+**The model is additive, not normalised.** W-VEG's weighted mean Σ w_i v_i G_i / Σ w_i G_i breaks the
+closed-form transmittance, so the extinction is the plain sum, and only the attributes (temperature, Cd) are
+the density-weighted means Σ c_i σ_i G_i / Σ σ_i G_i, fitted last with the geometry fixed (linear in c).
+
+**A gaussian is its precision's Cholesky factor.** G(x) = exp(−|Aᵀ(x − μ)|² / 2), A lower triangular with a
+positive diagonal kept by its log: an evaluation is three dot products, the gradient in A is d_i u_j, and no
+eigen-decomposition is needed until the export, which diagonalises M Σ Mᵀ by Jacobi rotations. G stops at
+3.5 deviations (G = 0.0022 there), and the fit, the way back and the box a gaussian is culled by are that
+one ellipsoid's, so the fit's own error is the way back's.
+
+**The fit is an AOFX effect**, as mesh2splat is (`plugins/vdb2splat`), and the engine lays the grid out for
+it: `vsPackLeaves` writes the density's leaves as a picture, 513 entries a leaf, the temperature and Cd read
+at the density's voxels through their own trees. The effect needs no tree reader, and the grid's world stays
+with the host.
+
+**The initial cut is chosen by error.** Raw moments of every block -- a leaf's 2³, 4³ and 8³ blocks reduced
+in group memory over its voxels in Morton order, 16³ and over summed from their children -- give one
+gaussian a block (the covariance a voxel box's 1/12 wider). A block's error is what that gaussian alone
+leaves of the density, plus the temperature's spread times `--emission-weight`. The cut is the blocks under τ
+with every ancestor over it; the host bisects τ on the count. Sharma and Schmalstieg's levels, decided by
+error rather than by density.
+
+**Refinement: EM, then Adam, without float atomics.** The forward pass is a group a leaf over the gaussians
+whose boxes meet it; whatever a gaussian needs from the voxels is gathered by the gaussian over the voxels of
+its box, one group each, reduced in group memory. First 40 EM steps: each gaussian moved to the moments of the
+density it is responsible for (ρ w_i / ρ̂), divided by the share of mass and of variance its 3.5-deviation stop
+keeps (0.99343, 0.97489), so a step does not shrink what it measures; a mixture that is the grid is a fixed
+point. Then 100 Adam steps on (μ, log σ, A) on the L2 loss, the step decaying a hundredfold. The proposal
+named Gauss-Newton or Adam alone; Adam alone from the block cut stayed at 0.10 relative L2 on a 16-gaussian
+mixture with 64 to fit it, EM then Adam reached 0.016. Densify and prune every 20 iterations: births at the voxels the mixture leaves
+most under (the threshold bisected on the count), deaths below 10⁻⁶ of the mass, both through slot lists
+compacted in order. Every iteration's writes are the slots' own, so the output order is deterministic.
+
+**What crosses to the processor** is counts: the leaves' box, the cut's count for a τ, the voxels over a
+residual threshold, a compaction's total, and the metrics' sums.
+
+**The file.** A ParticleField: the schema's arrays in the grid's world, and `primvars:athenea:volume:sigma`
+(half), `:albedo` (color3h), `:temperature` (half), `primvars:athenea:splat:volume`. `radiance:base`'s
+opacity is what a standard viewer draws, 1 − exp(−σ √(2π) s) through the middle. The compact layout of the
+proposal (23–39 B a gaussian, fp16 relative to the leaf, smallest-three rotation) is 104's.

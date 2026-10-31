@@ -176,6 +176,14 @@ struct ExportOptions {
     /// adds at the group's weight (Engine::setLightWeights,
     /// `athenea:lightLevel:<group>`).
     std::vector<std::pair<std::string, std::span<const float>>> lightLayers;
+    /// VOLUMETRIC GAUSSIANS (`athenea vdb2splat`, proposal 103): five halves
+    /// a gaussian, each the low 16 bits of a word, as the device packed them
+    /// -- sigma (the extinction's peak, in the grid's density units), Cd
+    /// (r g b) and the temperature. Written as `primvars:athenea:volume:sigma`
+    /// (half[]), `:albedo` (color3h[]) and, where `volumeTemperature`,
+    /// `:temperature` (half[]), with `primvars:athenea:splat:volume = 1`.
+    std::span<const uint32_t>       volumeHalves;
+    bool                            volumeTemperature = false;
 };
 
 /// WHAT A TRANSFER BAKE HANDS THE FILE, as the arrays a stage keeps
