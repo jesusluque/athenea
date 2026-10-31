@@ -16576,3 +16576,35 @@ renders used lit the smoke by about 10⁻⁵; E1b's sun is normalized.
 
 `test_transfer_zonal` (`athenea_aofx_tests "[zonal]"`) fails one assertion (`r[0] == 0`, 769) on the base
 commit 5d5aede as on this branch: not this work's.
+
+### E1b: the path trace judged where the smoke is (31 Oct)
+
+E1's relMSE (under 10⁻⁴ at every N, a 23 % density error included) did not discriminate: it was taken over
+the whole frame, mostly background, and the sun (a UsdLux DistantLight of intensity 3, not normalized) lit
+the smoke by about 10⁻⁵, so the dome alone drew it. E1b (`~/luc/athenea-gpu/vdb2splat_e1b.sh`, release build):
+a normalized sun of irradiance 3 and nothing else, so a pixel's alpha is the fraction of camera paths the
+volume stopped (1 − T); the density scale at ×1, ×4 and ×16 of E1's (smoke2 20, 80, 320; the blob 1, 4, 16);
+`athenea compare --min-alpha 0.01` over the pixels where T < 0.99 of the original; both renders at 4096
+paths, 512², the same seeds. Masked relMSE, PSNR of the sRGB-encoded colour in brackets:
+
+| N | smoke2 ×1 | ×4 | ×16 | blob ×1 | ×4 | ×16 |
+|---|---|---|---|---|---|---|
+| 2k | 0.137 (15.8 dB) | 0.096 (17.1) | 0.082 (18.2) | 0.066 (18.6) | 0.028 (22.4) | 0.018 (24.8) |
+| 10k | 0.092 (17.5) | 0.071 (18.4) | 0.061 (19.4) | 0.041 (20.9) | 0.019 (24.2) | 0.012 (26.4) |
+| 50k | 0.043 (20.9) | 0.040 (20.9) | 0.036 (21.6) | 0.013 (25.9) | 0.009 (27.5) | 0.0065 (28.7) |
+
+Covered pixels: smoke2 11 561 / 20 699 / 26 385, the blob 18 438 / 29 393 / 34 763 of 262 144. At 512 paths
+the same comparisons gave the same numbers within a few per cent (smoke2 ×1: 0.139, 0.096, 0.044), so they
+measure the fit, not the paths. Measure's relative error divides by b² + 0.01, so a dark pixel weighs less
+than its own scale would; the dense smoke (×16) is where the numbers are least diluted by that.
+
+Two things this does not settle. The proposal's bar (relMSE ≤ 1 % at N ≤ 50k) is met by the blob at ×4 and
+×16 and not by smoke2 (3.6–4.3 %), whose wisps and hard edges are where the differences sit (the heatmaps
+beside the renders). And the original rendered at 4096 paths against itself at 16384 differs by masked
+relMSE 0.21 / 0.088 / 0.036 (smoke2) and 0.20 / 0.058 / 0.025 (the blob), the same as 512 against 4096: the
+path tracer's images at different path totals do not converge on each other in these thin, sun-lit regions,
+which is a question about the renderer, not about the fit, and is not followed here. Renders at one total
+with the same seeds (every comparison above) do not have it.
+
+PT cost (64 paths, median of five frames): smoke2's grid given back 112–133 ms against the original's
+123–135 ms, the blob's 133–149 against 137–142: the same topology, the same cost.
