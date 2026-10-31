@@ -16940,3 +16940,44 @@ Shadows (1024², 1024 paths): smoke2's shadow 0.0012 (40.1 dB) from 50k and 0.00
 smoke itself 9.4·10⁻⁴ (40.9 dB) and 0.0028 (36.1 dB); the blob's shadow 4.1·10⁻⁵ and 1.1·10⁻⁴, the smoke
 1.0·10⁻⁴ and 3.2·10⁻⁴. The shadows barely moved (the ground gave every pixel a depth); the smoke's numbers
 fell by six to seven times. ms/frame 2385 / 2358 / 2380 (smoke2) and 2432 / 2429 / 2419 (the blob).
+
+### Splits, the explosion's temperature and a sequence (31 Oct)
+
+**Densify where the fit is worst.** Each densify round now gives `--split-share` (0.5) of its new slots to
+splitting the gaussians answerable for the most residual -- Σ over their voxels of their share times the
+squared residual, gathered with the gradient -- each into two along its longest axis, half a deviation either
+side, the pair keeping the one's second moment; the rest are born at the worst voxels as before. smoke2 at
+density ×16, the path trace masked to the smoke at 4096 paths (release, M5 Pro):
+
+| | 2k | 10k | 50k | fit |
+|---|---|---|---|---|
+| before (no splits, 100 Adam steps) | 0.052 | 0.034 | 0.0166 | 2.0 s |
+| after (splits, 300 Adam steps) | 0.046 | 0.024 | 0.0060 | 6.2 s |
+
+The density error at 50k goes 0.064 → 0.038; splits alone (100 steps) gave 0.0555, more steps alone 0.055,
+both 0.038. The bytes do not change (3.2 MB at 50k). The default stays 100 steps; 300 is what reaches 1 %.
+
+**The explosion** (openvdb.org, 3.9 M voxels, density and temperature; its `v` is not read): density relative
+L2 0.080 / 0.037 / 0.027 at 10k / 50k / 100k in 2.9–3.3 s; the path trace of the density given back, masked,
+2.8·10⁻³ (36.8 dB) / 6.2·10⁻⁴ (42.6 dB) / 3.8·10⁻⁴ (44.8 dB), 425 / 423 / 427 ms a frame against the original's
+428 (64 paths). The temperature, given back as Σ c_i w_i / Σ w_i: density-weighted relative L2 0.29 / 0.23 /
+0.20, unweighted 0.51 / 0.39 / 0.34 -- fire where there is no smoke is what gaussians of the density cannot
+carry. Its emission is not shaded by the path tracer yet. The first run of it found the attribute step broken:
+its Jacobi diagonal overshot by about the overlap and the clamp at zero kept every temperature there; the
+Hessian's row sum bounds the coupling, and the blob's temperature came to 1.5 % (density-weighted).
+
+**A sequence** (`--make-fixture blob-sequence`: the blob at 64³ carried by a known flow, a turn of 2π/120 and a
+rise of 0.3 voxels a frame, 30 frames, 4000 gaussians):
+
+| | mean density L2 | at frame 29 | mean flicker | at frame 29 | slots | mean move a frame | fit a frame |
+|---|---|---|---|---|---|---|---|
+| warm, advected by `vel` | 0.033 | 0.026 | 0.32 | 0.27 | every gaussian keeps its slot | 0.66 deviations | 0.04 s |
+| warm, not advected | 0.064 | 0.072 | 0.52 | 0.57 | kept | 0.32 | 0.04 s |
+| independent fits | 0.030 | 0.028 | 0.30 | 0.28 | reshuffled | 11 deviations | 0.16 s |
+
+Flicker is sqrt(Σ((b₁ − b₀) − (o₁ − o₀))² / Σ(o₁ − o₀)²): what the frame-to-frame change of the grid given back
+gets wrong of the original's. The warm sequence starts worse than independent fits (0.069 at frame 1) and
+ends better (0.026 against 0.028 at frame 29), at a quarter of the time, with every gaussian in its slot --
+what `.athv` needs. Path traced at frame 29 (masked): 2.1·10⁻⁴ warm, 2.6·10⁻⁴ independent. EM steps after
+Adam's are off in a warm frame: on a frame given twice, ten EM steps from the Adam-refined gaussians took the
+error from 0.044 to 9.5, while Adam alone took it to 0.035; why EM is unstable there is not settled.
