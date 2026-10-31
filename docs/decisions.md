@@ -17384,3 +17384,33 @@ temperature field, without which the explosion's fire has no truth to be measure
 camera. A cloud drawn twice shares one radiance buffer, baked for the last instance's place. The [mips] case of
 `athenea_usd_tests` (a floor four texels a pixel from the map, p99 26 against 8) fails the same on the base's
 shadow-map code, built from this branch before the medium's terms: not this work's.
+
+### After the volumes merge: the voxel's point, and E1 timed again (1 Nov)
+
+The merge of `volumes` up to e5fec07 brought the trilinear lookup (cdff1cf), in which a voxel's value stands at
+its index point ijk, OpenVDB's convention; the medium read the voxel a point fell in before, which put the value
+at ijk + 0.5, and the fit was written to that: a voxel ijk spans [ijk, ijk + 1) and its value sits at its centre.
+`athenea_aofx_tests "[vdb2splat]"` caught it -- the closed-form transmittance against ratio tracking went from a
+mean |ΔT| of 0.0087 to 0.0171, 63 rays of 2048 beyond five standard errors against at most 4 -- half a voxel of
+shift between the mixture and the medium it is measured through. The fit keeps its frame (the gaussians' records
+are in index space plus half a voxel, `kVoxelCentre`), and the two places that leave it subtract the half voxel:
+the closed form in `vsRays` and the world positions `vsExport` writes, so a ParticleField now stands where the
+path tracer draws the grid. A grid given back is on the input's own topology and is read the same way as the
+original, so the path traces of E1 do not depend on it. With it the case reads mean |ΔT| 0.0087 again.
+
+E1's headline again on the merged branch (release, Apple M5 Pro, the shared GPU lock held, whether the Mac was
+in interactive use not known; `~/luc/athenea-gpu/vdb2splat_opt0.sh`). The fit is the median of three runs; the
+path traces E1b's (a normalized sun alone, 4096 paths, 512², masked where the original lets through less than
+99 %), against references rendered with this build, which the PNanoVDB fix (96a256f) made some 30 % faster:
+
+| | fit s (before) | density rel. L2 | masked PT relMSE (before) | PT ms back / original (before) | usdc |
+|---|---|---|---|---|---|
+| smoke2 ×1, 50k, 100 Adam steps | 2.44 (1.97) | 0.0620 (0.0645) | 1.3·10⁻³ (2.4·10⁻³) | 112.9 / 121.8 (153–175 / 166–168) | 3.20 MB |
+| smoke2 ×1, 50k, 300 steps | 6.36 (6.2) | 0.0377 (0.038) | 6.4·10⁻⁴ | | 3.20 MB |
+| smoke2 ×16, 50k, 300 steps | | | 5.8·10⁻³ (6.0·10⁻³) | | |
+| smoke2 ×16, 10k, 300 steps | 6.57 | 0.1002 | 0.024 (0.024) | | 0.64 MB |
+| explosion, 50k, 100 steps | 3.85 (2.9–3.3) | 0.0367 (0.037) | 5.3·10⁻⁴ (6.2·10⁻⁴) | 366.8 / 360.6 (423 / 428) | 3.30 MB |
+
+The path traces are a little closer than before on the same fits (the references are of the merged path
+tracer, which reads the trilinear medium); the fit's times are what they were within the run-to-run spread of
+the earlier single runs.
