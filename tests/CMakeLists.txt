@@ -189,11 +189,12 @@ endif()
 add_subdirectory(aofx/bundles)
 athenea_test(athenea_aofx_tests
     SOURCES aofx/test_aofx.cpp aofx/test_mesh2splat.cpp aofx/test_bake_filter.cpp aofx/test_measure.cpp
-            aofx/test_transfer_zonal.cpp
-    LIBS athenea::aofx_host athenea::render athenea::gpu
+            aofx/test_transfer_zonal.cpp aofx/test_vdb2splat.cpp
+    LIBS athenea::aofx_host athenea::render athenea::gpu athenea::world athenea::io
     LABELS gpe)
+set_target_properties(athenea_aofx_tests PROPERTIES BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 # The conversion's own bundle, checked through the host like any other.
-add_dependencies(athenea_aofx_tests aofx_test_bundles athenea_aofx_mesh2splat athenea_aofx_measure
+add_dependencies(athenea_aofx_tests aofx_test_bundles athenea_aofx_mesh2splat athenea_aofx_vdb2splat athenea_aofx_measure
                  athenea_aofx_splatbakefilter athenea_aofx_splattransferzonal)
 target_compile_definitions(athenea_aofx_tests PRIVATE
     ATHENEA_AOFX_TEST_BUNDLES="${ATHENEA_AOFX_TEST_BUNDLES}"

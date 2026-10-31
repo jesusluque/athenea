@@ -16457,3 +16457,26 @@ OpenVDB). A topology of its own -- the gaussians' boxes as bricks -- is not buil
 over the active voxels and, along random segments of the volume's box, the mixture's closed-form
 transmittance (an erf a gaussian) against the mean of ratio-tracking estimates through the input
 (`VolumeSplats::rays`, medium.slang's own `mediumTransmittance`).
+
+### How it is checked
+
+The fixtures are made on the device: a box of active voxels (writeVdbBoxes at zero) whose values a kernel
+writes -- a known mixture of random gaussians evaluated at the voxel centres, or a smooth noise blob.
+`athenea_aofx_tests "[vdb2splat]"` (Metal, debug build):
+
+| Case | Measured | Held to |
+|---|---|---|
+| one gaussian, a budget of one (40³) | relative L2 3·10⁻⁵ | < 0.005 |
+| sixteen gaussians, a budget of 64 (48³) | 0.0114 | < 0.03 |
+| the blob (64³), 250 / 1000 / 4000 | 0.104 / 0.065 / 0.046 | falling, the last < 0.25 |
+| the fit's own error against the way back's | equal to 10⁻⁹ | < 10⁻³ |
+| a mixture's closed-form transmittance against ratio tracking, 2048 rays, 256 estimates each | mean \|ΔT\| 0.0087, none beyond 5 standard errors + 0.01, optical depth up to 3.4 | ≤ 1 in 500 beyond, mean < 0.01 |
+
+`athenea_technique_tests "[vdb2splat]"`: the volume furnace (albedo one under a dome of radiance one) on a
+twelve-gaussian mixture given back onto a 32³ box reads 0.99900, 0.94 standard errors from 1.
+
+Two defects the first runs showed: the gradient's last write had four threads read, set and write one float4
+each (one component of four kept -- Adam alone then stalled at 0.34 on a 16-gaussian mixture with 64 to fit it and 0.26 with 256 to fit
+it); and an EM step whose moments were not a gaussian's ran a box loop for minutes, until a factor's
+off-diagonals were held within twice the geometric mean of their diagonals and a box to the cells of the
+grid.

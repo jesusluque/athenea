@@ -22,6 +22,7 @@
 #include "athenea/material/TextureStore.h"
 #include "athenea/io/Ies.h"
 #include "athenea/io/Vdb.h"
+#include "athenea/world/VolumeSplats.h"
 #include "athenea/light/LightTable.h"
 #include "athenea/material/MaterialCompiler.h"
 #include "athenea/render/ReferenceRenderer.h"
@@ -3876,6 +3877,108 @@ TEST_CASE("an albedo-one medium under a uniform dome reads the dome's radiance, 
         CHECK(n[0] > 1000);
         CHECK(std::abs(mean - 1.0) < 5.0 * standardError);
     }
+}
+
+// The volume furnace on a grid that came back from gaussians (proposal 103,
+// the way back): a known mixture of twelve random gaussians evaluated on a
+// box's topology (world::VolumeSplats::splatToGrid), scattering everything,
+// under the dome of radiance 1. A way back that wrote a negative density or
+// left a hole the walk fell through would not read the dome's 1.
+TEST_CASE("a grid given back by gaussians, albedo one under a uniform dome, reads the dome's radiance",
+          "[technique][path][volume][furnace][vdb2splat]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "athenea-tests" / "technique";
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path path = dir / "furnace_mixture_topology.vdb";
+    const io::VdbBox box{{0, 0, 0}, {32, 32, 32}, 0.0F};
+    REQUIRE(io::writeVdbBoxes(path, "density", 0.1, std::span<const io::VdbBox>(&box, 1)));
+    auto topology = io::readVdbGrid(path, "density");
+    if (!topology) FAIL(topology.error().toString());
+    auto splats = world::VolumeSplats::create(*gpu->library);
+    if (!splats) FAIL(splats.error().toString());
+    world::PackedGrids packed = world::PackedGrids::of(*topology, nullptr, nullptr);
+    auto words = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, packed.words, "furnace.mixture.words");
+    REQUIRE(words);
+    gpu::BufferDesc desc;
+    desc.bytes = 12 * 64;
+    desc.elementBytes = 16;
+    desc.label = "furnace.mixture";
+    auto mixture = gpu::Buffer::create(*gpu->device, desc);
+    REQUIRE(mixture);
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        splats->randomMixture(batch, *mixture, 12, {32.0F, 32.0F, 32.0F}, 9.0F, 2.0F, 5.0F, 4u);
+        REQUIRE(batch.submit(true));
+    }
+    REQUIRE(splats->splatToGrid(*mixture, 12, *words, packed.density, packed.leafCount));
+    REQUIRE(words->read(*gpu->device, 0, packed.words.size() * 4, packed.words.data()));
+    const io::NanoGrid grid = packed.unpack(packed.density, *topology);
+    auto made = gpu::ComputeKernel::create(*gpu->library, "athenea/test/volume_render_check", "volumeFurnaceCheck");
+    if (!made) FAIL(made.error().toString());
+    const uint32_t w = 81;
+    const uint32_t h = 61;
+    render::Camera camera = render::Camera::lookingAt({0.0, 0.0, 0.0}, {0.0, 0.0, -1.0});
+    camera.lens.focal = 35.0;
+    const render::Projection projection = render::projectionFor(camera, w, h);
+    light::Light dome;
+    dome.kind = light::LightKind::Dome;
+    dome.intensity = 1.0F;
+    dome.shadow = true;
+    auto set = world::VolumeSet::create(*gpu->library);
+    if (!set) FAIL(set.error().toString());
+    world::VolumeInput input;
+    input.grid = &grid;
+    input.objectToWorld = aofx::xform::translation({-1.6, -1.6, -5.0});
+    input.densityScale = 0.6F;
+    input.albedo = {1.0F, 1.0F, 1.0F};
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        REQUIRE(set->set(batch, std::span<const world::VolumeInput>(&input, 1)));
+        REQUIRE(batch.submit(true));
+    }
+    LensExtras extras;
+    extras.volumes = &*set;
+    extras.light = &dome;
+    extras.bounces = 32;
+    const LensFrame frame = renderLensPlane(*gpu, projection, w, h, 50.0, 0.001, 0.001, 256, {}, extras);
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 2, "furnace.counts");
+    gpu::Buffer sums = test::uintBuffer(*gpu->device, 2, "furnace.sums");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        made->dispatch(batch, {1, 1, 1}, [&](rhi::ShaderCursor c) {
+            c["furnace"]["pixels"].setData(w * h);
+            c["furnace"]["minAlpha"].setData(0.25F);
+            c["with"].setBinding(frame.colour.rhi());
+            c["counts"].setBinding(counts.rhi());
+            c["zBits"].setBinding(sums.rhi());
+        });
+        REQUIRE(batch.submit(true));
+    }
+    uint32_t n[2] = {};
+    float s[2] = {};
+    REQUIRE(counts.read(*gpu->device, 0, sizeof(n), n));
+    REQUIRE(sums.read(*gpu->device, 0, sizeof(s), s));
+    const double count = n[0];
+    const double mean = count > 0 ? s[0] / count : 0.0;
+    const double spread = count > 1 ? std::sqrt(std::max(s[1] / count - mean * mean, 0.0)) : 0.0;
+    const double standardError = spread / std::sqrt(std::max(count, 1.0));
+    std::printf("  a mixture given back: %u pixels with opacity over 0.25 (of %u touched): mean radiance %.5f, %.2f "
+                "standard errors from the dome's 1\n",
+                n[0], n[1], mean, (mean - 1.0) / std::max(standardError, 1e-9));
+    {
+        std::vector<float> rgba(size_t{w} * h * 4);
+        REQUIRE(frame.colour.read(*gpu->device, 0, rgba.size() * 4, rgba.data()));
+        test::dumpPpm("volume_furnace_mixture_back", rgba.data(), w, h);
+    }
+    CHECK(n[0] > 300);
+    CHECK(std::abs(mean - 1.0) < 5.0 * standardError);
 }
 
 // A dome's and a sun's share of the lights' power, against an area light's
