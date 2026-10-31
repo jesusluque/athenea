@@ -17414,3 +17414,24 @@ path traces E1b's (a normalized sun alone, 4096 paths, 512², masked where the o
 The path traces are a little closer than before on the same fits (the references are of the merged path
 tracer, which reads the trilinear medium); the fit's times are what they were within the run-to-run spread of
 the earlier single runs.
+
+### The medium after the half-voxel shift (1 Nov)
+
+The ParticleField's positions are now half a voxel lower (the fit's records leave it at ijk where the trilinear
+medium puts a voxel's value, above). `athenea_usd_tests "[vdb2splat][raster]"` on the merged branch:
+emission-absorption mean 0.10282 raster against 0.10410 path traced, relMSE 4.3·10⁻⁴ over the frame (9.1·10⁻⁴
+before, held to 5·10⁻³); lit 0.21649 against 0.22308, relMSE 0.0128 (0.013). E1 again on fits made with this
+build (`~/luc/athenea-gpu/volraster_opt0.sh`, `volraster_e1lite.sh`: the same scenes, the path traces at 512
+paths instead of 1024, the grid given back not path traced; release, M5 Pro, the shared GPU lock, the Mac's
+interactive use not known):
+
+| | smoke2: smoke | shadow | emission-absorption | explosion: smoke | shadow | emission-absorption |
+|---|---|---|---|---|---|---|
+| (c) raster against (a), before | 0.025 | 0.0094 | 0.0047 | 0.031 | 0.0084 | 0.0022 |
+| (c) raster against (a), after | 0.025 | 0.0101 | 0.0055 | 0.032 | 0.0093 | 0.0028 |
+
+ms a frame (1024², medians): the raster 136.6 (135.7 before) and the medium with its ground 18.0 (18.1) for
+smoke2, 163.1 (160.4) and 17.4 (17.4) for the explosion; the path tracer's 64 paths 13 521 / 3 209 (14 829 /
+4 236) and 15 222 / 4 621 (19 753 / 7 115), the PNanoVDB fix of the merge. The scenes' numbers move within what
+a reference of half the paths adds (its own noise is in every relMSE above); the test, whose reference is the
+grid the same gaussians give back, is where the half voxel shows, and it halved.
