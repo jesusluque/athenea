@@ -9,6 +9,7 @@
 #include <fstream>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -915,6 +916,9 @@ struct StreamingPool::Impl {
     uint32_t                     heldEpochs = 8;
     uint64_t                     now = 0;           // the instant a clock-synced frame shows (setClock)
     Status                       counters;
+    /// In a share: the share, and what this pool gave its store.
+    std::shared_ptr<StreamingShare> share;
+    uint64_t                     budgetSplats = 0;
 
     // STAGING: one upload buffer of `stagingSlots` whole chunks, mapped once
     // by the frame thread at open. A loader writes only the slot it took
@@ -1174,9 +1178,36 @@ struct StreamingPool::Impl {
     void             flip(gpu::CommandBatch& batch, size_t index);
 };
 
+struct StreamingShare {
+    gpu::Device*                             device = nullptr;
+    std::vector<StreamingPool::Impl*>        pools;
+    bool                                     sealed = false;
+    std::string                              failure;   ///< why the last seal failed; empty: it did not
+    uint32_t                                 slots = 0;
+    /// Per slot: the pool and the chunk in it, or -1.
+    std::vector<std::pair<int32_t, int32_t>> owner;
+    bool                                     wanted = false;   ///< a want since the last update
+    uint64_t                                 frame = 1;
+
+    Result<void>     seal();
+    Result<uint32_t> update(bool wait);
+};
+
+std::shared_ptr<StreamingShare> makeStreamingShare(gpu::Device& device) {
+    auto share = std::make_shared<StreamingShare>();
+    share->device = &device;
+    return share;
+}
+
 StreamingPool::StreamingPool() : impl_(std::make_unique<Impl>()) {}
 
 StreamingPool::~StreamingPool() {
+    // A pool that leaves its share has the store laid out again for the rest.
+    if (impl_->share) {
+        auto& members = impl_->share->pools;
+        members.erase(std::remove(members.begin(), members.end(), impl_.get()), members.end());
+        impl_->share->sealed = false;
+    }
     {
         std::lock_guard lock(impl_->mutex);
         impl_->stop = true;
@@ -1196,16 +1227,26 @@ StreamingPool::~StreamingPool() {
 }
 
 Result<std::unique_ptr<StreamingPool>> StreamingPool::open(gpu::Device& device, const std::filesystem::path& path,
-                                                           const StreamingSettings& settings) {
+                                                           const StreamingSettings& settings,
+                                                           std::shared_ptr<StreamingShare> share) {
     auto source = AthcSource::open(path);
     if (!source) return std::move(source).error();
-    return open(device, std::unique_ptr<ChunkSource>(std::move(*source)), settings);
+    return open(device, std::unique_ptr<ChunkSource>(std::move(*source)), settings, std::move(share));
 }
 
 Result<std::unique_ptr<StreamingPool>> StreamingPool::open(gpu::Device& device, std::unique_ptr<ChunkSource> source,
-                                                           const StreamingSettings& settings) {
+                                                           const StreamingSettings& settings,
+                                                           std::shared_ptr<StreamingShare> share) {
     if (source == nullptr) {
         return Error(ErrorCode::InvalidArgument, "a streaming pool needs a chunk source");
+    }
+    if (share && source->live()) {
+        return Error::make(ErrorCode::InvalidArgument, "{}: a live stream keeps a store of its own, not a share's",
+                           source->name());
+    }
+    if (share && !share->pools.empty() && !(share->pools.front()->format == source->format())) {
+        return Error::make(ErrorCode::InvalidArgument, "{} is laid out unlike the clouds of its shared store",
+                           source->name());
     }
     std::unique_ptr<StreamingPool> pool(new StreamingPool());
     Impl& p = *pool->impl_;
@@ -1230,8 +1271,17 @@ Result<std::unique_ptr<StreamingPool>> StreamingPool::open(gpu::Device& device, 
         static_cast<uint32_t>(std::clamp<uint64_t>(settings.budgetSplats / p.format.chunkSplats, 1, most));
     p.maxSlots = budgeted;
     const uint32_t slots = p.grow ? 1u : budgeted;
-    ATHENEA_TRY(makeStore(device, p.cloud, p.format, p.cloud.count, chunks, slots,
-                          p.live ? p.cloud.splats.bounds : p.source->bounds(0), p.source->name()));
+    p.budgetSplats = settings.budgetSplats;
+    if (share) {
+        // Its slots come from the share's store, laid out when a cut first
+        // asks for its cloud (cloud()).
+        p.share = share;
+        share->pools.push_back(&p);
+        share->sealed = false;
+    } else {
+        ATHENEA_TRY(makeStore(device, p.cloud, p.format, p.cloud.count, chunks, slots,
+                              p.live ? p.cloud.splats.bounds : p.source->bounds(0), p.source->name()));
+    }
     p.cloud.streamed = true;
     if (p.live) {
         // Nothing shown yet: every chunk empty until an epoch says otherwise.
@@ -1239,7 +1289,7 @@ Result<std::unique_ptr<StreamingPool>> StreamingPool::open(gpu::Device& device, 
         p.cloud.chunkAntialiased.assign(chunks, -1);
         p.cloud.splats.count = static_cast<uint32_t>(uint64_t{slots} * p.format.chunkSplats);
     }
-    p.owner.assign(slots, -1);
+    p.owner.assign(share ? 0 : slots, -1);
     p.wantedNow.assign(chunks, 0);
     p.lastWanted.assign(chunks, 0);
     p.inFlight.assign(chunks, 0);
@@ -1298,13 +1348,29 @@ Result<std::unique_ptr<StreamingPool>> StreamingPool::open(gpu::Device& device, 
     for (uint32_t k = 0; k < loaders; ++k) {
         p.loaders.emplace_back([&p] { p.load(); });
     }
-    log::info("{}: streaming {} chunks of {} splats into {} slots{}", p.source->name(), chunks, p.format.chunkSplats,
-              slots, p.live ? ", live" : "");
+    if (share) {
+        log::info("{}: streaming {} chunks of {} splats into a shared store, {} slots of it its budget",
+                  p.source->name(), chunks, p.format.chunkSplats, slots);
+    } else {
+        log::info("{}: streaming {} chunks of {} splats into {} slots{}", p.source->name(), chunks,
+                  p.format.chunkSplats, slots, p.live ? ", live" : "");
+    }
     return pool;
 }
 
 const LodCloud& StreamingPool::cloud() const noexcept {
+    StreamingShare* share = impl_->share.get();
+    if (share != nullptr && !share->sealed && impl_->frameThread.current()) {
+        if (auto sealed = share->seal(); !sealed) {
+            log::warn("a shared streaming store: {}", sealed.error().toString());
+        }
+    }
     return impl_->cloud;
+}
+
+bool StreamingPool::ready() const noexcept {
+    const StreamingShare* share = impl_->share.get();
+    return share == nullptr || (share->sealed && share->failure.empty());
 }
 
 scene::Bounds StreamingPool::chunkBounds(uint32_t chunk) const {
@@ -1320,6 +1386,9 @@ void StreamingPool::want(std::span<const uint32_t> needs) {
     for (size_t c = 0; c < n; ++c) {
         p.wantedNow[c] = std::max(p.wantedNow[c], needs[c]);
     }
+    if (p.share) {
+        p.share->wanted = true;
+    }
 }
 
 void StreamingPool::setClock(uint64_t ptpNs) {
@@ -1332,6 +1401,10 @@ Result<uint32_t> StreamingPool::update(bool wait) {
     Impl& p = *impl_;
     ATHENEA_TRY(p.frameThread.require("StreamingPool::update"));
     p.retire(false);
+    if (p.share) {
+        // The share's update does every pool's; the first after the wants.
+        return p.share->wanted ? p.share->update(wait) : Result<uint32_t>(0u);
+    }
     return p.live ? p.updateLive(wait, p.budgetBytes) : p.updateOnDemand(wait, p.budgetBytes);
 }
 
@@ -1345,6 +1418,318 @@ bool withinBudget(uint64_t budget, uint64_t placed, uint64_t bytes) {
 }
 
 }   // namespace
+
+/// THE SHARED STORE LAID OUT: every pool's budget in whole chunks, one store
+/// of that many slots for all of them (the first pool's, made as a pool of
+/// its own makes it; the others take its buffers and keep their own chunk
+/// flags), and every chunk out of it. Each pool's levels stay its own, read
+/// where they are: the store's payload is not joined to them, as a pool of
+/// its own does not join it.
+Result<void> StreamingShare::seal() {
+    sealed = true;
+    failure.clear();
+    owner.clear();
+    slots = 0;
+    if (pools.empty()) {
+        return ok();
+    }
+    StreamingPool::Impl& first = *pools.front();
+    uint64_t total = 0;
+    for (const StreamingPool::Impl* p : pools) {
+        total += std::clamp<uint64_t>(p->budgetSplats / p->format.chunkSplats, 1, p->source->chunkCount());
+    }
+    const uint64_t n = total * first.format.chunkSplats;
+    if (n > 0xFFFFFFFFull) {
+        failure = "the shared store passes four billion splats";
+        return Error(ErrorCode::InvalidArgument, failure);
+    }
+    slots = static_cast<uint32_t>(total);
+    if (auto made = makeStore(*device, first.cloud, first.format, first.cloud.count, first.source->chunkCount(), slots,
+                              first.source->bounds(0), first.source->name());
+        !made) {
+        failure = made.error().toString();
+        slots = 0;
+        return made;
+    }
+    const scene::GpuSplats store = first.cloud.splats;
+    for (StreamingPool::Impl* pp : pools) {
+        StreamingPool::Impl& p = *pp;
+        LodCloud& lod = p.cloud;
+        if (pp != &first) {
+            lod.splats = splatsLike(p.format, p.source->bounds(0), p.source->name());
+            lod.splats.positions = store.positions;
+            lod.splats.shape = store.shape;
+            lod.splats.sh = store.sh;
+            lod.splats.normals = store.normals;
+            lod.splats.emission = store.emission;
+            for (const auto& [member, words] : extrasOf(p.extra)) {
+                lod.splats.*member = store.*member;
+            }
+            countsOf(p.extra, lod.splats);
+            lod.groups = first.cloud.groups;
+            lod.slots.assign(p.source->chunkCount(), -1);
+            const std::vector<uint32_t> none(p.source->chunkCount(), 0);
+            auto resident = gpu::Buffer::fromSpan(*device, std::span<const uint32_t>(none), "athc.resident");
+            if (!resident) {
+                failure = resident.error().toString();
+                return std::move(resident).error();
+            }
+            lod.resident = std::move(*resident);
+        }
+        // Any slot may hold a chunk of any pool: the whole store is a cut's.
+        lod.splats.count = static_cast<uint32_t>(n);
+        lod.splats.declared = lod.count;
+        lod.streamed = true;
+        ++lod.residency;
+        {
+            std::lock_guard lock(p.mutex);
+            for (const ChunkRequest& r : p.queue) {
+                p.inFlight[r.chunk] = 0;
+            }
+            p.queue.clear();
+            for (const Loaded& l : p.loaded) {
+                p.inFlight[l.request.chunk] = 0;
+                p.freeStaging.push_back(l.staging);
+            }
+            p.loaded.clear();
+            p.work.notify_all();
+        }
+        p.counters.slots = slots;
+        p.counters.resident = 0;
+        p.report();
+    }
+    owner.assign(slots, {-1, -1});
+    log::info("a shared store of {} slots of {} splats for {} clouds", slots, first.format.chunkSplats, pools.size());
+    return ok();
+}
+
+/// EVERY POOL'S UPDATE IN ONE: the chunks every pool wants, most wanted first
+/// whichever cloud they are of, against the store's cheapest slots -- as one
+/// pool's update does with its own. Each pool loads into its own staging and
+/// records its placements, and the evictions they make, into a batch of its
+/// own, submitted against its own fence; a slot is placed at most once an
+/// update, so the batches' order does not matter.
+Result<uint32_t> StreamingShare::update(bool wait) {
+    wanted = false;
+    for (StreamingPool::Impl* p : pools) {
+        p->retire(false);
+    }
+    const auto endFrame = [&] {
+        for (StreamingPool::Impl* p : pools) {
+            std::fill(p->wantedNow.begin(), p->wantedNow.end(), 0);
+            ++p->frame;
+            p->report();
+        }
+        ++frame;
+    };
+    if (!sealed || !failure.empty()) {
+        endFrame();
+        return 0u;
+    }
+    for (StreamingPool::Impl* p : pools) {
+        for (uint32_t c = 0; c < p->cloud.chunks(); ++c) {
+            if (p->wantedNow[c] != 0) {
+                p->lastWanted[c] = frame;
+            }
+        }
+    }
+    // What a slot's place is worth keeping, as one pool's update has it; a
+    // slot placed this update is not taken again in it.
+    std::vector<uint8_t> taken(slots, 0);
+    const auto worth = [&](uint32_t slot) -> std::pair<uint64_t, uint64_t> {
+        if (taken[slot] != 0) {
+            return {3, 0};
+        }
+        const auto [pool, chunk] = owner[slot];
+        if (pool < 0) {
+            return {0, 0};
+        }
+        const StreamingPool::Impl& p = *pools[static_cast<size_t>(pool)];
+        const auto c = static_cast<uint32_t>(chunk);
+        return p.wantedNow[c] == 0 ? std::pair<uint64_t, uint64_t>{1, p.lastWanted[c]}
+                                   : std::pair<uint64_t, uint64_t>{2, p.wantedNow[c]};
+    };
+    const auto mayTake = [](uint32_t want, std::pair<uint64_t, uint64_t> w) {
+        return w.first < 2 ? (w.first == 0 || want > 0) : (w.first == 2 && uint64_t{want} > 2 * w.second);
+    };
+    std::vector<uint32_t> bySlotWorth(slots);
+    for (uint32_t k = 0; k < slots; ++k) {
+        bySlotWorth[k] = k;
+    }
+    std::sort(bySlotWorth.begin(), bySlotWorth.end(), [&](uint32_t a, uint32_t b) { return worth(a) < worth(b); });
+
+    struct Missing {
+        uint32_t pool, chunk, want;
+    };
+    std::vector<Missing> missing;
+    size_t pending = 0;
+    for (uint32_t i = 0; i < pools.size(); ++i) {
+        StreamingPool::Impl& p = *pools[i];
+        std::lock_guard lock(p.mutex);
+        for (auto it = p.queue.begin(); it != p.queue.end();) {
+            if (p.wantedNow[it->chunk] == 0) {
+                p.inFlight[it->chunk] = 0;
+                it = p.queue.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        pending += p.queue.size() + p.busy + p.loaded.size();
+        for (uint32_t c = 0; c < p.cloud.chunks(); ++c) {
+            if (p.wantedNow[c] != 0 && p.cloud.slots[c] < 0 && p.inFlight[c] == 0) {
+                missing.push_back({i, c, p.wantedNow[c]});
+            }
+        }
+    }
+    std::sort(missing.begin(), missing.end(), [](const Missing& a, const Missing& b) {
+        return a.want != b.want ? a.want > b.want : (a.pool != b.pool ? a.pool < b.pool : a.chunk < b.chunk);
+    });
+    size_t next = pending;
+    for (const Missing& m : missing) {
+        if (next >= slots || !mayTake(m.want, worth(bySlotWorth[next]))) {
+            break;
+        }
+        StreamingPool::Impl& p = *pools[m.pool];
+        std::lock_guard lock(p.mutex);
+        p.inFlight[m.chunk] = 1;
+        p.queue.push_back(p.source->request(m.chunk));
+        ++next;
+    }
+    for (StreamingPool::Impl* pp : pools) {
+        StreamingPool::Impl& p = *pp;
+        std::lock_guard lock(p.mutex);
+        std::stable_sort(p.queue.begin(), p.queue.end(), [&](const ChunkRequest& a, const ChunkRequest& b) {
+            return p.wantedNow[a.chunk] > p.wantedNow[b.chunk];
+        });
+        p.work.notify_all();
+    }
+
+    // Placed most wanted first across pools, each in the cheapest slot it
+    // may take, as long as its pool's frame bytes last. `wait`: round after
+    // round until every queued chunk has come.
+    std::vector<std::unique_ptr<gpu::CommandBatch>> batches(pools.size());
+    const auto batchOf = [&](uint32_t i) -> gpu::CommandBatch& {
+        if (!batches[i]) {
+            batches[i] = std::make_unique<gpu::CommandBatch>(*device);
+        }
+        return *batches[i];
+    };
+    std::vector<uint64_t> placedBytes(pools.size(), 0);
+    std::vector<uint32_t> deferred(pools.size(), 0);
+    uint32_t placed = 0;
+    struct Arrived {
+        uint32_t pool;
+        Loaded   loaded;
+    };
+    for (;;) {
+        std::vector<Arrived> arrived;
+        for (uint32_t i = 0; i < pools.size(); ++i) {
+            StreamingPool::Impl& p = *pools[i];
+            std::unique_lock lock(p.mutex);
+            if (wait) {
+                p.done.wait(lock, [&] { return p.busy == 0 && (p.queue.empty() || p.freeStaging.empty()); });
+            }
+            for (const Loaded& l : p.loaded) {
+                arrived.push_back({i, l});
+            }
+            p.loaded.clear();
+        }
+        std::stable_sort(arrived.begin(), arrived.end(), [&](const Arrived& a, const Arrived& b) {
+            return pools[a.pool]->wantedNow[a.loaded.request.chunk] > pools[b.pool]->wantedNow[b.loaded.request.chunk];
+        });
+        std::vector<std::vector<Loaded>> held(pools.size());
+        bool anyHeld = false;
+        for (const Arrived& a : arrived) {
+            StreamingPool::Impl& p = *pools[a.pool];
+            const Loaded& l = a.loaded;
+            const uint32_t chunk = l.request.chunk;
+            if (p.cloud.slots[chunk] >= 0) {
+                p.inFlight[chunk] = 0;
+                p.release(l.staging);
+                continue;
+            }
+            uint32_t slot = 0;
+            for (uint32_t k = 1; k < slots; ++k) {
+                slot = worth(k) < worth(slot) ? k : slot;
+            }
+            const auto w = worth(slot);
+            if (!(w.first == 0 || mayTake(p.wantedNow[chunk], w))) {
+                p.inFlight[chunk] = 0;
+                p.release(l.staging);
+                continue;   // not worth a place now: asked for again when it is
+            }
+            if (!withinBudget(p.budgetBytes, placedBytes[a.pool], l.request.bytes)) {
+                held[a.pool].push_back(l);
+                anyHeld = true;
+                continue;
+            }
+            p.inFlight[chunk] = 0;
+            gpu::CommandBatch& batch = batchOf(a.pool);
+            const auto [evictedPool, evictedChunk] = owner[slot];
+            if (evictedPool >= 0) {
+                StreamingPool::Impl& q = *pools[static_cast<size_t>(evictedPool)];
+                const auto c = static_cast<uint32_t>(evictedChunk);
+                q.cloud.slots[c] = -1;
+                setResident(batch, q.cloud, c, false);
+                ++q.counters.evictions;
+            }
+            ATHENEA_TRY(p.placeLoaded(batch, l, slot));
+            setResident(batch, p.cloud, chunk, true);
+            p.cloud.slots[chunk] = static_cast<int32_t>(slot);
+            owner[slot] = {static_cast<int32_t>(a.pool), static_cast<int32_t>(chunk)};
+            taken[slot] = 1;
+            ++p.counters.loads;
+            placedBytes[a.pool] += l.request.bytes;
+            ++placed;
+        }
+        bool more = false;
+        for (uint32_t i = 0; i < pools.size(); ++i) {
+            StreamingPool::Impl& p = *pools[i];
+            deferred[i] = static_cast<uint32_t>(held[i].size());
+            std::lock_guard lock(p.mutex);
+            p.loaded.insert(p.loaded.end(), held[i].begin(), held[i].end());
+            more = more || !p.queue.empty() || p.busy > 0;
+        }
+        if (!wait || anyHeld || !more) {
+            break;
+        }
+        // Another round: what this one placed is run and every pool's
+        // staging freed, so the loaders that wait for it go on.
+        for (uint32_t i = 0; i < pools.size(); ++i) {
+            StreamingPool::Impl& p = *pools[i];
+            bool busy = false;
+            {
+                std::lock_guard lock(p.mutex);
+                busy = !p.queue.empty() || p.busy > 0;
+            }
+            if (p.recorded || busy) {
+                ATHENEA_TRY(p.submit(batchOf(i), true));
+            }
+            ATHENEA_TRY(p.takeFailure());
+        }
+    }
+    // Nothing placed, nothing submitted: a frame that changes nothing waits
+    // for nothing.
+    for (uint32_t i = 0; i < pools.size(); ++i) {
+        StreamingPool::Impl& p = *pools[i];
+        if (batches[i] && p.recorded) {
+            ATHENEA_TRY(p.submit(*batches[i], wait));
+        }
+        ATHENEA_TRY(p.takeFailure());
+        p.counters.placedBytes = placedBytes[i];
+        p.counters.deferred = deferred[i];
+        uint32_t resident = 0;
+        uint32_t absent = 0;
+        for (uint32_t c = 0; c < p.cloud.chunks(); ++c) {
+            resident += p.cloud.slots[c] >= 0 ? 1 : 0;
+            absent += (p.wantedNow[c] != 0 && p.cloud.slots[c] < 0) ? 1 : 0;
+        }
+        p.counters.resident = resident;
+        p.counters.missing = absent;
+    }
+    endFrame();
+    return placed;
+}
 
 Result<uint32_t> StreamingPool::Impl::updateOnDemand(bool wait, uint64_t budget) {
     LodCloud& lod = cloud;

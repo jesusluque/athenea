@@ -764,6 +764,9 @@ private:
     std::optional<lod::CutSelector>           cutter_;      ///< made on first use
     /// One store every streamed prim of a layout shares, its slots given to
     /// the chunks the view wants most whichever prim they are of.
+    std::shared_ptr<lod::StreamingShare>      streamShare_;
+    /// One store every streamed prim of a layout shares, its slots given to
+    /// the chunks the view wants most whichever prim they are of.
     std::optional<gpu::ComputeKernel>         aovConvert_;  ///< made on first use
     /// What `writeAov` converts into, kept between frames: a host that maps
     /// every frame (Blender's viewport) allocated two buffers a frame before.
