@@ -504,12 +504,12 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 
 | Option | Value | Default | Notes |
 |---|---|---|---|
-| `input` | directory, or splat files, required | — | a pages directory (`stream.txt`, every frame), or files read as one frame |
+| `input` | directory, or splat files, required | — | a pages directory (`stream.txt`, every frame; a page `f<frame>_c<page>.spz`, or `.ply` where there is no `.spz`), or files read as one frame |
 | `-o`, `--output` | path, required | — | the `.athv`; written under a partial name and renamed when complete |
 | `--bits` | `8` or `10` | `8` | HEVC Main or Main 10; a position is 16 or 20 bits |
 | `--range` | `FIRST:LAST` | every frame | the sequence's frames by index from 0, both included |
-| `--quality` | 0 to 1 | `0.5` | the encoder's constant quality |
-| `--megabits` | Mbit/s | by quality | an average bit rate instead |
+| `--quality` | 0 to 1 | `0.5` | the encoder's constant quality: VideoToolbox's own scale; NVENC one QP for every picture, round(51 x (1 - quality)) (0.5 is QP 26) |
+| `--megabits` | Mbit/s | by quality | an average bit rate instead (NVENC: variable rate, its peak twice the average) |
 | `--keyint` | pictures | the rate (a second) | between key frames: where a player can start |
 | `--intra` | flag | off | every picture a key frame |
 | `--hi` | `side` or `video` | `side` | the position high parts beside the video (exact) or as planes of their own (through the codec, and not exact: `docs/decisions.md`, "Video planes") |
@@ -542,7 +542,8 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 | `--rendition` | 0..65535 | `0` | the id every record carries, one a rendition of a ladder (`athv_stream.py`) |
 | `--rate` | frames a second | the sequence's, or 30 | stored in the file; `athenea stream` plays at it |
 | `--hevc` | path | none | the video alone as Annex B, for `ffprobe`; its pictures are planes, not an image |
-| `--check` | flag | off | each picture decoded again by the hardware decoder, turned back into splats on the device and measured against its source |
+| `--check` | flag | off | each picture decoded again by the hardware decoder, turned back into splats on the device and measured against its source. Needs a hardware decoder: where there is none (Linux, Windows) it is refused, saying so -- check there with `--units` |
+| `--units` | `.athv` | none | the video's units from this file -- another machine's encoder, the same frames and the same options -- instead of this machine's encoder; with `--check`, that encoder's stream through this machine's decoder against the same source. A file whose pictures are laid otherwise (bits, colours, tiles) is refused |
 
 **Sizes.** A picture is at most 8192 x 8192 in area and 16384 a side (the
 hardware encoder refused 10240 x 9600). A frame whose planes need more is cut
@@ -565,8 +566,15 @@ bit one), whether every position high part came back exact, and the hardware
 decode and the planes -> gaussians kernel in ms (medians, the kernel
 submitted and waited for).
 
-macOS (VideoToolbox) only for now; elsewhere the encoder is refused
-(`Unsupported`).
+**Where it encodes.** macOS: VideoToolbox. Linux and Windows: NVENC, through
+the NVIDIA driver's own library (`libnvidia-encode.so.1`, `nvEncodeAPI64.dll`)
+opened at run time -- NVENC API 12.2, a driver of 550.54.14 (Linux) or 551.76
+(Windows) or newer; without one the encoder is refused (`Unsupported`, with
+the reason). On a CUDA device (the default backend there) the session opens on
+the engine's own context and takes the planes where the kernels laid them, so
+they are not read back: the header line says `encoder hardware, from device
+memory`. Both write HEVC Main (Main 10 at `--bits 10`), 4:2:0, full range in
+the VUI, I and P pictures only.
 
 ### 2.7.3 `athenea video-decode` — a video's frames decoded and timed
 

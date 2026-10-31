@@ -188,6 +188,12 @@ struct EncodedPlanes {
     std::vector<std::byte> chroma;   ///< with `chroma`: NV12's second plane, (Cb, Cr) a 2 x 2 block; else empty
     std::vector<float>     ranges;   ///< attributes x 2
     std::vector<std::byte> high;     ///< chunks x highChunkBytes (empty when hiInVideo)
+    /// The same two planes where the codec laid them on the device (its own
+    /// buffers, rows `width` samples apart, valid until its next encode):
+    /// what an encoder that reads device memory takes instead (Codec.h,
+    /// `encodeDevice`). `chromaDevice` is null without `chroma`.
+    rhi::IBuffer* lumaDevice = nullptr;
+    rhi::IBuffer* chromaDevice = nullptr;
 };
 
 /// Where a picture's geometry layer stands in its sequence.
@@ -235,9 +241,11 @@ public:
     /// `first` (a slice), read back for the codec and the file.
     /// `heldBoxes`: the blocks' boxes to use (holdBoxes' union, laid as the
     /// whole frame's side payload) rather than this frame's own.
+    /// `readPlanes` false leaves `luma` and `chroma` empty -- the planes are
+    /// not read back, for an encoder that takes `lumaDevice` itself.
     [[nodiscard]] Result<EncodedPlanes> encode(const scene::GpuSplats& cloud, const PlaneLayout& layout,
                                                const gpu::Buffer& order, uint32_t first, const gpu::Buffer& ranges,
-                                               const gpu::Buffer* heldBoxes = nullptr);
+                                               const gpu::Buffer* heldBoxes = nullptr, bool readPlanes = true);
     /// BOXES HELD OVER FRAMES: the blocks' boxes of the whole frame
     /// (`frame`: its layout over all its splats, `positionBlock` set) in
     /// `order`, into `held` laid as the frame's side payload -- this frame's

@@ -465,6 +465,7 @@ TEST_CASE("the hardware video codec keeps the position high parts exact", "[vide
     settings.height = e.layout.height;
     settings.quality = 0.9;
     settings.keyInterval = 1;
+    settings.device = &device;
     auto encoder = video::createHardwareEncoder(settings);
     if (!encoder && encoder.error().code() == ErrorCode::Unsupported) {
         SKIP("no hardware video encoder here: " << encoder.error().message());
@@ -476,6 +477,9 @@ TEST_CASE("the hardware video codec keeps the position high parts exact", "[vide
     REQUIRE(units->front().keyframe);
     REQUIRE_FALSE(units->front().parameterSets.empty());
     auto decoder = video::createHardwareDecoder(0x31637668, 8);
+    if (!decoder && decoder.error().code() == ErrorCode::Unsupported) {
+        SKIP("an encoder but no hardware video decoder here: " << decoder.error().message());
+    }
     REQUIRE(decoder);
     auto frame = (*decoder)->decode(units->front().unit, units->front().parameterSets, true);
     REQUIRE(frame);
@@ -492,6 +496,75 @@ TEST_CASE("the hardware video codec keeps the position high parts exact", "[vide
     for (size_t a = 0; a < errors.size(); ++a) {
         CAPTURE(a, errors[a].maxSteps, errors[a].meanSteps);
         CHECK(errors[a].meanSteps < 8.0);   // a lossy codec at a high quality: near, not exact
+    }
+}
+
+TEST_CASE("an encoder that reads device memory gives the units its host samples give", "[video][gpu][codec]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Device& device = *gpu->device;
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    REQUIRE(loader);
+    auto codec = video::PlanesCodec::create(*gpu->library);
+    REQUIRE(codec);
+    test::CloudBuilder built = test::randomCloud(40000, 31, 0.004F, 0.3F);
+    auto cloud = loader->upload(built.raw, 3);
+    REQUIRE(cloud);
+    Encoded e = encode(device, *codec, *cloud, 8, false);
+    video::EncoderSettings settings;
+    settings.width = e.layout.width;
+    settings.height = e.layout.height;
+    settings.quality = 0.7;
+    settings.keyInterval = 2;
+    settings.device = &device;
+    auto fromHost = video::createHardwareEncoder(settings);
+    if (!fromHost && fromHost.error().code() == ErrorCode::Unsupported) {
+        SKIP("no hardware video encoder here: " << fromHost.error().message());
+    }
+    REQUIRE(fromHost);
+    if (!(*fromHost)->takesDevice()) {
+        SKIP("this encoder takes host samples only");
+    }
+    auto fromDevice = video::createHardwareEncoder(settings);
+    REQUIRE(fromDevice);
+    REQUIRE(e.planes.lumaDevice != nullptr);
+    // Three pictures: a key, a predicted one, a key again; the device's are
+    // the planes where the codec laid them, never read back.
+    for (uint64_t k = 0; k < 3; ++k) {
+        CAPTURE(k);
+        auto host = (*fromHost)->encode(e.planes.luma, e.planes.chroma, k);
+        video::DevicePicture picture;
+        picture.luma = e.planes.lumaDevice;
+        picture.chroma = e.planes.chromaDevice;
+        auto onDevice = (*fromDevice)->encodeDevice(picture, k);
+        REQUIRE(host);
+        REQUIRE(onDevice);
+        REQUIRE(host->size() == 1);
+        REQUIRE(onDevice->size() == 1);
+        const video::EncodedUnit& a = host->front();
+        const video::EncodedUnit& b = onDevice->front();
+        CHECK(a.keyframe == (k % 2 == 0));
+        CHECK(b.keyframe == a.keyframe);
+        CHECK(a.unit == b.unit);
+        CHECK(a.parameterSets == b.parameterSets);
+        // A key frame's parameter sets are a VPS, an SPS and a PPS, out of
+        // the unit, which holds length-prefixed NAL units only.
+        if (a.keyframe) {
+            REQUIRE(a.parameterSets.size() == 3);
+            CHECK(((a.parameterSets[0][0] >> 1) & 0x3F) == 32);
+            CHECK(((a.parameterSets[1][0] >> 1) & 0x3F) == 33);
+            CHECK(((a.parameterSets[2][0] >> 1) & 0x3F) == 34);
+        } else {
+            CHECK(a.parameterSets.empty());
+        }
+        size_t at = 0, nals = 0;
+        while (at + 4 <= a.unit.size()) {
+            const size_t n = (size_t{a.unit[at]} << 24) | (size_t{a.unit[at + 1]} << 16) |
+                             (size_t{a.unit[at + 2]} << 8) | a.unit[at + 3];
+            at += 4 + n;
+            ++nals;
+        }
+        CHECK(at == a.unit.size());
+        CHECK(nals >= 1);
     }
 }
 

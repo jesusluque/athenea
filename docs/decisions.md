@@ -27,6 +27,7 @@ The sections below are in the order the work was done. By area:
 - [Licences: Apache-2.0, and what is owed to whom](#licences-apache-20-and-what-is-owed-to-whom)
 - [The Blender add-on's package carries every licence it owes](#the-blender-add-ons-package-carries-every-licence-it-owes)
 - [A clone of the public repository builds (19 Oct)](#a-clone-of-the-public-repository-builds-19-oct)
+- [NVENC: the video planes' encoder on CUDA (31 Oct)](#nvenc-the-video-planes-encoder-on-cuda-31-oct)
 
 **Integrations: Blender, OpenFX**
 
@@ -16613,3 +16614,108 @@ segmenter already required).
   geometry stream and a colour stream) would let colour go back to 0.4.
 - Positions in each run's own fitted frame (still planes between keys) and the covariance's logarithm, measured
   in a prototype only: neither paid for its complexity at these settings.
+
+## NVENC: the video planes' encoder on CUDA (31 Oct)
+
+`athenea video-encode` on Linux and Windows: NVIDIA's hardware HEVC encoder behind the same `VideoEncoder` as
+VideoToolbox (`modules/video/src/Nvenc.cpp`), so the planes, the `.athv` and everything that reads it are unchanged.
+
+### Design
+
+- **Nothing linked.** The encoder library (`nvEncodeAPI64.dll`, `libnvidia-encode.so.1`) and the CUDA driver
+  (`nvcuda.dll`, `libcuda.so.1`) are opened at run time by `platform::SharedLibrary` (new: `LoadLibraryA` /
+  `dlopen`), `NvEncodeAPIGetMaxSupportedVersion` checked against the headers' API (12.2, a driver of 550.54.14 /
+  551.76 or newer), then `NvEncodeAPICreateInstance`. A build runs where there is no NVIDIA driver; the factory
+  says `Unsupported` with the reason. The types are FFmpeg's nv-codec-headers (`n12.2.72.0`, MIT), vendored in
+  `third_party/nv-codec-headers`: `nvEncodeAPI.h` and `dynlink_cuda.h`, for the few CUDA driver entry points.
+- **On the engine's context.** `EncoderSettings::device` (new) is the engine's device; on CUDA the session opens on
+  its own `CUcontext` (`Device::native()`, the one gpu_host adopts) and copies on its stream. Without a device, or
+  on Vulkan, it opens on the first device's primary context and takes host samples only.
+- **The planes never reach the CPU.** The input is one pitched allocation (`cuMemAllocPitch`, luma then the second
+  plane, NV12 or P010) registered once as `NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR` and mapped for each picture.
+  `VideoEncoder::encodeDevice` (new; `takesDevice()` says where it works) takes a `DevicePicture` -- the
+  buffers PlanesCodec laid the mosaic in (`EncodedPlanes::lumaDevice`, `chromaDevice`) -- and copies them in on the
+  device (`cuMemcpy2DAsync`, device to device); `PlanesCodec::encode(..., readPlanes = false)` then skips the
+  planes' read back. The host-span `encode` stays, the same copy from the host. Grey chroma is a `cuMemsetD8` /
+  `D16` once, while no chroma is given.
+- **What VideoToolbox gives.** HEVC Main (Main 10 at 10 bits), 4:2:0, `videoFullRangeFlag` 1 in the VUI (ffprobe:
+  `color_range=pc`, `yuvj420p`), preset P4 with the high-quality tuning (low latency for `realTime`), B pictures,
+  look-ahead and adaptive quantisation off: a frame in, its picture out, synchronously. `gopLength` and
+  `idrPeriod` are the key interval and every key is forced IDR with its parameter sets; NVENC's Annex B is split
+  into 4-byte lengths and the VPS, SPS and PPS go to `parameterSets`, as VideoToolbox's format description holds
+  them. Constant quality is constant QP, `round(51 x (1 - quality))` for I and P (VideoToolbox's quality has no QP
+  to map to; this is linear in the setting); a bit rate is VBR, the peak twice the average.
+- **Checked where it cannot be decoded.** There is no NVDEC yet, so `--check` on Linux and Windows is refused,
+  saying so. `video-encode --units FILE.athv` (new) replays another machine's units in place of the encoder: the
+  NVENC file goes through VideoToolbox's decoder and the planes decode on the Mac, against the same source frames
+  laid on the Mac. A pages directory now takes `.ply` pages where there is no `.spz`, because the Windows build
+  has no zstd and so reads no SPZ: both machines read the same PLY pages.
+- **A Windows build fix on the way:** `AttributeError::far` is `farSplats`; `far` is a macro under `windows.h`.
+
+### Measured
+
+The sparrow's flattened pages, frames 0-29 (300847 splats a frame, degree 3), as 3DGS PLY (converted from the SPZ
+pages with Niantic's library, so both machines read the same values): 59 planes in a 4608 x 4480 mosaic, a key
+picture every 30, Morton order a frame, group ranges, high parts beside. NVENC on an RTX 3070 Laptop GPU (Windows,
+driver 621.01, CUDA device); VideoToolbox on the M5 Pro. Neither machine was known to be idle: whether either
+was in interactive use is not known, and the Mac's jobs ran one at a time under the GPU guard. Times are
+`video-encode`'s medians a picture, release builds. `lay` is the planes kernels with what is read back (on the Mac
+the mosaic too; on CUDA only the ranges and side data); `encode` is the encoder call (NVENC: the device copy, the
+encode, the lock). Errors are `--check`'s means in steps of each attribute's own quantisation (position: of the 16
+bit one), through VideoToolbox's decoder on the Mac (NVENC's through `--units`), and the geometry error's median /
+p99 position.
+
+| setting | encoder | MB a frame (video + side) | Mbit/s at 30 | lay ms | encode ms | position / opacity / log scale / rotation / DC / rest, mean steps | position um, median / p99 |
+|---|---|---:|---:|---:|---:|---|---|
+| quality 0.3 | VideoToolbox | 0.795 (0.592 + 0.203) | 191 | 10.8 | 50.6 | 20.7 / 15.3 / 12.9 / 21.2 / 14.0 / 15.2 | 122 / 290 |
+| quality 0.3 (QP 36) | NVENC | 1.455 (1.252 + 0.203) | 349 | 1.4 | 36.6 | 12.8 / 5.55 / 8.33 / 12.3 / 9.73 / 10.7 | 72 / 172 |
+| quality 0.4 | VideoToolbox | 1.113 (0.910 + 0.203) | 267 | 9.8 | 51.7 | 14.8 / 10.8 / 10.5 / 15.3 / 11.7 / 13.2 | 86 / 205 |
+| quality 0.4 (QP 31) | NVENC | 2.782 (2.579 + 0.203) | 668 | 1.3 | 40.5 | 7.27 / 3.00 / 5.48 / 7.36 / 6.41 / 6.68 | 43 / 94 |
+| quality 0.5 | VideoToolbox | 1.854 (1.651 + 0.203) | 445 | 12.0 | 56.1 | 9.46 / 6.80 / 7.57 / 9.99 / 8.42 / 9.28 | 56 / 122 |
+| quality 0.5 (QP 26) | NVENC | 4.653 (4.451 + 0.203) | 1117 | 1.3 | 48.8 | 4.15 / 1.67 / 3.49 / 4.35 / 3.80 / 3.91 | 24 / 56 |
+| quality 0.7 | VideoToolbox | 6.039 (5.836 + 0.203) | 1449 | 11.0 | 72.4 | 3.01 / 2.07 / 2.83 / 3.32 / 2.93 / 3.03 | 18 / 40 |
+| quality 0.7 (QP 15) | NVENC | 9.434 (9.232 + 0.203) | 2264 | 1.4 | 76.1 | 1.23 / 0.53 / 1.10 / 1.30 / 1.13 / 1.23 | 7 / 17 |
+| 400 Mbit/s | VideoToolbox | 2.881 (2.678 + 0.203) | 691 | 11.6 | 53.5 | 14.3 / 10.2 / 8.29 / 12.6 / 9.20 / 10.3 | 79 / 244 |
+| 400 Mbit/s | NVENC | 2.682 (2.479 + 0.203) | 644 | 1.3 | 40.0 | 10.2 / 4.25 / 6.95 / 8.97 / 7.33 / 7.20 | 56 / 172 |
+
+- **At one bit rate NVENC is the better codec for planes**: 7 % fewer bytes than VideoToolbox and every
+  attribute nearer (opacity 4.25 against 10.2 steps, position 10.2 against 14.3). By the quality ladder the same
+  holds: NVENC at QP 36 (1.25 MB of video) is about as near as VideoToolbox at 0.5 (1.65 MB) on position and
+  rotation and nearer on the rest. Neither holds the 400 Mbit/s asked over 30 pictures (the key picture is 8.5 MB
+  on NVENC and 12.1 MB on VideoToolbox).
+- **The settings do not mean the same.** NVENC's QP at a given `--quality` spends 1.6-2.5 times VideoToolbox's
+  bytes; matching a VideoToolbox file's size takes about 0.1 less quality. A file's `quality` field says what was
+  asked, not what either encoder made of it.
+- **Encode time is the same order**: 37-76 ms a 4608 x 4480 picture on the laptop's NVENC, 51-72 ms on the M5
+  Pro, both rising with the bits made. The device input saves the CPU's part: the same planes from host spans
+  (a Vulkan device, so the planes go through the CPU: quality 0.4) took 68.5 ms to encode against 40.5 from
+  device memory, and laying them 128 ms with the read back against 1.3 without.
+- **The largest errors through `--units` are not the codec's.** NVENC's maxima stay at 115 position, 247
+  opacity, 180 log scale and 214-216 rotation steps from QP 36 down to QP 0 (quality 1.0: 16.08 MB of video a
+  frame, 115 ms; means 0.41 / 0.098 / 0.33 / 0.34 / 0.29 / 0.48 steps, positions 2.3 / 6.4 um), where
+  VideoToolbox's own maxima fall with its quality (19-36 steps at 0.7). A few splats take another Morton rank on
+  the Mac than they did on CUDA, so a decoded sample is measured against a neighbour: the order is computed again
+  on each machine, and the means and percentiles are what to read across machines. A VideoToolbox file replayed
+  through `--units` on its own machine gives its own `--check` figures to the last digit.
+- **10 bits and colour in chroma** (quality 0.5; 10-bit errors in steps of the 10-bit and 20-bit quantisation):
+
+| setting | encoder | MB a frame (video + side) | Mbit/s at 30 | encode ms | position / opacity / log scale / rotation / DC, mean steps | position um, median / p99 |
+|---|---|---:|---:|---:|---|---|
+| `--bits 10` | VideoToolbox | 3.708 (3.053 + 0.655) | 890 | 63.8 | 24.2 / 17.6 / 21.0 / 26.1 / 22.8 | 9.1 / 19.7 |
+| `--bits 10` (QP 26, P010) | NVENC | 5.131 (4.476 + 0.655) | 1231 | 47.0 | 17.1 / 11.6 / 15.1 / 18.3 / 16.0 | 6.4 / 14.0 |
+| `--chroma --sh-degree 0` (12 planes, 2048 x 1920) | VideoToolbox | 1.268 (1.065 + 0.202) | 304 | 14.8 | 9.46 / 6.81 / 7.57 / 9.99 / 12.6 | 56 / 122 |
+| `--chroma --sh-degree 0`, the second plane from device memory | NVENC | 1.780 (1.578 + 0.202) | 427 | 13.6 | 4.15 / 1.65 / 3.50 / 4.35 / 11.0 | 24 / 56 |
+
+- Tests: `athenea_video_tests` on the Windows machine (CUDA): 9 passed, 1 skipped (the round trip, no decoder); the new
+  case encodes the same planes from host spans and from device memory and gets the same bytes, the parameter sets
+  a VPS, an SPS and a PPS. On the Mac: 9 passed, 1 skipped (the new case: VideoToolbox takes host samples only).
+
+### Not done
+
+- NVDEC: the decoder, `createLumaTextures` on CUDA and `--check` where NVENC encodes. Until then a round trip is
+  checked on a Mac with `--units`.
+- A QP mapping fitted to VideoToolbox's quality (the table above is where one would start), and a constant quality
+  mode by NVENC's own target quality (VBR with `targetQuality`) rather than constant QP.
+- Linux: built and run on Windows only; the Linux path differs in the library names alone.
+- Registering the codec's own mosaic buffer as NVENC's input (no copy at all): the mosaic and the second plane are
+  two buffers, and NVENC wants one NV12 allocation, so one device copy remains.
