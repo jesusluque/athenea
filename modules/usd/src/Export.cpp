@@ -5,6 +5,7 @@
 #include "athenea/scene/DecodeParams.h"
 
 #include <algorithm>
+#include <array>
 #include <functional>
 #include <cstring>
 #include <set>
@@ -728,6 +729,40 @@ Result<void> writeVisibility(const std::filesystem::path& path, const std::strin
 
 namespace {
 
+/// WHETHER A FIELD MARKED A MERGE TREE IS ONE (usd/tree_leaves.slang's
+/// treeWhole): its roots' sizes sum to its leaves and every link goes up to a
+/// larger node. A cut of a tree, written with the tree's flag and arrays
+/// (decimate --cut-* until the SSF branch), is not. The CPU reads three
+/// counters.
+Result<bool> treeIsWhole(gpu::ShaderLibrary& library, const VtIntArray& sizes, const VtIntArray& parents) {
+    gpu::Device& device = library.device();
+    const uint32_t n = static_cast<uint32_t>(sizes.size());
+    auto size = gpu::Buffer::fromSpan<int>(device, std::span<const int>(sizes.cdata(), sizes.size()), "tree.size");
+    auto parent =
+        gpu::Buffer::fromSpan<int>(device, std::span<const int>(parents.cdata(), parents.size()), "tree.parent");
+    const std::vector<uint32_t> zeros(4, 0u);
+    auto tally = gpu::Buffer::fromSpan<uint32_t>(device, std::span<const uint32_t>(zeros), "tree.tally");
+    if (!size) return std::move(size).error();
+    if (!parent) return std::move(parent).error();
+    if (!tally) return std::move(tally).error();
+    auto whole = gpu::ComputeKernel::create(library, "athenea/usd/tree_leaves", "treeWhole");
+    if (!whole) return std::move(whole).error();
+    gpu::CommandBatch batch(device);
+    whole->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) {
+        c["recordSize"].setBinding(size->rhi());
+        c["recordParent"].setBinding(parent->rhi());
+        c["tally"].setBinding(tally->rhi());
+        for (const char* unused : {"lodSize", "selected", "dest", "source", "target"}) {
+            c[unused].setBinding(tally->rhi());
+        }
+        c["params"]["count"].setData(n);
+    });
+    ATHENEA_TRY(batch.submit(true));
+    std::array<uint32_t, 4> counts{};
+    ATHENEA_TRY(tally->read(device, 0, sizeof counts, counts.data()));
+    return counts[0] == counts[1] && counts[2] == 0;
+}
+
 /// A tree's leaves kept, in place: every buffer the cloud carries a gaussian
 /// at a time compacted to the gaussians whose `lodSize` is one
 /// (usd/tree_leaves.slang), on the device; the CPU reads the count.
@@ -916,7 +951,29 @@ Result<scene::GpuSplats> uploadParticleField(gpu::ShaderLibrary& library, scene:
     // the cloud the tree was built from. Its merges stand for runs of them
     // and would be drawn over them.
     const VtValue tree = splat("lodTree");
+    // A CUT OF A TREE IS NOT A TREE: `decimate --cut-*` wrote its cuts with the
+    // flag and the arrays of the tree they were cut from (until the SSF
+    // branch), and a merge in a cut stands in place of leaves the file does
+    // not hold -- keeping the leaves alone left holes (the example pawn's
+    // glass head, 57 k of 292 k nodes). Its roots do not sum to its leaves
+    // (treeIsWhole): it is drawn as it is, every node, as Hydra draws it.
+    bool cut = false;
     if (tree.IsHolding<bool>() && tree.UncheckedGet<bool>()) {
+        const VtValue parents = splat("lodParent");
+        const VtValue sizes = splat("lodSize");
+        if (parents.IsHolding<VtIntArray>() && sizes.IsHolding<VtIntArray>() &&
+            parents.UncheckedGet<VtIntArray>().size() == sizes.UncheckedGet<VtIntArray>().size()) {
+            auto whole = treeIsWhole(library, sizes.UncheckedGet<VtIntArray>(), parents.UncheckedGet<VtIntArray>());
+            if (!whole) return std::move(whole).error();
+            cut = !*whole;
+        }
+        if (cut) {
+            log::warn("{}: marked a merge tree, but its roots do not stand for its leaves: a cut of one, drawn as "
+                      "it is, every node",
+                      field.GetPath().GetString());
+        }
+    }
+    if (!cut && tree.IsHolding<bool>() && tree.UncheckedGet<bool>()) {
         const VtValue sizes = splat("lodSize");
         if (!sizes.IsHolding<VtIntArray>() || sizes.UncheckedGet<VtIntArray>().size() != streams.count) {
             return Error::make(ErrorCode::InvalidArgument, "{}: a merge tree without one lodSize a gaussian",
@@ -1488,6 +1545,10 @@ Result<void> writeDecimatedStage(const std::filesystem::path& input, const std::
         bool value = false;
         if (from && from.Get(&value) && value) {
             field.GetPrim().CreateAttribute(TfToken(name), SdfValueTypeNames->Bool, false).Set(true);
+        } else if (std::string(name) == "primvars:athenea:splat:lodTree") {
+            // What was written is not a tree (a cut of one, a decimation): the
+            // copy must not say it is, or a reader keeps its "leaves" alone.
+            field.GetPrim().RemoveProperty(TfToken(name));
         }
     }
     // Everything else a gaussian carries, merged.

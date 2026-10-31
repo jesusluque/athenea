@@ -16604,3 +16604,27 @@ Mode B; it is.
 33.5 against 46.0 ms -- with block-shaped differences on the glass head's reflections. Keeping each leaf's
 coverage and occlusion index changed nothing. Mode A is measured against the plain leaves, which isolates
 what solidifying does; what the tree's path draws that a plain cloud does not is still to be found.
+
+### A cut of a merge tree is not a tree (found on the pawn, 31 Oct)
+
+`decimate --cut-*` wrote its cuts into a copy of the tree's stage, and the copy kept the tree's
+`primvars:athenea:splat:lodTree` and its arrays. In a cut, a merge stands **in place of** leaves the file
+does not hold; but `uploadParticleField` (athenea convert, solidify) saw the flag and kept the gaussians of
+`lodSize` 1 alone -- dropping the merges and leaving holes: on the example pawn's glass head 57328 of 292056
+nodes, standing for ~115 k leaves, and the body likewise (its 1.32 M nodes read as 867 k). Hydra does not
+read the flag and drew every node, so only the paths through `uploadParticleField` were wrong.
+
+- `writeDecimatedStage` makes the copy say what was written: where the gaussians are not a tree, the flag is
+  removed rather than inherited.
+- `uploadParticleField` asks whether a field marked a tree is one (`usd/tree_leaves.slang`'s `treeWhole`, three
+  counters): in a tree its roots -- a node whose parent is itself or not in the file -- stand for every leaf
+  once, so their sizes sum to the leaves, and every link goes up to a larger node. A cut's links are the
+  tree's indices: its "roots" stand for leaves it does not hold, or its links point to smaller nodes. A field
+  that is not a tree is read as it is, every node, with a warning -- not refused, so the cuts already written
+  (the example pawn's among them) still open.
+- Checked (`tests/usd/test_tree_leaves.cpp`): a linked tree is read as its 6 leaves; a cut whose links all
+  point past it, and a small cut whose links all fall inside it and are wrong, are read whole (8); a copy of
+  a tree's stage that is not a tree does not carry the flag.
+
+On the pawn the leaves drawn plain are now the tree as the stage draws it: 53.5 dB between them (38.1 before),
+45.6 against 43.3 ms.
