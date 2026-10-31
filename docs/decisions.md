@@ -18917,6 +18917,5 @@ video instead of beside it (`--geometry-video`, the 20k rung, built with the fas
 | geometry in the video, quality 0.9 | 0.412 | 98.9 | 1638 / 3573 µm | 0.0266 | 0.0140 | 5.6 |
 | geometry in the video, quality 0.95 | 0.498 | 119.5 | 1062 / 2317 µm | 0.0244 | 0.0093 | 5.7 |
 
-A volume's gaussians move little from frame to frame and the layer's prediction from the frame before holds most
-of them (the predicted frames' layer is under half a key's): beside the video it is half the bytes for the same
-error. The sparrow's wings were the other way round.
+Beside the video the layer is half the bytes for the same error (its predicted frames 0.18 MB at the median
+against 0.25 MB for the key); in the video the positions need quality 0.95 to come back as close.
