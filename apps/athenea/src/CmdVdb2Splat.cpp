@@ -13,6 +13,7 @@
 // metrics' sums and the values a file holds.
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
@@ -172,8 +173,10 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
         if (!read) return std::move(read).error();
         colour = std::move(*read);
     }
-    cli::out("vdb2splat: %s: '%s' %u leaves, voxel %.4g%s%s\n", o.input.c_str(), density->name.c_str(),
-             density->leafCount, density->voxelSize, temperature ? ", temperature" : "", colour ? ", Cd" : "");
+    cli::out("vdb2splat: %s: '%s' %u leaves, voxel %.4g, %.2f MB as NanoVDB%s%s\n", o.input.c_str(),
+             density->name.c_str(), density->leafCount, density->voxelSize,
+             static_cast<double>(density->words.size()) * 4.0 / 1.0e6, temperature ? ", temperature" : "",
+             colour ? ", Cd" : "");
     if (density->leafCount == 0) {
         return Error::make(ErrorCode::InvalidArgument, "'{}': grid '{}' holds no leaves", o.input, o.density);
     }
@@ -213,8 +216,10 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
     number(job, "learningRate", o.learningRate);
     number(job, "hasTemperature", temperature ? 1.0 : 0.0);
     number(job, "hasColour", colour ? 1.0 : 0.0);
+    const auto started = std::chrono::steady_clock::now();
     auto rendered = aofx_host::renderEffect(context, effect, job);
     if (!rendered) return std::move(rendered).error();
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     const std::vector<float>* told = (*rendered)->attached("gaussians");
     if (told == nullptr || told->size() < 8) {
         return Error(ErrorCode::DeviceFailure, "the Vdb2Splat effect did not say how many gaussians it wrote");
@@ -225,6 +230,7 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
              count, static_cast<uint32_t>((*told)[1]), static_cast<uint32_t>((*told)[4]),
              static_cast<uint32_t>((*told)[7]), 1u << static_cast<uint32_t>((*told)[6]),
              static_cast<double>((*told)[3]));
+    cli::out("vdb2splat: the fit took %.2f s (the effect, end to end)\n", seconds);
     if (count == 0) return Error(ErrorCode::InvalidArgument, "vdb2splat: no gaussian came out");
     auto gaussians = viewOf(context, *rendered, "vdb2splat.records");
     if (!gaussians) return std::move(gaussians).error();

@@ -16468,7 +16468,7 @@ writes -- a known mixture of random gaussians evaluated at the voxel centres, or
 |---|---|---|
 | one gaussian, a budget of one (40³) | relative L2 3·10⁻⁵ | < 0.005 |
 | sixteen gaussians, a budget of 64 (48³) | 0.0114 | < 0.03 |
-| the blob (64³), 250 / 1000 / 4000 | 0.104 / 0.065 / 0.046 | falling, the last < 0.25 |
+| the blob (64³), 250 / 1000 / 4000 | 0.100 / 0.063 / 0.038 | falling, the last < 0.25 |
 | the fit's own error against the way back's | equal to 10⁻⁹ | < 10⁻³ |
 | a mixture's closed-form transmittance against ratio tracking, 2048 rays, 256 estimates each | mean \|ΔT\| 0.0087, none beyond 5 standard errors + 0.01, optical depth up to 3.4 | ≤ 1 in 500 beyond, mean < 0.01 |
 
@@ -16480,3 +16480,65 @@ each (one component of four kept -- Adam alone then stalled at 0.34 on a 16-gaus
 it); and an EM step whose moments were not a gaussian's ran a box loop for minutes, until a factor's
 off-diagonals were held within twice the geometric mean of their diagonals and a box to the cells of the
 grid.
+
+### E1: the error against the number of gaussians (31 Oct)
+
+`~/luc/athenea-gpu/vdb2splat_e1.sh`: for each budget, the fit (release build, Apple M5 Pro, one GPU job at a
+time under the shared lock; whether the Mac was in interactive use is not known), the way back on the input's
+topology, its density error over the active voxels, 4096 random rays (closed form against 64 ratio-tracking
+estimates each), and a path trace (512², 512 paths, a sun and a dim dome, albedo 0.8) of the grid given back
+against one of the original (`athenea compare`). PT ms is the median of five frames of 64 paths, no readback.
+The fit's time is the effect's, end to end; the cloud's bytes are the usdc's.
+
+A blob of smooth noise, 96³ voxels at 0.05, generated (`--make-fixture blob`), density scale 1:
+
+| N | density rel. L2 | rays beyond 5 SE (of 4096) | PT relMSE | fit s | cloud MB (B/g) | PT ms back / original |
+|---|---|---|---|---|---|---|
+| 2k | 0.0529 | 28 | 8.11e-05 | 0.88 | 0.13 (65) | 134.96 / 133.75 |
+| 5k | 0.0341 | 8 | 6.47e-05 | 1.96 | 0.32 (64) | 134.73 / 133.75 |
+| 10k | 0.0284 | 5 | 4.77e-05 | 3.76 | 0.64 (64) | 135.31 / 133.75 |
+| 20k | 0.0211 | 4 | 3.73e-05 | 7.27 | 1.32 (66) | 136.42 / 133.75 |
+| 50k | 0.0104 | 1 | 1.49e-05 | 17.88 | 3.30 (66) | 131.63 / 133.75 |
+| 100k | 0.0132 | 2 | 1.40e-05 | 35.73 | 6.60 (66) | 133.60 / 133.75 |
+
+.vdb on disk 2.39 MB; density as NanoVDB on the device 4.01 MB
+
+openvdb.org's smoke2 (2.8 M active voxels, 10144 leaves, voxel 0.1), density scale 20:
+
+| N | density rel. L2 | rays beyond 5 SE (of 4096) | PT relMSE | fit s | cloud MB (B/g) | PT ms back / original |
+|---|---|---|---|---|---|---|
+| 2k | 0.2336 | 344 | 8.35e-05 | 5.34 | 0.13 (65) | 118.65 / 117.43 |
+| 5k | 0.1764 | 243 | 6.90e-05 | 10.42 | 0.32 (64) | 113.26 / 117.43 |
+| 10k | 0.1324 | 186 | 5.46e-05 | 19.77 | 0.64 (64) | 116.44 / 117.43 |
+| 20k | 0.0973 | 115 | 4.20e-05 | 37.02 | 1.28 (64) | 121.97 / 117.43 |
+| 50k | 0.0645 | 50 | 2.43e-05 | 90.16 | 3.20 (64) | 119.57 / 117.43 |
+| 100k | 0.0631 | 32 | 1.83e-05 | 179.16 | 6.40 (64) | 116.82 / 117.43 |
+
+.vdb on disk 30.50 MB; density as NanoVDB on the device 22.63 MB
+
+- The path trace's relMSE is under 10⁻⁴ at every budget, well inside the proposal's 1 %; how much of it is
+  the paths' own noise was not measured (two renders of one grid were not compared). At 1024 px and 1024
+  paths, smoke2 from 50k gaussians against the original: relMSE 1.4·10⁻⁴, PSNR 49.7 dB, SSIM 0.994; the blob
+  from 20k: 8.9·10⁻⁵, 51.8 dB.
+- The density error is the harder number: smoke2's thin wisps cost it, 0.064 at 50k and no better at 100k.
+  The blob does not improve from 50k to 100k either (0.010 to 0.013), where the cut is saturated -- every
+  2³ block with mass is a gaussian, 33 877 of them -- and the rest are births: about nine voxels a gaussian
+  is past what the fit uses well.
+- The rays' mean |ΔT| (0.02–0.04) is mostly the 64 ratio-tracking estimates' own noise; the count beyond five
+  standard errors falls with N (smoke2 344 → 32 of 4096).
+- A grid given back has the input's topology, so it costs the path tracer what the original does (117–122 ms
+  against 117 for smoke2). The gaussians are 64–66 B each in usdc: smoke2 at 50k is 3.2 MB against 30.5 MB of
+  .vdb and 22.6 MB of NanoVDB on the device; the compact 23–39 B layout is proposal 104's.
+- The fit's time is linear in N (smoke2: 5 s at 2k, 90 s at 50k, 179 s at 100k): the forward pass visits
+  every gaussian a leaf, culled by its box. Binning the gaussians by leaf is what would make it leaves ×
+  overlap instead.
+- Below half a voxel a gaussian sampled at the voxel centres no longer holds the mass its integral says, and
+  the EM step assumes it does: with `minStd` at 0.35 smoke2 stalled at 0.19 by 10k and the blob's error rose
+  past 20k; at 0.5 both fell as above.
+
+### What is not done
+
+Sequences (proposal §3.5: advection by `vel`, slots kept between frames), a topology of its own for the way
+back, the explosion (temperature) and bunny_cloud volumes (19 M voxels: the leaves' picture and the model
+buffer are 1.3 GB at its size), splitting a gaussian over the size cap, binning for the forward pass, and the
+raster of the gaussians as a medium (proposal 105).

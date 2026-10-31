@@ -2589,7 +2589,7 @@ del presupuesto, un cuarto de sus entradas.
 | `leaves` | entero | `0` | cuántas hojas tiene `Grid`; lo pone el host, y 0 se rechaza |
 | `target` | entero | `20000` | el presupuesto, acotado por el hueco de la salida |
 | `emIterations`, `iterations`, `attributeIterations`, `maxBlock`, `emissionWeight`, `initFraction`, `densifyEvery`, `learningRate` | | como en §2.8.3 | las opciones del mismo nombre |
-| `minStd` | número, vóxeles | `0.35` | la desviación menor que puede tomar una gaussiana |
+| `minStd` | número, vóxeles | `0.5` | la desviación menor que puede tomar una gaussiana; por debajo de medio vóxel, más o menos, una gaussiana muestreada en los centros de los vóxeles ya no tiene la masa que dice su integral, que es lo que suponen los pasos de EM |
 | `pruneMass` | número | `1e-6` | se va una gaussiana cuya masa es menor que esta parte del total |
 | `hasTemperature`, `hasColour` | booleano | `0` | si `Grid` las lleva (las pone el host) |
 

@@ -2513,7 +2513,7 @@ entries.
 | `leaves` | integer | `0` | how many leaves `Grid` holds; the host sets it, and 0 is refused |
 | `target` | integer | `20000` | the budget, bounded by the output's room |
 | `emIterations`, `iterations`, `attributeIterations`, `maxBlock`, `emissionWeight`, `initFraction`, `densifyEvery`, `learningRate` | | as §2.8.3 | the options of the same names |
-| `minStd` | number, voxels | `0.35` | the smallest deviation a gaussian may take |
+| `minStd` | number, voxels | `0.5` | the smallest deviation a gaussian may take; below about half a voxel a gaussian sampled at the voxel centres no longer holds the mass its integral says, which the EM steps assume |
 | `pruneMass` | number | `1e-6` | a gaussian whose mass is under this share of the total goes |
 | `hasTemperature`, `hasColour` | boolean | `0` | whether `Grid` carries them (the host sets them) |
 

@@ -52,7 +52,7 @@ struct Vdb2SplatUniforms {
     float    threshold = 0.0F;
     float    maxStd = 21.0F;
 
-    float    minStd = 0.35F;
+    float    minStd = 0.5F;
     float    learningRate = 0.1F;
     uint32_t step = 1;
     float    pruneMass = 1e-6F;
@@ -139,7 +139,7 @@ public:
                T::Integer, 20, 1, 100000);
         number("learningRate", "Learning rate", "Adam's step: log units for sigma and the factor's diagonal, "
                "deviations for the centre. Decays tenfold over the run.", T::Double, 0.1, 0.0, 1.0);
-        number("minStd", "Smallest deviation", "In voxels.", T::Double, 0.35, 0.05, 10.0);
+        number("minStd", "Smallest deviation", "In voxels: below about half a voxel a gaussian sampled at the voxel centres no longer holds the mass its integral says, which the EM steps assume.", T::Double, 0.5, 0.05, 10.0);
         number("pruneMass", "Prune below", "A gaussian whose mass is under this share of the total goes.", T::Double,
                1e-6, 0.0, 1.0);
         number("hasTemperature", "Temperature", "The Grid clip carries a temperature (host).", T::Boolean, 0, 0, 1);
@@ -254,7 +254,7 @@ private:
             u.maxLevel = 3;
             while ((2u << u.maxLevel) <= maxBlock && u.maxLevel < 7) ++u.maxLevel;
             u.maxStd = static_cast<float>(maxBlock) / 3.0F;
-            u.minStd = static_cast<float>(std::clamp(request.number("minStd", 0.35), 0.05, 10.0));
+            u.minStd = static_cast<float>(std::clamp(request.number("minStd", 0.5), 0.05, 10.0));
             u.emissionWeight = static_cast<float>(std::max(request.number("emissionWeight", 1.0), 0.0));
             u.pruneMass = static_cast<float>(std::clamp(request.number("pruneMass", 1e-6), 0.0, 1.0));
             u.hasTemperature = request.number("hasTemperature", 0.0) >= 0.5 ? 1u : 0u;
