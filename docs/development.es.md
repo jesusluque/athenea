@@ -315,6 +315,16 @@ cualquier build y ninguna recompilación de C++. Un fichero de shader **nuevo**
 necesita reconfigurar CMake, porque el glob que los copia es
 `CONFIGURE_DEPENDS`.
 
+Un fichero no se copia tal cual: `nanovdb/PNanoVDB.h`, que incluyen los
+shaders de volumen, viene del prefijo de USD a través de
+`cmake/PatchPNanoVDB.cmake`, que lee su tabla de constantes de tipo de grid
+a través de una función indexada solo con literales. Indexada
+dinámicamente, Slang deja esa tabla como un array en la pila de un hilo de
+Metal, y los kernels que guardaban varias dibujaban valores erróneos. Una
+comprobación con `slangc` contra la cabecera del propio prefijo no compila,
+por tanto, lo que compila el motor; para eso, `-I` debe apuntar a
+`build/<preset>/shaders`.
+
 Para comprobar que un shader compila sin compilar nada más:
 
 ```sh

@@ -58,10 +58,12 @@ set(ATHENEA_NANOVDB_INCLUDE "" CACHE PATH "A directory holding nanovdb/PNanoVDB.
 find_file(ATHENEA_PNANOVDB_H nanovdb/PNanoVDB.h HINTS "${ATHENEA_USD_ROOT}/include" ${ATHENEA_NANOVDB_INCLUDE}
           NO_DEFAULT_PATH)
 if(ATHENEA_PNANOVDB_H)
+    # Copied with its type table read by literal indices only
+    # (cmake/PatchPNanoVDB.cmake says why).
     add_custom_command(OUTPUT "${ATHENEA_SHADER_OUTPUT_DIR}/nanovdb/PNanoVDB.h"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ATHENEA_PNANOVDB_H}"
-                "${ATHENEA_SHADER_OUTPUT_DIR}/nanovdb/PNanoVDB.h"
-        DEPENDS "${ATHENEA_PNANOVDB_H}" VERBATIM)
+        COMMAND ${CMAKE_COMMAND} -DIN=${ATHENEA_PNANOVDB_H} -DOUT=${ATHENEA_SHADER_OUTPUT_DIR}/nanovdb/PNanoVDB.h
+                -P "${CMAKE_CURRENT_LIST_DIR}/PatchPNanoVDB.cmake"
+        DEPENDS "${ATHENEA_PNANOVDB_H}" "${CMAKE_CURRENT_LIST_DIR}/PatchPNanoVDB.cmake" VERBATIM)
     add_custom_target(athenea_nanovdb_header ALL DEPENDS "${ATHENEA_SHADER_OUTPUT_DIR}/nanovdb/PNanoVDB.h")
     if(TARGET athenea_shaders_copy)
         add_dependencies(athenea_shaders_copy athenea_nanovdb_header)

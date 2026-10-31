@@ -305,6 +305,15 @@ Shaders are compiled at run time, not embedded, so a change to an existing
 at all. A **new** shader file needs a CMake re-configure, because the glob
 that copies them is `CONFIGURE_DEPENDS`.
 
+One file is not copied as it is: `nanovdb/PNanoVDB.h`, which the volume
+shaders include, comes from the USD prefix through
+`cmake/PatchPNanoVDB.cmake`, which reads its table of grid type constants
+through a function indexed by literals only. Indexed dynamically, Slang
+leaves that table as an array on a Metal thread's stack, and kernels that
+kept several drew wrong values. A `slangc` check against the prefix's own
+header therefore does not compile what the engine compiles; point `-I` at
+`build/<preset>/shaders` for that.
+
 To check that a shader compiles without building anything:
 
 ```sh

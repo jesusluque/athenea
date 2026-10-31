@@ -3664,8 +3664,9 @@ one binary, smoke2):
   Beer-Lambert check and the furnace failed (coverage a tenth of what it
   is), and which medium shader it was paired with decided whether it
   failed -- the same shader passed with the emitters in. No uninitialised
-  value or binding was found in the time this pass had; reverted. **Stage
-  A's +26% over 5d5aede stays open** and the cause is that kernel's size.
+  value or binding was found in the time this pass had; reverted. Stage A's
+  +26% over 5d5aede was not that kernel's size but PNanoVDB's type table
+  (below).
 - *A two-level majorant inside a leaf* (the full one only on the cell's
   last layers, the leaf's own maximum elsewhere): fewer null collisions in
   the leaves before the leaves, but the three pieces a cell cost more than
@@ -3675,8 +3676,55 @@ one binary, smoke2):
   within the run's spread; not worth the kernel.
 - Computing that inner maximum inside `volumeLeafMax`'s loop made smoke2's
   frame lose whole leaves on Metal, whether or not the extra word was
-  written; as a separate kernel it did not. Unexplained, like the above --
-  two signs that this device's compiler is fragile on these kernels.
+  written; as a separate kernel it did not. The cause is found (below).
+
+### The leaves lost on Metal: PNanoVDB's type table on the thread's stack
+
+The second of those failures was a defect, and the cause is found.
+`PNANOVDB_GRID_TYPE_GET` reads a grid type's layout -- strides, offsets,
+value sizes -- from `pnanovdb_grid_type_constants`, a table of 20 rows of
+28 words, indexed by the type. Slang emits that table for Metal as an
+array built in thread memory inside every function that reads it. Where
+the index folds to a literal the array goes; where it does not -- a type
+read from a header, or a constant handed to a function Slang did not
+inline -- the array stays: 2240 bytes of stack a thread, seven of them in
+the path tracer's kernel. `volumeLeafMax` with the inner maximum in its
+loop kept such arrays, and on Metal it wrote wrong leaf maxima, different
+leaves each run (6834, 7070, 6782, 7003, 7560 of smoke2's 13444 on five
+runs), the same kernel exactly right on CUDA (0 of 13444, RTX 3070). A
+maximum too low is a majorant too low, so delta tracking walked through
+those leaves as if they were empty -- the lost leaves.
+
+**The fix is in the copy of the header.** `cmake/PatchPNanoVDB.cmake`
+copies `PNanoVDB.h` from the USD prefix with the macro reading the table
+through `pnanovdb_grid_type_get`, a function that compares the type against
+each of the 19 literals and indexes the table only by them; Slang folds
+each case to a struct of constants and no array is left in any kernel (the
+Metal source of the path tracer's kernel had seven, now none). With it the
+loop's inner maximum gives 0 of 13444 wrong on Metal, twice, where it gave
+7072; the build copies the header through the script, so a `slangc` check
+against the prefix's header is not what the engine compiles
+(`development.md` 3.2). Nothing else in PNanoVDB changes, and the medium
+shaders are as they were.
+
+**And it was the regression.** The arrays cost more than correctness: every
+function holding one built 2240 bytes on the stack each call. Measured as
+above (`athenea stage --frames 5`, median of the last four, 1024 x 1024, 64
+paths in passes of 16, 8 bounces, one binary with each header, the GPU slot
+held for the run, two rounds that agree within 2%):
+
+| ms a frame | 5d5aede | header as shipped, nearest | patched, nearest | as shipped, trilinear | patched, trilinear |
+|---|---|---|---|---|---|
+| smoke2 | 438 | 611 | 331 | 760 | 496 |
+| explosion | 654 | 892 | 424 | 962 | 557 |
+
+Frames at equal seeds are identical (relMSE 0, both filters, 512 x 512);
+device bytes unchanged (28.38 and 27.14 MB). Stage A's regression over
+5d5aede is gone: a volume frame at nearest is now 24% and 35% faster than
+5d5aede's. Trilinear over nearest is +50% and +31% -- the same
+milliseconds as before over a smaller base, so the +25% target is now
+further off in proportion, and the trilinear lookup is what is left to
+make cheaper.
 
 ### Not done
 
