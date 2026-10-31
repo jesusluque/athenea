@@ -1,12 +1,16 @@
 // Copyright (c) 2026 jesus luque.
 //
 // `athenea vdb2splat`: a .vdb volume into volumetric gaussians (proposal
-// 103). The grid is read and laid out as NanoVDB on the host, its
+// 103), and back. The grid is read and laid out as NanoVDB on the host, its
 // leaves laid out as a picture by a kernel (world::VolumeSplats), the fit is
 // the Vdb2Splat effect (plugins/vdb2splat) run through the AOFX host as
 // mesh2splat's is, and what comes out is written as a ParticleField whose
-// gaussians carry the extinction's peak, Cd and temperature. What crosses to
-// the processor is counts and the values a file holds.
+// gaussians carry the extinction's peak, Cd and temperature. `--back` writes
+// the mixture evaluated on the input's own topology as a .vdb the path
+// tracer renders unchanged; `--measure` prints how far that is from the
+// input and how far the mixture's closed-form transmittance is from ratio
+// tracking through the input. What crosses to the processor is counts, the
+// metrics' sums and the values a file holds.
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -29,6 +33,7 @@
 #include "athenea/image/Image.h"
 #include "athenea/io/Vdb.h"
 #include "athenea/usd/Export.h"
+#include "athenea/world/VolumeSet.h"
 #include "athenea/world/VolumeSplats.h"
 
 namespace athenea::cli {
@@ -37,6 +42,7 @@ namespace {
 struct Options {
     std::string              input;
     std::string              output;
+    std::string              back;
     std::string              density = "density";
     std::string              temperature = "temperature";
     std::string              colour = "Cd";
@@ -50,8 +56,12 @@ struct Options {
     uint32_t                 densifyEvery = 20;
     double                   learningRate = 0.1;
     double                   densityScale = 1.0;
+    bool                     measure = false;
+    uint32_t                 rays = 4096;
+    uint32_t                 raySamples = 64;
     std::string              fixture;
     uint32_t                 fixtureSize = 96;
+    uint32_t                 fixtureGaussians = 64;
     double                   voxelSize = 0.05;
     uint32_t                 seed = 1;
     std::vector<std::string> paths;
@@ -82,8 +92,8 @@ Result<gpu::Buffer> wordsOn(gpu::Device& device, const std::vector<uint32_t>& wo
 }
 
 /// A fixture: a box of `size` voxels a side, every voxel active, filled on
-/// the device with a smooth noise ball (`blob`), with a temperature grid
-/// beside its density.
+/// the device -- `mixture` the sum of known random gaussians, `blob` a smooth
+/// noise ball -- with a temperature grid beside its density.
 Result<void> makeFixture(gpu::ShaderLibrary& library, const Options& o) {
     gpu::Device& device = library.device();
     const std::filesystem::path dir = std::filesystem::path(o.input).parent_path();
@@ -103,7 +113,23 @@ Result<void> makeFixture(gpu::ShaderLibrary& library, const Options& o) {
     auto splats = world::VolumeSplats::create(library);
     if (!splats) return std::move(splats).error();
     const float centre = static_cast<float>(s) * 0.5F;
-    {
+    if (o.fixture == "mixture") {
+        gpu::BufferDesc desc;
+        desc.bytes = uint64_t{o.fixtureGaussians} * 64;
+        desc.elementBytes = 16;
+        desc.label = "vdb2splat.mixture";
+        auto mixture = gpu::Buffer::create(device, desc);
+        if (!mixture) return std::move(mixture).error();
+        {
+            gpu::CommandBatch batch(device);
+            splats->randomMixture(batch, *mixture, o.fixtureGaussians,
+                                  {static_cast<float>(s), static_cast<float>(s), static_cast<float>(s)},
+                                  static_cast<float>(s) * 0.2F, 2.0F, static_cast<float>(s) * 0.08F, o.seed);
+            ATHENEA_TRY(batch.submit(true));
+        }
+        ATHENEA_TRY(splats->splatToGrid(*mixture, o.fixtureGaussians, *words, packed.density, packed.leafCount,
+                                        packed.temperature));
+    } else {
         gpu::CommandBatch batch(device);
         splats->fixture(batch, *words, packed, 1, {centre, centre, centre}, static_cast<float>(s) * 0.4F, o.seed);
         ATHENEA_TRY(batch.submit(true));
@@ -244,16 +270,58 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
         cli::out("vdb2splat: wrote %s\n", o.output.c_str());
     }
 
+    if (!o.back.empty() || o.measure) {
+        // The way back, on a copy of the input's own words.
+        auto returned = wordsOn(device, packed.words, "vdb2splat.back");
+        if (!returned) return std::move(returned).error();
+        ATHENEA_TRY(splats->splatToGrid(*gaussians, count, *returned, packed.density, packed.leafCount,
+                                        packed.temperature));
+        if (o.measure) {
+            auto error = splats->compare(*returned, *words, packed.density, packed.leafCount);
+            if (!error) return std::move(error).error();
+            cli::out("vdb2splat: back on the input's topology: relative L2 %.5f, largest difference %.5g\n",
+                     error->relativeL2, error->largest);
+            auto set = world::VolumeSet::create(library);
+            if (!set) return std::move(set).error();
+            world::VolumeInput input;
+            input.grid = &*density;
+            input.densityScale = static_cast<float>(o.densityScale);
+            {
+                gpu::CommandBatch batch(device);
+                ATHENEA_TRY(set->set(batch, std::span<const world::VolumeInput>(&input, 1)));
+                ATHENEA_TRY(batch.submit(true));
+            }
+            auto rays = splats->rays(set->words(), *gaussians, count, density->indexToWorld, o.rays, o.raySamples,
+                                     o.seed, 0.01F);
+            if (!rays) return std::move(rays).error();
+            cli::out("vdb2splat: %u random rays: mean |T_mix - T_ratio| %.5f, %u beyond 5 standard errors + 0.01, "
+                     "largest optical depth %.3f\n",
+                     rays->rays, rays->meanDifference, rays->beyond, rays->largestDepth);
+        }
+        if (!o.back.empty()) {
+            std::vector<uint32_t> back(packed.words.size());
+            ATHENEA_TRY(returned->read(device, 0, back.size() * 4, back.data()));
+            world::PackedGrids out = packed;
+            out.words = std::move(back);
+            std::vector<io::NanoGrid> grids{out.unpack(out.density, *density)};
+            if (temperature) grids.push_back(out.unpack(out.temperature, *temperature));
+            ATHENEA_TRY(platform::writeAtomically(o.back, [&](const std::filesystem::path& partial) {
+                return io::writeNanoGrids(partial, grids);
+            }));
+            cli::out("vdb2splat: wrote %s (the mixture on the input's topology)\n", o.back.c_str());
+        }
+    }
     return ok();
 }
 
 }   // namespace
 
 void addVdb2Splat(CLI::App& app) {
-    auto* cmd = app.add_subcommand("vdb2splat", "a .vdb volume into volumetric gaussians");
+    auto* cmd = app.add_subcommand("vdb2splat", "a .vdb volume into volumetric gaussians, and back onto its grid");
     auto o = std::make_shared<Options>();
     cmd->add_option("input", o->input, "the volume (.vdb); with --make-fixture, the file written")->required();
     cmd->add_option("-o,--output", o->output, "the gaussians, as a ParticleField stage (.usda, .usdc, .usd)");
+    cmd->add_option("--back", o->back, "also write the mixture evaluated on the input's topology (.vdb)");
     cmd->add_option("--density", o->density, "the density grid's name");
     cmd->add_option("--temperature", o->temperature, "the temperature grid's name, read where there is one");
     cmd->add_option("--colour", o->colour, "the Cd grid's name (vec3), read where there is one");
@@ -268,13 +336,17 @@ void addVdb2Splat(CLI::App& app) {
         ->check(CLI::Range(0.01, 1.0));
     cmd->add_option("--densify-every", o->densifyEvery, "iterations between densify-and-prune rounds");
     cmd->add_option("--learning-rate", o->learningRate, "Adam's step");
-    cmd->add_option("--density-scale", o->densityScale, "density to extinction a world unit, for the exported "
-                                                         "opacity");
+    cmd->add_option("--density-scale", o->densityScale, "density to extinction a world unit, for --measure's rays "
+                                                         "and the exported opacity");
+    cmd->add_flag("--measure", o->measure, "print the way back's error and the rays' transmittance error");
+    cmd->add_option("--rays", o->rays, "--measure's random rays");
+    cmd->add_option("--ray-samples", o->raySamples, "ratio-tracking estimates a ray");
     cmd->add_option("--make-fixture", o->fixture, "write a generated volume to `input` and stop")
-        ->check(CLI::IsMember({"blob"}));
+        ->check(CLI::IsMember({"mixture", "blob"}));
     cmd->add_option("--fixture-size", o->fixtureSize, "the fixture's voxels a side");
+    cmd->add_option("--fixture-gaussians", o->fixtureGaussians, "a mixture fixture's gaussians");
     cmd->add_option("--voxel-size", o->voxelSize, "the fixture's voxel, world units");
-    cmd->add_option("--seed", o->seed, "the fixture's seed");
+    cmd->add_option("--seed", o->seed, "the fixture's and the rays' seed");
     cmd->add_option("--path", o->paths, "extra bundle directories (after $AOFX_PLUGIN_PATH)");
     cmd->callback([o] {
         const auto fail = [](const Error& error) {

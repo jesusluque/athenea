@@ -737,12 +737,15 @@ la grid de densidad y, si el fichero las tiene, las grids de temperatura y de
 Cd que la acompañan, como medias ponderadas por la densidad. El ajuste es el
 efecto Vdb2Splat (§7.2) y cada paso suyo corre en el dispositivo; cómo lo
 cuenta development.es.md §6.13. Las gaussianas se escriben como un
-ParticleField (abajo).
+ParticleField (abajo). `--back` escribe la mezcla evaluada en los vóxeles
+activos de la propia grid de densidad de la entrada: un `.vdb` que el path
+tracer dibuja como dibuja cualquier volumen.
 
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
 | `input` | ruta, obligatoria | — | un `.vdb`; con `--make-fixture`, el fichero que se escribe |
 | `-o`, `--output` | ruta | ninguna | `.usda`, `.usdc`, `.usd`; sin ella no se escribe nada |
+| `--back` | ruta | ninguna | un `.vdb` de `density` (y `temperature`, donde la entrada la tiene) sobre la topología de la entrada |
 | `--density` | nombre de grid | `density` | una grid float; el ajuste rechaza un fichero sin ella |
 | `--temperature` | nombre de grid | `temperature` | una grid float, leída donde el fichero la tiene; sus vóxeles se leen en los de la densidad |
 | `--colour` | nombre de grid | `Cd` | una grid vec3, leída donde el fichero la tiene, recortada a [0, 1] y guardada con 8 bits por canal |
@@ -755,11 +758,15 @@ ParticleField (abajo).
 | `--init-fraction` | de 0,01 a 1 | `0.6` | la parte del presupuesto que tiene el primer corte; el resto nace donde el residuo es mayor |
 | `--densify-every` | entero | `20` | iteraciones entre rondas de densificar y podar; ninguna después del 70 % de ellas |
 | `--learning-rate` | número | `0.1` | el paso de Adam, en unidades de log para el pico y la diagonal del factor y en desviaciones para el centro; decae diez veces a lo largo de la ejecución |
-| `--density-scale` | número | `1` | de densidad a extinción por unidad del mundo: la opacidad que se escribe para un visor estándar |
-| `--make-fixture` | `blob` | ninguno | escribe `input` y termina: una caja de `--fixture-size` vóxeles de lado, todos activos, rellena en el dispositivo con una bola de ruido suave, con una grid de temperatura |
+| `--density-scale` | número | `1` | de densidad a extinción por unidad del mundo: para los rayos de `--measure` y la opacidad que se escribe para un visor estándar |
+| `--measure` | flag | apagado | imprime el error L2 relativo de la vuelta sobre los vóxeles activos y su mayor diferencia, y la transmitancia en forma cerrada frente al ratio tracking a través de la entrada a lo largo de `--rays` segmentos aleatorios |
+| `--rays` | entero | `4096` | `--measure` |
+| `--ray-samples` | entero | `64` | estimaciones de ratio tracking por rayo |
+| `--make-fixture` | `mixture` \| `blob` | ninguno | escribe `input` y termina: una caja de `--fixture-size` vóxeles de lado, todos activos, rellena en el dispositivo con una mezcla conocida de `--fixture-gaussians` gaussianas aleatorias o con una bola de ruido suave, con una grid de temperatura |
 | `--fixture-size` | entero | `96` | vóxeles de lado |
+| `--fixture-gaussians` | entero | `64` | `mixture` |
 | `--voxel-size` | número | `0.05` | el vóxel del fixture, en unidades del mundo |
-| `--seed` | entero | `1` | el del fixture |
+| `--seed` | entero | `1` | el del fixture y el de los rayos |
 | `--path` | directorio ‹repetible› | ninguno | directorios de bundles que se buscan después de `$AOFX_PLUGIN_PATH` |
 
 Lo que guarda el stage en su `UsdVolParticleField3DGaussianSplat`, además de
@@ -782,7 +789,7 @@ bloques más gruesos que tiene el volumen ya son más que `--init-fraction` de
 él.
 
 ```sh
-athenea vdb2splat smoke.vdb -n 50000 -o smoke_gs.usdc
+athenea vdb2splat smoke.vdb -n 50000 -o smoke_gs.usdc --back smoke_back.vdb --measure
 athenea vdb2splat blob.vdb --make-fixture blob --fixture-size 128
 ```
 
@@ -2617,8 +2624,8 @@ imagen de OpenUSD, así que lo que lea esa compilación.
 (versiones 3 y 4; la 4 necesita zstd), `.glb` de glTF con
 `KHR_gaussian_splatting`, y USD (§2.8.1). `athenea vdb2splat` escribe USD (§2.8.3).
 
-**Volúmenes que se escriben.** `athenea vdb2splat --make-fixture` escribe
-grids float `.vdb`, volúmenes de niebla, por OpenVDB.
+**Volúmenes que se escriben.** `athenea vdb2splat --back` y `--make-fixture`
+escriben grids float `.vdb`, volúmenes de niebla, por OpenVDB.
 
 **Imágenes que se escriben.** OpenEXR, lineal premultiplicado, con la fila de
 abajo primero dentro del motor y escrito con la de arriba primero como quiere
@@ -2638,7 +2645,7 @@ solo se escribe como la vista previa de MCP.
 | `athenea view` | nada, o un EXR con `--snapshot` |
 | `athenea live` | un EXR por frame, numerado, cada uno con su timecode |
 | `athenea mesh2splat` | una escena USD con la nube |
-| `athenea vdb2splat` | una escena USD con las gaussianas; con `--make-fixture`, un `.vdb` y nada más |
+| `athenea vdb2splat` | una escena USD con las gaussianas; con `--back`, un `.vdb`; con `--make-fixture`, un `.vdb` y nada más |
 | `athenea flatten` | ficheros `.ply`, `.spz`, `.glb` y USD de las nubes aplanadas, la escena compuesta junto a ellos, y con `--validate` lo que escribe `mesh2splat --validate` |
 | `athenea lightmap` | `lightmap_<atlas>.exr` (half, lineal, la fila de abajo primero) y `lightmapped.usda`, que pone el original como sublayer; sus materiales van bajo el prim raíz que comparten todas las mallas horneadas (`/<raíz>/AtheneaLightmaps`), así que referenciar ese prim los conserva |
 | `athenea visibility` | el fichero de la nube, editado en el sitio o copiado |

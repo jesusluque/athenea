@@ -16450,3 +16450,10 @@ residual threshold, a compaction's total, and the metrics' sums.
 (half), `:albedo` (color3h), `:temperature` (half), `primvars:athenea:splat:volume`. `radiance:base`'s
 opacity is what a standard viewer draws, 1 − exp(−σ √(2π) s) through the middle. The compact layout of the
 proposal (23–39 B a gaussian, fp16 relative to the leaf, smallest-three rotation) is 104's.
+
+**The way back** (`VolumeSplats::splatToGrid`) evaluates the mixture at the active voxels of the input's own
+topology and writes the values in place; `--back` writes it as a `.vdb` (`io::writeNanoGrids`, NanoVDB to
+OpenVDB). A topology of its own -- the gaussians' boxes as bricks -- is not built. `--measure` prints the way back's relative L2 error
+over the active voxels and, along random segments of the volume's box, the mixture's closed-form
+transmittance (an erf a gaussian) against the mean of ratio-tracking estimates through the input
+(`VolumeSplats::rays`, medium.slang's own `mediumTransmittance`).

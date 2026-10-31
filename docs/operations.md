@@ -717,12 +717,15 @@ with each G_i of peak 1 (proposal 103): the density grid's extinction, and
 the temperature and Cd grids beside it, if the file holds them, as
 density-weighted means. The fit is the Vdb2Splat effect (§7.2) and every step
 of it runs on the device; development.md §6.13 says how. The gaussians are
-written as a ParticleField (below).
+written as a ParticleField (below). `--back` writes the mixture evaluated at
+the active voxels of the input's own density grid: a `.vdb` the path tracer
+renders as it renders any volume.
 
 | Option | Value | Default | Notes |
 |---|---|---|---|
 | `input` | path, required | — | a `.vdb`; with `--make-fixture`, the file written |
 | `-o`, `--output` | path | none | `.usda`, `.usdc`, `.usd`; nothing is written without it |
+| `--back` | path | none | a `.vdb` of `density` (and `temperature`, where the input has one) on the input's topology |
 | `--density` | grid name | `density` | a float grid; the fit refuses a file without it |
 | `--temperature` | grid name | `temperature` | a float grid, read where the file has it; its voxels are read at the density's |
 | `--colour` | grid name | `Cd` | a vec3 grid, read where the file has it, clamped to [0, 1] and kept as 8 bits a channel |
@@ -735,11 +738,15 @@ written as a ParticleField (below).
 | `--init-fraction` | 0.01 to 1 | `0.6` | the share of the budget the first cut holds; the rest is born where the residual is largest |
 | `--densify-every` | integer | `20` | iterations between densify-and-prune rounds; none after 70 % of them |
 | `--learning-rate` | number | `0.1` | Adam's step, in log units for the peak and the factor's diagonal and in deviations for the centre; it decays tenfold over the run |
-| `--density-scale` | number | `1` | density to extinction a world unit: the opacity written for a standard viewer |
-| `--make-fixture` | `blob` | none | writes `input` and stops: a box of `--fixture-size` voxels a side, every voxel active, filled on the device with a smooth noise ball, with a temperature grid |
+| `--density-scale` | number | `1` | density to extinction a world unit: for `--measure`'s rays and the opacity written for a standard viewer |
+| `--measure` | flag | off | prints the way back's relative L2 error over the active voxels and its largest difference, and the closed-form transmittance against ratio tracking through the input along `--rays` random segments |
+| `--rays` | integer | `4096` | `--measure` |
+| `--ray-samples` | integer | `64` | ratio-tracking estimates a ray |
+| `--make-fixture` | `mixture` \| `blob` | none | writes `input` and stops: a box of `--fixture-size` voxels a side, every voxel active, filled on the device with a known mixture of `--fixture-gaussians` random gaussians or a smooth noise ball, with a temperature grid |
 | `--fixture-size` | integer | `96` | voxels a side |
+| `--fixture-gaussians` | integer | `64` | `mixture` |
 | `--voxel-size` | number | `0.05` | the fixture's voxel, world units |
-| `--seed` | integer | `1` | the fixture's |
+| `--seed` | integer | `1` | the fixture's and the rays' |
 | `--path` | directory ‹repeatable› | none | bundle directories searched after `$AOFX_PLUGIN_PATH` |
 
 What the stage holds, on its `UsdVolParticleField3DGaussianSplat`, besides
@@ -761,7 +768,7 @@ fewer are written where the coarsest blocks the volume holds are already
 more than `--init-fraction` of it.
 
 ```sh
-athenea vdb2splat smoke.vdb -n 50000 -o smoke_gs.usdc
+athenea vdb2splat smoke.vdb -n 50000 -o smoke_gs.usdc --back smoke_back.vdb --measure
 athenea vdb2splat blob.vdb --make-fixture blob --fixture-size 128
 ```
 
@@ -2540,7 +2547,7 @@ so whatever that build reads.
 and 4; 4 needs zstd), glTF `.glb` with `KHR_gaussian_splatting`, and USD
 (§2.8.1). `athenea vdb2splat` writes USD (§2.8.3).
 
-**Volumes written.** `athenea vdb2splat --make-fixture` writes
+**Volumes written.** `athenea vdb2splat --back` and `--make-fixture` write
 `.vdb` float grids, fog volumes, through OpenVDB.
 
 **Images written.** OpenEXR, linear premultiplied, bottom row first inside the
@@ -2560,7 +2567,7 @@ Cryptomatte layer is always float. PNG is written only as the MCP preview.
 | `athenea view` | nothing, or one EXR with `--snapshot` |
 | `athenea live` | one EXR a frame, numbered, each with its timecode |
 | `athenea mesh2splat` | a USD stage holding the cloud |
-| `athenea vdb2splat` | a USD stage holding the gaussians; with `--make-fixture`, a `.vdb` and nothing else |
+| `athenea vdb2splat` | a USD stage holding the gaussians; with `--back`, a `.vdb`; with `--make-fixture`, a `.vdb` and nothing else |
 | `athenea flatten` | `.ply`, `.spz`, `.glb` and USD files of the flattened clouds, the composed stage beside them, and with `--validate` what `mesh2splat --validate` writes |
 | `athenea lightmap` | `lightmap_<atlas>.exr` (half, linear, bottom row first) and `lightmapped.usda`, which sublayers the source; its materials are under the one root prim every baked mesh shares (`/<root>/AtheneaLightmaps`), so referencing that prim keeps them |
 | `athenea visibility` | the cloud's file, edited in place or copied |
