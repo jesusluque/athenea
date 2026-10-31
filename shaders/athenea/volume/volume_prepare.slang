@@ -31,7 +31,7 @@ ConstantBuffer<PrepareParams> params;
 StructuredBuffer<float4>     instanceRows;   // instances: 3 rows each, the instance's transform before the prototype's
 
 static const uint kHeaderWords = 8;
-static const uint kRecordWords = 32;
+static const uint kRecordWords = 40;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]

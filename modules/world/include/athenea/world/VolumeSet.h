@@ -45,6 +45,9 @@ struct VolumeInput {
     /// so a medium of albedo one emits nothing and one of albedo zero glows
     /// `emission` where it is opaque (a Material's `uniform_edf`).
     std::array<float, 3> emission{0.0F, 0.0F, 0.0F};
+    /// The light linking categories it is in (a bit each, as a mesh
+    /// instance's): a linked light lights it only where its bit is set.
+    uint64_t             categories = 0;
 };
 
 /// Where one grid sits in the words, for a kernel that reads it.
@@ -77,7 +80,7 @@ public:
     [[nodiscard]] const gpu::Buffer& majorant() const noexcept { return majorant_; }
 
     static constexpr uint32_t kHeaderWords = 8;
-    static constexpr uint32_t kRecordWords = 32;
+    static constexpr uint32_t kRecordWords = 40;
 
 private:
     gpu::Device*                     device_ = nullptr;

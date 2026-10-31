@@ -1055,11 +1055,12 @@ StructuredBuffer<uint> volumeWords;   // world::VolumeSet's words: header, recor
 /// The first real collision along the ray among the frame's volumes before
 /// tMax, if any: each volume's own free flight, the nearest of them.
 bool mediumScatterAny(float3 origin, float3 direction, float tMin, float tMax, inout uint rng, out float t,
-                      out float3 albedo, out float g, out float3 emission) {
+                      out float3 albedo, out float g, out float3 emission, out uint2 categories) {
     t = tMax;
     albedo = float3(1.0);
     g = 0.0;
     emission = float3(0.0);
+    categories = uint2(0u);
     bool any = false;
     const uint count = volumeCount(volumeWords);
     for (uint v = 0; v < count; ++v) {
@@ -1070,6 +1071,7 @@ bool mediumScatterAny(float3 origin, float3 direction, float tMin, float tMax, i
             albedo = r.albedo;
             g = r.g;
             emission = r.emission;
+            categories = uint2(r.categoriesLo, r.categoriesHi);
             any = true;
         }
     }
@@ -1093,11 +1095,12 @@ StructuredBuffer<float>        emissiveTable;
 uniform uint                   emissiveOn;
 float emissiveWord(uint i) { return emissiveTable[i]; }
 bool mediumScatterAny(float3 origin, float3 direction, float tMin, float tMax, inout uint rng, out float t,
-                      out float3 albedo, out float g, out float3 emission) {
+                      out float3 albedo, out float g, out float3 emission, out uint2 categories) {
     t = tMax;
     albedo = float3(1.0);
     g = 0.0;
     emission = float3(0.0);
+    categories = uint2(0u);
     return false;
 }
 float mediumTransmittanceAny(float3 origin, float3 direction, float tMin, float tMax, inout uint rng) { return 1.0; }
@@ -1966,9 +1969,10 @@ float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crosse
 /// The same at a point inside a medium: the phase function for the lobes,
 /// no surface to offset from, the lights chosen by power -- in what is left
 /// of the choice after the emitting triangles' `share` (the caller takes
-/// those, as at a surface).
-float3 gatherLightMedium(float3 p, float3 wo, float g, float share, uint2 pixel, uint sample, uint bounce, uint mask,
-                         out uint group) {
+/// those, as at a surface). A linked light lights the medium only where the
+/// volume is in its categories, as it lights a surface.
+float3 gatherLightMedium(float3 p, float3 wo, float g, float share, uint2 categories, uint2 pixel, uint sample,
+                         uint bounce, uint mask, out uint group) {
     group = 0;
     if (lightCount == 0) {
         return float3(0.0);
@@ -1980,6 +1984,9 @@ float3 gatherLightMedium(float3 p, float3 wo, float g, float share, uint2 pixel,
     }
     const LightRecord light = lightFor(choice.index, pixel, sample);
     group = light.group;
+    if (!lightLinked(light.lightCategory, categories.x, categories.y)) {
+        return float3(0.0);
+    }
     LightSample ls;
     if (light.kind == kLightDome && !domeHasImage(light)) {
         // A point in a medium faces no hemisphere: the dome's cosine
@@ -2241,8 +2248,9 @@ R"(    bool firstShaded = false;
                 float3 albedo;
                 float g;
                 float3 glow;
+                uint2 mediumCategories;
                 const float tMin = bounce == 0 && found.valid && !ownRays ? camera.nearZ : 0.0;
-                if (kVolumes && mediumScatterAny(o, d, tMin, tHit, rng, tS, albedo, g, glow)) {
+                if (kVolumes && mediumScatterAny(o, d, tMin, tHit, rng, tS, albedo, g, glow, mediumCategories)) {
                     const float3 p = o + d * tS;
                     if (!vertexSeen) {
                         vertexSeen = true;
@@ -2297,7 +2305,7 @@ R"(    bool firstShaded = false;
                             }
                         }
                     } else {
-                        const float3 direct = gatherLightMedium(p, -d, g, share, tid, sample, bounce, mask, group);
+                        const float3 direct = gatherLightMedium(p, -d, g, share, mediumCategories, tid, sample, bounce, mask, group);
                         carried += throughput * direct;
                         if (kLightGroups && path.groupsIndirect == 0u) {
                             if (path.groupsIndirect == 0u) addGroup(groups, group, throughput * direct * opacity);

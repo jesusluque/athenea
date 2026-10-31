@@ -88,6 +88,10 @@ void HdAtheneaVolume::Sync(HdSceneDelegate* delegate, HdRenderParam* renderParam
         arrays.albedo = {a[0], a[1], a[2]};
     }
     arrays.g = floatOf(delegate->Get(id, _atheneaVolumeTokens->anisotropy), 0.0F);
+    // What the light linking scene index resolved its collections into, as
+    // a mesh's: a linked light lights the medium only where it is included.
+    const VtArray<TfToken> categories = delegate->GetCategories(id);
+    arrays.categories.assign(categories.begin(), categories.end());
     _UpdateVisibility(delegate, dirtyBits);
     arrays.visible = IsVisible() && HdAtheneaInstancersVisible(delegate, GetInstancerId());
     engine->setVolume(id, std::move(arrays));

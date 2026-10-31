@@ -1,7 +1,8 @@
 // Copyright (c) 2026 jesus luque.
 //
 // VOLUMES THROUGH HYDRA (M9), past the first medium: the grid cache held to
-// its budget over an animated sequence, and instanced volumes. Fixtures are written by
+// its budget over an animated sequence, instanced volumes, and light
+// linking in a medium. Fixtures are written by
 // io::writeVdbBoxes; frames are compared on the device, and what the host
 // reads back are counters.
 #include "../gpu/GpuTest.h"
@@ -229,4 +230,91 @@ TEST_CASE("a PointInstancer of a volume draws its instances where two authored v
     CHECK(same->p99 <= 1);
     CHECK(same->over2 < 40);
     CHECK(differs->over2 > 2000);
+}
+
+// LIGHT LINKING IN A MEDIUM: a scattering volume alone, lit by one sun.
+// Linked so that its collection leaves the volume out, the sun lights none
+// of the medium and the frame is black; linked so that it includes the
+// volume, it lights it as an unlinked sun does.
+TEST_CASE("a light whose link leaves a volume out lights none of its medium, and one that includes it lights it",
+          "[usd][gpu][volume][lights][linking]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs ray queries");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const fs::path vdb = scratch("linked_box.vdb");
+    const io::VdbBox box{{0, 0, 0}, {32, 32, 32}, 0.5F};
+    REQUIRE(io::writeVdbBoxes(vdb, "density", 0.1, std::span<const io::VdbBox>(&box, 1)));
+    // link: "" unlinked, "excludes" or "includes" the volume.
+    const auto stage = [&](const std::string& name, const std::string& link) {
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def DistantLight \"Sun\"" << (link.empty() ? "" : " (\n    prepend apiSchemas = [\"CollectionAPI:lightLink\"]\n)")
+            << "\n{\n    float inputs:intensity = 3\n    float inputs:angle = 0\n";
+        if (link == "excludes") {
+            out << "    uniform bool collection:lightLink:includeRoot = 1\n"
+                   "    rel collection:lightLink:excludes = </Fog>\n";
+        } else if (link == "includes") {
+            out << "    uniform bool collection:lightLink:includeRoot = 0\n"
+                   "    rel collection:lightLink:includes = </Fog>\n";
+        }
+        out << "}\n"
+               "def Volume \"Fog\"\n{\n"
+               "    double3 xformOp:translate = (-1.6, -1.6, -5)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+               "    rel field:density = </Fog/density>\n"
+               "    float primvars:athenea:densityScale = 1\n"
+               "    color3f primvars:athenea:albedo = (1, 1, 1)\n"
+               "    def OpenVDBAsset \"density\"\n    {\n"
+               "        asset filePath = @" << vdb.string() << "@\n"
+               "        token fieldName = \"density\"\n    }\n}\n";
+        return path;
+    };
+    const uint32_t w = 81, h = 61;
+    const auto frame = [&](const fs::path& path) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setPathSamples(64);
+        (*renderer)->setPathBounces(0);
+        (*renderer)->setPathTotal(64);
+        auto image = (*renderer)->render(frontCamera(), 1.0, w, h, "rt");
+        if (!image) FAIL(image.error().toString());
+        // Opacity aside: a medium's collision is opaque whatever lights it,
+        // so the colour alone is what the link decides.
+        std::vector<float> rgb = image->rgba;
+        for (size_t i = 3; i < rgb.size(); i += 4) rgb[i] = 1.0F;
+        usd::StageImage opaque = *image;
+        opaque.rgba = std::move(rgb);
+        return upload(*gpu, opaque);
+    };
+    gpu::Buffer unlinked = frame(stage("linked_none.usda", ""));
+    gpu::Buffer excluded = frame(stage("linked_excludes.usda", "excludes"));
+    gpu::Buffer included = frame(stage("linked_includes.usda", "includes"));
+    std::vector<float> zeros(size_t{w} * h * 4, 0.0F);
+    for (size_t i = 3; i < zeros.size(); i += 4) zeros[i] = 1.0F;
+    gpu::BufferDesc desc;
+    desc.bytes = zeros.size() * sizeof(float);
+    desc.elementBytes = 16;
+    auto black = gpu::Buffer::create(*gpu->device, desc, zeros.data());
+    REQUIRE(black);
+    auto lit = render::compareImages(*gpu->library, unlinked, *black, w, h);
+    auto dark = render::compareImages(*gpu->library, excluded, *black, w, h);
+    auto same = render::compareImages(*gpu->library, included, unlinked, w, h);
+    REQUIRE(lit);
+    REQUIRE(dark);
+    REQUIRE(same);
+    std::printf("  unlinked sun: %llu pixels over 2 against black; excluded: %llu (max %u); included against "
+                "unlinked: p99 %u, %llu over 2\n",
+                static_cast<unsigned long long>(lit->over2), static_cast<unsigned long long>(dark->over2), dark->max,
+                same->p99, static_cast<unsigned long long>(same->over2));
+    CHECK(lit->over2 > 1000);
+    CHECK(dark->max == 0);
+    CHECK(same->p99 <= 1);
+    CHECK(same->over2 < 20);
 }

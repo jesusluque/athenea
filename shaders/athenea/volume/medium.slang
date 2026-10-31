@@ -16,7 +16,7 @@ module medium;
 #include "nanovdb/PNanoVDB.h"
 
 /// A volume as the frame's words hold it (VolumeSet lays it out):
-/// 32 words a record, after the header.
+/// 40 words a record, after the header.
 public struct VolumeRecord {
     public uint     gridWord;      // the grid's word offset
     public uint     leafBase;      // word offset of its leaf maxima (floats)
@@ -30,10 +30,12 @@ public struct VolumeRecord {
     public float    g;             // Henyey-Greenstein asymmetry
     public float    majorant;      // the grid's largest density (a kernel's)
     public float3   emission;      // radiance of the absorbing part (VolumeSet.h)
+    public uint     categoriesLo;  // the light linking categories it is in (lightLinked)
+    public uint     categoriesHi;
 };
 
 public static const uint kVolumeHeaderWords = 8;
-public static const uint kVolumeRecordWords = 32;
+public static const uint kVolumeRecordWords = 40;
 
 public uint volumeCount(StructuredBuffer<uint> words) { return words[0]; }
 
@@ -54,6 +56,8 @@ public VolumeRecord volumeRecord(StructuredBuffer<uint> words, uint index) {
     r.g = asfloat(words[b + 26]);
     r.majorant = asfloat(words[b + 27]);
     r.emission = float3(asfloat(words[b + 28]), asfloat(words[b + 29]), asfloat(words[b + 30]));
+    r.categoriesLo = words[b + 33];
+    r.categoriesHi = words[b + 34];
     return r;
 }
 

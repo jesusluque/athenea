@@ -3388,6 +3388,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                             input.instanceCount = vc.chain.count;
                         }
                         input.densityScale = volume.densityScale;
+                        input.categories = categoryMask(volume.categories);
                         input.albedo = volume.albedo;
                         input.g = volume.g;
                         // THE MATERIAL'S WORD, WHERE THE VOLUME BINDS ONE. The

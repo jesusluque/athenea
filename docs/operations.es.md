@@ -1956,7 +1956,10 @@ vuelve a leer. Un `filePath` muestreado en el tiempo, un fichero por frame,
 guarda lo que permite el presupuesto y no todos los frames mostrados. El
 dispositivo guarda solo las rejillas del frame. Un Volume bajo un
 `PointInstancer` o una instancia nativa se dibuja en cada instancia, y todas
-leen la misma rejilla, dispuesta una sola vez.
+leen la misma rejilla, dispuesta una sola vez. El light linking vale en un
+medio como en una superficie: una luz cuya `collection:lightLink` deja fuera
+un Volume no ilumina nada de su medio; su sombra no se enlaza (un volumen
+atenúa toda luz que proyecta sombras).
 
 **Grupos de luces**, que todavía no declara ningún schema. Las lámparas de una
 nube son un primvar por grupo en su field, y sus grupos y estados son

@@ -118,6 +118,8 @@ Result<void> VolumeSet::set(gpu::CommandBatch& batch, std::span<const VolumeInpu
             words[b + 28] = bitsOf(in.emission[0]);
             words[b + 29] = bitsOf(in.emission[1]);
             words[b + 30] = bitsOf(in.emission[2]);
+            words[b + 33] = static_cast<uint32_t>(in.categories & 0xFFFFFFFFu);
+            words[b + 34] = static_cast<uint32_t>(in.categories >> 32);
         }
     }
     auto madeWords = gpu::Buffer::fromSpan<uint32_t>(*device_, words, "volumes.words");

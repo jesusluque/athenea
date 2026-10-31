@@ -164,6 +164,8 @@ struct VolumeArrays {
     /// The instancers above it, innermost first (as a mesh's): one record
     /// an instance, every one reading the same grid.
     std::vector<InstancerLink> instancing;
+    /// What the light linking scene index resolved its collections into.
+    std::vector<pxr::TfToken> categories;
 };
 
 struct PointsArrays {

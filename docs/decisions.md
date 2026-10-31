@@ -3289,8 +3289,26 @@ its records. A collision walks every record, so a thousand instances cost a
 thousand walks a ray; no structure over the instances yet.
 
 **Checked** (`[usd][volume][instancing]`): two absorbing boxes as a
-PointInstancer's instances against the same two authored as Volumes where
-it puts them, over a sun-lit plane: the same frame, p99 0 and max 0, and 17888 of the 19481 pixels more than 2 off the frame without them.
+PointInstancer's instances against the same two authored as Volumes where it
+puts them, over a sun-lit plane: the same frame, p99 0 and max 0, and 17888
+of the 19481 pixels more than 2 off the frame without them.
+
+### Light linking in a medium
+
+A collision in a medium was lit by every light, whatever its
+`collection:lightLink` said. `HdAtheneaVolume` now reads its categories (the
+light linking scene index's, as a mesh's), the engine turns them into the
+same 64-bit mask a mesh instance carries, and the record carries it (words
+33 and 34; the record grew to 40 words, word 31 and 32 left for the flags
+and a level set's width). `mediumScatterAny` hands back the colliding
+record's mask, and `gatherLightMedium` drops a light whose category the
+volume is not in, as `gatherLight` does at a surface. Shadow linking is not
+read for media: a volume dims every light that casts shadows.
+
+**Checked** (`[usd][volume][linking]`): a scattering box alone under one
+sun: unlinked, 4941 pixels lit (over 2 against black); with the sun's link
+excluding the volume, every pixel black (max 0); including it, the unlinked
+frame (p99 0).
 
 ### Not done
 
@@ -3298,6 +3316,8 @@ it puts them, over a sun-lit plane: the same frame, p99 0 and max 0, and 17888 o
 - Only float grids, one field a volume (density); no temperature, emission
   or colour fields, no `UsdVol` material networks -- the medium's
   parameters are the three primvars.
+- Shadow linking does not apply to media: a volume dims every light that
+  casts shadows, whatever the light's `shadowLink` says.
 - Light groups do not collect light scattered in a medium differently from
   a surface's: a collision's light goes to its light's group, as a
   surface's does.

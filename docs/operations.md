@@ -1897,6 +1897,9 @@ again is read again. A `filePath` sampled in time, a file a frame, holds
 what the budget allows rather than every frame shown. The device holds the
 frame's grids alone. A Volume under a `PointInstancer` or a native instance
 is drawn at every instance, each reading the same grid, laid out once.
+Light linking holds in a medium as on a surface: a light whose
+`collection:lightLink` leaves a Volume out lights none of its medium; its
+shadow is not linked (a volume dims every light that casts shadows).
 
 **Light groups**, which no schema declares yet. A cloud's lamps are a primvar
 a group on its field, and its groups and states are attributes on Scope prims
