@@ -36,7 +36,7 @@ float floatOf(VtValue const& value, float fallback) {
 HdDirtyBits HdAtheneaVolume::GetInitialDirtyBitsMask() const {
     return HdChangeTracker::Clean | HdChangeTracker::InitRepr | HdChangeTracker::DirtyPrimvar |
            HdChangeTracker::DirtyTransform | HdChangeTracker::DirtyVisibility | HdChangeTracker::DirtyVolumeField |
-           HdChangeTracker::DirtyMaterialId;
+           HdChangeTracker::DirtyMaterialId | HdChangeTracker::DirtyInstancer | HdChangeTracker::DirtyInstanceIndex;
 }
 
 void HdAtheneaVolume::Sync(HdSceneDelegate* delegate, HdRenderParam* renderParam, HdDirtyBits* dirtyBits,
@@ -48,8 +48,25 @@ void HdAtheneaVolume::Sync(HdSceneDelegate* delegate, HdRenderParam* renderParam
         return;
     }
     athenea::usd::VolumeArrays arrays;
-    // The medium is the field named density, else the first field.
+    // The chain of instancers above it, innermost first, with the elements
+    // each level takes of the one above, as a mesh's: one record an
+    // instance, every one reading the same grid.
+    _UpdateInstancer(delegate, dirtyBits);
+    HdInstancer::_SyncInstancerAndParents(delegate->GetRenderIndex(), GetInstancerId());
+    {
+        SdfPath child = id;
+        SdfPath instancer = GetInstancerId();
+        while (!instancer.IsEmpty()) {
+            arrays.instancing.push_back({instancer, delegate->GetInstanceIndices(instancer, child)});
+            HdInstancer* level = delegate->GetRenderIndex().GetInstancer(instancer);
+            child = instancer;
+            instancer = level != nullptr ? level->GetParentId() : SdfPath();
+        }
+    }
+    // The medium is the field named density, else the first field; every
+    // field is kept by name.
     for (const HdVolumeFieldDescriptor& field : delegate->GetVolumeFieldDescriptors(id)) {
+        arrays.fields.emplace_back(field.fieldName.GetString(), field.fieldId);
         if (arrays.field.IsEmpty() || field.fieldName == _atheneaVolumeTokens->density) {
             arrays.field = field.fieldId;
             arrays.fieldName = field.fieldName.GetString();
@@ -73,6 +90,10 @@ void HdAtheneaVolume::Sync(HdSceneDelegate* delegate, HdRenderParam* renderParam
         arrays.albedo = {a[0], a[1], a[2]};
     }
     arrays.g = floatOf(delegate->Get(id, _atheneaVolumeTokens->anisotropy), 0.0F);
+    // What the light linking scene index resolved its collections into, as
+    // a mesh's: a linked light lights the medium only where it is included.
+    const VtArray<TfToken> categories = delegate->GetCategories(id);
+    arrays.categories.assign(categories.begin(), categories.end());
     _UpdateVisibility(delegate, dirtyBits);
     arrays.visible = IsVisible() && HdAtheneaInstancersVisible(delegate, GetInstancerId());
     engine->setVolume(id, std::move(arrays));
@@ -101,6 +122,20 @@ void HdAtheneaVolumeField::Sync(HdSceneDelegate* delegate, HdRenderParam* render
         } else if (name.IsHolding<std::string>()) {
             asset.gridName = name.UncheckedGet<std::string>();
         }
+        // Which of the file's grids, by UsdVol's own attributes: the index
+        // among those of the name, the type it must hold, and what a
+        // vector's values are.
+        const VtValue index = delegate->Get(id, TfToken("fieldIndex"));
+        if (index.IsHolding<int>()) {
+            asset.fieldIndex = index.UncheckedGet<int>();
+        }
+        const auto tokenOf = [&](const char* key) {
+            const VtValue v = delegate->Get(id, TfToken(key));
+            return v.IsHolding<TfToken>() ? v.UncheckedGet<TfToken>().GetString() : std::string();
+        };
+        asset.dataType = tokenOf("fieldDataType");
+        asset.roleHint = tokenOf("vectorDataRoleHint");
+        asset.field3d = _field3d;
         engine->setVolumeField(id, std::move(asset));
     }
     *dirtyBits = Clean;

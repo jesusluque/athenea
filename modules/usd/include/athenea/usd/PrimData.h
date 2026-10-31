@@ -137,9 +137,18 @@ struct ParticleFieldArrays {
 };
 
 /// A volume's field asset, as UsdVolOpenVDBAsset names it.
+struct InstancerLink {
+    pxr::SdfPath      instancer;
+    pxr::VtArray<int> indices;
+};
+
 struct VolumeFieldAsset {
     std::string path;       ///< the .vdb, resolved
     std::string gridName;   ///< the grid in it; empty: the first
+    int         fieldIndex = -1;   ///< among the grids of that name (UsdVol fieldIndex); -1 unauthored
+    std::string dataType;          ///< UsdVol fieldDataType; empty unauthored
+    std::string roleHint;          ///< UsdVol vectorDataRoleHint; empty unauthored
+    bool        field3d = false;   ///< a Field3DAsset, not an OpenVDBAsset
 };
 
 /// A volume as Sync reads it: which field is its medium, where it stands,
@@ -147,6 +156,9 @@ struct VolumeFieldAsset {
 struct VolumeArrays {
     pxr::SdfPath         field;       ///< the field prim (an openvdbAsset bprim)
     std::string          fieldName;   ///< the volume's name for it ("density")
+    /// Every field it names, as its `field:NAME` relationships do, in
+    /// Hydra's order: (name, field prim).
+    std::vector<std::pair<std::string, pxr::SdfPath>> fields;
     /// The Material bound to the Volume, whose `volume` terminal says how
     /// the medium scatters (MaterialX `volume`, `anisotropic_vdf`); empty,
     /// or one without a volume terminal, leaves the three primvars below.
@@ -156,6 +168,11 @@ struct VolumeArrays {
     std::array<float, 3> albedo{0.8F, 0.8F, 0.8F};
     float                g = 0.0F;
     bool                 visible = true;
+    /// The instancers above it, innermost first (as a mesh's): one record
+    /// an instance, every one reading the same grid.
+    std::vector<InstancerLink> instancing;
+    /// What the light linking scene index resolved its collections into.
+    std::vector<pxr::TfToken> categories;
 };
 
 struct PointsArrays {
@@ -280,11 +297,6 @@ struct MeshTransforms {
     std::optional<render::Mat4> end;
     double                      timeStart = 0.0;   ///< the samples' times, in frames about the frame
     double                      timeEnd = 0.0;
-};
-
-struct InstancerLink {
-    pxr::SdfPath      instancer;
-    pxr::VtArray<int> indices;
 };
 
 /// A coordinate system bound to a prim (UsdShadeCoordSysAPI), by the name a

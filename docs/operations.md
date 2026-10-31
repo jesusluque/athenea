@@ -1656,6 +1656,7 @@ found and does not.
 | `athenea:cloudShadowResolution` | int | `1024` | texels a side, per light |
 | `athenea:cloudShadowTerms` | int | `0` | 1 is the total; 3, 5, 7 add Fourier pairs; 0 lets what receives decide |
 | `athenea:cloudShadowDensity` | float | `1.0` | multiplier on the cloud's optical depth |
+| `athenea:volumeCacheMB` | int or float, MB | `2048` | rt: the volume grids kept read on the host, least recently drawn out first; the grids the frame draws are kept whatever it says, and 0 keeps those alone (§4.3, *Volumes*) |
 
 Read but not declared:
 
@@ -1956,6 +1957,41 @@ bound to say it.
 A Material with a `volume` terminal is the standard way to say the same
 thing, and where one is bound it wins.
 
+**Volumes** are path traced (`rt`); the raster draws none. Each grid a
+field names is read once per file and grid name and kept read on the host,
+in a cache of `athenea:volumeCacheMB` (default 2048 MB): past it, the grids
+the frame does not draw leave, least recently drawn first, and one drawn
+again is read again. A `filePath` sampled in time, a file a frame, holds
+what the budget allows rather than every frame shown. The device holds the
+frame's grids alone. A Volume under a `PointInstancer` or a native instance
+is drawn at every instance, each reading the same grid, laid out once.
+Light linking holds in a medium as on a surface: a light whose
+`collection:lightLink` leaves a Volume out lights none of its medium; its
+shadow is not linked (a volume dims every light that casts shadows). A
+level set (an OpenVDB grid of class `level set`, such as a surface converted
+to a volume) is read as a fog: density 0 outside, 1 from half the band's
+width inside on, a linear ramp between -- `clamp(-distance / halfWidth, 0,
+1)`, the half width being the grid's background value -- with its interior
+filled. A grid is read in its own value type: float (also one the file
+stores as half floats), double, int32, vec3f, vec3d and mask. Read as a
+density, a vector grid is its length, an int grid its value and a mask 1
+where active. Bool, int64 and integer vector grids are refused with an error
+naming the type, and a level set must be of floats.
+An `OpenVDBAsset`'s `fieldName` names the grids it reads from, in the
+file's order; `fieldIndex` counts among the grids of that name, from 0;
+`fieldDataType` (half, float, double, int, half3, float3, double3, mask)
+must agree with the grid the index picks, or, without an index, picks the
+first of the name that holds it; `vectorDataRoleHint` (None, Point, Normal,
+Vector, Color) says what a vector field's values are, over the file's own
+vector type. A field that names no grid of the file, or one of another
+type, is refused with the reason, said once, and its Volume is not drawn
+if it is the density. A `Field3DAsset` is taken, and refused when read --
+said once -- since no build of this engine reads Field3D yet. A Volume
+keeps every field it names, up to eight (the density first, then in
+Hydra's order; one past the eighth is said and not read), each by its
+name on the device; the medium is shaded by its density alone, and the
+other fields wait for the shading that reads them.
+
 **Light groups**, which no schema declares yet. A cloud's lamps are a primvar
 a group on its field, and its groups and states are attributes on Scope prims
 -- children of a `LightGroups` and of a `LightStates` Scope anywhere on the
@@ -2069,7 +2105,9 @@ by the material's rays. The clusters are made again when the meshes, their
 materials or which of them emit change -- a stage loading, a material
 edited -- and only moved and reweighed while a frame plays. Off, the path
 tracer draws its emitting triangles from a flat table by power, as before,
-and the raster shows their glow alone.
+and the raster shows their glow alone. Either way, in a path traced frame
+with volumes a collision in a medium samples them as a surface does, and
+their light reaches it through the media in between.
 
 The raster lights meshes by them in closed form (`athenea:meshLightSamples`
 0, the default): each 16 x 16 tile of the frame takes a cut of up to 16

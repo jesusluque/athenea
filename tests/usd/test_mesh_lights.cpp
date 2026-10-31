@@ -16,12 +16,14 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <span>
 #include <string>
 #include <vector>
 
 #include <pxr/base/plug/registry.h>
 #include <pxr/imaging/hio/image.h>
 
+#include "athenea/io/Vdb.h"
 #include "athenea/render/ReferenceRenderer.h"
 #include "athenea/usd/StageRenderer.h"
 
@@ -282,6 +284,77 @@ TEST_CASE("a MeshLightAPI quad lights a floor as a rect light of its size and in
                     mode.name, same->relMse, same->p99Relative, noise->relMse);
         picture(*gpu, deep, rect, std::string("meshlightapi_") + mode.name + "_vs_rect", 1.0F, 8.0F);
         CHECK(same->relMse < noise->relMse / 32.0);
+    }
+}
+
+// EMITTERS AND MEDIA (M9): a scattering volume under the emitting panel,
+// over the floor. Next event estimation draws the panel's triangles from the
+// medium's collisions as well as from the floor, through the flat table and
+// through the tree, and the frame is a RectLight's of the panel's size and
+// radiance in its place. Before, any volume in the frame turned the
+// emitting triangles off as lights: the panel was found only by the rays
+// the phase and the floor's material sent, and at 32 paths its frame was
+// several times noisier than the rect light's; now it is as noisy.
+TEST_CASE("a volume lit by mesh lights reads as one lit by a rect light of their size, sampled from the medium",
+          "[usd][gpu][mesh][path][meshlights][volume]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const fs::path vdb = scratch("medium_box.vdb");
+    const io::VdbBox box{{0, 0, 0}, {32, 20, 32}, 1.0F};
+    REQUIRE(io::writeVdbBoxes(vdb, "density", 0.1, std::span<const io::VdbBox>(&box, 1)));
+    const std::string volume = std::string("def Volume \"Fog\"\n{\n"
+                                           "    double3 xformOp:translate = (-1.6, 0.2, -4.6)\n"
+                                           "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                                           "    rel field:density = </Fog/density>\n"
+                                           "    float primvars:athenea:densityScale = 0.5\n"
+                                           "    color3f primvars:athenea:albedo = (0.8, 0.8, 0.8)\n"
+                                           "    def OpenVDBAsset \"density\"\n    {\n"
+                                           "        asset filePath = @") +
+                               vdb.string() + "@\n        token fieldName = \"density\"\n    }\n}\n";
+    const fs::path rectPath = scratch("medium_rect.usda");
+    {
+        std::ofstream out(rectPath);
+        out << kFloorAndCamera << volume
+            << "def RectLight \"Panel\"\n{\n"
+               "    float inputs:intensity = 3\n    float inputs:width = 1\n    float inputs:height = 1\n"
+               "    color3f inputs:color = (1, 0.8, 0.6)\n"
+               "    double3 xformOp:translate = (0, 2.5, -3)\n"
+               "    double xformOp:rotateX = -90\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateX\"]\n}\n";
+    }
+    const fs::path panelPath = scratch("medium_panel.usda");
+    {
+        std::ofstream out(panelPath);
+        out << kFloorAndCamera << volume
+            << downQuad("Panel", -0.5F, -3.5F, 0.5F, -2.5F, 2.5F, "\"MaterialBindingAPI\"")
+            << "    rel material:binding = </Materials/Glow>\n}\n"
+            << kGlowMaterial;
+    }
+    const uint32_t w = 64, h = 48;
+    const Frame rectDeep = frameOf(*gpu, rectPath, w, h, "rt", true, 8192);
+    const Frame rect = frameOf(*gpu, rectPath, w, h, "rt", true, 32);
+    auto rectNoise = render::compareHdr(*gpu->library, rect.rgba, rectDeep.rgba, w, h);
+    REQUIRE(rectNoise);
+    for (const bool tree : {false, true}) {
+        const Frame deep = frameOf(*gpu, panelPath, w, h, "rt", tree, 8192);
+        const Frame shallow = frameOf(*gpu, panelPath, w, h, "rt", tree, 32);
+        auto same = render::compareHdr(*gpu->library, deep.rgba, rectDeep.rgba, w, h);
+        auto noise = render::compareHdr(*gpu->library, shallow.rgba, rectDeep.rgba, w, h);
+        REQUIRE(same);
+        REQUIRE(noise);
+        std::printf("  panel in a medium (%s) against a rect light, 8192 paths: relMSE %.3e (p99 relative %.3e); "
+                    "at 32 paths %.3e, the rect light's %.3e\n",
+                    tree ? "tree" : "flat table", same->relMse, same->p99Relative, noise->relMse,
+                    rectNoise->relMse);
+        picture(*gpu, deep, rectDeep, std::string("medium_panel_vs_rect_") + (tree ? "tree" : "flat"), 1.0F, 8.0F);
+        CHECK(same->relMse < noise->relMse / 16.0);
+        CHECK(noise->relMse < 2.0 * rectNoise->relMse);
     }
 }
 

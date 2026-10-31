@@ -16,7 +16,7 @@ module medium;
 #include "nanovdb/PNanoVDB.h"
 
 /// A volume as the frame's words hold it (VolumeSet lays it out):
-/// 32 words a record, after the header.
+/// 168 words a record, after the header: these 40, then the field table.
 public struct VolumeRecord {
     public uint     gridWord;      // the grid's word offset
     public uint     leafBase;      // word offset of its leaf maxima (floats)
@@ -30,10 +30,15 @@ public struct VolumeRecord {
     public float    g;             // Henyey-Greenstein asymmetry
     public float    majorant;      // the grid's largest density (a kernel's)
     public float3   emission;      // radiance of the absorbing part (VolumeSet.h)
+    public uint     flags;         // kVolumeLevelSet: a level set, made a fog (VolumeSet)
+    public float    background;    // a level set's band half width, for its tiles
+    public uint     categoriesLo;  // the light linking categories it is in (lightLinked)
+    public uint     categoriesHi;
 };
 
 public static const uint kVolumeHeaderWords = 8;
-public static const uint kVolumeRecordWords = 32;
+public static const uint kVolumeRecordWords = 168;   // 40, then a table of 8 fields of 16 (fields.slang)
+public static const uint kVolumeLevelSet = 1u;
 
 public uint volumeCount(StructuredBuffer<uint> words) { return words[0]; }
 
@@ -54,20 +59,46 @@ public VolumeRecord volumeRecord(StructuredBuffer<uint> words, uint index) {
     r.g = asfloat(words[b + 26]);
     r.majorant = asfloat(words[b + 27]);
     r.emission = float3(asfloat(words[b + 28]), asfloat(words[b + 29]), asfloat(words[b + 30]));
+    r.flags = words[b + 31];
+    r.background = asfloat(words[b + 32]);
+    r.categoriesLo = words[b + 33];
+    r.categoriesHi = words[b + 34];
     return r;
 }
 
-// --- Random numbers: a counter hashed, advanced a draw at a time ------------
+// --- Random numbers: a stream's key and a counter, hashed together -----------
+//
+// A stream is (key, counter): its key a hash of everything that names it --
+// the pixel, the frame's seed, the path's absolute index, the bounce, the
+// purpose -- and each draw the hash of key and counter, the counter then
+// advanced. Two streams draw the same numbers only if their keys meet, at
+// 32-bit birthday odds. The state used to be one word stepped by an LCG and
+// seeded from a 24-bit float: every stream was a stretch of the LCG's one
+// cycle of 2^32, started at one of 2^24 points, so a pixel's streams ran
+// into one another -- the more draws a path took and the more paths a pixel
+// had, the more of them repeated another's numbers -- and a pixel's error
+// stopped falling with its path count.
 
-uint mediumHash(uint x) {
+public uint mediumHash(uint x) {
     x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
     return x;
 }
 
-/// A uniform in [0, 1) from the state, which advances.
-public float mediumRandom(inout uint state) {
-    state = state * 747796405u + 2891336453u;
-    return float(mediumHash(state) >> 8) / 16777216.0;
+/// The stream a purpose of a path draws from: its key, its counter at 0.
+public uint2 mediumStreamOf(uint pixelIndex, uint seed, uint pathIndex, uint bounce, uint purpose) {
+    uint key = mediumHash(pixelIndex ^ 0x9e3779b9u);
+    key = mediumHash(key + seed);
+    key = mediumHash(key + pathIndex);
+    key = mediumHash(key + bounce);
+    key = mediumHash(key + purpose);
+    return uint2(key, 0u);
+}
+
+/// A uniform in [0, 1) from the stream, which advances.
+public float mediumRandom(inout uint2 state) {
+    const uint word = mediumHash(state.x ^ mediumHash(state.y * 0x9e3779b9u + 0x7f4a7c15u));
+    state.y += 1u;
+    return float(word >> 8) / 16777216.0;
 }
 
 // --- The phase function -------------------------------------------------------
@@ -138,13 +169,25 @@ pnanovdb_grid_handle_t gridOf(VolumeRecord r) {
     return grid;
 }
 
+/// A level set's tile as a fog: its signed distance, as the leaves were made.
+float tileDensity(VolumeRecord r, float sdf) {
+    return saturate(-sdf / max(r.background, 1e-30));
+}
+
 /// The leaf under `ijk` and its majorant (0 where no leaf is): the accessor
 /// caches the leaf, and its address gives its index in the leaf array.
 float leafMajorantAt(StructuredBuffer<uint> words, VolumeRecord r, inout pnanovdb_readaccessor_t acc,
                      pnanovdb_coord_t ijk) {
     const uint dim = pnanovdb_readaccessor_get_dim(PNANOVDB_GRID_TYPE_FLOAT, words, acc, ijk);
     if (dim != 1u) {
-        return 0.0;   // a tile or the background: tiles were voxelised, so nothing is here
+        // A tile or the background: a fog's tiles were voxelised, so nothing
+        // is here. A level set's interior is tiles: inside, density 1.
+        if ((r.flags & kVolumeLevelSet) != 0u) {
+            return tileDensity(r, pnanovdb_read_float(words, pnanovdb_readaccessor_get_value_address(
+                                                                PNANOVDB_GRID_TYPE_FLOAT, words, acc, ijk))) *
+                   r.sigmaScale;
+        }
+        return 0.0;
     }
     const uint leafSize = PNANOVDB_GRID_TYPE_GET(PNANOVDB_GRID_TYPE_FLOAT, leaf_size);
     const uint index = (acc.leaf.address.byte_offset - r.leafWord0 * 4u) / leafSize;
@@ -154,13 +197,19 @@ float leafMajorantAt(StructuredBuffer<uint> words, VolumeRecord r, inout pnanovd
     return asfloat(words[r.leafBase + index]) * r.sigmaScale;
 }
 
-float densityAt(StructuredBuffer<uint> words, inout pnanovdb_readaccessor_t acc, float3 p) {
+float densityAt(StructuredBuffer<uint> words, VolumeRecord r, inout pnanovdb_readaccessor_t acc, float3 p) {
     pnanovdb_coord_t ijk;
     ijk.x = int(floor(p.x));
     ijk.y = int(floor(p.y));
     ijk.z = int(floor(p.z));
     const pnanovdb_address_t at = pnanovdb_readaccessor_get_value_address(PNANOVDB_GRID_TYPE_FLOAT, words, acc, ijk);
-    return pnanovdb_read_float(words, at);
+    const float value = pnanovdb_read_float(words, at);
+    // A level set's leaves were made fog; its tiles and background are
+    // still distances.
+    if ((r.flags & kVolumeLevelSet) != 0u && pnanovdb_readaccessor_get_dim(PNANOVDB_GRID_TYPE_FLOAT, words, acc, ijk) != 1u) {
+        return tileDensity(r, value);
+    }
+    return value;
 }
 
 static const int kMaxLeafSteps = 2048;
@@ -170,7 +219,7 @@ static const int kMaxCollisions = 4096;
 /// medium scatters the path before `tMax`, and where. Leaf by leaf, each at
 /// its own majorant; a null collision costs one density lookup.
 public bool mediumScatter(StructuredBuffer<uint> words, VolumeRecord r, float3 origin, float3 direction, float tMin,
-                          float tMax, inout uint rng, out float tScatter) {
+                          float tMax, inout uint2 rng, out float tScatter) {
     tScatter = tMax;
     const IndexRay ray = toIndex(r, origin, direction);
     float t0 = tMin;
@@ -192,7 +241,7 @@ public bool mediumScatter(StructuredBuffer<uint> words, VolumeRecord r, float3 o
                 for (int k = 0; k < kMaxCollisions; ++k) {
                     t -= log(max(1.0 - mediumRandom(rng), 1e-7)) / majorant;
                     if (t >= tB) break;
-                    const float sigma = densityAt(words, acc, ray.origin + ray.direction * t) * r.sigmaScale;
+                    const float sigma = densityAt(words, r, acc, ray.origin + ray.direction * t) * r.sigmaScale;
                     if (mediumRandom(rng) * majorant < sigma) {
                         tScatter = t;
                         return true;
@@ -208,7 +257,7 @@ public bool mediumScatter(StructuredBuffer<uint> words, VolumeRecord r, float3 o
 /// Ratio tracking: the transmittance from `tMin` to `tMax`, an unbiased
 /// estimate with the same walk.
 public float mediumTransmittance(StructuredBuffer<uint> words, VolumeRecord r, float3 origin, float3 direction,
-                                 float tMin, float tMax, inout uint rng) {
+                                 float tMin, float tMax, inout uint2 rng) {
     const IndexRay ray = toIndex(r, origin, direction);
     float t0 = tMin;
     float t1 = tMax;
@@ -230,7 +279,7 @@ public float mediumTransmittance(StructuredBuffer<uint> words, VolumeRecord r, f
                 for (int k = 0; k < kMaxCollisions; ++k) {
                     t -= log(max(1.0 - mediumRandom(rng), 1e-7)) / majorant;
                     if (t >= tB) break;
-                    const float sigma = densityAt(words, acc, ray.origin + ray.direction * t) * r.sigmaScale;
+                    const float sigma = densityAt(words, r, acc, ray.origin + ray.direction * t) * r.sigmaScale;
                     transmittance *= max(1.0 - sigma / majorant, 0.0);
                     if (transmittance < 1e-4) return 0.0;
                 }
@@ -245,7 +294,7 @@ public float mediumTransmittance(StructuredBuffer<uint> words, VolumeRecord r, f
 public float mediumDensityAt(StructuredBuffer<uint> words, VolumeRecord r, float3 p) {
     pnanovdb_readaccessor_t acc;
     pnanovdb_readaccessor_init(acc, pnanovdb_tree_get_root(words, pnanovdb_grid_get_tree(words, gridOf(r))));
-    return densityAt(words, acc, mul(r.worldToIndex, float4(p, 1.0)));
+    return densityAt(words, r, acc, mul(r.worldToIndex, float4(p, 1.0)));
 }
 
 /// The leaf majorant over a world point (0 where no leaf is), for a check.

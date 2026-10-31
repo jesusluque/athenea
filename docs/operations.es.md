@@ -1703,6 +1703,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:cloudShadowResolution` | int | `1024` | texels por lado, por luz |
 | `athenea:cloudShadowTerms` | int | `0` | 1 es solo el total; 3, 5, 7 añaden pares de Fourier; 0 deja decidir a quien recibe |
 | `athenea:cloudShadowDensity` | float | `1.0` | multiplicador de la profundidad óptica de la nube |
+| `athenea:volumeCacheMB` | int o float, MB | `2048` | rt: las rejillas de volumen que se guardan leídas en el host; sale primero la dibujada hace más tiempo. Las rejillas que dibuja el frame se guardan diga lo que diga, y 0 guarda solo esas (§4.3, *Volúmenes*) |
 
 Leídos pero no declarados:
 
@@ -2016,6 +2017,45 @@ Material que lo diga.
 Un Material con un terminal `volume` es la manera estándar de decir lo mismo,
 y donde hay uno atado, gana.
 
+**Volúmenes**: se trazan con path tracing (`rt`); el raster no dibuja ninguno.
+Cada rejilla que nombra un field se lee una vez por fichero y nombre de
+rejilla y se guarda leída en el host, en una caché de `athenea:volumeCacheMB`
+(2048 MB por defecto): pasado ese tamaño, las rejillas que el frame no dibuja
+salen, primero la dibujada hace más tiempo, y una que se vuelve a dibujar se
+vuelve a leer. Un `filePath` muestreado en el tiempo, un fichero por frame,
+guarda lo que permite el presupuesto y no todos los frames mostrados. El
+dispositivo guarda solo las rejillas del frame. Un Volume bajo un
+`PointInstancer` o una instancia nativa se dibuja en cada instancia, y todas
+leen la misma rejilla, dispuesta una sola vez. El light linking vale en un
+medio como en una superficie: una luz cuya `collection:lightLink` deja fuera
+un Volume no ilumina nada de su medio; su sombra no se enlaza (un volumen
+atenúa toda luz que proyecta sombras). Un level set (una rejilla de OpenVDB
+de clase `level set`, como una superficie convertida en volumen) se lee como
+una niebla: densidad 0 fuera, 1 desde la mitad del ancho de la banda hacia
+dentro, y una rampa lineal entre ambas -- `clamp(-distancia / semiancho, 0,
+1)`, siendo el semiancho el valor de fondo de la rejilla -- con su interior
+lleno. Una rejilla se lee en su propio tipo de valor: float (también una que
+el fichero guarda en half), double, int32, vec3f, vec3d y máscara. Leída como
+densidad, una rejilla vectorial es su longitud, una de enteros su valor y una
+máscara 1 donde está activa. Las rejillas bool, int64 y de vectores enteros
+se rechazan con un error que nombra el tipo, y un level set ha de ser de
+floats.
+El `fieldName` de un `OpenVDBAsset` nombra las rejillas de las que lee, en
+el orden del fichero; `fieldIndex` cuenta entre las rejillas de ese nombre,
+desde 0; `fieldDataType` (half, float, double, int, half3, float3, double3,
+mask) ha de coincidir con la rejilla que elige el índice o, sin índice,
+elige la primera de ese nombre que lo tenga; `vectorDataRoleHint` (None,
+Point, Normal, Vector, Color) dice qué son los valores de un field
+vectorial, por encima del tipo vectorial del propio fichero. Un field que no
+nombra ninguna rejilla del fichero, o una de otro tipo, se rechaza con el
+motivo, dicho una vez, y su Volume no se dibuja si es la densidad. Un
+`Field3DAsset` se acepta y se rechaza al leerlo -- dicho una vez -- porque
+ninguna compilación de este motor lee todavía Field3D. Un Volume guarda
+todos los fields que nombra, hasta ocho (la densidad primero, luego en el
+orden de Hydra; el que pasa del octavo se dice y no se lee), cada uno por su
+nombre en el dispositivo; el medio se sombrea solo con su densidad, y los
+demás fields esperan al sombreado que los lea.
+
 **Grupos de luces**, que todavía no declara ningún schema. Las lámparas de una
 nube son un primvar por grupo en su field, y sus grupos y estados son
 atributos en prims Scope -- hijos de un Scope `LightGroups` y de uno
@@ -2133,7 +2173,9 @@ rehacen cuando cambian las mallas, sus materiales o cuáles de ellas emiten --
 al cargar una escena, al editar un material -- y mientras un frame se
 reproduce solo se mueven y se reponderan. Apagado, el path tracer toma sus
 triángulos emisores de una tabla plana por potencia, como antes, y el raster
-muestra solo su brillo.
+muestra solo su brillo. De una forma u otra, en un frame trazado con volúmenes
+una colisión en un medio los muestrea como lo hace una superficie, y su luz le
+llega a través de los medios que haya entre ambos.
 
 El raster ilumina las mallas por ellas en forma cerrada
 (`athenea:meshLightSamples` 0, el valor por defecto): cada tile de 16 x 16 del

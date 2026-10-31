@@ -1,0 +1,630 @@
+// Copyright (c) 2026 jesus luque.
+//
+// VOLUMES THROUGH HYDRA (M9), past the first medium: the grid cache held to
+// its budget over an animated sequence, instanced volumes, and light
+// linking in a medium. Fixtures are written by
+// io::writeVdbBoxes; frames are compared on the device, and what the host
+// reads back are counters.
+#include "../gpu/GpuTest.h"
+
+#include <algorithm>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <span>
+#include <string>
+#include <vector>
+
+#include <pxr/base/plug/registry.h>
+
+#include "athenea/io/Vdb.h"
+#include "athenea/render/ReferenceRenderer.h"
+#include "athenea/usd/StageRenderer.h"
+
+using namespace athenea;
+namespace fs = std::filesystem;
+
+namespace {
+
+[[maybe_unused]] const bool kPluginsRegistered = [] {
+    pxr::PlugRegistry::GetInstance().RegisterPlugins(fs::path(ATHENEA_HYDRA_PLUGIN_DIR).string());
+    return true;
+}();
+
+fs::path scratch(const std::string& name) {
+    const fs::path dir = fs::temp_directory_path() / "athenea-tests" / "volumes";
+    fs::create_directories(dir);
+    return dir / name;
+}
+
+/// A sun-lit plane at z = -4 the camera at the origin looks at down -z; the
+/// sun casts no shadow, so a volume dims only the camera's chord.
+const char* kPlaneAndSun =
+    "#usda 1.0\n(\n    upAxis = \"Y\"\n    startTimeCode = 1\n    endTimeCode = 8\n)\n"
+    "def Mesh \"Plane\"\n{\n"
+    "    int[] faceVertexCounts = [4]\n"
+    "    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+    "    point3f[] points = [(-4, -4, -4), (4, -4, -4), (4, 4, -4), (-4, 4, -4)]\n"
+    "    color3f[] primvars:displayColor = [(0.8, 0.8, 0.8)]\n"
+    "    uniform token subdivisionScheme = \"none\"\n}\n"
+    "def DistantLight \"Sun\"\n{\n"
+    "    float inputs:intensity = 3\n    float inputs:angle = 0\n"
+    "    bool inputs:shadow:enable = 0\n}\n";
+
+render::Camera frontCamera() {
+    render::Camera camera = render::Camera::lookingAt({0.0, 0.0, 0.0}, {0.0, 0.0, -1.0});
+    camera.lens.focal = 35.0;
+    return camera;
+}
+
+gpu::Buffer upload(test::Gpu& gpu, const usd::StageImage& image) {
+    gpu::BufferDesc desc;
+    desc.bytes = image.rgba.size() * sizeof(float);
+    desc.elementBytes = 16;
+    auto made = gpu::Buffer::create(*gpu.device, desc, image.rgba.data());
+    REQUIRE(made);
+    return std::move(*made);
+}
+
+}   // namespace
+
+// THE GRID CACHE (athenea:volumeCacheMB): a Volume whose field's filePath
+// is time-sampled, a file a frame, eight frames, under a budget that holds
+// two of its grids. Each frame reads its grid; the grids it no longer draws
+// leave the cache least recently used first, so the bytes held stay under
+// the budget however long the sequence; and a frame whose grid was evicted
+// reads it again and draws what it drew the first time.
+TEST_CASE("an animated volume's grid cache stays within its budget, and a frame read again draws as it did",
+          "[usd][gpu][volume][cache]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    // 64^3 voxels of 0.05: 512 leaves (and 217 more the medium reaches).
+    constexpr int kFrames = 8;
+    std::vector<fs::path> files;
+    for (int f = 1; f <= kFrames; ++f) {
+        files.push_back(scratch("sequence." + std::to_string(f) + ".vdb"));
+        const io::VdbBox box{{0, 0, 0}, {64, 64, 64}, 0.25F + 0.05F * float(f)};
+        REQUIRE(io::writeVdbBoxes(files.back(), "density", 0.05, std::span<const io::VdbBox>(&box, 1)));
+    }
+    const fs::path path = scratch("sequence.usda");
+    {
+        std::ofstream out(path);
+        out << kPlaneAndSun
+            << "def Volume \"Smoke\"\n{\n"
+               "    double3 xformOp:translate = (-1.6, -1.6, -3.8)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+               "    rel field:density = </Smoke/density>\n"
+               "    float primvars:athenea:densityScale = 1\n"
+               "    color3f primvars:athenea:albedo = (0, 0, 0)\n"
+               "    def OpenVDBAsset \"density\"\n    {\n"
+               "        asset filePath.timeSamples = {\n";
+        for (int f = 1; f <= kFrames; ++f) {
+            out << "            " << f << ": @" << files[static_cast<size_t>(f - 1)].string() << "@,\n";
+        }
+        out << "        }\n        token fieldName = \"density\"\n    }\n}\n";
+    }
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    (*renderer)->setAntialias(false);
+    (*renderer)->setPathSamples(64);
+    (*renderer)->setPathBounces(0);
+    (*renderer)->setPathTotal(64);
+    // Two grids' worth and a little: the third evicts the first. A grid is
+    // 3.81 MB: the box's 512 leaves, the 217 before it its lookups reach
+    // (VolumeSet's medium), and -- the box standing at the index origin --
+    // a node of each level for each of the seven octants below it.
+    (*renderer)->setVolumeCacheMB(8.0);
+    const uint32_t w = 64, h = 48;
+    const render::Camera camera = frontCamera();
+    std::optional<gpu::Buffer> first;
+    uint64_t largest = 0;
+    usd::StageRenderer::VolumeCacheCounts counts;
+    for (int f = 1; f <= kFrames; ++f) {
+        auto image = (*renderer)->render(camera, double(f), w, h, "rt");
+        if (!image) FAIL(image.error().toString());
+        if (f == 1) {
+            first = upload(*gpu, *image);
+        }
+        counts = (*renderer)->volumeCacheCounts();
+        largest = std::max(largest, counts.bytes);
+        std::printf("  frame %d: %llu grids, %.2f MB held (%.2f MB on the device), %llu read, %llu evicted\n", f,
+                    static_cast<unsigned long long>(counts.grids), double(counts.bytes) / 1048576.0,
+                    double(counts.deviceBytes) / 1048576.0, static_cast<unsigned long long>(counts.reads),
+                    static_cast<unsigned long long>(counts.evictions));
+    }
+    CHECK(counts.reads == kFrames);
+    CHECK(counts.grids == 2);
+    CHECK(counts.evictions == kFrames - 2);
+    CHECK(largest <= uint64_t{8} * 1048576);
+    // Frame 1's grid left long ago: read again, and the same frame.
+    auto again = (*renderer)->render(camera, 1.0, w, h, "rt");
+    if (!again) FAIL(again.error().toString());
+    const usd::StageRenderer::VolumeCacheCounts after = (*renderer)->volumeCacheCounts();
+    CHECK(after.reads == kFrames + 1);
+    gpu::Buffer second = upload(*gpu, *again);
+    auto same = render::compareImages(*gpu->library, *first, second, w, h);
+    REQUIRE(same);
+    std::printf("  frame 1 read again: p99 %u max %u, %llu pixels over 2\n", same->p99, same->max,
+                static_cast<unsigned long long>(same->over2));
+    CHECK(same->p99 <= 1);
+    CHECK(same->over2 < 10);
+}
+
+// INSTANCED VOLUMES: a PointInstancer whose prototype is a Volume, two
+// instances side by side, draws the frame two Volumes authored where the
+// instancer puts them draw -- one record an instance, the grid laid out
+// once -- and not the frame without them.
+TEST_CASE("a PointInstancer of a volume draws its instances where two authored volumes stand",
+          "[usd][gpu][volume][instancing]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const fs::path vdb = scratch("instanced_box.vdb");
+    const io::VdbBox box{{0, 0, 0}, {16, 16, 16}, 0.8F};
+    REQUIRE(io::writeVdbBoxes(vdb, "density", 0.1, std::span<const io::VdbBox>(&box, 1)));
+    const auto volume = [&](const std::string& name, const std::string& at, const std::string& translate) {
+        return "def Volume \"" + name + "\"\n{\n" +
+               (translate.empty() ? std::string()
+                                  : "    double3 xformOp:translate = " + translate +
+                                        "\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n") +
+               "    rel field:density = <" + at + "/density>\n"
+               "    float primvars:athenea:densityScale = 1\n"
+               "    color3f primvars:athenea:albedo = (0, 0, 0)\n"
+               "    def OpenVDBAsset \"density\"\n    {\n"
+               "        asset filePath = @" + vdb.string() + "@\n"
+               "        token fieldName = \"density\"\n    }\n}\n";
+    };
+    const fs::path authored = scratch("volumes_authored.usda");
+    {
+        std::ofstream out(authored);
+        out << kPlaneAndSun << volume("Left", "/Left", "(-1.7, -0.8, -3.8)")
+            << volume("Right", "/Right", "(0.1, -0.8, -3.8)");
+    }
+    const fs::path instanced = scratch("volumes_instanced.usda");
+    {
+        std::ofstream out(instanced);
+        out << kPlaneAndSun
+            << "def PointInstancer \"Fogs\"\n{\n"
+               "    point3f[] positions = [(-1.7, -0.8, -3.8), (0.1, -0.8, -3.8)]\n"
+               "    int[] protoIndices = [0, 0]\n"
+               "    rel prototypes = </Fogs/Prototypes/Fog>\n"
+               "    def Scope \"Prototypes\"\n    {\n"
+            << volume("Fog", "/Fogs/Prototypes/Fog", "") << "    }\n}\n";
+    }
+    const fs::path empty = scratch("volumes_none.usda");
+    {
+        std::ofstream out(empty);
+        out << kPlaneAndSun;
+    }
+    const uint32_t w = 161, h = 121;
+    const auto frame = [&](const fs::path& path) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setPathSamples(256);
+        (*renderer)->setPathBounces(0);
+        (*renderer)->setPathTotal(256);
+        auto image = (*renderer)->render(frontCamera(), 1.0, w, h, "rt");
+        if (!image) FAIL(image.error().toString());
+        return upload(*gpu, *image);
+    };
+    gpu::Buffer byInstancer = frame(instanced);
+    gpu::Buffer byPrims = frame(authored);
+    gpu::Buffer without = frame(empty);
+    auto same = render::compareImages(*gpu->library, byInstancer, byPrims, w, h);
+    auto differs = render::compareImages(*gpu->library, byInstancer, without, w, h);
+    REQUIRE(same);
+    REQUIRE(differs);
+    std::printf("  instanced against authored: p99 %u max %u, %llu pixels over 2; against no volume: %llu over 2\n",
+                same->p99, same->max, static_cast<unsigned long long>(same->over2),
+                static_cast<unsigned long long>(differs->over2));
+    CHECK(same->p99 <= 1);
+    CHECK(same->over2 < 40);
+    CHECK(differs->over2 > 2000);
+}
+
+// LIGHT LINKING IN A MEDIUM: a scattering volume alone, lit by one sun.
+// Linked so that its collection leaves the volume out, the sun lights none
+// of the medium and the frame is black; linked so that it includes the
+// volume, it lights it as an unlinked sun does.
+TEST_CASE("a light whose link leaves a volume out lights none of its medium, and one that includes it lights it",
+          "[usd][gpu][volume][lights][linking]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs ray queries");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const fs::path vdb = scratch("linked_box.vdb");
+    const io::VdbBox box{{0, 0, 0}, {32, 32, 32}, 0.5F};
+    REQUIRE(io::writeVdbBoxes(vdb, "density", 0.1, std::span<const io::VdbBox>(&box, 1)));
+    // link: "" unlinked, "excludes" or "includes" the volume.
+    const auto stage = [&](const std::string& name, const std::string& link) {
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def DistantLight \"Sun\"" << (link.empty() ? "" : " (\n    prepend apiSchemas = [\"CollectionAPI:lightLink\"]\n)")
+            << "\n{\n    float inputs:intensity = 3\n    float inputs:angle = 0\n";
+        if (link == "excludes") {
+            out << "    uniform bool collection:lightLink:includeRoot = 1\n"
+                   "    rel collection:lightLink:excludes = </Fog>\n";
+        } else if (link == "includes") {
+            out << "    uniform bool collection:lightLink:includeRoot = 0\n"
+                   "    rel collection:lightLink:includes = </Fog>\n";
+        }
+        out << "}\n"
+               "def Volume \"Fog\"\n{\n"
+               "    double3 xformOp:translate = (-1.6, -1.6, -5)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+               "    rel field:density = </Fog/density>\n"
+               "    float primvars:athenea:densityScale = 1\n"
+               "    color3f primvars:athenea:albedo = (1, 1, 1)\n"
+               "    def OpenVDBAsset \"density\"\n    {\n"
+               "        asset filePath = @" << vdb.string() << "@\n"
+               "        token fieldName = \"density\"\n    }\n}\n";
+        return path;
+    };
+    const uint32_t w = 81, h = 61;
+    const auto frame = [&](const fs::path& path) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setPathSamples(64);
+        (*renderer)->setPathBounces(0);
+        (*renderer)->setPathTotal(64);
+        auto image = (*renderer)->render(frontCamera(), 1.0, w, h, "rt");
+        if (!image) FAIL(image.error().toString());
+        // Opacity aside: a medium's collision is opaque whatever lights it,
+        // so the colour alone is what the link decides.
+        std::vector<float> rgb = image->rgba;
+        for (size_t i = 3; i < rgb.size(); i += 4) rgb[i] = 1.0F;
+        usd::StageImage opaque = *image;
+        opaque.rgba = std::move(rgb);
+        return upload(*gpu, opaque);
+    };
+    gpu::Buffer unlinked = frame(stage("linked_none.usda", ""));
+    gpu::Buffer excluded = frame(stage("linked_excludes.usda", "excludes"));
+    gpu::Buffer included = frame(stage("linked_includes.usda", "includes"));
+    std::vector<float> zeros(size_t{w} * h * 4, 0.0F);
+    for (size_t i = 3; i < zeros.size(); i += 4) zeros[i] = 1.0F;
+    gpu::BufferDesc desc;
+    desc.bytes = zeros.size() * sizeof(float);
+    desc.elementBytes = 16;
+    auto black = gpu::Buffer::create(*gpu->device, desc, zeros.data());
+    REQUIRE(black);
+    auto lit = render::compareImages(*gpu->library, unlinked, *black, w, h);
+    auto dark = render::compareImages(*gpu->library, excluded, *black, w, h);
+    auto same = render::compareImages(*gpu->library, included, unlinked, w, h);
+    REQUIRE(lit);
+    REQUIRE(dark);
+    REQUIRE(same);
+    std::printf("  unlinked sun: %llu pixels over 2 against black; excluded: %llu (max %u); included against "
+                "unlinked: p99 %u, %llu over 2\n",
+                static_cast<unsigned long long>(lit->over2), static_cast<unsigned long long>(dark->over2), dark->max,
+                same->p99, static_cast<unsigned long long>(same->over2));
+    CHECK(lit->over2 > 1000);
+    CHECK(dark->max == 0);
+    CHECK(same->p99 <= 1);
+    CHECK(same->over2 < 20);
+}
+
+// FIELD SELECTION THROUGH HYDRA: an OpenVDBAsset reads UsdVol's fieldIndex
+// and fieldDataType. A file holds two grids named density, faint then
+// dense; the field asking for index 1 draws what a file holding only the
+// dense grid draws, and one declaring a type the grid does not hold is
+// refused (said once) and draws as no volume.
+TEST_CASE("an OpenVDBAsset's fieldIndex and fieldDataType choose the grid it reads",
+          "[usd][gpu][volume][fields]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const auto grid = [](double value) {
+        io::VdbGridSpec g;
+        g.name = "density";
+        g.voxelSize = 0.1;
+        g.boxes = {io::VdbBox{{0, 0, 0}, {32, 32, 32}, value, {0, 0, 0}}};
+        return g;
+    };
+    const fs::path two = scratch("two_densities.vdb");
+    const io::VdbGridSpec both[] = {grid(0.05), grid(1.5)};
+    REQUIRE(io::writeVdbGrids(two, both));
+    const fs::path one = scratch("dense_only.vdb");
+    const io::VdbGridSpec dense[] = {grid(1.5)};
+    REQUIRE(io::writeVdbGrids(one, dense));
+    const auto stage = [&](const std::string& name, const fs::path& vdb, const std::string& extra) {
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        out << kPlaneAndSun
+            << "def Volume \"Smoke\"\n{\n"
+               "    double3 xformOp:translate = (-1.6, -1.6, -3.8)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+               "    rel field:density = </Smoke/density>\n"
+               "    float primvars:athenea:densityScale = 1\n"
+               "    color3f primvars:athenea:albedo = (0, 0, 0)\n"
+               "    def OpenVDBAsset \"density\"\n    {\n"
+               "        asset filePath = @" << vdb.string() << "@\n"
+               "        token fieldName = \"density\"\n" << extra << "    }\n}\n";
+        return path;
+    };
+    const fs::path none = scratch("selection_none.usda");
+    {
+        std::ofstream out(none);
+        out << kPlaneAndSun;
+    }
+    const uint32_t w = 81, h = 61;
+    const auto frame = [&](const fs::path& path) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setPathSamples(64);
+        (*renderer)->setPathBounces(0);
+        (*renderer)->setPathTotal(64);
+        auto image = (*renderer)->render(frontCamera(), 1.0, w, h, "rt");
+        if (!image) FAIL(image.error().toString());
+        return upload(*gpu, *image);
+    };
+    gpu::Buffer byIndex = frame(stage("selection_index.usda", two, "        int fieldIndex = 1\n"));
+    gpu::Buffer byFile = frame(stage("selection_file.usda", one, ""));
+    gpu::Buffer first = frame(stage("selection_first.usda", two, ""));
+    gpu::Buffer wrongType =
+        frame(stage("selection_type.usda", two, "        token fieldDataType = \"float3\"\n"));
+    gpu::Buffer withNone = frame(none);
+    auto same = render::compareImages(*gpu->library, byIndex, byFile, w, h);
+    auto faint = render::compareImages(*gpu->library, first, byFile, w, h);
+    auto refused = render::compareImages(*gpu->library, wrongType, withNone, w, h);
+    REQUIRE(same);
+    REQUIRE(faint);
+    REQUIRE(refused);
+    std::printf("  fieldIndex 1 against the dense grid's own file: p99 %u, %llu over 2; the first grid against it: "
+                "%llu over 2; a float3 declared: against no volume p99 %u, %llu over 2\n",
+                same->p99, static_cast<unsigned long long>(same->over2), static_cast<unsigned long long>(faint->over2),
+                refused->p99, static_cast<unsigned long long>(refused->over2));
+    CHECK(same->p99 <= 1);
+    CHECK(same->over2 < 20);
+    CHECK(faint->over2 > 500);
+    CHECK(refused->p99 <= 1);
+    CHECK(refused->over2 < 20);
+}
+
+// FIELD3D: a Volume whose density is a Field3DAsset. The bprim is made (the
+// delegate supports `field3dAsset`), and in a build without Field3D -- every
+// build so far -- reading it is an error, said once and kept in the cache
+// as a failure, so a second frame does not read it again; the frame draws
+// as one without the volume.
+TEST_CASE("a Field3DAsset is a field the delegate takes, refused once in a build without Field3D",
+          "[usd][gpu][volume][field3d]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    if (io::haveField3d()) {
+        SKIP("built with Field3D: the refusal is not this build's");
+    }
+    const fs::path path = scratch("field3d.usda");
+    {
+        std::ofstream out(path);
+        out << kPlaneAndSun
+            << "def Volume \"Smoke\"\n{\n"
+               "    rel field:density = </Smoke/density>\n"
+               "    def Field3DAsset \"density\"\n    {\n"
+               "        asset filePath = @" << scratch("smoke.f3d").string() << "@\n"
+               "        token fieldName = \"density\"\n    }\n}\n";
+    }
+    const fs::path none = scratch("field3d_none.usda");
+    {
+        std::ofstream out(none);
+        out << kPlaneAndSun;
+    }
+    const uint32_t w = 81, h = 61;
+    const auto setUp = [&](const fs::path& p) {
+        auto renderer = usd::StageRenderer::open(p);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setPathSamples(16);
+        (*renderer)->setPathBounces(0);
+        (*renderer)->setPathTotal(16);
+        return std::move(*renderer);
+    };
+    auto renderer = setUp(path);
+    auto image = renderer->render(frontCamera(), 1.0, w, h, "rt");
+    if (!image) FAIL(image.error().toString());
+    gpu::Buffer withField3d = upload(*gpu, *image);
+    auto again = renderer->render(frontCamera(), 2.0, w, h, "rt");
+    if (!again) FAIL(again.error().toString());
+    const usd::StageRenderer::VolumeCacheCounts counts = renderer->volumeCacheCounts();
+    auto plain = setUp(none);
+    auto plainImage = plain->render(frontCamera(), 1.0, w, h, "rt");
+    if (!plainImage) FAIL(plainImage.error().toString());
+    gpu::Buffer without = upload(*gpu, *plainImage);
+    auto same = render::compareImages(*gpu->library, withField3d, without, w, h);
+    REQUIRE(same);
+    std::printf("  a Field3D density: %llu read, %llu failed, %llu grids held; against no volume p99 %u, %llu over 2\n",
+                static_cast<unsigned long long>(counts.reads), static_cast<unsigned long long>(counts.failed),
+                static_cast<unsigned long long>(counts.grids), same->p99, static_cast<unsigned long long>(same->over2));
+    CHECK(counts.reads == 1);
+    CHECK(counts.failed == 1);
+    CHECK(counts.grids == 0);
+    CHECK(same->p99 <= 1);
+    CHECK(same->over2 < 20);
+}
+
+// EVERY FIELD THROUGH HYDRA: a Volume naming density, temperature, Cd and
+// vel reads all four grids -- kept by name in its record -- and, shading by
+// density alone so far, draws the frame its density alone draws. One naming
+// nine fields reads the first eight (the density's first) and says the
+// ninth is not read.
+TEST_CASE("a Volume's fields are all read and kept, up to eight, its frame drawn by its density",
+          "[usd][gpu][volume][fields]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const auto grid = [](const std::string& name, io::VdbType type, double value) {
+        io::VdbGridSpec g;
+        g.name = name;
+        g.type = type;
+        g.voxelSize = 0.1;
+        g.boxes = {io::VdbBox{{0, 0, 0}, {32, 32, 32}, value, {value, value, value}}};
+        return g;
+    };
+    std::vector<io::VdbGridSpec> specs = {grid("density", io::VdbType::Float, 0.8),
+                                          grid("temperature", io::VdbType::Float, 900.0),
+                                          grid("Cd", io::VdbType::Vec3f, 0.5), grid("vel", io::VdbType::Vec3f, 1.0)};
+    for (int k = 0; k < 5; ++k) {
+        specs.push_back(grid("extra" + std::to_string(k), io::VdbType::Float, 0.1 * (k + 1)));
+    }
+    const fs::path vdb = scratch("many_fields.vdb");
+    REQUIRE(io::writeVdbGrids(vdb, specs));
+    const auto stage = [&](const std::string& file, size_t fieldCount) {
+        const fs::path path = scratch(file);
+        std::ofstream out(path);
+        out << kPlaneAndSun
+            << "def Volume \"Smoke\"\n{\n"
+               "    double3 xformOp:translate = (-1.6, -1.6, -3.8)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+               "    float primvars:athenea:densityScale = 1\n"
+               "    color3f primvars:athenea:albedo = (0, 0, 0)\n";
+        for (size_t k = 0; k < fieldCount; ++k) {
+            out << "    rel field:" << specs[k].name << " = </Smoke/" << specs[k].name << ">\n";
+        }
+        for (size_t k = 0; k < fieldCount; ++k) {
+            out << "    def OpenVDBAsset \"" << specs[k].name << "\"\n    {\n"
+                << "        asset filePath = @" << vdb.string() << "@\n"
+                << "        token fieldName = \"" << specs[k].name << "\"\n    }\n";
+        }
+        out << "}\n";
+        return path;
+    };
+    const uint32_t w = 81, h = 61;
+    const auto frame = [&](const fs::path& path, usd::StageRenderer::VolumeCacheCounts& counts) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setPathSamples(64);
+        (*renderer)->setPathBounces(0);
+        (*renderer)->setPathTotal(64);
+        auto image = (*renderer)->render(frontCamera(), 1.0, w, h, "rt");
+        if (!image) FAIL(image.error().toString());
+        counts = (*renderer)->volumeCacheCounts();
+        return upload(*gpu, *image);
+    };
+    usd::StageRenderer::VolumeCacheCounts alone, four, nine;
+    gpu::Buffer densityAlone = frame(stage("fields_density.usda", 1), alone);
+    gpu::Buffer fourFields = frame(stage("fields_four.usda", 4), four);
+    gpu::Buffer nineFields = frame(stage("fields_nine.usda", 9), nine);
+    auto same = render::compareImages(*gpu->library, fourFields, densityAlone, w, h);
+    auto sameNine = render::compareImages(*gpu->library, nineFields, densityAlone, w, h);
+    REQUIRE(same);
+    REQUIRE(sameNine);
+    std::printf("  grids read: density alone %llu, four fields %llu, nine fields %llu; four against density alone p99 "
+                "%u, %llu over 2; nine p99 %u, %llu over 2\n",
+                static_cast<unsigned long long>(alone.reads), static_cast<unsigned long long>(four.reads),
+                static_cast<unsigned long long>(nine.reads), same->p99, static_cast<unsigned long long>(same->over2),
+                sameNine->p99, static_cast<unsigned long long>(sameNine->over2));
+    CHECK(alone.reads == 1);
+    CHECK(four.reads == 4);
+    CHECK(four.grids == 4);
+    CHECK(nine.reads == 8);
+    CHECK(same->p99 <= 1);
+    CHECK(same->over2 < 20);
+    CHECK(sameNine->p99 <= 1);
+    CHECK(sameNine->over2 < 20);
+}
+
+// A FRAME OF VOLUMES ALONE CONVERGES OVER PASSES. A scattering box under a
+// sun, nothing else, its optical depth ln 2 along the camera's rays, so a
+// path sees it half the time: 64 paths gathered in one pass, and in 64 passes
+// of one. The path tracer wrote each pass's depth over the frame's, and a
+// pixel whose last pass met nothing read as uncovered however many passes
+// before it had -- in a frame of volumes alone, where no surface gives the
+// pixel a depth, half the box's pixels went black, and which ones changed
+// with the path count, so the frame never converged. No pixel may be empty
+// in one frame and over half covered in the other.
+TEST_CASE("a frame of volumes alone gathered over many passes covers what one pass covers",
+          "[usd][gpu][volume][passes]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs ray queries");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const fs::path vdb = scratch("half_box.vdb");
+    const io::VdbBox box{{0, 0, 0}, {32, 32, 32}, 1.0, {0, 0, 0}};
+    REQUIRE(io::writeVdbBoxes(vdb, "density", 0.1, std::span<const io::VdbBox>(&box, 1)));
+    const fs::path path = scratch("half_box.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    float inputs:angle = 0\n}\n"
+               "def Volume \"Fog\"\n{\n"
+               "    double3 xformOp:translate = (-1.6, -1.6, -5)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+               "    rel field:density = </Fog/density>\n"
+               "    float primvars:athenea:densityScale = 0.2166\n"
+               "    color3f primvars:athenea:albedo = (1, 1, 1)\n"
+               "    def OpenVDBAsset \"density\"\n    {\n"
+               "        asset filePath = @" << vdb.string() << "@\n"
+               "        token fieldName = \"density\"\n    }\n}\n";
+    }
+    const uint32_t w = 81, h = 61;
+    const auto frame = [&](uint32_t perPass) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setPathSamples(perPass);
+        (*renderer)->setPathBounces(4);
+        (*renderer)->setPathTotal(64);
+        auto image = (*renderer)->render(frontCamera(), 1.0, w, h, "rt");
+        if (!image) FAIL(image.error().toString());
+        return upload(*gpu, *image);
+    };
+    gpu::Buffer onePass = frame(64);
+    gpu::Buffer manyPasses = frame(1);
+    auto kernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/coverage_check", "coverageHoles");
+    if (!kernel) FAIL(kernel.error().toString());
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 4, "coverage.counts");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        kernel->dispatch(batch, {w * h, 1, 1}, [&](rhi::ShaderCursor c) {
+            c["coverage"]["pixels"].setData(w * h);
+            c["a"].setBinding(manyPasses.rhi());
+            c["b"].setBinding(onePass.rhi());
+            c["counts"].setBinding(counts.rhi());
+        });
+        REQUIRE(batch.submit(true));
+    }
+    uint32_t c[4] = {};
+    REQUIRE(counts.read(*gpu->device, 0, sizeof(c), c));
+    std::printf("  64 passes of 1 path against 1 pass of 64: %u pixels empty in the first and over half covered "
+                "in the second, %u the other way; %u over half covered\n",
+                c[0], c[1], c[2]);
+    CHECK(c[2] > 1000);
+    CHECK(c[0] == 0);
+    CHECK(c[1] == 0);
+}

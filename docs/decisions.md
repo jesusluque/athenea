@@ -2227,8 +2227,9 @@ the same size and radiance in its place (one bounce, 64x48): deep frames of
 8192 paths agree to relMSE 4.1e-7, and at 32 paths the error is 8.7e-5 sampled
 as a light against 11.75 by the material's rays alone.
 
-**Not done.** Emitting triangles are not sampled from inside media, nor
-under motion at their shutter slice (the table is the frame's). A table of
+**Not done.** Emitting triangles are not sampled under motion at their
+shutter slice (the table is the frame's). From inside media they are now
+(M9, *Emitting triangles from a medium*). A table of
 millions of triangles accumulates in float: a triangle whose power is below
 the running total's precision is sampled with a rounded probability.
 
@@ -3223,18 +3224,298 @@ the furnace through Hydra with no mesh at all -- a `DomeLight` of radiance 1
 and an albedo-one `Volume`: 4278 pixels read 1.00044, 0.44 standard errors
 from the dome.
 
-### Not done
+### Emitting triangles from a medium
 
-- The raster technique draws no volume, and the engine says so once.
-- Only float grids, one field a volume (density); no temperature, emission
-  or colour fields, no `UsdVol` material networks -- the medium's
-  parameters are the three primvars.
-- Light groups do not collect light scattered in a medium differently from
-  a surface's: a collision's light goes to its light's group, as a
-  surface's does.
-- In a medium lights are chosen by power, not through the light BVH.
-- No MIS in media; no spectral tracking for a coloured extinction.
-- Verified on Metal; the L4 run of these tests is M11's.
+A frame with any volume compiled its path tracing kernel with the emitting
+triangles off (`kEmissive` false in the volumes' variant), so a scene lit by
+a glowing mesh lost its light the moment a volume entered it: the panel was
+met only by the rays the phase and the materials sent. Both variants now
+compile the emitters, and a collision in a medium draws them as a surface
+does: their share of the choice (`emissiveShare`, their power against the
+lights') picks a point on a triangle -- through the mesh lights' tree or the
+flat table -- the phase stands for the lobes, and the shadow ray is
+ratio-tracked through the media as a light's is. The point is shaded on the
+next step, as a surface's is, and the path then goes on from the collision
+(`mediumResume`). The phase's own ray is weighed against that draw by the
+power heuristic (`previousWeighs` with the phase's density), since it meets
+the same emitters. A surface's draw of an emitter is dimmed by the media in
+between too. A point in a medium has no normal: `lightImportance` takes a
+zero normal as facing every way, so the tree chooses there by distance and
+orientation alone.
+
+**Checked** (`[usd][meshlights][volume]`): a scattering box (albedo 0.8,
+sigma 0.5) under a 1 x 1 emitting panel, over the floor, against a
+RectLight of the panel's size and radiance in its place: deep frames of 8192
+paths agree to relMSE 5.2e-6 through the flat table and 5.0e-6 through the
+tree, and at 32 paths the panel's frames read 9.3e-4 and 8.9e-4 against the
+rect light's 8.6e-4 -- as noisy as the light is.
+
+### The grid cache, held to a budget
+
+The engine read each grid once per file and name and kept it for good, so
+an animated `filePath` -- a file a frame -- grew the host's memory by a
+grid every frame it showed. The cache (`nanoGrids_`) is now least recently
+used under a byte budget, `athenea:volumeCacheMB` (default 2048 MB, about
+a dozen frames of a mid-sized explosion at 150 MB a frame): after each
+layout of the frame's volumes, while the bytes held pass the budget, the
+grid drawn longest ago that this frame does not draw leaves. A frame's own
+grids are never evicted, so a budget of 0 keeps exactly those. On the
+device there was never more than the frame's: `VolumeSet` copies the
+frame's grids into its one buffer of words, which each layout replaces, so
+an evicted grid's device copy went with the layout that stopped drawing it.
+What the cache holds, reads and evicts, and the words' size on the device,
+are counted (`StageRenderer::volumeCacheCounts`).
+
+**Checked** (`[usd][volume][cache]`): eight frames of a sequence, a 1.34 MB
+grid each, under a 3 MB budget: two grids held from the second frame on
+(2.68 MB), eight read, six evicted, the device at one grid throughout; and
+frame 1 drawn again reads its grid again and draws the same frame, p99 0.
+
+### Instanced volumes
+
+A Volume under an instancer was drawn once, at its prototype's transform:
+the instancer chain was read for visibility alone. `HdAtheneaVolume` now
+reads the chain as a mesh does (innermost first, the elements each level
+takes), the engine composes it on the device with `world::Instancing` --
+recomposed when an instancer's version moves -- and `VolumeSet` lays out
+**one record an instance**: the host writes each the prototype's world to
+index (`inverse(objectToWorld * indexToObject)`, as before), and
+`volumeInstances` composes the instance's inverse under it on the device,
+`worldToIndex_k = prototype * inverse(chain_k)`. Grids are laid out once
+however many records read them -- by pointer, so two Volumes naming one file
+and grid share it too -- and the bounds and leaf-maximum kernels run once a
+grid; the finish kernel writes the grid's bounds and majorant into each of
+its records. A collision walks every record, so a thousand instances cost a
+thousand walks a ray; no structure over the instances yet.
+
+**Checked** (`[usd][volume][instancing]`): two absorbing boxes as a
+PointInstancer's instances against the same two authored as Volumes where it
+puts them, over a sun-lit plane: the same frame, p99 0 and max 0, and 17888
+of the 19481 pixels more than 2 off the frame without them.
+
+### Light linking in a medium
+
+A collision in a medium was lit by every light, whatever its
+`collection:lightLink` said. `HdAtheneaVolume` now reads its categories (the
+light linking scene index's, as a mesh's), the engine turns them into the
+same 64-bit mask a mesh instance carries, and the record carries it (words
+33 and 34; the record grew to 40 words, word 31 and 32 left for the flags
+and a level set's width). `mediumScatterAny` hands back the colliding
+record's mask, and `gatherLightMedium` drops a light whose category the
+volume is not in, as `gatherLight` does at a surface. Shadow linking is not
+read for media: a volume dims every light that casts shadows.
+
+**Checked** (`[usd][volume][linking]`): a scattering box alone under one
+sun: unlinked, 4941 pixels lit (over 2 against black); with the sun's link
+excluding the volume, every pixel black (max 0); including it, the unlinked
+frame (p99 0).
+
+### Level sets read as fog
+
+A level set's values are signed distances, negative inside, and the reader
+took them for densities: a surface converted to a volume rendered as a
+negative density in its band and nothing inside. The class and the
+background are the header's, so `readVdbGrid` now says a grid is a level set
+and gives its background -- for a level set the band's half width, in the
+distance's units -- and no value is read on the host. `VolumeSet` makes it a
+fog on the device as it lays it out: `volumeLevelSetToFog` rewrites every
+voxel of every leaf, active or not, as `clamp(-sdf / halfWidth, 0, 1)` (an
+inactive voxel holds plus or minus the background, so it comes out 0 or 1),
+before the leaf maxima are taken -- over the inactive voxels too, which are
+density now. The interior beyond the band is not leaves but the level set's
+inactive tiles, which the conversion cannot reach and voxelising would
+multiply; the record carries a flag and the width (words 31 and 32), and the
+medium reads a level set's tile the same way, as its majorant too, so the
+interior is filled at the tile's own cost of one step a leaf cell.
+
+**Checked** (`[volume][levelset]`, `io::writeVdbLevelSetBox`, OpenVDB's own
+box level set as the fixture): a 32^3 box at voxel 0.1 with a band of three
+voxels, sigma 0.5 a unit of density. Under nearest-voxel lookup the band's
+inner ramp reads 0, 1/3, 2/3 on each side, so the optical depth along an
+axis is sigma (L - halfWidth) = 0.5 x 2.9: transmittance 0.2393, 0.2384 and
+0.2393 by ratio tracking along x, -y and z against exp(-1.45) = 0.2346,
+within 1.5 standard errors, and delta tracking's scatter fraction within 1.5
+as well; no density over its majorant at 16384 random points in and about
+the box. The grid has 208 leaves of the 216 leaf cells over its bounds: the
+8 inside are the tiles the medium filled.
+
+### Grid types
+
+Only float grids were read; anything else was refused. `readVdbGrid` now
+lays a grid out as **NanoVDB's own grid of its value type** -- float,
+double, int32, Vec3f, Vec3d and mask -- so no value is converted on the
+host, and `NanoGrid` carries the type and the header's GridType code.
+NanoVDB 32.4's OpenVDB converter names no grid type for Vec3d (it throws
+"unsupported value type"), so a Vec3d grid goes through NanoVDB's
+`GridBuilder` instead: each active voxel's value copied into the builder's
+tree, the same copy the converter makes. A float grid the file stores as
+half (`is_saved_as_half_float`, Houdini's 16-bit VDBs) is decoded by OpenVDB
+as it reads, as decompression is, and is a float grid from there. NanoVDB
+32.4 has a half build type but no half leaf, so no grid is laid out as half
+on the device; `nvRead` still reads PNanoVDB's half type, for a NanoVDB that
+makes one. Bool, int64 and the integer vectors are refused with the type in
+the error; a level set must be float, since its fog is rewritten in place.
+
+On the device every read goes by the grid's type, read from its header:
+`nanovdb.slang`'s `NvGrid` and `NvLeaf` carry it, leaves are strided by its
+leaf size, and `nvRead` returns a value as xyz and a component count --
+a double converted to the nearest float with integer arithmetic (Metal has
+no double), an int widened, a vector's three components. A mask's value is
+its active state.
+
+**The medium still walks floats only.** The first version read the density
+grid by its type inside `medium.slang`: one tree walk with the type known
+at run time. The tracking functions are inlined at every call of the path
+tracer's kernel, and a run-time type makes each walk index PNanoVDB's table
+of type constants dynamically; the volumes variant of the kernel then took
+the Metal compiler service down (`XPC_ERROR_CONNECTION_INTERRUPTED` at
+pipeline creation) while every small test kernel compiled. So a grid of any
+other type carries a **float grid of its topology** (`NanoGrid::scalar`:
+OpenVDB's `topologyUnion` onto an empty float grid, every value 0 -- a copy
+of structure, no value read), laid out beside it; `volumeScalarFill` writes
+each of its voxels, active or not, from the typed grid's scalar at the same
+coordinate -- a vector's length, an int's value, a mask's active state,
+negative values as 0 -- before its bounds and leaf maxima are taken. The
+medium's code is as it was, and the typed grid stays on the device for what
+reads it by name (the fields, below).
+
+**Checked** (`[volume][types]`): a 16^3 box at voxel 0.1 in each type, every
+voxel of the 20^3 region about it read on the device against the value it
+was filled with (0 outside), bit for bit: 0 of 8000 off in all seven, and
+the header's type the expected one. The values are chosen to show each
+conversion: 0.1 stored as half reads 0.0999755859375; a double 0.1 reads
+0.1F, the nearest float, which truncating the mantissa would miss by a bit;
+a Vec3d (0.3, 0.4, 0) reads (0.3F, 0.4F, 0). The medium's float grid,
+read the same way, holds the scalar in every voxel (0 of 8000 off). Through
+each, ratio and delta tracking along an axis are Beer-Lambert's with that
+scalar (the vectors' length, the int's 2, the mask's 1) within 1.7 standard
+errors.
+
+### Which grid a field reads
+
+An `OpenVDBAsset` was read by its `fieldName` alone, the first grid of the
+name. UsdVol says more, and it is read now (`io::VdbSelection`, from the
+headers only -- `readAllGridMetadata`, no grid read until one is chosen):
+the grids of the name in the file's order, each with its occurrence among
+those of its name (OpenVDB reads the second as `density[1]`); `fieldIndex`
+counts among them; `fieldDataType` must agree with the grid the index
+picks, and without an index it picks the first of the name that holds that
+type (half and float are a float grid, half3 and float3 a Vec3f one).
+Anything else is refused with the reason: an index past the grids of the
+name, a declared type the grid does not hold, a token not read.
+`vectorDataRoleHint` (None, Point, Normal, Vector, Color) is read over the
+header's own vector type (OpenVDB's covariant, contravariant relative and
+absolute become Normal, Vector, Point); a hint that names no role is said
+and the header's kept. The grid cache's key holds the whole selection.
+
+**Checked** (`[volume][types][fields]`): a file of four grids -- density as
+float 0.25, Vec3f (0.375, 0.5, 0) and double 0.75, then temperature 3 --
+read under seven selections, each grid checked on the device by its values
+(0 of 8000 voxels off, the header's type the expected one); five refusals
+with their reasons; the Vec3f's role Vector from its header. Through Hydra
+(`[usd][volume][fields]`), `fieldIndex = 1` of a file whose two density
+grids are faint then dense draws the frame of a file holding the dense one
+alone (p99 0, 0 pixels over 2), the first draws 4941 pixels apart, and a
+`fieldDataType = "float3"` the grid does not hold draws as no volume.
+
+### Field3D assets
+
+`field3dAsset` is now a bprim the delegate supports, made as the same field
+class with a flag. No toolchain this engine builds with has the Field3D
+library, so `io::readField3dGrid` is an `Unsupported` error that names the
+file and says to convert it to OpenVDB; the cache keeps the failure, so it
+is said once and not read again (`VolumeCacheCounts::failed`), and a Volume
+whose density it is draws nothing.
+
+**Checked** (`[usd][volume][field3d]`): a Volume whose density is a
+`Field3DAsset`, drawn twice: one read, one failure, no grid held, and the
+frame of the stage without it (p99 0).
+
+### Every field by name
+
+A Volume kept the field named density and dropped the rest. Now every
+field it names is read -- through the same cache, each grid laid out once
+-- and kept in its record: the record grew from 40 to 168 words, a table
+of eight fields of 16 words after the first 40 (field count in word 36).
+An entry holds the field's typed grid, the FNV-1a hash of the name the
+Volume gives it (its `field:NAME` relationship), its role from that name
+(density; temperature; flame, heat or fuel; Cd, color or colour; vel, v or
+velocity; other), its vector role, its grid type, and the map from the
+density's index space to the field's own, `inverse(fieldIndexToObject) *
+densityIndexToObject`, which an instance moves with the density, so an
+instance's record needs no field transform of its own. The density comes
+first; past eight, a field is said and not read. `fields.slang` finds a
+field by name or role and reads it at a world point through the typed
+accessor, at its nearest voxel. The medium still reads the density alone:
+temperature, colour and velocity wait for stage C's shading.
+
+**Checked** (`[volume][fields]`): eight fields of six types in one record
+-- density at voxel 0.1, temperature and vel at 0.2, a double flame, a
+Vec3f Cd, a mask, an int, a Vec3f rest of role Point -- probed by name
+inside their boxes and outside, in a volume at the origin and one moved by
+10: 17 probes each, 0 in the wrong slot, 0 values off, 0 roles off; a name
+the volume does not have finds none; a ninth field is refused by
+`VolumeSet`. Through Hydra: density alone reads 1 grid; with temperature,
+Cd and vel, 4, and the same frame (p99 0); with nine fields, 8.
+
+**Sizes.** A field costs its grid once, however many records name it, plus
+16 words a record. A non-float density costs its typed grid and its float
+topology: at the 16^3 fixture (8 leaves), float 80560 words (315 KB),
+double 84728, int32 80560, Vec3f 162552, Vec3d 248664, mask 76464, and the
+float topology another 80560 for each non-float one. A float the file
+stores as half is a quarter smaller on disk and the same on the device.
+
+### The medium's random streams
+
+The medium drew its numbers from one word stepped by an LCG, seeded from
+`random()`'s float -- 24 bits -- for each path, bounce and purpose. Every
+stream was then a stretch of the LCG's single cycle of 2^32, started at one
+of 2^24 points, and a pixel's streams ran into one another: two streams
+that pass through one state draw the same numbers from there on. The more
+draws a path takes (null collisions in a sparse medium) and the more paths
+a pixel has, the more of them share randomness. A stream is now a key and a
+counter (`mediumStreamOf`, `mediumRandom` on a `uint2`): the key a chain of
+the full hash over the pixel, the frame's seed, the path's absolute index,
+the bounce and the purpose, each draw the hash of key and counter. Two
+streams meet only where their 32-bit keys collide.
+
+It surfaced as a bias, not as noise: with the medium's leaves before the
+leaves (below), the emitting panel in a medium read 6% darker than the rect
+light of its size, the same 6% under other seeds, while the rect light
+moved 1% -- the emitter's path opens more streams a vertex than a light's.
+With keyed streams the two agree as they did before the extra leaves
+(relMSE 4.0e-6 and 3.9e-6 at 8192 paths, flat table and tree).
+
+**Checked** (`[volume][random]`): one pixel's streams as the path tracer
+opens them -- 4096 paths, 8 bounces, the 4 purposes -- over their first 64
+draws, 8.4 million states sorted on the device and counted where neighbours
+are equal: 64 repeated states keyed (one pair of colliding keys; two pairs
+expected at 32-bit birthday odds), 42289 with the legacy LCG.
+
+### A frame of volumes alone, over many passes
+
+The vdb2splat measurements found a path traced smoke not converging: the
+original at 4096 paths against itself at 16384 read masked relMSE 0.21, as
+512 against 4096 did. The frame was deterministic; what changed with the
+path count was *which* pixels showed: holes in a smooth region, specks in an
+empty one. The path tracer wrote each pass's depth over the frame's, and a
+pixel whose last pass met nothing (all its samples passed through) read as
+uncovered however many passes before it had, since the composite takes its
+coverage from that depth. A frame with surfaces hides it -- they give every
+pixel a depth -- but in a frame of volumes alone a thin medium's pixel is
+often missed by a whole pass. The depth is now kept from the frame where a
+pass meets nothing.
+
+**Checked** (`[usd][volume][passes]`): a scattering box under a sun and
+nothing else, optical depth ln 2 along the camera's rays, at 64 paths in one
+pass and in 64 passes of one: before the fix 1196 pixels empty in the
+many passes' frame that the one pass covers over half (that frame had 1352
+pixels over half covered; 2450 after), after it none. smoke2 (vdb2splat's
+E1b setup, x1, a normalized sun, 512 x 512, 4 bounces, masked to alpha >=
+0.01) against its own 16384-path frame: relMSE 0.2117 at 1024 paths and 0.2077 at 4096 before; 8.26e-4 and 1.64e-4 after,
+a ratio of 5.03 where independent paths give (1/1024 - 1/16384) / (1/4096 -
+1/16384) = 5. Frame times are the same (10.7 s / 26.7 s / 90.4 s before,
+10.3 s / 27.3 s / 95.8 s after, wall clock with loading, one run each).
 
 ## End to end: Kitchen_set lit, and two defects only a real stage showed
 

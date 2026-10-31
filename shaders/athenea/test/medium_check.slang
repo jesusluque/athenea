@@ -38,8 +38,8 @@ void mediumRays(uint3 tid: SV_DispatchThreadID) {
     const uint i = tid.x;
     if (i >= medium.rays) return;
     const VolumeRecord r = volumeRecord(words, medium.volume);
-    uint rngA = 0x9E3779B9u ^ (i * 2654435761u);
-    uint rngB = 0x7F4A7C15u ^ (i * 40503u + 1u);
+    uint2 rngA = mediumStreamOf(i, 0x9E3779B9u, 0u, 0u, 1u);
+    uint2 rngB = mediumStreamOf(i, 0x9E3779B9u, 0u, 0u, 2u);
     perRay[i] = mediumTransmittance(words, r, medium.origin, medium.direction, medium.tMin, medium.tMax, rngA);
     float t;
     const bool scattered = mediumScatter(words, r, medium.origin, medium.direction, medium.tMin, medium.tMax, rngB, t);

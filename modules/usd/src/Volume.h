@@ -24,13 +24,18 @@ protected:
     HdDirtyBits _PropagateDirtyBits(HdDirtyBits bits) const override { return bits; }
 };
 
-/// A UsdVolOpenVDBAsset: the file and the grid in it a volume's field reads.
+/// A UsdVolOpenVDBAsset or a UsdVolField3DAsset: the file and the grid in
+/// it a volume's field reads. A Field3D one is refused when read, in a build
+/// without Field3D (every build so far), and said once.
 class HdAtheneaVolumeField final : public HdField {
 public:
-    explicit HdAtheneaVolumeField(SdfPath const& id) : HdField(id) {}
+    explicit HdAtheneaVolumeField(SdfPath const& id, bool field3d = false) : HdField(id), _field3d(field3d) {}
     HdDirtyBits GetInitialDirtyBitsMask() const override { return AllDirty; }
     void Sync(HdSceneDelegate* sceneDelegate, HdRenderParam* renderParam, HdDirtyBits* dirtyBits) override;
     void Finalize(HdRenderParam* renderParam) override;
+
+private:
+    bool _field3d = false;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

@@ -148,10 +148,11 @@ public float lightImportance(LightNode node, float3 p, float3 n) {
     if (thetaPrime >= thetaE) {
         return 0.0;
     }
-    // The surface's own cosine, with the same uncertainty.
+    // The surface's own cosine, with the same uncertainty. A point with no
+    // normal -- a collision in a medium -- faces every way: no cosine.
     const float thetaI = acos(clamp(dot(n, -wi), -1.0, 1.0));
     const float thetaIPrime = max(thetaI - thetaU, 0.0);
-    const float cosI = thetaIPrime < 0.5 * kBvhPi ? cos(thetaIPrime) : 0.0;
+    const float cosI = dot(n, n) == 0.0 ? 1.0 : thetaIPrime < 0.5 * kBvhPi ? cos(thetaIPrime) : 0.0;
     return node.lo.w * cos(thetaPrime) * cosI / max(d2, radius * radius);
 }
 

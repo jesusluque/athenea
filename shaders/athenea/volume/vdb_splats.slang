@@ -477,7 +477,7 @@ void vsRays(uint3 tid: SV_DispatchThreadID) {
     const float tMix = exp(-tau);
     float mean = 0.0, square = 0.0;
     for (uint k = 0; k < params.samples; ++k) {
-        uint rng = rayHash(ray * 7919u + k * 104729u + params.seed * 31u);
+        uint2 rng = mediumStreamOf(ray, params.seed, k, 0u, 0u);   // a stream of its own an estimate
         const float est = mediumTransmittance(words, r, wa, (wb - wa) / len, 0.0, len, rng);
         mean += est;
         square += est * est;
