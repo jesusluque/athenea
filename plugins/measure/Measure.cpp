@@ -68,7 +68,8 @@ struct MeasureUniforms {
     uint32_t dstStride = 0;
     int32_t  dstOffsetX = 0;
     int32_t  dstOffsetY = 0;
-    uint32_t pad0 = 0;
+    /// Was padding: zero, which is what a host that does not send `minAlpha` gets.
+    float    minAlpha = 0.0F;
 };
 static_assert(sizeof(MeasureUniforms) == 80, "must match MeasureParams exactly");
 
@@ -173,6 +174,20 @@ public:
             "of 0 is the picture's edge. The differences are always over the "
             "whole picture.";
         into.params.push_back(window);
+
+        // Added after the rest: a host that does not send it compares every pixel, as before.
+        aofx::ParamDesc minAlpha;
+        minAlpha.name = "minAlpha";
+        minAlpha.label = "Covered from";
+        minAlpha.type = aofx::ParamType::Double;
+        minAlpha.defaults = {0.0};
+        minAlpha.hardMin = {0.0};
+        minAlpha.hardMax = {1.0};
+        minAlpha.hint =
+            "The differences (relMSE, the relative and 8-bit distributions, PSNR, SSIM) only over the "
+            "pixels whose Reference alpha reaches this: what a volume covers, 1 - its transmittance, "
+            "without the background. 0 is every pixel.";
+        into.params.push_back(minAlpha);
     }
 
     [[nodiscard]] std::vector<aofx::KernelDesc> kernels() const override {
@@ -226,6 +241,7 @@ public:
             static_cast<uint32_t>(std::clamp(std::lround(request.number("threshold", 2.0)), 0L, 255L));
         uniforms.mode = static_cast<uint32_t>(std::clamp(std::lround(request.number("mode", 3.0)), 0L, 3L));
         uniforms.gain = static_cast<float>(std::max(request.number("gain", 1.0), 0.0));
+        uniforms.minAlpha = static_cast<float>(std::clamp(request.number("minAlpha", 0.0), 0.0, 1.0));
         uniforms.dstWidth = static_cast<uint32_t>(target->buffer.width);
         uniforms.dstHeight = static_cast<uint32_t>(target->buffer.height);
         uniforms.dstStride = static_cast<uint32_t>(target->buffer.stride);

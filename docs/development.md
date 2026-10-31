@@ -1422,9 +1422,11 @@ a product that does not care what order its factors come in. The pieces:
      factor, its diagonal by its log and held between `minStd` and a third
      of `maxBlock`, each off-diagonal within twice the geometric mean of the
      diagonals beside it. The forward pass is one group a leaf over the
-     gaussians whose boxes meet it; the gradient is gathered by the gaussian,
-     one group each over the voxels of its box, reduced in group memory: no
-     atomics on floats anywhere.
+     gaussians whose boxes meet it -- each leaf's list built every iteration
+     (counted with atomics on integers, scanned in leaf order, filled, then
+     sorted by slot in group memory, so the sums' order is no race's); the
+     gradient is gathered by the gaussian, one group each over the voxels of
+     its box, reduced in group memory: no atomics on floats anywhere.
   5. *Densify and prune* every `densifyEvery` iterations until 70 % of them:
      a gaussian of a negligible share of the mass is freed, and new ones are
      born at the voxels the mixture leaves most under (the host bisects the
@@ -1447,8 +1449,8 @@ in the path tracer knows it was gaussians.
 What it does not do yet: sequences (§3.5 of the proposal: advection by `vel`,
 slots kept from frame to frame); a topology of its own for the way back (the
 input's is reused); splitting a gaussian over the size cap (the cap is a
-clamp on the factor's diagonal); the forward pass visits every gaussian a
-leaf, culled by its box, so its cost is leaves × gaussians.
+clamp on the factor's diagonal); binning for the way back and the rays,
+which still visit every gaussian a leaf or a ray.
 
 ## 7. Dependencies and toolchain
 

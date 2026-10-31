@@ -757,7 +757,8 @@ tracer dibuja como dibuja cualquier volumen.
 | `--emission-weight` | número ≥ 0 | `1` | lo que cuenta la dispersión de la temperatura en un bloque junto al error de la densidad, con la temperatura escalada al rango de la densidad |
 | `--init-fraction` | de 0,01 a 1 | `0.6` | la parte del presupuesto que tiene el primer corte; el resto nace donde el residuo es mayor |
 | `--densify-every` | entero | `20` | iteraciones entre rondas de densificar y podar; ninguna después del 70 % de ellas |
-| `--learning-rate` | número | `0.1` | el paso de Adam, en unidades de log para el pico y la diagonal del factor y en desviaciones para el centro; decae diez veces a lo largo de la ejecución |
+| `--learning-rate` | número | `0.1` | el paso de Adam, en unidades de log para el pico y la diagonal del factor y en desviaciones para el centro; decae cien veces a lo largo de los pasos de Adam |
+| `--no-bins` | flag | apagado | la pasada hacia delante sobre todas las gaussianas para cada hoja, descartadas por su caja, en vez de la lista de cada hoja: el ajuste como era antes del binning, para medir tiempos |
 | `--density-scale` | número | `1` | de densidad a extinción por unidad del mundo: para los rayos de `--measure` y la opacidad que se escribe para un visor estándar |
 | `--measure` | flag | apagado | imprime el error L2 relativo de la vuelta sobre los vóxeles activos y su mayor diferencia, y la transmitancia en forma cerrada frente al ratio tracking a través de la entrada a lo largo de `--rays` segmentos aleatorios |
 | `--rays` | entero | `4096` | `--measure` |
@@ -893,6 +894,7 @@ ruta de búsqueda: uno compilado en este árbol siempre lo está.
 | `--heatmap` | ruta | ninguna | escribe además la imagen del efecto, un EXR del tamaño de `image` |
 | `--show` | `source`, `difference`, `relative`, `codes` | `codes` | lo que dibuja `--heatmap`: el `mode` del efecto Measure (§7.1) |
 | `--gain` | número ≥ 0 | `1` | por cuánto se multiplica `--heatmap`; los números no dependen de él |
+| `--min-alpha` | de 0 a 1 | `0`, todos los píxeles | las diferencias (relMSE, las distribuciones, PSNR, SSIM) solo donde el alfa de la referencia llega a esto; el alfa de un volumen trazado es 1 − su transmitancia, así que 0,01 es donde deja pasar menos del 99 %. Las medias no se enmascaran |
 | `--path` | directorio ‹repetible› | ninguno | directorios de bundles buscados después de `$AOFX_PLUGIN_PATH` |
 
 Una media conserva el signo, y una diferencia no: un horno blanco que no debe
@@ -2551,6 +2553,7 @@ implementación de `athenea compare`, y el mismo bundle carga en openFXplayer.
 | `gain` | número ≥ 0 | `1` | solo el mapa de calor |
 | `threshold` | entero 0–255 | `2` | valores de código de 8 bits que un píxel puede diferir sin contar como por encima |
 | `window` | cuatro números, píxeles | `0 0 0 0` | X0 Y0 X1 Y1 en píxeles de Source, filas desde abajo; un X1 o Y1 de 0 es el borde. Solo las medias y los máximos |
+| `minAlpha` | número 0–1 | `0` | las diferencias solo sobre los píxeles cuyo alfa de Reference llega a esto; 0 es todos. Va en la palabra de relleno del bloque de uniforms, así que un host que no lo envía compara como antes |
 
 Lo que adjunta, todo floats. Una cuenta son dos floats, `alto × 2^24 + bajo`,
 cada uno exacto (alto es 0 por debajo de 16 777 216):
@@ -2592,6 +2595,7 @@ del presupuesto, un cuarto de sus entradas.
 | `minStd` | número, vóxeles | `0.5` | la desviación menor que puede tomar una gaussiana; por debajo de medio vóxel, más o menos, una gaussiana muestreada en los centros de los vóxeles ya no tiene la masa que dice su integral, que es lo que suponen los pasos de EM |
 | `pruneMass` | número | `1e-6` | se va una gaussiana cuya masa es menor que esta parte del total |
 | `hasTemperature`, `hasColour` | booleano | `0` | si `Grid` las lleva (las pone el host) |
+| `binned` | booleano | `1` | lo contrario de `--no-bins` |
 
 Adjunta `gaussians`: las escritas, el presupuesto, las hojas, el error L2
 relativo del ajuste sobre los vóxeles activos, las gaussianas que tenía el

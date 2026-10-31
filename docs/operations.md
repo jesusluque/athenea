@@ -737,7 +737,8 @@ renders as it renders any volume.
 | `--emission-weight` | number ≥ 0 | `1` | what the temperature's spread in a block counts beside the density's error, the temperature scaled to the density's range |
 | `--init-fraction` | 0.01 to 1 | `0.6` | the share of the budget the first cut holds; the rest is born where the residual is largest |
 | `--densify-every` | integer | `20` | iterations between densify-and-prune rounds; none after 70 % of them |
-| `--learning-rate` | number | `0.1` | Adam's step, in log units for the peak and the factor's diagonal and in deviations for the centre; it decays tenfold over the run |
+| `--learning-rate` | number | `0.1` | Adam's step, in log units for the peak and the factor's diagonal and in deviations for the centre; it decays a hundredfold over the Adam steps |
+| `--no-bins` | flag | off | the forward pass over every gaussian for every leaf, culled by its box, instead of each leaf's list: the fit as it was before binning, for a timing |
 | `--density-scale` | number | `1` | density to extinction a world unit: for `--measure`'s rays and the opacity written for a standard viewer |
 | `--measure` | flag | off | prints the way back's relative L2 error over the active voxels and its largest difference, and the closed-form transmittance against ratio tracking through the input along `--rays` random segments |
 | `--rays` | integer | `4096` | `--measure` |
@@ -871,6 +872,7 @@ is.
 | `--heatmap` | path | none | also writes the effect's picture, an EXR the size of `image` |
 | `--show` | `source`, `difference`, `relative`, `codes` | `codes` | what `--heatmap` draws: the Measure effect's `mode` (§7.1) |
 | `--gain` | number ≥ 0 | `1` | what `--heatmap` is multiplied by; the numbers do not depend on it |
+| `--min-alpha` | 0 to 1 | `0`, every pixel | the differences (relMSE, the distributions, PSNR, SSIM) only where the reference's alpha reaches this; a path traced volume's alpha is 1 − its transmittance, so 0.01 is where it lets through less than 99 %. The means are not masked |
 | `--path` | directory ‹repeatable› | none | bundle directories searched after `$AOFX_PLUGIN_PATH` |
 
 A mean keeps its sign, which a difference does not: a white furnace that must
@@ -2476,6 +2478,7 @@ implementation, and the same bundle loads in openFXplayer.
 | `gain` | number ≥ 0 | `1` | the heatmap only |
 | `threshold` | integer 0–255 | `2` | 8-bit code values a pixel may differ by and not be counted as over |
 | `window` | four numbers, pixels | `0 0 0 0` | X0 Y0 X1 Y1 in Source's pixels, rows from the bottom; an X1 or Y1 of 0 is the edge. The means and the largest values only |
+| `minAlpha` | number 0–1 | `0` | the differences only over the pixels whose Reference alpha reaches this; 0 is every pixel. Added in the uniform block's padding word, so a host that does not send it compares as before |
 
 What it attaches, floats all. A count is two floats, `high × 2^24 + low`, each
 exact (high is 0 below 16 777 216):
@@ -2516,6 +2519,7 @@ entries.
 | `minStd` | number, voxels | `0.5` | the smallest deviation a gaussian may take; below about half a voxel a gaussian sampled at the voxel centres no longer holds the mass its integral says, which the EM steps assume |
 | `pruneMass` | number | `1e-6` | a gaussian whose mass is under this share of the total goes |
 | `hasTemperature`, `hasColour` | boolean | `0` | whether `Grid` carries them (the host sets them) |
+| `binned` | boolean | `1` | `--no-bins`'s opposite |
 
 It attaches `gaussians`: written, the budget, leaves, the fit's relative L2
 error over the active voxels, the gaussians the first cut held, the

@@ -50,6 +50,7 @@ struct Options {
     uint32_t                 target = 20000;
     uint32_t                 iterations = 100;
     uint32_t                 emIterations = 40;
+    bool                     noBins = false;
     uint32_t                 attributeIterations = 20;
     uint32_t                 maxBlock = 64;
     double                   emissionWeight = 1.0;
@@ -208,6 +209,7 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
     number(job, "target", o.target);
     number(job, "iterations", o.iterations);
     number(job, "emIterations", o.emIterations);
+    number(job, "binned", o.noBins ? 0.0 : 1.0);
     number(job, "attributeIterations", o.attributeIterations);
     number(job, "maxBlock", o.maxBlock);
     number(job, "emissionWeight", o.emissionWeight);
@@ -333,6 +335,7 @@ void addVdb2Splat(CLI::App& app) {
     cmd->add_option("--colour", o->colour, "the Cd grid's name (vec3), read where there is one");
     cmd->add_option("-n,--target", o->target, "how many gaussians, at most");
     cmd->add_option("--em-iterations", o->emIterations, "EM steps on the geometry, first");
+    cmd->add_flag("--no-bins", o->noBins, "the forward pass over every gaussian for every leaf (for a timing)");
     cmd->add_option("--iterations", o->iterations, "Adam steps on the geometry, after the EM steps");
     cmd->add_option("--attribute-iterations", o->attributeIterations, "Jacobi steps on temperature and Cd");
     cmd->add_option("--max-block", o->maxBlock, "the largest block a gaussian starts from, voxels a side")

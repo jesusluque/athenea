@@ -48,7 +48,7 @@ struct MeasureParams {
     uint  dstStride;
     int   dstOffsetX;     // the output's origin in Source's pixels
     int   dstOffsetY;
-    uint  pad0;
+    float minAlpha;       // the differences only where Reference's alpha reaches this (0: everywhere)
 };
 
 StructuredBuffer<float4>    src;
@@ -146,6 +146,7 @@ void measureRows(uint3 tid: SV_DispatchThreadID) {
     for (uint x = 0; x < params.width; ++x) {
         const float4 pa = src[y * params.srcStride + x];
         const float4 pb = ref[y * params.refStride + x];
+        if (pb.w < params.minAlpha) continue;   // outside what the reference covers
         histogram[row + codeDifference(pa, pb)] += 1;
 
         float worst = 0.0;
@@ -171,6 +172,7 @@ void measureRows(uint3 tid: SV_DispatchThreadID) {
     for (uint x = 0; x < params.width; ++x) {
         const float4 pa = src[y * params.srcStride + x];
         const float4 pb = ref[y * params.refStride + x];
+        if (pb.w < params.minAlpha) continue;
         float3 d = float3(encode(pa.x) - encode(pb.x), encode(pa.y) - encode(pb.y), encode(pa.z) - encode(pb.z));
         seen += dot(d, d) / 3.0;
         float ma = 0.0, mb = 0.0, aa = 0.0, bb = 0.0, ab = 0.0, n = 0.0;

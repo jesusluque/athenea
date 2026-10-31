@@ -1494,9 +1494,13 @@ importa en qué orden llegan sus factores. Las piezas:
      logaritmo y sujeta entre `minStd` y un tercio de `maxBlock`, y cada
      término fuera de la diagonal dentro del doble de la media geométrica de
      las diagonales que tiene al lado. La pasada hacia delante es un grupo
-     por hoja sobre las gaussianas cuyas cajas la tocan; el gradiente lo
-     recoge la gaussiana, un grupo cada una sobre los vóxeles de su caja,
-     reducido en memoria de grupo: en ningún sitio hay atómicos sobre floats.
+     por hoja sobre las gaussianas cuyas cajas la tocan -- la lista de cada
+     hoja se construye en cada iteración (contada con atómicos sobre enteros,
+     escaneada en orden de hoja, rellenada y luego ordenada por hueco en
+     memoria de grupo, así el orden de las sumas no lo decide ninguna
+     carrera) --; el gradiente lo recoge la gaussiana, un grupo cada una
+     sobre los vóxeles de su caja, reducido en memoria de grupo: en ningún
+     sitio hay atómicos sobre floats.
   5. *Densificar y podar* cada `densifyEvery` iteraciones hasta el 70 % de
      ellas: se libera una gaussiana con una parte despreciable de la masa, y
      nacen otras en los vóxeles que la mezcla deja más por debajo (el host
@@ -1522,9 +1526,9 @@ gaussianas.
 Lo que aún no hace: secuencias (§3.5 de la propuesta: advección por `vel`,
 huecos conservados de un frame al siguiente); una topología propia para la
 vuelta (se reutiliza la de la entrada); partir una gaussiana que pasa del
-tope de tamaño (el tope es un recorte de la diagonal del factor); la pasada
-hacia delante visita todas las gaussianas por hoja, descartadas por su caja,
-así que su coste es hojas × gaussianas.
+tope de tamaño (el tope es un recorte de la diagonal del factor); el
+binning para la vuelta y para los rayos, que aún visitan todas las
+gaussianas por hoja o por rayo.
 
 ## 7. Dependencias y toolchain
 

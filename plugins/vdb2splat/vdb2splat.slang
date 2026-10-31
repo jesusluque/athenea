@@ -53,7 +53,7 @@ struct V2sParams {
     uint  leafCount;
     uint  leafEntries;     // 513
     uint  capacity;        // the budget: slots in the state buffers
-    uint  unused0;
+    uint  binned;          // 1: the forward pass walks each leaf's list (v2sBin*), 0: every slot
 
     int4  cellLo;          // the leaves' box in leaf cells (8 voxels): low corner
     int4  cellExtent;      // and its size
@@ -103,6 +103,8 @@ RWStructuredBuffer<float4> adam;       // 9: a slot's moments, 8 entries (m: 4, 
 RWStructuredBuffer<float4> grad;       // 10: a slot's gradient, 4 entries
 RWStructuredBuffer<float4> model;      // 11: per voxel: (rho^, sum w T, sum w R, sum w G), (sum w B, 0, 0, 0)
 RWStructuredBuffer<uint>   list;       // 12: compactions' output
+RWStructuredBuffer<uint>   bins;       // 13: per leaf: its count, where its list starts, a cursor
+RWStructuredBuffer<uint>   pairs;      // 14: the leaves' lists of slots, one after another
 ConstantBuffer<V2sParams>  params;
 
 static const uint kNodesPerLeaf = 73;
@@ -812,8 +814,13 @@ void v2sForward(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
         x[h] = lo + float3(morton3(t + h * 256)) + 0.5;
         for (uint k = 0; k < 5; ++k) acc[h][k] = 0.0;
     }
-    for (uint base = 0; base < params.capacity; base += 256) {
-        const uint slot = base + t;
+    // Binned, the leaf's own list (every gaussian whose box meets it, in
+    // slot order); else every slot, culled by its box.
+    const uint listed = params.binned != 0 ? bins[leaf] : params.capacity;
+    const uint first = params.binned != 0 ? bins[params.leafCount + leaf] : 0u;
+    for (uint base = 0; base < listed; base += 256) {
+        const uint slot = base + t < listed ? (params.binned != 0 ? pairs[first + base + t] : base + t)
+                                            : params.capacity;
         bool hit = false;
         if (slot < params.capacity) {
             const float4 r0 = records[slot * 4 + 0];
@@ -1118,6 +1125,124 @@ void v2sAttributes(uint3 tid: SV_DispatchThreadID) {
     if (params.hasColour != 0) s3.xyz = saturate(s3.xyz - damp * g0.yzw / h);
     state[slot * 4 + 2] = s2;
     state[slot * 4 + 3] = s3;
+}
+
+// --- Binning: each leaf's list of the gaussians whose boxes meet it ---------------
+
+/// The leaf cells a slot's box covers, clamped to the grid's box; false
+/// for a dead slot.
+bool boxCells(uint slot, out int3 clo, out int3 chi) {
+    clo = int3(0); chi = int3(-1);
+    if (slot >= params.capacity) return false;
+    const float4 r0 = records[slot * 4 + 0];
+    const float4 r3 = records[slot * 4 + 3];
+    if (r3.w < 0.5) return false;
+    clo = max(floorDiv8(int3(floor(r0.xyz - r3.xyz))) - params.cellLo.xyz, int3(0));
+    chi = min(floorDiv8(int3(floor(r0.xyz + r3.xyz))) - params.cellLo.xyz, params.cellExtent.xyz - 1);
+    return true;
+}
+
+/// One thread a leaf: its cursor cleared, and (`mode` 0) its count.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void v2sBinClear(uint3 tid: SV_DispatchThreadID) {
+    const uint leaf = tid.x;
+    if (leaf >= params.leafCount) return;
+    if (params.mode == 0) bins[leaf] = 0u;
+    bins[2 * params.leafCount + leaf] = 0u;
+}
+
+/// One thread a slot: `mode` 0 counts it into every leaf its box meets, 1
+/// writes it into their lists.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void v2sBinSlots(uint3 tid: SV_DispatchThreadID) {
+    const uint slot = tid.x;
+    int3 clo, chi;
+    if (!boxCells(slot, clo, chi)) return;
+    for (int cx = clo.x; cx <= chi.x; ++cx) {
+        for (int cy = clo.y; cy <= chi.y; ++cy) {
+            for (int cz = clo.z; cz <= chi.z; ++cz) {
+                const int leaf = leafAtCell(int3(cx, cy, cz));
+                if (leaf < 0) continue;
+                if (params.mode == 0) {
+                    InterlockedAdd(bins[uint(leaf)], 1u);
+                } else {
+                    uint at;
+                    InterlockedAdd(bins[2 * params.leafCount + uint(leaf)], 1u, at);
+                    pairs[bins[params.leafCount + uint(leaf)] + at] = slot;
+                }
+            }
+        }
+    }
+}
+
+/// One group: where each leaf's list starts (an exclusive scan of the
+/// counts, in leaf order), the total into the counters.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void v2sBinScan(uint3 gtid: SV_GroupThreadID) {
+    const uint t = gtid.x;
+    const uint total = params.leafCount;
+    const uint slice = (total + 255) / 256;
+    const uint from = min(t * slice, total);
+    const uint to = min(from + slice, total);
+    uint sum = 0;
+    for (uint i = from; i < to; ++i) sum += bins[i];
+    gScan[t] = sum;
+    GroupMemoryBarrierWithGroupSync();
+    if (t == 0) {
+        uint running = 0;
+        for (uint k = 0; k < 256; ++k) {
+            const uint here = gScan[k];
+            gScan[k] = running;
+            running += here;
+        }
+        counters[kCounterTotal] = running;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    uint at = gScan[t];
+    for (uint i = from; i < to; ++i) {
+        bins[total + i] = at;
+        at += bins[i];
+    }
+}
+
+groupshared uint gSort[2048];
+
+/// One group a leaf: its list sorted by slot (bitonic, in group memory), so
+/// a voxel adds its gaussians in an order no race decides. A list longer
+/// than 2048 is left as the atomics wrote it.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void v2sBinSort(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
+    const uint leaf = gid.x;
+    const uint t = gtid.x;
+    if (leaf >= params.leafCount) return;
+    const uint n = bins[leaf];
+    if (n < 2 || n > 2048) return;
+    const uint first = bins[params.leafCount + leaf];
+    uint size = 2;
+    while (size < n) size *= 2;
+    for (uint i = t; i < size; i += 256) gSort[i] = i < n ? pairs[first + i] : 0xFFFFFFFFu;
+    GroupMemoryBarrierWithGroupSync();
+    for (uint k = 2; k <= size; k *= 2) {
+        for (uint j = k / 2; j > 0; j /= 2) {
+            for (uint i = t; i < size; i += 256) {
+                const uint l = i ^ j;
+                if (l > i) {
+                    const bool up = (i & k) == 0;
+                    const uint a = gSort[i], b = gSort[l];
+                    if ((a > b) == up) {
+                        gSort[i] = b;
+                        gSort[l] = a;
+                    }
+                }
+            }
+            GroupMemoryBarrierWithGroupSync();
+        }
+    }
+    for (uint i = t; i < n; i += 256) pairs[first + i] = gSort[i];
 }
 
 // --- 5. Densify and prune ---------------------------------------------------------

@@ -33,6 +33,7 @@ struct Options {
     std::string              heatmap;
     std::string              show = "codes";
     double                   gain = 1.0;
+    double                   minAlpha = 0.0;
     std::vector<std::string> paths;
 };
 
@@ -93,6 +94,9 @@ void addCompare(CLI::App& app) {
     cmd->add_option("--show", o->show, "what --heatmap draws")
         ->check(CLI::IsMember({"source", "difference", "relative", "codes"}));
     cmd->add_option("--gain", o->gain, "what --heatmap is multiplied by");
+    cmd->add_option("--min-alpha", o->minAlpha,
+                    "the differences only where the reference's alpha reaches this (what a volume covers)")
+        ->check(CLI::Range(0.0, 1.0));
     cmd->add_option("--path", o->paths, "extra bundle directories (after $AOFX_PLUGIN_PATH)");
     cmd->callback([o] {
         const auto fail = [](const Error& error) {
@@ -149,6 +153,9 @@ void addCompare(CLI::App& app) {
         }
         job.params.push_back(aofx::ParamValue{"mode", {static_cast<double>(showIndex(o->show))}, {}});
         job.params.push_back(aofx::ParamValue{"gain", {o->gain}, {}});
+        if (o->minAlpha > 0.0) {
+            job.params.push_back(aofx::ParamValue{"minAlpha", {o->minAlpha}, {}});
+        }
         auto rendered = aofx_host::renderEffect(*context, *effect, job);
         if (!rendered) fail(rendered.error());
         const image::Image& out = **rendered;

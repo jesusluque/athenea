@@ -34,7 +34,7 @@ struct Vdb2SplatUniforms {
     uint32_t leafCount = 0;
     uint32_t leafEntries = 513;
     uint32_t capacity = 0;
-    uint32_t unused0 = 0;
+    uint32_t binned = 1;
 
     int32_t cellLo[4] = {0, 0, 0, 0};
     int32_t cellExtent[4] = {1, 1, 1, 0};
@@ -81,7 +81,8 @@ const char* const kKernels[] = {"v2sClear",       "v2sBounds",     "v2sLeafMap",
                                 "v2sCompact",     "v2sInitEmit",   "v2sReset",            "v2sPrepare",
                                 "v2sForward",     "v2sLoss",       "v2sBackward",         "v2sAdam",
                                 "v2sAttributes",  "v2sEm",         "v2sPrune",      "v2sUnder",            "v2sSpawn",
-                                "v2sAliveFlags",  "v2sWrite"};
+                                "v2sAliveFlags",  "v2sWrite",      "v2sBinClear",   "v2sBinSlots",   "v2sBinScan",
+                                "v2sBinSort"};
 
 float floatOf(uint32_t bits) {
     float f = 0.0F;
@@ -138,12 +139,14 @@ public:
         number("densifyEvery", "Densify every", "Iterations between densify-and-prune rounds (none after 70%).",
                T::Integer, 20, 1, 100000);
         number("learningRate", "Learning rate", "Adam's step: log units for sigma and the factor's diagonal, "
-               "deviations for the centre. Decays tenfold over the run.", T::Double, 0.1, 0.0, 1.0);
+               "deviations for the centre. Decays a hundredfold over the Adam steps.", T::Double, 0.1, 0.0, 1.0);
         number("minStd", "Smallest deviation", "In voxels: below about half a voxel a gaussian sampled at the voxel centres no longer holds the mass its integral says, which the EM steps assume.", T::Double, 0.5, 0.05, 10.0);
         number("pruneMass", "Prune below", "A gaussian whose mass is under this share of the total goes.", T::Double,
                1e-6, 0.0, 1.0);
         number("hasTemperature", "Temperature", "The Grid clip carries a temperature (host).", T::Boolean, 0, 0, 1);
         number("hasColour", "Cd", "The Grid clip carries a Cd (host).", T::Boolean, 0, 0, 1);
+        number("binned", "Binned", "1: the forward pass walks each leaf's list of the gaussians that meet it; 0: "
+               "every gaussian for every leaf, culled by its box (what it was, for a timing).", T::Boolean, 1, 0, 1);
     }
 
     [[nodiscard]] std::vector<aofx::KernelDesc> kernels() const override {
@@ -217,9 +220,44 @@ private:
             return true;
         }
 
+        aofx::Buffer pairs;
+        uint64_t     pairsRoom = 0;
+
+        /// The forward pass, binned: each leaf's list of the gaussians whose
+        /// boxes meet it built first (counted, scanned, filled, sorted), so a
+        /// leaf visits its own gaussians rather than every slot. The lists'
+        /// total is read back to size them; the room only grows.
+        bool forward(uint32_t leafThreads) {
+            if (u.binned != 0) {
+                const uint32_t mode = u.mode;
+                u.mode = 0;
+                if (!dispatch("v2sBinClear", u.leafCount) || !dispatch("v2sBinSlots", u.capacity) ||
+                    !dispatch("v2sBinScan", 256)) {
+                    return false;
+                }
+                uint32_t c[16] = {};
+                if (!readCounters(c, 16)) return false;
+                const uint64_t total = c[kCounterTotal];
+                if (total > pairsRoom) {
+                    const uint64_t room = std::max<uint64_t>(total + total / 2, 1024);
+                    pairs = quads((room + 3) / 4);
+                    if (!pairs.isValid()) return fail("vdb2splat: no room for the leaves' lists");
+                    pairsRoom = room;
+                    buffers[14] = pairs;
+                }
+                u.mode = 1;
+                if (!dispatch("v2sBinClear", u.leafCount) || !dispatch("v2sBinSlots", u.capacity) ||
+                    !dispatch("v2sBinSort", leafThreads)) {
+                    return false;
+                }
+                u.mode = mode;
+            }
+            return dispatch("v2sForward", leafThreads);
+        }
+
         bool lossPass(uint32_t leafThreads, float stats[4]) {
             u.mode = 1;
-            if (!dispatch("v2sPrepare", u.capacity) || !dispatch("v2sForward", leafThreads) ||
+            if (!dispatch("v2sPrepare", u.capacity) || !forward(leafThreads) ||
                 !dispatch("v2sLoss", 256)) {
                 return false;
             }
@@ -259,6 +297,7 @@ private:
             u.pruneMass = static_cast<float>(std::clamp(request.number("pruneMass", 1e-6), 0.0, 1.0));
             u.hasTemperature = request.number("hasTemperature", 0.0) >= 0.5 ? 1u : 0u;
             u.hasColour = request.number("hasColour", 0.0) >= 0.5 ? 1u : 0u;
+            u.binned = request.number("binned", 1.0) >= 0.5 ? 1u : 0u;
             const uint32_t adamSteps = static_cast<uint32_t>(std::max(request.number("iterations", 100.0), 0.0));
             const uint32_t emSteps = static_cast<uint32_t>(std::max(request.number("emIterations", 40.0), 0.0));
             const uint32_t iterations = emSteps + adamSteps;
@@ -277,7 +316,7 @@ private:
             if (!counters.isValid()) return fail("vdb2splat could not take its counters");
             // Bound in the kernels' order; what is not there yet is the counters.
             buffers = {grid->buffer, target->buffer, counters, counters, counters, counters, counters,
-                       counters,     counters,       counters, counters, counters, counters};
+                       counters,     counters,       counters, counters, counters, counters, counters, counters};
 
             const uint32_t leafThreads = u.leafCount * 256;
             u.mode = 0;
@@ -322,8 +361,10 @@ private:
                                           &list}) {
                 if (!b->isValid()) return fail("vdb2splat: no room on the device for its working buffers");
             }
+            const aofx::Buffer bins = quads((uint64_t{u.leafCount} * 3 + 3) / 4);
+            if (!bins.isValid()) return fail("vdb2splat: no room for the leaves' counts");
             buffers = {grid->buffer, target->buffer, counters, leafMap, nodes, coarse, partial,
-                       flags,        state,          adam,     grad,    model, list};
+                       flags,        state,          adam,     grad,    model, list, bins, counters};
 
             // 1, 2: the blocks, their moments and their errors.
             u.mode = 0;
@@ -391,7 +432,7 @@ private:
             float stats[4] = {};
             for (uint32_t it = 0; it < iterations; ++it) {
                 u.mode = 0;
-                if (!dispatch("v2sPrepare", u.capacity) || !dispatch("v2sForward", leafThreads)) return false;
+                if (!dispatch("v2sPrepare", u.capacity) || !forward(leafThreads)) return false;
                 if (it < emSteps) {
                     // EM first: robust from a rough start, and a fixed point
                     // at a mixture that is the grid.
@@ -441,7 +482,7 @@ private:
             if (u.hasTemperature != 0 || u.hasColour != 0) {
                 for (uint32_t it = 0; it < attributeSteps; ++it) {
                     u.mode = 0;
-                    if (!dispatch("v2sPrepare", u.capacity) || !dispatch("v2sForward", leafThreads)) return false;
+                    if (!dispatch("v2sPrepare", u.capacity) || !forward(leafThreads)) return false;
                     u.mode = 1;
                     if (!dispatch("v2sBackward", uint64_t{u.capacity} * 64)) return false;
                     u.mode = 0;

@@ -16542,3 +16542,37 @@ Sequences (proposal §3.5: advection by `vel`, slots kept between frames), a top
 back, the explosion (temperature) and bunny_cloud volumes (19 M voxels: the leaves' picture and the model
 buffer are 1.3 GB at its size), splitting a gaussian over the size cap, binning for the forward pass, and the
 raster of the gaussians as a medium (proposal 105).
+
+### The forward pass binned by leaf (31 Oct)
+
+The forward pass walked every slot for every leaf, culled by its box: leaves × gaussians, which made the
+fit linear in N. It now walks each leaf's own list: every iteration a thread a gaussian counts the leaves its
+box meets (atomics on integers), one group scans the counts in leaf order, a second pass fills the lists, and
+a group a leaf sorts its list by slot in group memory (bitonic, up to 2048 entries), so a voxel adds its
+gaussians in slot order and the result is the unbinned one to the bit: the fits below gave the same density
+errors binned and not, and `athenea_aofx_tests "[vdb2splat]"` the same digits. `--no-bins` keeps the old pass
+for a timing. smoke2, release build, the fit end to end (the GPU lock held; whether the Mac was in
+interactive use is not known):
+
+| N | unbinned | binned |
+|---|---|---|
+| 2k | 5.35 s | 2.60 s |
+| 10k | 19.80 s | 2.50 s |
+| 50k | 90.36 s | 1.97 s |
+
+What is left grows with the gaussians' boxes and the voxels, not with leaves × N. The way back
+(`splatToGrid`) and `rays` are still unbinned: they run once a fit.
+
+### `athenea compare --min-alpha`
+
+The relMSE of E1 above was taken over every pixel, most of them background, and Measure's relative error
+divides by b² + 0.01, so a dark smoke on a dark ground read under 10⁻⁴ at every N. The Measure effect takes
+`minAlpha` (in the uniform block's padding word, so a host that does not send it compares as before): the
+differences only where the reference's alpha reaches it. A path traced volume's alpha is the fraction of
+camera paths that collided in it, 1 − its transmittance, so 0.01 is where it lets through less than 99 %.
+That holds under a sun alone: a visible dome is an opaque background (alpha 1 everywhere). A UsdLux
+DistantLight's intensity is a radiance unless `inputs:normalize` is set, so the sun of intensity 3 the first
+renders used lit the smoke by about 10⁻⁵; E1b's sun is normalized.
+
+`test_transfer_zonal` (`athenea_aofx_tests "[zonal]"`) fails one assertion (`r[0] == 0`, 769) on the base
+commit 5d5aede as on this branch: not this work's.
