@@ -17391,6 +17391,65 @@ split, on more volumes (`~/luc/athenea-gpu/vdb2splat_opt2defaults.sh`, median of
 Faster everywhere (8–28 %), better at 50k on the blob and smoke2, worse at 10k on the blob and on the explosion:
 not a default to change on this.
 
+### Densify rounds as a count, and the smallest deviation (1 Nov, round 2)
+
+**Rounds as a count.** `--densify-rounds n` (the effect's `densifyRounds`) places round k after
+floor(k x iterations / (n + 3)) of the iterations (EM and Adam together), none after 70 % as before, so the
+schedule scales with the budget: 4 rounds over the default 140 iterations fall after 20, 40, 60 and 80 -- the
+default's own -- and over 560 after 80, 160, 240 and 320, round 1's recipe. 0 (the default) keeps
+`--densify-every`. A sequence's warm frames take their own period, `--warm-densify-every` (20, what they had), so
+neither a count nor a long period of the full fit reaches them. Release, M5 Pro, the shared GPU lock, the Mac's
+interactive use not known (`~/luc/athenea-gpu/vdb2splat_r2a.sh`, median of three):
+
+| | defaults (100 steps) s / L2 | recipe, every 80 s / L2 | recipe, 4 rounds s / L2 |
+|---|---|---|---|
+| blob 96³ 10k | 0.40 / 0.02691 | 1.03 / 0.01891 | 1.04 / 0.01891 |
+| blob 50k | 0.46 / 0.01191 | 1.06 / 0.00115 | 1.05 / 0.00115 |
+| smoke2 10k | 1.38 / 0.12261 | 4.79 / 0.09397 | 4.80 / 0.09397 |
+| smoke2 50k | 1.83 / 0.06218 | 6.35 / 0.03038 | 6.35 / 0.03038 |
+| explosion 10k | 2.20 / 0.07961 | 5.75 / 0.06118 | 5.75 / 0.06118 |
+| explosion 50k | 3.12 / 0.03673 | 8.73 / 0.02408 | 8.73 / 0.02408 |
+
+(the recipe: `--iterations 520 --checkerboard --init-fraction 0.7 --split-share 1 --max-block 32`). The count
+gives the period's results to the digit. smoke2 50k at 300 steps: every 20 (11 rounds) 5.27 s / 0.03772, 4
+rounds 5.62 s / 0.03680, 11 rounds as a count 6.06 s / 0.03802.
+
+The blob sequence (128³, 30 frames, 20k, warm), mean over the frames:
+
+| | frame 0 L2 | mean L2 | flicker | fit s a frame |
+|---|---|---|---|---|
+| defaults | 0.0199 | 0.02244 | 0.274 | 0.11 |
+| recipe, every 80, warm frames every 80 (round 1's worry) | 0.0110 | 0.02378 | 0.293 | 0.16 |
+| recipe, every 80, warm frames every 20 | 0.0110 | 0.02378 | 0.293 | 0.16 |
+| recipe, 4 rounds | 0.0110 | 0.02378 | 0.293 | 0.16 |
+| 520 steps, cut 0.7, 4 rounds (splits and blocks as default) | 0.0095 | 0.02285 | 0.283 | 0.15 |
+
+A warm frame loses nothing to a long period here: it keeps every slot (none is pruned, so a round has no free
+slot to give), and the rows with and without its rounds are the same. The recipe's better first frame does not
+carry: the sequence's mean is worse (0.0238 against 0.0224), so the recipe is not made the default -- it is 3.5
+times the fit's time, and the sequence is no better. Why is the next paragraph.
+
+**The smallest deviation.** A warm frame's start is the frame before carried by the flow. On the fixture with a
+rise alone of 1.5 voxels a frame, the carried start with no step after it (one step of rate 0) is as far from the
+grid as no carrying at all on frames 1 and 3 (0.148 against 0.143) and exactly the first frame's error on frames 2
+and 4 (0.019876): moved by a whole number of voxels the mixture matches, by a half it does not. The fit at the
+default `--min-std` 0.5 matches the grid at the voxel centres, where it is measured, with gaussians that differ
+between them; carried off the lattice they show it, and every warm frame spends its 30 steps undoing that (the
+mean move of a slot is a deviation a frame, the noise the geometry layer of a stream then carries). `--min-std`
+(new; the effect's `minStd`, 0.5 by default) on the same runs:
+
+| `--min-std` | rise fixture, carried start: frames 0 / 1 / 2 | blob sequence (turn and rise): frames 1-4 | mean L2 | flicker |
+|---|---|---|---|---|
+| 0.5 | 0.0199 / 0.1480 / 0.0199 | 0.068 0.054 0.037 0.029 | 0.02244 | 0.274 |
+| 0.75 | 0.0206 / 0.0555 / 0.0206 | 0.032 0.031 0.026 0.023 | 0.01889 | 0.229 |
+| 1.0 | 0.0190 / 0.0205 / 0.0190 | 0.021 0.020 0.019 0.018 | 0.01645 | 0.201 |
+
+On single volumes (median of three, 100 steps) 1.0 is not a default: blob 10k 0.0269 → 0.0260, blob 50k 0.0119
+→ 0.0277, smoke2 10k 0.123 → 0.199, smoke2 50k 0.062 → 0.212, explosion 10k / 50k unchanged (0.0796 / 0.0369);
+smoke2's detail is a voxel wide. The default stays 0.5; a smooth sequence carried by its flow takes
+`--min-std 1.0` (vol-stream's ladder, below). Not done: a test of the fit off the lattice (the grid given back at
+points between the centres), which is what would choose the floor per volume.
+
 ### Bytes a gaussian: the compact record (1 Nov)
 
 Proposal 104's lane, gaussians and quantisation only. `--quantise half|byte` quantises the fit's records
