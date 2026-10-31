@@ -604,3 +604,146 @@ TEST_CASE("a field's name, index and data type pick the grid UsdVol says, checke
     CHECK(io::vectorRoleFromHint("Color").value() == io::VectorRole::Color);
     CHECK_FALSE(io::vectorRoleFromHint("Colour"));
 }
+
+// EVERY FIELD BY NAME: a volume with eight fields of every type, at two
+// voxel sizes -- temperature at 0.2 where the density is at 0.1 -- laid out
+// in one VolumeSet, each a table entry in the record. A kernel names each
+// field by its hash and reads it at a world point inside the boxes and one
+// outside: every value is the one it was filled with (0 outside), with the
+// role its name gives and the vector role it was given; a name the volume
+// does not have finds no slot.
+TEST_CASE("a volume's fields are each reachable on the device by name, at their own voxel size",
+          "[volume][gpu][fields]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const fs::path dir = fs::temp_directory_path() / "athenea-tests" / "volume";
+    fs::create_directories(dir);
+    struct Field {
+        const char*    name;
+        io::VdbType    type;
+        double         voxel;
+        int            side;   // the box [0, side)^3 in its own voxels: 1.6 world units either way
+        double         written[3];
+        float          read[4];
+        world::FieldRole role;
+        io::VectorRole vectorRole;
+    };
+    const Field fields[] = {
+        {"density", io::VdbType::Float, 0.1, 16, {0.5, 0, 0}, {0.5F, 0, 0, 1}, world::FieldRole::Density,
+         io::VectorRole::None},
+        {"temperature", io::VdbType::Float, 0.2, 8, {300.0, 0, 0}, {300.0F, 0, 0, 1}, world::FieldRole::Temperature,
+         io::VectorRole::None},
+        {"flame", io::VdbType::Double, 0.1, 16, {0.1, 0, 0}, {0.1F, 0, 0, 1}, world::FieldRole::Flame,
+         io::VectorRole::None},
+        {"Cd", io::VdbType::Vec3f, 0.1, 16, {0.25, 0.5, 0.75}, {0.25F, 0.5F, 0.75F, 3}, world::FieldRole::Color,
+         io::VectorRole::Color},
+        {"vel", io::VdbType::Vec3d, 0.2, 8, {0.3, 0.4, 0}, {0.3F, 0.4F, 0, 3}, world::FieldRole::Velocity,
+         io::VectorRole::Vector},
+        {"active", io::VdbType::Mask, 0.1, 16, {1, 0, 0}, {1.0F, 0, 0, 1}, world::FieldRole::Other,
+         io::VectorRole::None},
+        {"count", io::VdbType::Int32, 0.1, 16, {7, 0, 0}, {7.0F, 0, 0, 1}, world::FieldRole::Other,
+         io::VectorRole::None},
+        {"rest", io::VdbType::Vec3f, 0.1, 16, {1, 2, 3}, {1.0F, 2.0F, 3.0F, 3}, world::FieldRole::Other,
+         io::VectorRole::Point},
+    };
+    std::vector<io::NanoGrid> grids;
+    grids.reserve(8);
+    for (const Field& f : fields) {
+        const fs::path path = dir / (std::string("field_") + f.name + ".vdb");
+        io::VdbGridSpec spec;
+        spec.name = f.name;
+        spec.type = f.type;
+        spec.voxelSize = f.voxel;
+        spec.boxes = {io::VdbBox{{0, 0, 0}, {f.side, f.side, f.side}, f.written[0],
+                                 {f.written[0], f.written[1], f.written[2]}}};
+        if (auto written = io::writeVdbGrids(path, std::span<const io::VdbGridSpec>(&spec, 1)); !written) {
+            FAIL(written.error().toString());
+        }
+        auto grid = io::readVdbGrid(path, f.name);
+        if (!grid) FAIL(grid.error().toString());
+        grids.push_back(std::move(*grid));
+    }
+    world::VolumeInput input;
+    input.grid = &grids[0];
+    for (size_t k = 0; k < 8; ++k) {
+        world::VolumeFieldInput field;
+        field.grid = &grids[k];
+        field.nameHash = world::fieldNameHash(fields[k].name);
+        field.role = world::fieldRoleOf(fields[k].name);
+        field.vectorRole = fields[k].vectorRole;
+        CHECK(field.role == fields[k].role);
+        input.fields.push_back(field);
+    }
+    // A second volume after it, translated, reading the same grids: the
+    // table is the record's own, and world points move with it.
+    world::VolumeInput moved = input;
+    moved.objectToWorld = render::Mat4::identity();
+    moved.objectToWorld.at(0, 3) = 10.0;
+    const world::VolumeInput volumes[] = {input, moved};
+    auto set = world::VolumeSet::create(*gpu->library);
+    if (!set) FAIL(set.error().toString());
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        REQUIRE(set->set(batch, volumes));
+        REQUIRE(batch.submit(true));
+    }
+    CHECK(set->count() == 8);
+    // The probes: each field inside its box at (0.85, 0.65, 1.05) and outside
+    // at (2.5, 0.5, 0.5), in each volume; and a name neither has.
+    std::vector<uint32_t> probes;
+    const auto bits = [](float v) {
+        uint32_t b = 0;
+        std::memcpy(&b, &v, 4);
+        return b;
+    };
+    const auto probe = [&](float x, float y, float z, uint32_t hash, const float* value, uint32_t role,
+                           uint32_t vectorRole, int32_t slot) {
+        probes.insert(probes.end(), {bits(x), bits(y), bits(z), hash, bits(value[0]), bits(value[1]), bits(value[2]),
+                                     bits(value[3]), role, vectorRole, static_cast<uint32_t>(slot), 0u});
+    };
+    for (float dx : {0.0F, 10.0F}) {
+        probes.clear();
+        for (size_t k = 0; k < 8; ++k) {
+            const uint32_t hash = world::fieldNameHash(fields[k].name);
+            const float outside[4] = {0.0F, 0.0F, 0.0F, fields[k].read[3]};
+            probe(dx + 0.85F, 0.65F, 1.05F, hash, fields[k].read, uint32_t(fields[k].role),
+                  uint32_t(fields[k].vectorRole), int32_t(k));
+            probe(dx + 2.5F, 0.5F, 0.5F, hash, outside, uint32_t(fields[k].role), uint32_t(fields[k].vectorRole),
+                  int32_t(k));
+        }
+        const float none[4] = {};
+        probe(dx + 0.85F, 0.65F, 1.05F, world::fieldNameHash("smoke"), none, 0, 0, -1);
+        auto probeBuffer = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, probes, "fields.probes");
+        REQUIRE(probeBuffer);
+        gpu::Buffer counts = test::uintBuffer(*gpu->device, 4, "fields.counts");
+        auto kernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/fields_check", "volumeFieldsCheck");
+        if (!kernel) FAIL(kernel.error().toString());
+        const uint32_t n = static_cast<uint32_t>(probes.size() / 12);
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            kernel->dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor c) {
+                c["fieldsCheck"]["probes"].setData(n);
+                c["fieldsCheck"]["volume"].setData(uint32_t{dx == 0.0F ? 0u : 1u});
+                c["words"].setBinding(set->words().rhi());
+                c["probes"].setBinding(probeBuffer->rhi());
+                c["counts"].setBinding(counts.rhi());
+            });
+            REQUIRE(batch.submit(true));
+        }
+        uint32_t c[4] = {};
+        REQUIRE(counts.read(*gpu->device, 0, sizeof(c), c));
+        std::printf("  volume %s: %u probes; %u found the wrong slot, %u read the wrong value, %u the wrong role\n",
+                    dx == 0.0F ? "at the origin" : "moved by 10", c[3], c[0], c[1], c[2]);
+        CHECK(c[3] == 17);
+        CHECK(c[0] == 0);
+        CHECK(c[1] == 0);
+        CHECK(c[2] == 0);
+    }
+    // A ninth field is refused.
+    world::VolumeInput tooMany = input;
+    tooMany.fields.push_back(input.fields[0]);
+    gpu::CommandBatch batch(*gpu->device);
+    CHECK_FALSE(set->set(batch, std::span<const world::VolumeInput>(&tooMany, 1)));
+}

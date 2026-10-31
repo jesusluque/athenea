@@ -63,8 +63,10 @@ void HdAtheneaVolume::Sync(HdSceneDelegate* delegate, HdRenderParam* renderParam
             instancer = level != nullptr ? level->GetParentId() : SdfPath();
         }
     }
-    // The medium is the field named density, else the first field.
+    // The medium is the field named density, else the first field; every
+    // field is kept by name.
     for (const HdVolumeFieldDescriptor& field : delegate->GetVolumeFieldDescriptors(id)) {
+        arrays.fields.emplace_back(field.fieldName.GetString(), field.fieldId);
         if (arrays.field.IsEmpty() || field.fieldName == _atheneaVolumeTokens->density) {
             arrays.field = field.fieldId;
             arrays.fieldName = field.fieldName.GetString();

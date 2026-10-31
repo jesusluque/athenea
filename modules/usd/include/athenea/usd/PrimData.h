@@ -156,6 +156,9 @@ struct VolumeFieldAsset {
 struct VolumeArrays {
     pxr::SdfPath         field;       ///< the field prim (an openvdbAsset bprim)
     std::string          fieldName;   ///< the volume's name for it ("density")
+    /// Every field it names, as its `field:NAME` relationships do, in
+    /// Hydra's order: (name, field prim).
+    std::vector<std::pair<std::string, pxr::SdfPath>> fields;
     /// The Material bound to the Volume, whose `volume` terminal says how
     /// the medium scatters (MaterialX `volume`, `anisotropic_vdf`); empty,
     /// or one without a volume terminal, leaves the three primvars below.

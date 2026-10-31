@@ -16,7 +16,7 @@ module medium;
 #include "nanovdb/PNanoVDB.h"
 
 /// A volume as the frame's words hold it (VolumeSet lays it out):
-/// 40 words a record, after the header.
+/// 168 words a record, after the header: these 40, then the field table.
 public struct VolumeRecord {
     public uint     gridWord;      // the grid's word offset
     public uint     leafBase;      // word offset of its leaf maxima (floats)
@@ -37,7 +37,7 @@ public struct VolumeRecord {
 };
 
 public static const uint kVolumeHeaderWords = 8;
-public static const uint kVolumeRecordWords = 40;
+public static const uint kVolumeRecordWords = 168;   // 40, then a table of 8 fields of 16 (fields.slang)
 public static const uint kVolumeLevelSet = 1u;
 
 public uint volumeCount(StructuredBuffer<uint> words) { return words[0]; }

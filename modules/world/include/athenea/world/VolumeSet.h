@@ -15,6 +15,7 @@
 #include <array>
 #include <cstdint>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "athenea/core/Result.h"
@@ -29,6 +30,24 @@ class ShaderLibrary;
 }
 
 namespace athenea::world {
+
+/// What a field is, from the name the Volume gives it: Houdini's and the
+/// renderers' usual names (density; temperature or temp; flame, heat or
+/// fuel; Cd, color or colour; vel, v or velocity). Others are kept, by name.
+enum class FieldRole : uint32_t { Other, Density, Temperature, Flame, Color, Velocity };
+
+[[nodiscard]] FieldRole fieldRoleOf(std::string_view name) noexcept;
+
+/// FNV-1a of a field's name: how a kernel names the field it reads.
+[[nodiscard]] uint32_t fieldNameHash(std::string_view name) noexcept;
+
+/// One of a volume's fields: its typed grid, by name.
+struct VolumeFieldInput {
+    const io::NanoGrid* grid = nullptr;
+    uint32_t            nameHash = 0;
+    FieldRole           role = FieldRole::Other;
+    io::VectorRole      vectorRole = io::VectorRole::None;
+};
 
 /// One volume: a grid, where it stands, and how it scatters. A grid of any
 /// type: one not of floats is walked as its float topology (NanoGrid::scalar),
@@ -51,6 +70,9 @@ struct VolumeInput {
     /// The light linking categories it is in (a bit each, as a mesh
     /// instance's): a linked light lights it only where its bit is set.
     uint64_t             categories = 0;
+    /// Every field it names, the density among them, at most kMaxFields: a
+    /// table in its record, read by name (shaders/athenea/volume/fields.slang).
+    std::vector<VolumeFieldInput> fields;
 };
 
 /// Where one grid sits in the words, for a kernel that reads it.
@@ -83,7 +105,10 @@ public:
     [[nodiscard]] const gpu::Buffer& majorant() const noexcept { return majorant_; }
 
     static constexpr uint32_t kHeaderWords = 8;
-    static constexpr uint32_t kRecordWords = 40;
+    static constexpr uint32_t kMaxFields = 8;
+    static constexpr uint32_t kFieldBase = 40;    ///< the field table's first word in a record
+    static constexpr uint32_t kFieldWords = 16;
+    static constexpr uint32_t kRecordWords = kFieldBase + kMaxFields * kFieldWords;
 
 private:
     gpu::Device*                     device_ = nullptr;

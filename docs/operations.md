@@ -1918,7 +1918,11 @@ Vector, Color) says what a vector field's values are, over the file's own
 vector type. A field that names no grid of the file, or one of another
 type, is refused with the reason, said once, and its Volume is not drawn
 if it is the density. A `Field3DAsset` is taken, and refused when read --
-said once -- since no build of this engine reads Field3D yet.
+said once -- since no build of this engine reads Field3D yet. A Volume
+keeps every field it names, up to eight (the density first, then in
+Hydra's order; one past the eighth is said and not read), each by its
+name on the device; the medium is shaded by its density alone, and the
+other fields wait for the shading that reads them.
 
 **Light groups**, which no schema declares yet. A cloud's lamps are a primvar
 a group on its field, and its groups and states are attributes on Scope prims

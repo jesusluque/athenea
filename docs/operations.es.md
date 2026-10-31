@@ -1980,7 +1980,11 @@ vectorial, por encima del tipo vectorial del propio fichero. Un field que no
 nombra ninguna rejilla del fichero, o una de otro tipo, se rechaza con el
 motivo, dicho una vez, y su Volume no se dibuja si es la densidad. Un
 `Field3DAsset` se acepta y se rechaza al leerlo -- dicho una vez -- porque
-ninguna compilación de este motor lee todavía Field3D.
+ninguna compilación de este motor lee todavía Field3D. Un Volume guarda
+todos los fields que nombra, hasta ocho (la densidad primero, luego en el
+orden de Hydra; el que pasa del octavo se dice y no se lee), cada uno por su
+nombre en el dispositivo; el medio se sombrea solo con su densidad, y los
+demás fields esperan al sombreado que los lea.
 
 **Grupos de luces**, que todavía no declara ningún schema. Las lámparas de una
 nube son un primvar por grupo en su field, y sus grupos y estados son

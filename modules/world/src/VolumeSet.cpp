@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <string_view>
 
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Device.h"
@@ -33,6 +34,24 @@ Result<VolumeSet> VolumeSet::create(gpu::ShaderLibrary& library) {
     set.instancesKernel_ = std::move(*instances);
     set.finishKernel_ = std::move(*finish);
     return set;
+}
+
+uint32_t fieldNameHash(std::string_view name) noexcept {
+    uint32_t h = 2166136261u;
+    for (const char c : name) {
+        h ^= static_cast<uint8_t>(c);
+        h *= 16777619u;
+    }
+    return h;
+}
+
+FieldRole fieldRoleOf(std::string_view name) noexcept {
+    if (name == "density") return FieldRole::Density;
+    if (name == "temperature" || name == "temp") return FieldRole::Temperature;
+    if (name == "flame" || name == "heat" || name == "fuel") return FieldRole::Flame;
+    if (name == "Cd" || name == "color" || name == "colour") return FieldRole::Color;
+    if (name == "vel" || name == "v" || name == "velocity") return FieldRole::Velocity;
+    return FieldRole::Other;
 }
 
 namespace {
@@ -76,6 +95,16 @@ Result<void> VolumeSet::set(gpu::CommandBatch& batch, std::span<const VolumeInpu
         if (in.instanceRows != nullptr && !in.instanceRows->valid()) {
             return Error(ErrorCode::InvalidArgument, "volumes: an instanced volume with no instance rows");
         }
+        if (in.fields.size() > kMaxFields) {
+            return Error::make(ErrorCode::InvalidArgument, "volumes: {} fields, at most {}", in.fields.size(),
+                               kMaxFields);
+        }
+        for (const VolumeFieldInput& field : in.fields) {
+            if (field.grid == nullptr) {
+                return Error(ErrorCode::InvalidArgument, "volumes: a field with no grid");
+            }
+            place(field.grid, false);
+        }
         if (in.grid->scalar != nullptr) {
             const bool fresh = std::find(grids.begin(), grids.end(), in.grid->scalar.get()) == grids.end();
             gridOf[v] = place(in.grid->scalar.get(), true);
@@ -116,13 +145,34 @@ Result<void> VolumeSet::set(gpu::CommandBatch& batch, std::span<const VolumeInpu
     // written alike; the instance kernel then composes each one's instance
     // under that transform, on the device.
     std::vector<std::array<float, 12>> prototypes(volumes.size());
-    for (size_t v = 0; v < volumes.size(); ++v) {
-        const VolumeInput& in = volumes[v];
-        render::Mat4 indexToObject = render::Mat4::identity();
+    const auto indexToObjectOf = [](const io::NanoGrid& grid) {
+        render::Mat4 m = render::Mat4::identity();
         for (int r = 0; r < 4; ++r) {
             for (int c = 0; c < 4; ++c) {
-                indexToObject.at(r, c) = in.grid->indexToWorld[static_cast<size_t>(c * 4 + r)];
+                m.at(r, c) = grid.indexToWorld[static_cast<size_t>(c * 4 + r)];
             }
+        }
+        return m;
+    };
+    for (size_t v = 0; v < volumes.size(); ++v) {
+        const VolumeInput& in = volumes[v];
+        const render::Mat4 indexToObject = indexToObjectOf(*in.grid);
+        // THE FIELD TABLE: each field's typed grid, its name's hash, its role,
+        // and the map from the density's index space to the field's own --
+        // inverse(fieldIndexToObject) * densityIndexToObject, the same in
+        // every instance's record, since an instance moves both alike.
+        std::vector<std::array<uint32_t, kFieldWords>> table;
+        for (const VolumeFieldInput& field : in.fields) {
+            std::array<uint32_t, kFieldWords> entry{};
+            const auto at = std::find(grids.begin(), grids.end(), field.grid);
+            entry[0] = placements_[static_cast<size_t>(at - grids.begin())].gridWord;
+            entry[1] = field.nameHash;
+            entry[2] = static_cast<uint32_t>(field.role) | (static_cast<uint32_t>(field.vectorRole) << 8);
+            entry[3] = field.grid->nanoType;
+            const render::Mat4 fromDensity = aofx::xform::inverseAffine(indexToObjectOf(*field.grid)) * indexToObject;
+            const std::array<float, 12> rows = fromDensity.rows3x4();
+            for (size_t i = 0; i < 12; ++i) entry[4 + i] = bitsOf(rows[i]);
+            table.push_back(entry);
         }
         const render::Mat4 worldToIndex = aofx::xform::inverseAffine(in.objectToWorld * indexToObject);
         prototypes[v] = worldToIndex.rows3x4();
@@ -147,6 +197,10 @@ Result<void> VolumeSet::set(gpu::CommandBatch& batch, std::span<const VolumeInpu
             words[b + 32] = bitsOf(in.grid->background);
             words[b + 33] = static_cast<uint32_t>(in.categories & 0xFFFFFFFFu);
             words[b + 34] = static_cast<uint32_t>(in.categories >> 32);
+            words[b + 36] = static_cast<uint32_t>(table.size());
+            for (size_t f = 0; f < table.size(); ++f) {
+                std::copy(table[f].begin(), table[f].end(), words.begin() + std::ptrdiff_t(b + kFieldBase + f * kFieldWords));
+            }
         }
     }
     auto madeWords = gpu::Buffer::fromSpan<uint32_t>(*device_, words, "volumes.words");

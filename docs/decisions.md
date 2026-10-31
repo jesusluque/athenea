@@ -3431,6 +3431,40 @@ whose density it is draws nothing.
 `Field3DAsset`, drawn twice: one read, one failure, no grid held, and the
 frame of the stage without it (p99 0).
 
+### Every field by name
+
+A Volume kept the field named density and dropped the rest. Now every
+field it names is read -- through the same cache, each grid laid out once
+-- and kept in its record: the record grew from 40 to 168 words, a table
+of eight fields of 16 words after the first 40 (field count in word 36).
+An entry holds the field's typed grid, the FNV-1a hash of the name the
+Volume gives it (its `field:NAME` relationship), its role from that name
+(density; temperature; flame, heat or fuel; Cd, color or colour; vel, v or
+velocity; other), its vector role, its grid type, and the map from the
+density's index space to the field's own, `inverse(fieldIndexToObject) *
+densityIndexToObject`, which an instance moves with the density, so an
+instance's record needs no field transform of its own. The density comes
+first; past eight, a field is said and not read. `fields.slang` finds a
+field by name or role and reads it at a world point through the typed
+accessor, at its nearest voxel. The medium still reads the density alone:
+temperature, colour and velocity wait for stage C's shading.
+
+**Checked** (`[volume][fields]`): eight fields of six types in one record
+-- density at voxel 0.1, temperature and vel at 0.2, a double flame, a
+Vec3f Cd, a mask, an int, a Vec3f rest of role Point -- probed by name
+inside their boxes and outside, in a volume at the origin and one moved by
+10: 17 probes each, 0 in the wrong slot, 0 values off, 0 roles off; a name
+the volume does not have finds none; a ninth field is refused by
+`VolumeSet`. Through Hydra: density alone reads 1 grid; with temperature,
+Cd and vel, 4, and the same frame (p99 0); with nine fields, 8.
+
+**Sizes.** A field costs its grid once, however many records name it, plus
+16 words a record. A non-float density costs its typed grid and its float
+topology: at the 16^3 fixture (8 leaves), float 80560 words (315 KB),
+double 84728, int32 80560, Vec3f 162552, Vec3d 248664, mask 76464, and the
+float topology another 80560 for each non-float one. A float the file
+stores as half is a quarter smaller on disk and the same on the device.
+
 ## End to end: Kitchen_set lit, and two defects only a real stage showed
 
 The plan closes with real stages through `athenea stage`. Kitchen_set with the

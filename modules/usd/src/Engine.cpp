@@ -3329,13 +3329,14 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 if (rebuild) {
                     volumesBuilt_ = volumesVersion_;
                     ++gridUse_;
-                    for (const auto& [id, volume] : volumes_) {
-                        if (!volume.visible || volume.field.IsEmpty()) {
-                            continue;
-                        }
-                        const auto field = volumeFields_.find(volume.field);
+                    // A field's grid, through the cache: null where its
+                    // field prim has not arrived or its grid cannot be read
+                    // (said once, the failure kept).
+                    const auto gridFor = [&](const pxr::SdfPath& volumeId,
+                                             const pxr::SdfPath& fieldId) -> std::shared_ptr<const io::NanoGrid> {
+                        const auto field = volumeFields_.find(fieldId);
                         if (field == volumeFields_.end() || field->second.path.empty()) {
-                            continue;   // its field has not arrived
+                            return nullptr;   // its field has not arrived
                         }
                         // A grid is known by its file and its selection: the
                         // name, the index among that name's grids and the
@@ -3358,7 +3359,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                                                       : io::readVdbGrid(asset.path, selection);
                             ++gridReads_;
                             if (!read) {
-                                log::warn("hdAthenea: volume {}: {}", id.GetString(), read.error().toString());
+                                log::warn("hdAthenea: volume {}: {}", volumeId.GetString(), read.error().toString());
                             }
                             CachedGrid entry;
                             if (read) {
@@ -3370,11 +3371,56 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                             cached = nanoGrids_.emplace(key, std::move(entry)).first;
                         }
                         cached->second.lastUse = gridUse_;
-                        if (cached->second.grid == nullptr) {
+                        return cached->second.grid;
+                    };
+                    for (const auto& [id, volume] : volumes_) {
+                        if (!volume.visible || volume.field.IsEmpty()) {
                             continue;
                         }
+                        const std::shared_ptr<const io::NanoGrid> density = gridFor(id, volume.field);
+                        if (density == nullptr) {
+                            continue;
+                        }
+                        // EVERY FIELD, by the name the Volume gives it, the
+                        // density's first: a table in the record (at most
+                        // eight), read by name on the device. Shading reads
+                        // the density alone so far.
+                        std::vector<world::VolumeFieldInput> fields;
+                        const auto addField = [&](const std::string& name, const std::shared_ptr<const io::NanoGrid>& grid,
+                                                  const pxr::SdfPath& fieldId) {
+                            world::VolumeFieldInput f;
+                            f.grid = grid.get();
+                            f.nameHash = world::fieldNameHash(name);
+                            f.role = world::fieldRoleOf(name);
+                            f.vectorRole = grid->vectorRole;
+                            const auto asset = volumeFields_.find(fieldId);
+                            if (asset != volumeFields_.end() && !asset->second.roleHint.empty()) {
+                                if (auto hinted = io::vectorRoleFromHint(asset->second.roleHint)) f.vectorRole = *hinted;
+                            }
+                            fields.push_back(f);
+                            holding.push_back(grid);
+                        };
+                        addField(volume.fieldName, density, volume.field);
+                        size_t dropped = 0;
+                        for (const auto& [name, fieldId] : volume.fields) {
+                            if (fieldId == volume.field) {
+                                continue;
+                            }
+                            if (fields.size() >= world::VolumeSet::kMaxFields) {
+                                ++dropped;
+                                continue;
+                            }
+                            if (const std::shared_ptr<const io::NanoGrid> grid = gridFor(id, fieldId)) {
+                                addField(name, grid, fieldId);
+                            }
+                        }
+                        if (dropped > 0) {
+                            log::warn("hdAthenea: volume {}: {} fields past the first {} are not read", id.GetString(),
+                                      dropped, world::VolumeSet::kMaxFields);
+                        }
                         world::VolumeInput input;
-                        input.grid = cached->second.grid.get();
+                        input.grid = density.get();
+                        input.fields = std::move(fields);
                         input.objectToWorld = volume.objectToWorld;
                         // INSTANCED: one record an instance, each the chain's
                         // transform before the prototype's, composed on the
@@ -3438,8 +3484,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                                 input.emission = c.emission;
                             }
                         }
-                        inputs.push_back(input);
-                        holding.push_back(cached->second.grid);
+                        inputs.push_back(std::move(input));
                     }
                     // Over the budget, the grids this layout does not draw
                     // leave, least recently drawn first: an animated

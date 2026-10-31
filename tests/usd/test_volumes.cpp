@@ -467,3 +467,90 @@ TEST_CASE("a Field3DAsset is a field the delegate takes, refused once in a build
     CHECK(same->p99 <= 1);
     CHECK(same->over2 < 20);
 }
+
+// EVERY FIELD THROUGH HYDRA: a Volume naming density, temperature, Cd and
+// vel reads all four grids -- kept by name in its record -- and, shading by
+// density alone so far, draws the frame its density alone draws. One naming
+// nine fields reads the first eight (the density's first) and says the
+// ninth is not read.
+TEST_CASE("a Volume's fields are all read and kept, up to eight, its frame drawn by its density",
+          "[usd][gpu][volume][fields]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const auto grid = [](const std::string& name, io::VdbType type, double value) {
+        io::VdbGridSpec g;
+        g.name = name;
+        g.type = type;
+        g.voxelSize = 0.1;
+        g.boxes = {io::VdbBox{{0, 0, 0}, {32, 32, 32}, value, {value, value, value}}};
+        return g;
+    };
+    std::vector<io::VdbGridSpec> specs = {grid("density", io::VdbType::Float, 0.8),
+                                          grid("temperature", io::VdbType::Float, 900.0),
+                                          grid("Cd", io::VdbType::Vec3f, 0.5), grid("vel", io::VdbType::Vec3f, 1.0)};
+    for (int k = 0; k < 5; ++k) {
+        specs.push_back(grid("extra" + std::to_string(k), io::VdbType::Float, 0.1 * (k + 1)));
+    }
+    const fs::path vdb = scratch("many_fields.vdb");
+    REQUIRE(io::writeVdbGrids(vdb, specs));
+    const auto stage = [&](const std::string& file, size_t fieldCount) {
+        const fs::path path = scratch(file);
+        std::ofstream out(path);
+        out << kPlaneAndSun
+            << "def Volume \"Smoke\"\n{\n"
+               "    double3 xformOp:translate = (-1.6, -1.6, -3.8)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+               "    float primvars:athenea:densityScale = 1\n"
+               "    color3f primvars:athenea:albedo = (0, 0, 0)\n";
+        for (size_t k = 0; k < fieldCount; ++k) {
+            out << "    rel field:" << specs[k].name << " = </Smoke/" << specs[k].name << ">\n";
+        }
+        for (size_t k = 0; k < fieldCount; ++k) {
+            out << "    def OpenVDBAsset \"" << specs[k].name << "\"\n    {\n"
+                << "        asset filePath = @" << vdb.string() << "@\n"
+                << "        token fieldName = \"" << specs[k].name << "\"\n    }\n";
+        }
+        out << "}\n";
+        return path;
+    };
+    const uint32_t w = 81, h = 61;
+    const auto frame = [&](const fs::path& path, usd::StageRenderer::VolumeCacheCounts& counts) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setPathSamples(64);
+        (*renderer)->setPathBounces(0);
+        (*renderer)->setPathTotal(64);
+        auto image = (*renderer)->render(frontCamera(), 1.0, w, h, "rt");
+        if (!image) FAIL(image.error().toString());
+        counts = (*renderer)->volumeCacheCounts();
+        return upload(*gpu, *image);
+    };
+    usd::StageRenderer::VolumeCacheCounts alone, four, nine;
+    gpu::Buffer densityAlone = frame(stage("fields_density.usda", 1), alone);
+    gpu::Buffer fourFields = frame(stage("fields_four.usda", 4), four);
+    gpu::Buffer nineFields = frame(stage("fields_nine.usda", 9), nine);
+    auto same = render::compareImages(*gpu->library, fourFields, densityAlone, w, h);
+    auto sameNine = render::compareImages(*gpu->library, nineFields, densityAlone, w, h);
+    REQUIRE(same);
+    REQUIRE(sameNine);
+    std::printf("  grids read: density alone %llu, four fields %llu, nine fields %llu; four against density alone p99 "
+                "%u, %llu over 2; nine p99 %u, %llu over 2\n",
+                static_cast<unsigned long long>(alone.reads), static_cast<unsigned long long>(four.reads),
+                static_cast<unsigned long long>(nine.reads), same->p99, static_cast<unsigned long long>(same->over2),
+                sameNine->p99, static_cast<unsigned long long>(sameNine->over2));
+    CHECK(alone.reads == 1);
+    CHECK(four.reads == 4);
+    CHECK(four.grids == 4);
+    CHECK(nine.reads == 8);
+    CHECK(same->p99 <= 1);
+    CHECK(same->over2 < 20);
+    CHECK(sameNine->p99 <= 1);
+    CHECK(sameNine->over2 < 20);
+}
