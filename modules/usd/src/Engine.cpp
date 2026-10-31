@@ -864,6 +864,15 @@ Engine::VolumeCacheCounts Engine::volumeCacheCounts() const {
     return counts;
 }
 
+void Engine::setVolumeFilter(world::VolumeFilter filter) {
+    const std::lock_guard<std::mutex> held(guard_);
+    if (filter != volumeFilter_) {
+        volumeFilter_ = filter;
+        ++volumesVersion_;
+        revision_.fetch_add(1);
+    }
+}
+
 void Engine::removeVolume(const pxr::SdfPath& id) {
     revision_.fetch_add(1);
     const std::lock_guard<std::mutex> held(guard_);
@@ -3421,6 +3430,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                         world::VolumeInput input;
                         input.grid = density.get();
                         input.fields = std::move(fields);
+                        input.filter = volumeFilter_;
                         input.objectToWorld = volume.objectToWorld;
                         // INSTANCED: one record an instance, each the chain's
                         // transform before the prototype's, composed on the

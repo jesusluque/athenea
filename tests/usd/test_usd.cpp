@@ -6398,7 +6398,7 @@ TEST_CASE("a UsdVol volume with an OpenVDB field absorbs as Beer-Lambert says th
     }
     auto made = gpu::ComputeKernel::create(*gpu->library, "athenea/test/volume_render_check", "volumeRenderCheck");
     if (!made) FAIL(made.error().toString());
-    gpu::Buffer counts = test::uintBuffer(*gpu->device, 5, "volume.hydra.counts");
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 7, "volume.hydra.counts");
     gpu::Buffer sums = test::uintBuffer(*gpu->device, 4, "volume.hydra.sums");
     {
         gpu::CommandBatch batch(*gpu->device);
@@ -6408,8 +6408,11 @@ TEST_CASE("a UsdVol volume with an OpenVDB field absorbs as Beer-Lambert says th
             c["toWorld"]["row0"].setData(rows.data(), sizeof(float) * 4);
             c["toWorld"]["row1"].setData(rows.data() + 4, sizeof(float) * 4);
             c["toWorld"]["row2"].setData(rows.data() + 8, sizeof(float) * 4);
+            // The box's voxels, 0..31 at 0.1, by their centres: voxel
+            // values stand at integer index points, and the medium looks them
+            // up trilinearly, which the check integrates exactly (voxel 0.1).
             const float boxMin[3] = {0.0F, -1.6F, -3.8F};
-            const float boxMax[3] = {3.2F, 1.6F, -0.6F};
+            const float boxMax[3] = {3.1F, 1.5F, -0.7F};
             const float towardLight[3] = {0.0F, 0.0F, 1.0F};
             c["check"]["boxMin"].setData(boxMin, sizeof(boxMin));
             c["check"]["boxMax"].setData(boxMax, sizeof(boxMax));
@@ -6419,6 +6422,7 @@ TEST_CASE("a UsdVol volume with an OpenVDB field absorbs as Beer-Lambert says th
             c["check"]["paths"].setData(static_cast<float>(kPaths));
             c["check"]["deviations"].setData(5.0F);
             c["check"]["shadows"].setData(uint32_t{0});
+            c["check"]["voxel"].setData(0.1F);
             c["with"].setBinding(with.rhi());
             c["without"].setBinding(without.rhi());
             c["counts"].setBinding(counts.rhi());
@@ -6426,7 +6430,7 @@ TEST_CASE("a UsdVol volume with an OpenVDB field absorbs as Beer-Lambert says th
         });
         REQUIRE(batch.submit(true));
     }
-    uint32_t n[5] = {};
+    uint32_t n[7] = {};
     float s[4] = {};
     REQUIRE(counts.read(*gpu->device, 0, sizeof(n), n));
     REQUIRE(sums.read(*gpu->device, 0, sizeof(s), s));
@@ -6434,6 +6438,9 @@ TEST_CASE("a UsdVol volume with an OpenVDB field absorbs as Beer-Lambert says th
     std::printf("  through Hydra: %u pixels through the box, %u beyond 5 binomial deviations, mean z^2 %.3f, mean "
                 "ratio %.4f against %.4f; %u outside, %u changed; %u uncovered\n",
                 n[0], n[1], meanSquare, n[0] ? s[1] / n[0] : 0.0F, n[0] ? s[2] / n[0] : 0.0F, n[2], n[3], n[4]);
+    std::printf("  beyond the deviations without the three paths' slack: %u, %u of them where under 5 paths "
+                "are expected\n",
+                n[5], n[6]);
     CHECK(n[0] > 3000);
     CHECK(n[1] == 0);
     CHECK(meanSquare > 0.7);

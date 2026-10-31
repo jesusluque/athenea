@@ -39,6 +39,12 @@ public struct VolumeRecord {
 public static const uint kVolumeHeaderWords = 8;
 public static const uint kVolumeRecordWords = 168;   // 40, then a table of 8 fields of 16 (fields.slang)
 public static const uint kVolumeLevelSet = 1u;
+/// The lookup, flags bits 8-9 (athenea:volumeFilter): trilinear (0, the
+/// default), nearest (1), or stochastic (2): one voxel drawn with the
+/// trilinear weights, whose expectation is the trilinear value.
+public static const uint kVolumeFilterTrilinear = 0u;
+public static const uint kVolumeFilterNearest = 1u;
+public static const uint kVolumeFilterStochastic = 2u;
 
 public uint volumeCount(StructuredBuffer<uint> words) { return words[0]; }
 
@@ -174,8 +180,22 @@ float tileDensity(VolumeRecord r, float sdf) {
     return saturate(-sdf / max(r.background, 1e-30));
 }
 
-/// The leaf under `ijk` and its majorant (0 where no leaf is): the accessor
-/// caches the leaf, and its address gives its index in the leaf array.
+/// The value at voxel `ijk` as a density: a leaf's voxel; a level set's
+/// tile or background made fog the way its leaves were.
+float voxelDensity(StructuredBuffer<uint> words, VolumeRecord r, inout pnanovdb_readaccessor_t acc, pnanovdb_coord_t ijk) {
+    const float value = pnanovdb_read_float(words, pnanovdb_readaccessor_get_value_address(PNANOVDB_GRID_TYPE_FLOAT,
+                                                                                         words, acc, ijk));
+    if ((r.flags & kVolumeLevelSet) != 0u && pnanovdb_readaccessor_get_dim(PNANOVDB_GRID_TYPE_FLOAT, words, acc, ijk) != 1u) {
+        return tileDensity(r, value);
+    }
+    return value;
+}
+
+/// A cell's majorant: its leaf's maximum, which covers [origin, origin + 8]
+/// on each axis -- all a lookup in the cell reads -- or, for a cell with no
+/// leaf, its tile's density: every cell whose lookups reach a leaf's voxels
+/// was made a leaf when the grid was read (io::NanoGrid, touchLeavesBelow).
+/// 0 for a fog's empty cell.
 float leafMajorantAt(StructuredBuffer<uint> words, VolumeRecord r, inout pnanovdb_readaccessor_t acc,
                      pnanovdb_coord_t ijk) {
     const uint dim = pnanovdb_readaccessor_get_dim(PNANOVDB_GRID_TYPE_FLOAT, words, acc, ijk);
@@ -197,17 +217,63 @@ float leafMajorantAt(StructuredBuffer<uint> words, VolumeRecord r, inout pnanovd
     return asfloat(words[r.leafBase + index]) * r.sigmaScale;
 }
 
-float densityAt(StructuredBuffer<uint> words, VolumeRecord r, inout pnanovdb_readaccessor_t acc, float3 p) {
-    pnanovdb_coord_t ijk;
-    ijk.x = int(floor(p.x));
-    ijk.y = int(floor(p.y));
-    ijk.z = int(floor(p.z));
-    const pnanovdb_address_t at = pnanovdb_readaccessor_get_value_address(PNANOVDB_GRID_TYPE_FLOAT, words, acc, ijk);
-    const float value = pnanovdb_read_float(words, at);
-    // A level set's leaves were made fog; its tiles and background are
-    // still distances.
-    if ((r.flags & kVolumeLevelSet) != 0u && pnanovdb_readaccessor_get_dim(PNANOVDB_GRID_TYPE_FLOAT, words, acc, ijk) != 1u) {
-        return tileDensity(r, value);
+/// The density at index point `p`, voxel values standing at integer
+/// coordinates (OpenVDB's convention): trilinear between the eight about
+/// it; the nearest; or one of them drawn with the trilinear weights.
+float densityAt(StructuredBuffer<uint> words, VolumeRecord r, inout pnanovdb_readaccessor_t acc, float3 p,
+                inout uint2 rng) {
+    const uint filter = (r.flags >> 8) & 3u;
+    const float3 base = floor(p);
+    const float3 f = p - base;
+    if (filter != kVolumeFilterTrilinear) {
+        float3 jitter = float3(0.5, 0.5, 0.5);
+        if (filter == kVolumeFilterStochastic) {
+            jitter = float3(mediumRandom(rng), mediumRandom(rng), mediumRandom(rng));
+        }
+        const float3 tap = floor(p + jitter);
+        pnanovdb_coord_t c;
+        c.x = int(tap.x);
+        c.y = int(tap.y);
+        c.z = int(tap.z);
+        return voxelDensity(words, r, acc, c);
+    }
+    // The eight in one leaf -- seven points in eight of a leaf's cells have
+    // them so -- read straight from its value table: the first through the
+    // accessor, the rest at fixed strides from it (z one word, y eight, x 64),
+    // where eight walks of the tree used to be. A leaf's values are the
+    // grid's own, a level set's made fog, so no tile needs reading.
+    pnanovdb_coord_t c0;
+    c0.x = int(base.x);
+    c0.y = int(base.y);
+    c0.z = int(base.z);
+    const pnanovdb_address_t at = pnanovdb_readaccessor_get_value_address(PNANOVDB_GRID_TYPE_FLOAT, words, acc, c0);
+    const uint inLeaf = at.byte_offset - acc.leaf.address.byte_offset;
+    if (acc.leaf.address.byte_offset != 0u && inLeaf < PNANOVDB_GRID_TYPE_GET(PNANOVDB_GRID_TYPE_FLOAT, leaf_size) &&
+        (c0.x & 7) != 7 && (c0.y & 7) != 7 && (c0.z & 7) != 7) {
+        const uint w = at.byte_offset / 4u;
+        const float x00 = lerp(asfloat(words[w]), asfloat(words[w + 1u]), f.z);
+        const float x01 = lerp(asfloat(words[w + 8u]), asfloat(words[w + 9u]), f.z);
+        const float x10 = lerp(asfloat(words[w + 64u]), asfloat(words[w + 65u]), f.z);
+        const float x11 = lerp(asfloat(words[w + 72u]), asfloat(words[w + 73u]), f.z);
+        return lerp(lerp(x00, x01, f.y), lerp(x10, x11, f.y), f.x);
+    }
+    // Straddling leaves: the corners in the first corner's leaf from its
+    // table, the others through the accessor.
+    const bool baseInLeaf = acc.leaf.address.byte_offset != 0u &&
+                            inLeaf < PNANOVDB_GRID_TYPE_GET(PNANOVDB_GRID_TYPE_FLOAT, leaf_size);
+    const uint w0 = at.byte_offset / 4u;
+    float value = 0.0;
+    [loop]
+    for (uint k = 0; k < 8u; ++k) {
+        const uint3 bit = uint3(k & 1u, (k >> 1) & 1u, (k >> 2) & 1u);
+        pnanovdb_coord_t c;
+        c.x = c0.x + int(bit.x);
+        c.y = c0.y + int(bit.y);
+        c.z = c0.z + int(bit.z);
+        const bool same = baseInLeaf && ((c.x ^ c0.x) & ~7) == 0 && ((c.y ^ c0.y) & ~7) == 0 && ((c.z ^ c0.z) & ~7) == 0;
+        const float v = same ? asfloat(words[w0 + bit.x * 64u + bit.y * 8u + bit.z]) : voxelDensity(words, r, acc, c);
+        const float3 w = select(bit != uint3(0, 0, 0), f, 1.0 - f);
+        value += w.x * w.y * w.z * v;
     }
     return value;
 }
@@ -241,7 +307,7 @@ public bool mediumScatter(StructuredBuffer<uint> words, VolumeRecord r, float3 o
                 for (int k = 0; k < kMaxCollisions; ++k) {
                     t -= log(max(1.0 - mediumRandom(rng), 1e-7)) / majorant;
                     if (t >= tB) break;
-                    const float sigma = densityAt(words, r, acc, ray.origin + ray.direction * t) * r.sigmaScale;
+                    const float sigma = densityAt(words, r, acc, ray.origin + ray.direction * t, rng) * r.sigmaScale;
                     if (mediumRandom(rng) * majorant < sigma) {
                         tScatter = t;
                         return true;
@@ -279,7 +345,7 @@ public float mediumTransmittance(StructuredBuffer<uint> words, VolumeRecord r, f
                 for (int k = 0; k < kMaxCollisions; ++k) {
                     t -= log(max(1.0 - mediumRandom(rng), 1e-7)) / majorant;
                     if (t >= tB) break;
-                    const float sigma = densityAt(words, r, acc, ray.origin + ray.direction * t) * r.sigmaScale;
+                    const float sigma = densityAt(words, r, acc, ray.origin + ray.direction * t, rng) * r.sigmaScale;
                     transmittance *= max(1.0 - sigma / majorant, 0.0);
                     if (transmittance < 1e-4) return 0.0;
                 }
@@ -294,7 +360,8 @@ public float mediumTransmittance(StructuredBuffer<uint> words, VolumeRecord r, f
 public float mediumDensityAt(StructuredBuffer<uint> words, VolumeRecord r, float3 p) {
     pnanovdb_readaccessor_t acc;
     pnanovdb_readaccessor_init(acc, pnanovdb_tree_get_root(words, pnanovdb_grid_get_tree(words, gridOf(r))));
-    return densityAt(words, r, acc, mul(r.worldToIndex, float4(p, 1.0)));
+    uint2 rng = uint2(asuint(p.x) ^ (asuint(p.y) * 747796405u) ^ (asuint(p.z) * 2891336453u), 0u);
+    return densityAt(words, r, acc, mul(r.worldToIndex, float4(p, 1.0)), rng);
 }
 
 /// The leaf majorant over a world point (0 where no leaf is), for a check.
