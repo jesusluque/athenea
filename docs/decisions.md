@@ -17370,6 +17370,21 @@ no round at all, and the small fixtures of `athenea_aofx_tests` are not refitted
 rounds given as a count rather than a period first. Why EM after Adam diverges on a warm frame is not looked at
 here.
 
+The 100-step defaults against the same steps with a first cut of 0.7, densify every 80 and every new slot a
+split, on more volumes (`~/luc/athenea-gpu/vdb2splat_opt2defaults.sh`, median of three):
+
+| | defaults s / L2 | the three knobs s / L2 |
+|---|---|---|
+| blob (E1's fixture, 96³) 10k | 0.39 / 0.0269 | 0.35 / 0.0303 |
+| blob 50k | 0.46 / 0.0119 | 0.33 / 0.0098 |
+| smoke2 10k | 1.39 / 0.1226 | 1.15 / 0.1227 |
+| smoke2 50k | 1.83 / 0.0622 | 1.61 / 0.0544 |
+| explosion 10k | 2.20 / 0.0796 | 2.06 / 0.0821 |
+| explosion 50k | 3.10 / 0.0367 | 2.56 / 0.0378 |
+
+Faster everywhere (8–28 %), better at 50k on the blob and smoke2, worse at 10k on the blob and on the explosion:
+not a default to change on this.
+
 ### Bytes a gaussian: the compact record (1 Nov)
 
 Proposal 104's lane, gaussians and quantisation only. `--quantise half|byte` quantises the fit's records
