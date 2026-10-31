@@ -554,3 +554,77 @@ TEST_CASE("a Volume's fields are all read and kept, up to eight, its frame drawn
     CHECK(sameNine->p99 <= 1);
     CHECK(sameNine->over2 < 20);
 }
+
+// A FRAME OF VOLUMES ALONE CONVERGES OVER PASSES. A scattering box under a
+// sun, nothing else, its optical depth ln 2 along the camera's rays, so a
+// path sees it half the time: 64 paths gathered in one pass, and in 64 passes
+// of one. The path tracer wrote each pass's depth over the frame's, and a
+// pixel whose last pass met nothing read as uncovered however many passes
+// before it had -- in a frame of volumes alone, where no surface gives the
+// pixel a depth, half the box's pixels went black, and which ones changed
+// with the path count, so the frame never converged. No pixel may be empty
+// in one frame and over half covered in the other.
+TEST_CASE("a frame of volumes alone gathered over many passes covers what one pass covers",
+          "[usd][gpu][volume][passes]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs ray queries");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const fs::path vdb = scratch("half_box.vdb");
+    const io::VdbBox box{{0, 0, 0}, {32, 32, 32}, 1.0, {0, 0, 0}};
+    REQUIRE(io::writeVdbBoxes(vdb, "density", 0.1, std::span<const io::VdbBox>(&box, 1)));
+    const fs::path path = scratch("half_box.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    float inputs:angle = 0\n}\n"
+               "def Volume \"Fog\"\n{\n"
+               "    double3 xformOp:translate = (-1.6, -1.6, -5)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+               "    rel field:density = </Fog/density>\n"
+               "    float primvars:athenea:densityScale = 0.2166\n"
+               "    color3f primvars:athenea:albedo = (1, 1, 1)\n"
+               "    def OpenVDBAsset \"density\"\n    {\n"
+               "        asset filePath = @" << vdb.string() << "@\n"
+               "        token fieldName = \"density\"\n    }\n}\n";
+    }
+    const uint32_t w = 81, h = 61;
+    const auto frame = [&](uint32_t perPass) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setPathSamples(perPass);
+        (*renderer)->setPathBounces(4);
+        (*renderer)->setPathTotal(64);
+        auto image = (*renderer)->render(frontCamera(), 1.0, w, h, "rt");
+        if (!image) FAIL(image.error().toString());
+        return upload(*gpu, *image);
+    };
+    gpu::Buffer onePass = frame(64);
+    gpu::Buffer manyPasses = frame(1);
+    auto kernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/coverage_check", "coverageHoles");
+    if (!kernel) FAIL(kernel.error().toString());
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 4, "coverage.counts");
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        kernel->dispatch(batch, {w * h, 1, 1}, [&](rhi::ShaderCursor c) {
+            c["coverage"]["pixels"].setData(w * h);
+            c["a"].setBinding(manyPasses.rhi());
+            c["b"].setBinding(onePass.rhi());
+            c["counts"].setBinding(counts.rhi());
+        });
+        REQUIRE(batch.submit(true));
+    }
+    uint32_t c[4] = {};
+    REQUIRE(counts.read(*gpu->device, 0, sizeof(c), c));
+    std::printf("  64 passes of 1 path against 1 pass of 64: %u pixels empty in the first and over half covered "
+                "in the second, %u the other way; %u over half covered\n",
+                c[0], c[1], c[2]);
+    CHECK(c[2] > 1000);
+    CHECK(c[0] == 0);
+    CHECK(c[1] == 0);
+}

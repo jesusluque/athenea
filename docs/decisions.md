@@ -3492,6 +3492,31 @@ draws, 8.4 million states sorted on the device and counted where neighbours
 are equal: 64 repeated states keyed (one pair of colliding keys; two pairs
 expected at 32-bit birthday odds), 42289 with the legacy LCG.
 
+### A frame of volumes alone, over many passes
+
+The vdb2splat measurements found a path traced smoke not converging: the
+original at 4096 paths against itself at 16384 read masked relMSE 0.21, as
+512 against 4096 did. The frame was deterministic; what changed with the
+path count was *which* pixels showed: holes in a smooth region, specks in an
+empty one. The path tracer wrote each pass's depth over the frame's, and a
+pixel whose last pass met nothing (all its samples passed through) read as
+uncovered however many passes before it had, since the composite takes its
+coverage from that depth. A frame with surfaces hides it -- they give every
+pixel a depth -- but in a frame of volumes alone a thin medium's pixel is
+often missed by a whole pass. The depth is now kept from the frame where a
+pass meets nothing.
+
+**Checked** (`[usd][volume][passes]`): a scattering box under a sun and
+nothing else, optical depth ln 2 along the camera's rays, at 64 paths in one
+pass and in 64 passes of one: before the fix 1196 pixels empty in the
+many passes' frame that the one pass covers over half (that frame had 1352
+pixels over half covered; 2450 after), after it none. smoke2 (vdb2splat's
+E1b setup, x1, a normalized sun, 512 x 512, 4 bounces, masked to alpha >=
+0.01) against its own 16384-path frame: relMSE 0.2117 at 1024 paths and 0.2077 at 4096 before; 8.26e-4 and 1.64e-4 after,
+a ratio of 5.03 where independent paths give (1/1024 - 1/16384) / (1/4096 -
+1/16384) = 5. Frame times are the same (10.7 s / 26.7 s / 90.4 s before,
+10.3 s / 27.3 s / 95.8 s after, wall clock with loading, one run each).
+
 ## End to end: Kitchen_set lit, and two defects only a real stage showed
 
 The plan closes with real stages through `athenea stage`. Kitchen_set with the

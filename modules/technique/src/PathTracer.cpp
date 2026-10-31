@@ -3035,7 +3035,13 @@ R"(            // deep before the ray is out again, and at the default of one
     sum[at] = now;
     const float total_samples = before + float(samples);
     colour[at] = total_samples > 0.0 ? now / total_samples : float4(0.0);
-    depth[at] = hitDepth;
+    // The depth a pass found, or -- a pass whose samples all passed through
+    // (a medium's pixel often is one) -- the one the frame had. Written as
+    // found, a pixel whose last pass met nothing read as uncovered however
+    // many passes before it had: the composite took its depth for its
+    // coverage, and a thin medium's frame stopped converging with its path
+    // count -- which pixels showed depended on what the last pass drew.
+    depth[at] = hitDepth > 0.0 || path.accumulated == 0 ? hitDepth : depth[at];
     endGroups(at, pixels, groups, alpha, total_samples);
     // The luminance's second moment. Whether the pixel stops is decided by
     // pathDecide, after the pass, where its neighbours' spread can be read
