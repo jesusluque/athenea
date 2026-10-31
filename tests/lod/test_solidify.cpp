@@ -202,3 +202,51 @@ TEST_CASE("a sphere of flat gaussians solidifies onto the sphere, and draws as i
         CHECK(diff->p99 <= 4);
     }
 }
+
+// TWO FACES OF A THIN PIECE, nearer than a blob reaches: each stays on its
+// own face, with its own normal, and none merges with the other's.
+TEST_CASE("the two faces of a thin plate stay two", "[lod][gpu][ssf]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto solidifier = lod::Solidifier::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!solidifier) FAIL(solidifier.error().toString());
+    constexpr uint32_t kSide = 60;
+    const float spacing = 1.0F / kSide;
+    const float gap = 0.5F * spacing;   // the faces 0.25 of a blob's reach apart
+    test::CloudBuilder b;
+    for (const float side : {1.0F, -1.0F}) {
+        for (uint32_t j = 0; j < kSide; ++j) {
+            for (uint32_t i = 0; i < kSide; ++i) {
+                const float x = (i + 0.5F) * spacing - 0.5F, y = (j + 0.5F) * spacing - 0.5F;
+                const float s = 0.6F * spacing;
+                // +z as it is, -z turned half round x.
+                b.add(x, y, side * 0.5F * gap, 0.95F, s, s, 0.05F * s,
+                      side > 0 ? std::array<float, 4>{1, 0, 0, 0} : std::array<float, 4>{0, 1, 0, 0},
+                      {0.6F, 0.6F, 0.6F});
+            }
+        }
+    }
+    auto cloud = loader->upload(b.raw, 0);
+    REQUIRE(cloud);
+    auto result = solidifier->solidify(*cloud);
+    if (!result) FAIL(result.error().toString());
+    const uint32_t face = kSide * kSide;
+    const std::array<uint32_t, 4> plate =
+        counted(*gpu, "ssfPlateCheck", result->solid.blobs, [&](rhi::ShaderCursor c) {
+            c["sources"].setBinding(result->solidSource.rhi());
+            c["blobPositions"].setBinding(result->solid.positions.rhi());
+            c["blobNormals"].setBinding(result->normals.rhi());
+            c["params"]["surface"].setData(face);
+            c["params"]["off"].setData(0.5F * gap);
+            c["params"]["lean"].setData(1.0e-3F);
+        });
+    std::printf("  thin plate, gap %.4f (a quarter of a blob's reach): %u absorbed of %u, %u blobs; off their face: "
+                "%u; inside, normals off theirs by more than 2.6 deg: %u of %u\n",
+                gap, result->coherent, 2 * face, result->solid.blobs, plate[0], plate[1], plate[3]);
+    CHECK(result->coherent == 2 * face);
+    CHECK(result->solid.blobs == 2 * face);   // nothing merged across
+    CHECK(plate[2] == result->solid.blobs);
+    CHECK(plate[0] == 0);
+    CHECK(plate[1] == 0);
+}

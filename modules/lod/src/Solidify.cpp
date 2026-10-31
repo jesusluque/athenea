@@ -416,6 +416,7 @@ Result<SolidifyResult> Solidifier::solidify(const scene::GpuSplats& cloud, const
         ATHENEA_TRY(batch.submit(true));
     }
     result.solid = layerOf(*layer3, *m3);
+    result.solid.normals = layer3->normals;
     result.normals = std::move(layer3->normals);
     result.solidSource = std::move(*source3);
     log::info("solidify: {} gaussians, {} candidates, {} absorbed ({:.1f} %), {} blobs after merging, {} residuals", n,

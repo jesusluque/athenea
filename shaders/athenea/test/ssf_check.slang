@@ -23,6 +23,7 @@ struct SsfCheckParams {
 RWStructuredBuffer<float4> blobPositions;
 RWStructuredBuffer<uint>   blobShape;   ///< 4 words a blob
 RWStructuredBuffer<uint>   anchors;     ///< 4 words an anchor
+RWStructuredBuffer<uint>   blobNormals; ///< packNormal a blob
 RWStructuredBuffer<uint>   wrong;       ///< [0] words changed by a repack, [1] blob fields off, [2] anchor fields off, [3] read
 ConstantBuffer<SsfCheckParams> params;
 
@@ -76,6 +77,7 @@ void ssfGenerate(uint3 tid: SV_DispatchThreadID) {
         [unroll] for (uint k = 0; k < 4; ++k) {
             blobShape[i * 4 + k] = shape[k];
         }
+        blobNormals[i] = packNormal(normalize(float3(unit(i, 12), unit(i, 13), unit(i, 14)) * 2.0 - 1.0 + 1.0e-3));
     }
     if (i < params.anchors) {
         const uint4 w = packAnchor(generatedAnchor(i));

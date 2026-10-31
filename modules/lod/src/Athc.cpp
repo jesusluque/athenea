@@ -119,14 +119,17 @@ struct SolidHeader {
     uint32_t blobBytes;     // 32
     uint32_t anchorBytes;   // 16
     uint32_t pad;
-    uint64_t blobsAt;       // page-aligned: positions[blobs], then shape[blobs]
+    uint64_t blobsAt;       // page-aligned: positions[blobs], shape[blobs], normals[blobs]
     uint64_t anchorsAt;     // page-aligned: anchors[anchors]
 };
 static_assert(sizeof(SolidHeader) == 40);
 constexpr uint64_t kSolidHeaderAt = kExtraHeaderAt + sizeof(ExtraHeader);
 static_assert(kSolidHeaderAt + sizeof(SolidHeader) <= kPage, "the solid header lies in page 0, before the level table");
-constexpr uint32_t kSolidVersion = 1;
-constexpr uint32_t kBlobBytes = 32;
+/// 2: a blob carries its normal, one packNormal word after its shape (the
+/// user's decision of 31 Oct). Version 1 (no normal) was never written but by
+/// this branch's tests.
+constexpr uint32_t kSolidVersion = 2;
+constexpr uint32_t kBlobBytes = 36;
 constexpr uint32_t kAnchorBytes = 16;
 
 /// A member of a cloud, as a pointer: named once, since MSVC does not parse
@@ -414,6 +417,9 @@ Result<LodCloud> openCloud(gpu::Device& device, const platform::MappedFile& file
         if (!shape) return std::move(shape).error();
         auto anchors = deviceBuffer(device, uint64_t{sh.anchors} * 4, 4, "athc.anchors", base + sh.anchorsAt);
         if (!anchors) return std::move(anchors).error();
+        auto normals = deviceBuffer(device, sh.blobs, 4, "athc.solid", blobs + uint64_t{sh.blobs} * 32);
+        if (!normals) return std::move(normals).error();
+        lod.solid.normals = std::move(*normals);
         lod.solid.blobs = sh.blobs;
         lod.solid.anchors = sh.anchors;
         lod.solid.positions = std::move(*positions);
@@ -513,9 +519,9 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
         }
     }
     const SolidLayer& solid = cloud.solid;
-    if (solid.present() &&
-        (solid.anchors == 0 || !solid.positions.valid() || !solid.shape.valid() || !solid.anchorWords.valid())) {
-        return Error(ErrorCode::InvalidArgument, "a solid layer's blobs need their anchors and all three buffers");
+    if (solid.present() && (solid.anchors == 0 || !solid.positions.valid() || !solid.shape.valid() ||
+                            !solid.anchorWords.valid() || !solid.normals.valid())) {
+        return Error(ErrorCode::InvalidArgument, "a solid layer's blobs need their anchors, normals and all buffers");
     }
     const uint32_t shWords = cloud.splats.shWords;
     // Normals are written only where every level keeps them as the splats do.
@@ -675,6 +681,7 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
         padTo(sh.blobsAt);
         ATHENEA_TRY(copy(solid.positions, 0, uint64_t{solid.blobs} * 16));
         ATHENEA_TRY(copy(solid.shape, 0, uint64_t{solid.blobs} * 16));
+        ATHENEA_TRY(copy(solid.normals, 0, uint64_t{solid.blobs} * 4));
         padTo(sh.anchorsAt);
         ATHENEA_TRY(copy(solid.anchorWords, 0, uint64_t{solid.anchors} * 16));
     }

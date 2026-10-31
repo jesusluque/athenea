@@ -350,6 +350,37 @@ athenea decimate car_tx.usdc car_tx_10x.usdc --ratio 10
 athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 --ratio 2.7
 ```
 
+### 2.4.2 `athenea solidify` — las superficies opacas de una nube como capa sólida (SSF)
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `input` | ruta, obligatoria | — | una escena (`.usd`, `.usda`, `.usdc`: su primer ParticleField gaussiano) |
+| `output` | ruta, obligatoria | — | `.usda`, `.usdc`, `.usd` |
+| `--prim` | ruta | el primero | el ParticleField que leer, donde una escena tiene más de uno |
+| `--degree` | 0..3 | `3` | armónicos que se conservan |
+| `--opacity-min` | 0..1 | `0.5` | una gaussiana menos opaca que esto queda residual |
+| `--flat-max` | 0..1 | `0.25` | una gaussiana cuya escala fina pase de esto de la media queda residual |
+| `--coherence-min` | 0..1 | `0.9` | un blob cuyos vecinos concuerdan con su normal menos que esto (la media ponderada de \|n·n'\|), o con menos de dos vecinos, vuelve a los residuales |
+| `--radius-scale` | 0.5..8 | `2` | el soporte de un blob sobre la escala de su gaussiana |
+| `--thickness` | 0.01..4 | `0.5` | el grosor del ancla (el semieje normal del blob) sobre el radio medio de los candidatos |
+| `--thin-ratio` | 0.001..1 | `0.1` | Modo A: el eje fino de un blob dibujado sobre su radio menor |
+
+Las gaussianas que describen una superficie opaca -- opacas, planas, que no
+son vidrio (transmisión por encima de la mitad, o una lámina fina) y cuyos
+vecinos concuerdan en la normal -- pasan a ser blobs de un campo sumado ligado
+a la superficie (`docs/decisions.md`, Solid splats); el resto se queda como
+está, la capa residual. La salida es el Modo A: los blobs dibujados como
+gaussianas planas, luego los residuales, escritos en una copia de la escena
+como la escribe `athenea decimate`; cualquier otro array que lleve el campo
+(material, transfer, direcciones abiertas, normal de sombreado, ids) es el de
+la gaussiana de origen de cada salida. Imprime los recuentos -- candidatas,
+absorbidas, blobs, residuales --, el tiempo de la lectura, la solidificación
+y la escritura, y el tamaño de los dos ficheros.
+
+```sh
+athenea solidify clouds/M_Pawn_Body_W.usdc ssf/M_Pawn_Body_W.usdc
+```
+
 ### 2.5 `athenea stage` — una escena USD por el delegate de Hydra
 
 | Opción | Valor | Por defecto | Notas |
@@ -1368,11 +1399,11 @@ grupo fundido de más de una es plano (cero). Una nube con capa sólida (SSF:
 blobs ligados al conjunto cero de un campo sumado, y sus gaussianas entonces
 los residuales) la guarda bajo el bit 7: una cabecera sólida de cuarenta
 bytes en el byte 136, tras el sitio de la cabecera extra, la haya o no -- su
-versión (1), sus blobs y anclas, de 32 y 16 bytes cada uno, y dónde están --
+versión (2), sus blobs y anclas, de 36 y 16 bytes cada uno, y dónde están --
 y su sección tras los chunks, alineada a página: la posición y el peso de
 cada blob (float4), luego las cuatro palabras de forma de cada blob (log f16
 de los dos radios tangentes, color base f16, theta entre pi como unorm16, el
-índice de su ancla), luego las anclas (grosor y k del smooth-min en float32,
+índice de su ancla), luego la normal de cada blob (una palabra `packNormal`), luego las anclas (grosor y k del smooth-min en float32,
 la entrada de la apariencia en el codebook o `0xFFFFFFFF`, flags). La capa es
 de la nube entera, sin niveles ni chunks propios; un stream la lee al abrir.
 Una cabecera sólida de otra versión, o cuyos blobs o anclas pasarían del

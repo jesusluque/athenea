@@ -52,3 +52,29 @@ void ssfSphereCheck(uint3 tid: SV_DispatchThreadID) {
     InterlockedAdd(wrong[2], 1u);
     InterlockedMax(wrong[3], uint(min(off, 4000.0) * 1.0e6));
 }
+
+/// A THIN PLATE: the first `surface` gaussians its top face at z = +off
+/// (normal +z), the rest its bottom at -off (normal -z). How many blobs left
+/// their face by more than a tenth of the gap, and how many inside the plate
+/// (|x|, |y| < 0.4) lean off their face's normal by more than `lean`.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void ssfPlateCheck(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x >= params.count) {
+        return;
+    }
+    const bool top = sources[tid.x] < params.surface;
+    const float3 p = blobPositions[tid.x].xyz;
+    const float face = top ? params.off : -params.off;
+    if (!(abs(p.z - face) <= 0.1 * params.off)) {
+        InterlockedAdd(wrong[0], 1u);
+    }
+    if (abs(p.x) < 0.4 && abs(p.y) < 0.4) {
+        const float3 n = unpackNormal(blobNormals[tid.x]);
+        if (!(1.0 - n.z * (top ? 1.0 : -1.0) <= params.lean)) {
+            InterlockedAdd(wrong[1], 1u);
+        }
+        InterlockedAdd(wrong[3], 1u);
+    }
+    InterlockedAdd(wrong[2], 1u);
+}

@@ -121,6 +121,14 @@ public uint gridLowerBound(uint key, uint count) {
 /// (grad F, F) at x through the grid: -tau exactly and no gradient where no
 /// blob reaches.
 public float4 fieldAt(float3 x, float tau) {
+    return fieldFacing(x, tau, float3(0.0), false);
+}
+
+/// The same, from the blobs facing the side `facing` faces alone (n . facing
+/// > 0): one face's field, which the other face of a thin piece -- its
+/// normals the other way -- does not reach into. What solidifying weighs,
+/// moves and turns a blob by, so that two faces near each other stay two.
+public float4 fieldFacing(float3 x, float tau, float3 facing, bool oneSide) {
     float4 field = float4(0.0);
     const uint count = uint(gridInfo[kGridCount]);
     const uint level = uint(gridInfo[kGridLevel]);
@@ -139,7 +147,10 @@ public float4 fieldAt(float3 x, float tau) {
                 const uint code = cellCode(uint3(cell)) << shift;
                 const uint end = level == 0 ? count : gridLowerBound(code + (1u << shift), count);
                 for (uint j = gridLowerBound(code, count); j < end; ++j) {
-                    addBlob(fieldBlob(gridOrder[j]), x, field);
+                    const FieldBlob f = fieldBlob(gridOrder[j]);
+                    if (!oneSide || dot(f.n, facing) > 0.0) {
+                        addBlob(f, x, field);
+                    }
                 }
             }
         }

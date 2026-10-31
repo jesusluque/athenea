@@ -62,6 +62,9 @@ struct SolidLayer {
     gpu::Buffer positions;   ///< float4 per blob: xyz, weight
     gpu::Buffer shape;       ///< 4 uint per blob: log radii, colour, theta, anchor
     gpu::Buffer anchorWords; ///< 4 uint per anchor: thickness, smooth-min k, appearance, flags
+    /// packNormal a blob: stored for now (the user's decision of 31 Oct; phase 4
+    /// measures whether it can be derived from the field and dropped).
+    gpu::Buffer normals;
 
     [[nodiscard]] bool present() const noexcept { return blobs > 0; }
 };

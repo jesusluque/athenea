@@ -60,6 +60,7 @@ lod::SolidLayer generated(test::Gpu& gpu) {
     solid.positions = deviceWords(*gpu.device, kBlobs, 16, "test.solid.positions");
     solid.shape = deviceWords(*gpu.device, uint64_t{kBlobs} * 4, 4, "test.solid.shape");
     solid.anchorWords = deviceWords(*gpu.device, uint64_t{kAnchors} * 4, 4, "test.solid.anchors");
+    solid.normals = deviceWords(*gpu.device, kBlobs, 4, "test.solid.normals");
     static gpu::ComputeKernel kGenerate = ssfKernel(gpu, "ssfGenerate");
     gpu::Buffer unused = test::uintBuffer(*gpu.device, 4, "test.solid.wrong");
     gpu::CommandBatch batch(*gpu.device);
@@ -67,6 +68,7 @@ lod::SolidLayer generated(test::Gpu& gpu) {
         c["blobPositions"].setBinding(solid.positions.rhi());
         c["blobShape"].setBinding(solid.shape.rhi());
         c["anchors"].setBinding(solid.anchorWords.rhi());
+        c["blobNormals"].setBinding(solid.normals.rhi());
         c["wrong"].setBinding(unused.rhi());
         c["params"]["blobs"].setData(kBlobs);
         c["params"]["anchors"].setData(kAnchors);
@@ -85,6 +87,7 @@ std::array<uint32_t, 4> packCheck(test::Gpu& gpu, const lod::SolidLayer& solid) 
     kCheck.dispatch(batch, {std::max(solid.blobs, solid.anchors), 1, 1}, [&](rhi::ShaderCursor c) {
         c["blobPositions"].setBinding(solid.positions.rhi());
         c["blobShape"].setBinding(solid.shape.rhi());
+        c["blobNormals"].setBinding(solid.normals.rhi());
         c["anchors"].setBinding(solid.anchorWords.rhi());
         c["wrong"].setBinding(wrong.rhi());
         c["params"]["blobs"].setData(solid.blobs);
@@ -104,7 +107,8 @@ uint64_t wordsApart(test::Gpu& gpu, const lod::SolidLayer& a, const lod::SolidLa
     uint64_t off = 0;
     for (const auto& [x, y, words] : {std::tuple{&a.positions, &b.positions, a.blobs * 4},
                                       std::tuple{&a.shape, &b.shape, a.blobs * 4},
-                                      std::tuple{&a.anchorWords, &b.anchorWords, a.anchors * 4}}) {
+                                      std::tuple{&a.anchorWords, &b.anchorWords, a.anchors * 4},
+                                      std::tuple{&a.normals, &b.normals, a.blobs}}) {
         auto different = render::countDifferent(*gpu.library, *x, *y, words);
         REQUIRE(different);
         off += *different;
@@ -211,12 +215,12 @@ TEST_CASE("a solid layer goes through a .athc word for word, whole and streamed"
     }
     SECTION("a solid header this reader does not read is refused, saying why") {
         const uint32_t version = wordAt(solidPath, kSolidAt);
-        REQUIRE(version == 1);
-        patchWord(solidPath, kSolidAt, 2);
+        REQUIRE(version == 2);
+        patchWord(solidPath, kSolidAt, 3);
         auto later = lod::readAthc(*gpu->device, solidPath);
         REQUIRE_FALSE(later);
-        CHECK(later.error().toString().find("solid layer version 2, this reads 1") != std::string::npos);
-        patchWord(solidPath, kSolidAt, 1);
+        CHECK(later.error().toString().find("solid layer version 3, this reads 2") != std::string::npos);
+        patchWord(solidPath, kSolidAt, 2);
         patchWord(solidPath, kSolidAt + 4, 0x7FFFFFFFu);   // blobs past the end
         auto past = lod::readAthc(*gpu->device, solidPath);
         REQUIRE_FALSE(past);

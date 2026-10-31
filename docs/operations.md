@@ -342,6 +342,36 @@ athenea decimate car_tx.usdc car_tx_10x.usdc --ratio 10
 athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 --ratio 2.7
 ```
 
+### 2.4.2 `athenea solidify` — a cloud's opaque surfaces as a solid layer (SSF)
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `input` | path, required | — | a stage (`.usd`, `.usda`, `.usdc`: its first gaussian ParticleField) |
+| `output` | path, required | — | `.usda`, `.usdc`, `.usd` |
+| `--prim` | path | the first | the ParticleField to read, where a stage has more than one |
+| `--degree` | 0..3 | `3` | harmonics kept |
+| `--opacity-min` | 0..1 | `0.5` | a gaussian less opaque than this stays residual |
+| `--flat-max` | 0..1 | `0.25` | a gaussian whose thin scale is more than this of its middle one stays residual |
+| `--coherence-min` | 0..1 | `0.9` | a blob whose neighbours' normals agree with its own less than this (the weighted mean of \|n·n'\|), or that has fewer than two neighbours, goes back to the residuals |
+| `--radius-scale` | 0.5..8 | `2` | a blob's support over its gaussian's scale |
+| `--thickness` | 0.01..4 | `0.5` | the anchor's thickness (the blob's normal half-axis) over the candidates' mean middle radius |
+| `--thin-ratio` | 0.001..1 | `0.1` | Mode A: a drawn blob's thin axis over its smaller radius |
+
+The gaussians that describe an opaque surface -- opaque, flat, not glass
+(transmission over a half, or a thin sheet), and whose neighbours' normals
+agree -- become blobs of a summed field bound to the surface
+(`docs/decisions.md`, Solid splats); the rest stay as they are, the residual
+layer. The output is Mode A: the blobs drawn as flat gaussians, then the
+residuals, written into a copy of the stage as `athenea decimate` writes one;
+every other array the field carries (material, transfer, open directions,
+shading normal, ids) is each output's source gaussian's. It prints the counts
+-- candidates, absorbed, blobs, residuals --, the time of the read, the
+solidification and the write, and both files' sizes.
+
+```sh
+athenea solidify clouds/M_Pawn_Body_W.usdc ssf/M_Pawn_Body_W.usdc
+```
+
 ### 2.5 `athenea stage` — a USD stage through the Hydra delegate
 
 | Option | Value | Default | Notes |
@@ -1330,11 +1360,11 @@ word is 1, and a merged group of more than one is flat (zero). A cloud with
 a solid layer (SSF: blobs bound to the zero set of a summed field, its
 gaussians then the residuals) keeps it under bit 7: a solid header of forty
 bytes at byte 136, after the extra header's place whether or not one is
-there -- its version (1), its blobs and anchors, 32 and 16 bytes each, and
+there -- its version (2), its blobs and anchors, 36 and 16 bytes each, and
 where they are -- and its section after the chunks, page-aligned: every
 blob's position and weight (float4), then every blob's four words of shape
 (f16 log of the two tangent radii, f16 base colour, theta over pi as unorm16,
-the anchor's index), then the anchors (float32 thickness and smooth-min k,
+the anchor's index), then every blob's normal (one `packNormal` word), then the anchors (float32 thickness and smooth-min k,
 the appearance's codebook entry or `0xFFFFFFFF`, flags). The layer is the
 cloud's as a whole, with no levels or chunks of its own; a stream reads it
 when it opens. A solid header of another version, or whose blobs or anchors

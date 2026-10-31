@@ -12,6 +12,7 @@
 #include "athenea/gpu/Buffer.h"
 #include "athenea/io/RawSplats.h"
 #include "athenea/lod/Lod.h"
+#include "athenea/lod/Solidify.h"
 #include "athenea/scene/GpuClouds.h"
 
 namespace athenea::gpu {
@@ -494,6 +495,30 @@ struct DecimateStageOptions {
 [[nodiscard]] Result<lod::DecimateStats> decimateStage(gpu::ShaderLibrary& library, const std::filesystem::path& input,
                                                        const std::filesystem::path& output,
                                                        const DecimateStageOptions& options = {});
+
+/// What `solidifyStage` is asked (SSF phase 2b, `athenea solidify`).
+struct SolidifyStageOptions {
+    std::string            prim;        ///< the ParticleField to read; empty for the first
+    uint32_t               degree = 3;  ///< harmonics kept
+    lod::SolidifySettings  settings;
+};
+
+/// What it did: counts, and the time of each part (wall clock, every stage of
+/// the device waited for).
+struct SolidifyStageStats {
+    uint32_t gaussians = 0, candidates = 0, absorbed = 0, blobs = 0, residuals = 0;
+    double   readSeconds = 0.0, solidifySeconds = 0.0, writeSeconds = 0.0;
+};
+
+/// A STAGE'S CLOUD SOLIDIFIED, DRAWN AS MODE A: its ParticleField (`prim`, or
+/// the first) solidified by lod::Solidifier, and written into a copy of the
+/// stage (`writeDecimatedStage`) as the blobs drawn as flat gaussians and then
+/// the residuals, every other array of the field taken from the gaussian
+/// each came from -- a TX cloud's appearance carried so, until the anchors'
+/// codebook (phase 4).
+[[nodiscard]] Result<SolidifyStageStats> solidifyStage(gpu::ShaderLibrary& library, const std::filesystem::path& input,
+                                                       const std::filesystem::path& output,
+                                                       const SolidifyStageOptions& options = {});
 
 /// One level of a cloud converted at several cells: the stage it was written
 /// to (its cloud at /World/Splats) and its cell, in its own units.

@@ -42,6 +42,7 @@ void addRender(CLI::App& app);
 void addBench(CLI::App& app);
 void addConvert(CLI::App& app);
 void addDecimate(CLI::App& app);
+void addSolidify(CLI::App& app);
 void addMigrate(CLI::App& app);
 void addStage(CLI::App& app);
 void addAofx(CLI::App& app);

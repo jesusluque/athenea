@@ -16553,3 +16553,13 @@ unit sphere, 1500 round ones in a shell round it and 300 flat ones alone and tur
 | size a primitive, raw | a blob 32 B + 4 B of stored normal = 36 B (+ 4 B of source index while Mode A carries TX by it), against a gaussian's 32 B + harmonics (4 B at degree 0, as here; 96 B at 3) + its extras; on a TX cloud the transfer dominates both, which this layer does not touch yet |
 
 The release timings and sizes that count are phase 2b's, on the pawn.
+
+**The solid header is version 2**: a blob carries its normal, one `packNormal` word after its shape (36 B a
+blob in the file); version 1, which had none, was written by this branch's tests alone and is refused.
+
+**Two faces of a thin piece** (a pawn's base, a car's panel) lie nearer than a blob reaches, their normals
+apart. The weights, the ridge and the normals read the field of the blobs facing a blob's own way alone
+(`fieldFacing`), and a merge needs normals of one sign. Checked on a plate of two 60 × 60 faces a quarter of
+a blob's reach apart: all 7200 absorbed, 7200 blobs (none merged across), none off its face by a tenth of the
+gap, no normal inside the plate off its face's by 2.6°. What a field summed over both faces draws (Mode B)
+is not settled by this.

@@ -26,7 +26,14 @@
 //   ssfNormals     each normal the field's gradient on the outer zero set,
 //                  signed as it was
 //   ssfMerge       of two blobs nearer than a fraction of their radius whose
-//                  normals agree, the later is dropped
+//                  normals agree (in sign: two faces never merge), the later
+//                  is dropped
+//
+// TWO FACES OF A THIN PIECE (a pawn's base, a car's panel) lie closer than a
+// blob's reach, their normals apart: the weights, the ridge and the normals
+// read the field of the blobs facing the blob's own way alone
+// (ssf_field.slang's fieldFacing), so the faces neither blend nor move
+// toward each other.
 //
 // WHY A RIDGE AND NOT THE ZERO SET. A sheet of blobs centred on a surface
 // has its field's maximum on the sheet, so F = 0 is two sheets at +-delta,
@@ -222,7 +229,8 @@ void ssfWeights(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const float4 p = blobPositions[i];
-    const float sum = fieldAt(p.xyz, 0.0).w;   // C now, tau aside
+    const float3 n = unpackNormal(blobNormals[i]);
+    const float sum = fieldFacing(p.xyz, 0.0, n, true).w;   // C now, tau aside, this face's
     const float scaled = sum > 0.0 ? clamp(params.level / sum, 0.1, 10.0) : 1.0;
     outPositions[i] = float4(p.xyz, p.w * scaled);
 }
@@ -239,9 +247,9 @@ void ssfRidge(uint3 tid: SV_DispatchThreadID) {
     // Newton on g(t) = dF/dn along the normal: the second derivative by a
     // difference of gradients a tenth of c apart.
     const float h = 0.1 * c;
-    const float g = dot(fieldAt(f.centre, params.tau).xyz, f.n);
-    const float gp = dot(fieldAt(f.centre + h * f.n, params.tau).xyz, f.n);
-    const float gm = dot(fieldAt(f.centre - h * f.n, params.tau).xyz, f.n);
+    const float g = dot(fieldFacing(f.centre, params.tau, f.n, true).xyz, f.n);
+    const float gp = dot(fieldFacing(f.centre + h * f.n, params.tau, f.n, true).xyz, f.n);
+    const float gm = dot(fieldFacing(f.centre - h * f.n, params.tau, f.n, true).xyz, f.n);
     const float curvature = (gp - gm) / (2.0 * h);
     float step = curvature < 0.0 ? -g / curvature : 0.0;   // a maximum: F curves down
     step = clamp(step, -0.5 * c, 0.5 * c);
@@ -259,7 +267,7 @@ void ssfNormals(uint3 tid: SV_DispatchThreadID) {
     const float c = 1.0 / f.inverseAxes.z;
     // The outer zero set, where the field's gradient is the surface's normal.
     const float delta = c * sqrt(max(1.0 - pow(params.tau / params.level, 1.0 / 3.0), 0.0));
-    const float3 g = fieldAt(f.centre + delta * f.n, params.tau).xyz;
+    const float3 g = fieldFacing(f.centre + delta * f.n, params.tau, f.n, true).xyz;
     const float len = length(g);
     float3 n = f.n;
     if (len > 0.0) {
@@ -283,7 +291,7 @@ void ssfMerge(uint3 tid: SV_DispatchThreadID) {
         if (j < i && kept) {
             const FieldBlob b = fieldBlob(j);
             const float reach = params.mergeFraction * min(own, min(1.0 / b.inverseAxes.x, 1.0 / b.inverseAxes.y));
-            if (length(b.centre - a.centre) < reach && abs(dot(a.n, b.n)) > 0.95) {
+            if (length(b.centre - a.centre) < reach && dot(a.n, b.n) > 0.95) {   // one face: the same sign
                 kept = false;
             }
         }

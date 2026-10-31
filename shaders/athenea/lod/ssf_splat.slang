@@ -81,3 +81,23 @@ void ssfGather(uint3 tid: SV_DispatchThreadID) {
         }
     }
 }
+
+StructuredBuffer<uint>   srcWords;
+RWStructuredBuffer<uint> dstWords;
+
+/// Any array a gaussian long, `geometry` words each (reused as the width):
+/// each output's from its source's -- what a stage's other arrays (material,
+/// transfer, ids) do when a cloud is written as Mode A.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void ssfGatherWords(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    const uint w = params.geometry;
+    const uint s = sources[i];
+    for (uint k = 0; k < w; ++k) {
+        dstWords[(params.first + i) * w + k] = srcWords[s * w + k];
+    }
+}
