@@ -18,8 +18,9 @@
 //    closed form against ratio tracking through a grid (medium.slang).
 //  - vsExport: the gaussians in the world, as a ParticleField's records.
 //
-// A gaussian record is four float4s in the grid's index space (a voxel ijk
-// spans [ijk, ijk + 1)): (centre, sigma), (A00, A10, A11, A20), (A21, A22,
+// A gaussian record is four float4s in the fit's frame, the grid's index
+// space shifted by half a voxel (a voxel ijk spans [ijk, ijk + 1), its value
+// at ijk + 0.5): (centre, sigma), (A00, A10, A11, A20), (A21, A22,
 // temperature, Cd rgba8), (half extents of its box, alive). A is the lower
 // Cholesky factor of the precision: G(x) = exp(-|A^T (x - mu)|^2 / 2),
 // stopped at 3.5 deviations as the fit stops it.
@@ -69,6 +70,10 @@ static const uint kNone = 0xFFFFFFFFu;
 static const float kReach = 3.5;
 static const float kReachQ = kReach * kReach;
 static const uint kLeafEntries = 513;
+/// A voxel's value stands at its index point ijk (OpenVDB's and the medium's
+/// convention, medium.slang); the fit puts it at ijk + 0.5. A record's
+/// centre less this is in the grid's index space.
+static const float kVoxelCentre = 0.5;
 
 // --- The tree -----------------------------------------------------------------------
 
@@ -581,7 +586,7 @@ void vsRays(uint3 tid: SV_DispatchThreadID) {
         const float4 r0 = gaussians[g * 4 + 0];
         const float4 r1 = gaussians[g * 4 + 1];
         const float4 r2 = gaussians[g * 4 + 2];
-        tau += r0.w * lineIntegral(r0.xyz, r1.x, r1.y, r1.z, r1.w, r2.x, r2.y, oi, di, 0.0, len);
+        tau += r0.w * lineIntegral(r0.xyz - kVoxelCentre, r1.x, r1.y, r1.z, r1.w, r2.x, r2.y, oi, di, 0.0, len);
     }
     tau *= r.sigmaScale;
     const float tMix = exp(-tau);
@@ -676,7 +681,7 @@ void vsExport(uint3 tid: SV_DispatchThreadID) {
         axes[0][2] = -axes[0][2]; axes[1][2] = -axes[1][2]; axes[2][2] = -axes[2][2];
     }
     const float4 q = quaternionOf(axes);
-    const float3 position = indexToWorld(r0.xyz);
+    const float3 position = indexToWorld(r0.xyz - kVoxelCentre);
     const float meanStd = pow(scale.x * scale.y * scale.z, 1.0 / 3.0);
     const float opacity = 1.0 - exp(-r0.w * params.densityScale * 2.50662827 * meanStd);
     const float3 colour = unpackColour(r2.w);
