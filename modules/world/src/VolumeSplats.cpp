@@ -68,6 +68,8 @@ Result<VolumeSplats> VolumeSplats::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(v.export_, "vsExport"));
     ATHENEA_TRY(make(v.slots_, "vsSlots"));
     ATHENEA_TRY(make(v.flicker_, "vsFlicker"));
+    ATHENEA_TRY(make(v.exportPly_, "vsExportPly"));
+    ATHENEA_TRY(make(v.import_, "vsImportSplats"));
     return v;
 }
 
@@ -318,6 +320,33 @@ void VolumeSplats::exportRecords(gpu::CommandBatch& batch, const gpu::Buffer& ga
         c["exported"].setBinding(out.rhi());
         c["params"]["count"].setData(count);
         c["params"]["densityScale"].setData(densityScale);
+        setRows(c["params"], indexToWorld);
+    });
+}
+
+void VolumeSplats::exportPly(gpu::CommandBatch& batch, const gpu::Buffer& gaussians, uint32_t count,
+                             const std::array<double, 16>& indexToWorld, float densityScale,
+                             const gpu::Buffer& out) const {
+    exportPly_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) {
+        c["gaussians"].setBinding(gaussians.rhi());
+        c["exported"].setBinding(out.rhi());
+        c["params"]["count"].setData(count);
+        c["params"]["densityScale"].setData(densityScale);
+        setRows(c["params"], indexToWorld);
+    });
+}
+
+void VolumeSplats::importSplats(gpu::CommandBatch& batch, const gpu::Buffer& positions, const gpu::Buffer& shape,
+                                const gpu::Buffer& sh, uint32_t shWords, uint32_t restPerColour, uint32_t count,
+                                const std::array<double, 16>& indexToWorld, const gpu::Buffer& out) const {
+    import_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) {
+        c["splatPositions"].setBinding(positions.rhi());
+        c["splatShape"].setBinding(shape.rhi());
+        c["splatSh"].setBinding(sh.rhi());
+        c["recordsOut"].setBinding(out.rhi());
+        c["params"]["count"].setData(count);
+        c["params"]["shWords"].setData(shWords);
+        c["params"]["restPerColour"].setData(restPerColour);
         setRows(c["params"], indexToWorld);
     });
 }

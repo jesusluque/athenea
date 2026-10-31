@@ -790,21 +790,8 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
             if (!lod.streamed) {
                 return Error(ErrorCode::InvalidArgument, lod.splats.source + ": a cut needs a merged level");
             }
-            // A live stream's: nothing to cut to, its chunks on the device
-            // copied as they are into the frame's cloud.
-            Frame& frame = *frames_[k];
-            std::vector<const scene::GpuSplats*> clouds;
-            auto drawn = copyChunks(lod, frame, clouds);
-            if (!drawn) return std::move(drawn).error();
-            if (stats != nullptr) {
-                CutStats s;
-                s.splats = *drawn;
-                s.available = *drawn;
-                stats->push_back(std::move(s));
-            }
-            for (const scene::GpuSplats* cloud : clouds) {
-                out.push_back({cloud, instance.objectToWorld, instance.edit});
-            }
+            // A live stream's: nothing to cut; its chunks are copied as they
+            // are below, in the instances' order.
             continue;
         }
         Work w;
@@ -1122,8 +1109,26 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
             }
             continue;
         }
-        const Work& w = works[at++];
         const LodCloud& lod = *instance.cloud;
+        if (lod.levels.empty() && lod.streamed) {
+            // A live stream's chunks on the device copied as they are into
+            // the frame's cloud.
+            std::vector<const scene::GpuSplats*> clouds;
+            auto drawn = copyChunks(lod, *frames_[k], clouds);
+            if (!drawn) return std::move(drawn).error();
+            if (stats != nullptr) {
+                CutStats s;
+                s.splats = *drawn;
+                s.available = *drawn;
+                stats->push_back(std::move(s));
+            }
+            for (const scene::GpuSplats* cloud : clouds) {
+                out.push_back({cloud, instance.objectToWorld, instance.edit});
+                from.push_back(k);
+            }
+            continue;
+        }
+        const Work& w = works[at++];
         if (stats != nullptr) {
             CutStats s;
             s.splats = w.splatsDrawn;

@@ -572,6 +572,7 @@ exacta, la baja por el códec. La croma se queda en gris medio, así que el
 | `--rate` | frames por segundo | el de la secuencia, o 30 | se guarda en el fichero; `athenea stream` lo reproduce a ese ritmo |
 | `--hevc` | ruta | ninguna | el vídeo solo como Annex B, para `ffprobe`; sus imágenes son planos, no una imagen |
 | `--check` | flag | no | cada imagen se decodifica otra vez con el decodificador hardware, vuelve a gaussianas en el dispositivo y se mide contra su fuente |
+| `--each-a-frame` | flag | no | los ficheros de splats dados son una secuencia, cada fichero un frame en el orden dado; sin él son las páginas de un frame |
 
 **Tamaños.** Una imagen tiene como mucho 8192 x 8192 de área y 16384 de lado
 (el codificador hardware rechazó 10240 x 9600). Un frame cuyos planos
@@ -938,6 +939,8 @@ tracer dibuja como dibuja cualquier volumen.
 | `--warm-learning-rate` | número | `0.03` | el paso de Adam en un frame en caliente |
 | `--no-advect` | flag | apagado | un frame en caliente arranca donde el anterior dejó sus gaussianas |
 | `--dt` | número | `1` | frames sobre los que el flujo lleva las gaussianas, de un frame al siguiente |
+| `--cloud` | ruta con una tira de `#` | ninguna | una secuencia: las gaussianas de cada frame, todos los huecos (uno muerto es una mota de ln σ −30 en el origen, para que los huecos conserven su sitio), como PLY de 3DGS: posición, desviaciones y rotación en el mundo, el albedo como color base, ln σ en `f_rest_0` y la temperatura en `f_rest_1` (los dos primeros coeficientes de resto del rojo), la opacidad como la escribe `-o` para un visor. Lo que toma `video-encode --each-a-frame` |
+| `--from-athv` | `.athv` | ninguno | una secuencia: las gaussianas de cada frame decodificadas de este vídeo de splats de `--cloud` (en orden, con el decodificador hardware) en vez de ajustadas, y luego devueltas y juzgadas como un ajuste: el error de densidad frente al frame de `input`, el parpadeo, `--back`. `input` puede ser las grids que devolvió un ajuste, para juzgar el vídeo frente a la nube f32 |
 
 Una secuencia imprime, por frame: las gaussianas vivas, el error L2 relativo de la densidad devuelta, el tiempo del ajuste y, desde el segundo frame, el parpadeo -- sqrt(Σ((b₁ − b₀) − (o₁ − o₀))² / Σ(o₁ − o₀)²) sobre los vóxeles activos, lo que el cambio de un frame al siguiente de la grid devuelta tiene de mal frente al del original -- y cuántas de las gaussianas del frame anterior siguen vivas en el mismo hueco, y cuánto se movieron frente a su desviación media. `--measure` imprime también el error de la temperatura, ponderado por la densidad (la medida del propio ajuste: donde no hay densidad la temperatura de una gaussiana no dice nada) y sin ponderar. `--make-fixture blob-sequence` escribe `--frames` de la bola de ruido llevada por un flujo conocido -- un giro alrededor de su vertical de 2π/120 por frame y una subida de 0,3 vóxeles por frame --, cada uno con su `density` y su `vel` (unidades del mundo por frame).
 

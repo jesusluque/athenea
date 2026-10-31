@@ -29,6 +29,7 @@
 #include <string>
 #include <vector>
 
+#include "AthvFrames.h"
 #include "Commands.h"
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/CommandBatch.h"
@@ -54,8 +55,10 @@ struct InputFrame {
     std::vector<fs::path>  files;
 };
 
-/// The frames to encode: a pages directory's stream.txt, or the files as one.
-Result<std::vector<InputFrame>> inputFrames(const std::vector<std::string>& inputs, double& rate) {
+/// The frames to encode: a pages directory's stream.txt, or the files as one
+/// (`eachAFrame`: each file a frame of its own, in the order given).
+Result<std::vector<InputFrame>> inputFrames(const std::vector<std::string>& inputs, double& rate,
+                                            bool eachAFrame = false) {
     std::vector<InputFrame> frames;
     if (inputs.size() == 1 && fs::is_directory(inputs[0])) {
         const fs::path dir = inputs[0];
@@ -85,6 +88,13 @@ Result<std::vector<InputFrame>> inputFrames(const std::vector<std::string>& inpu
                 }
                 frames.push_back(std::move(f));
             }
+        }
+    } else if (eachAFrame) {
+        for (size_t k = 0; k < inputs.size(); ++k) {
+            InputFrame f;
+            f.files.emplace_back(inputs[k]);
+            f.time = static_cast<double>(k) / (rate > 0.0 ? rate : 30.0);
+            frames.push_back(std::move(f));
         }
     } else {
         InputFrame f;
@@ -600,6 +610,110 @@ void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::Planes
              static_cast<double>(asFloat(got[12])), got[13] * 1.0e-4 / std::max(count, 1u), p99);
 }
 
+/// AthvFrames: video-decode's loop, a source frame at a time.
+class AthvFramesImpl final : public AthvFrames {
+public:
+    gpu::Device*                                device = nullptr;
+    std::optional<video::PlanesCodec>           codec;
+    std::unique_ptr<video::AthvReader>          reader;
+    std::unique_ptr<video::VideoDecoder>        decoder;
+    std::unique_ptr<video::LumaTextures>        textures;
+    scene::GpuSplats                            store_;
+    gpu::Buffer                                 geometryState;
+    uint32_t                                    picture = 0;
+    std::vector<double>                         decodeTimes;
+
+    Result<uint32_t> next() override {
+        const video::AthvHeader& h = reader->header();
+        uint32_t splats = 0;
+        int64_t source = -1;
+        while (picture < reader->frames()) {
+            auto f = reader->read(picture);
+            if (!f) return std::move(f).error();
+            if (source >= 0 && f->source != static_cast<uint32_t>(source)) break;
+            source = f->source;
+            ++picture;
+            const auto t = std::chrono::steady_clock::now();
+            auto frame = decoder->decode(f->unit, f->parameterSets, f->keyframe);
+            if (!frame) return std::move(frame).error();
+            decodeTimes.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count());
+            auto layout = video::PlaneLayout::make(f->splats, h.bits, h.restPerColour, h.hiInVideo, h.chunkSplats,
+                                                   h.columns, h.maxSplats, 0, 0, h.chroma, h.geometry, h.layoutFold());
+            if (!layout) return std::move(layout).error();
+            layout->positionBlock = h.positionBlock;
+            layout->positionHighBits = h.positionHighBits;
+            layout->geometryPositionBits = h.geometryPositionBits;
+            layout->geometryScaleBits = h.geometryScaleBits;
+            layout->geometryRotationBits = h.geometryRotationBits;
+            layout->geometryMotion = h.geometryOrder == 3;
+            layout->positionTarget = h.positionTarget;
+            const uint32_t need = std::max(f->sourceSplats, f->firstSplat + f->splats);
+            if (store_.count < need) {
+                auto s = video::PlanesCodec::allocate(*device, need, h.restPerColour, "vdb2splat.decoded");
+                if (!s) return std::move(s).error();
+                store_ = std::move(*s);
+            }
+            auto side = sidePage(*device, f->ranges, f->high, f->geometry);
+            if (!side) return std::move(side).error();
+            auto luma = textures->wrap(**frame);
+            if (!luma) return std::move(luma).error();
+            gpu::CommandBatch batch(*device);
+            if (h.geometry) {
+                if (!geometryState.valid()) {
+                    gpu::BufferDesc desc;
+                    desc.bytes = std::max<uint64_t>(uint64_t{reader->mostSourceSplats()} * 32, 32);
+                    desc.elementBytes = 4;
+                    desc.label = "vdb2splat.geometryState";
+                    auto made = gpu::Buffer::create(*device, desc);
+                    if (!made) return std::move(made).error();
+                    geometryState = std::move(*made);
+                }
+                const video::GeometryFrame at{f->source, h.geometryInterval, h.geometryStagger, h.geometryOrder};
+                ATHENEA_TRY(codec->geometryApply(batch, *layout, side->rhi(), 0, layout->rangeBytes() + f->high.size(),
+                                                 at, f->firstSplat, 0, f->splats, geometryState));
+            }
+            ATHENEA_TRY(codec->decode(batch, *layout, luma->texture.get(), luma->chroma.get(), side->rhi(), 0,
+                                      layout->rangeBytes(), 0, f->splats, store_, f->firstSplat, h.restPerColour,
+                                      h.geometry ? &geometryState : nullptr, f->firstSplat));
+            ATHENEA_TRY(batch.submit(true));
+            splats = std::max(splats, f->firstSplat + f->splats);
+        }
+        if (source < 0) return Error(ErrorCode::NotFound, "athv: no frame left");
+        return splats;
+    }
+    const scene::GpuSplats& store() const override { return store_; }
+    uint32_t restPerColour() const override { return reader->header().restPerColour; }
+    uint32_t sourceFrames() const override { return reader->sourceFrames(); }
+    double bytesPerFrame() const override {
+        return static_cast<double>(reader->bytes()) / std::max<uint32_t>(reader->sourceFrames(), 1);
+    }
+    double decodeMs() const override { return decodeTimes.empty() ? 0.0 : median(decodeTimes); }
+};
+
+}   // namespace
+
+Result<std::unique_ptr<AthvFrames>> AthvFrames::open(gpu::Device& device, gpu::ShaderLibrary& library,
+                                                     const std::string& path) {
+    auto out = std::make_unique<AthvFramesImpl>();
+    out->device = &device;
+    auto reader = video::AthvReader::open(path);
+    if (!reader) return std::move(reader).error();
+    out->reader = std::move(*reader);
+    const video::AthvHeader& h = out->reader->header();
+    auto codec = video::PlanesCodec::create(library);
+    if (!codec) return std::move(codec).error();
+    out->codec.emplace(std::move(*codec));
+    auto decoder = video::createHardwareDecoder(h.codec, h.bits);
+    if (!decoder) return std::move(decoder).error();
+    out->decoder = std::move(*decoder);
+    auto textures = video::createLumaTextures(device);
+    if (!textures) return std::move(textures).error();
+    out->textures = std::move(*textures);
+    return std::unique_ptr<AthvFrames>(std::move(out));
+}
+
+namespace {
+
 }   // namespace
 
 void addVideo(CLI::App& app) {
@@ -617,6 +731,7 @@ void addVideo(CLI::App& app) {
         float    mergeAspect = 1000.0F;
         std::string pruneScore = "area";
         double quality = 0.5, megabits = 0.0, rate = 0.0;
+        bool eachAFrame = false;
         bool check = false, intra = false, chroma = false, holdBoxes = false, geometry = false, geometryStagger = false;
         uint32_t geometryKey = 0, geometryPositionBits = 16, geometryScaleBits = 10, geometryPredict = 1;
         std::vector<uint32_t> geometryHold;
@@ -633,6 +748,8 @@ void addVideo(CLI::App& app) {
     enc->add_option("-o,--output", o->output, "the .athv written")->required();
     enc->add_option("--bits", o->bits, "bits a sample: 8 (HEVC Main) or 10 (Main 10)")
         ->check(CLI::IsMember({8u, 10u}));
+    enc->add_flag("--each-a-frame", o->eachAFrame, "the splat files are a sequence, each file one frame in the "
+                  "order given (otherwise they are one frame's)");
     enc->add_option("--range", o->range, "FIRST:LAST: the sequence's frames by index, from 0, both included");
     enc->add_option("--quality", o->quality, "the encoder's constant quality, 0 to 1")->check(CLI::Range(0.0, 1.0));
     enc->add_option("--megabits", o->megabits, "an average bit rate in Mbit/s instead of a quality");
@@ -767,7 +884,7 @@ void addVideo(CLI::App& app) {
                                                   (o->geometryFold[1] << 8u) | (o->geometryFold[2] << 16u))
                                                : 0u;
         double rate = o->rate;
-        auto frames = inputFrames(o->inputs, rate);
+        auto frames = inputFrames(o->inputs, rate, o->eachAFrame);
         if (!frames) cli::fail(frames.error());
         size_t first = 0, last = frames->size() - 1;
         if (!o->range.empty()) {

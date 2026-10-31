@@ -18651,3 +18651,77 @@ no round at all, and the small fixtures of `athenea_aofx_tests` are not refitted
 100-step line says the defaults themselves would gain (better and faster on smoke2), which wants the densify
 rounds given as a count rather than a period first. Why EM after Adam diverges on a warm frame is not looked at
 here.
+
+## A volume sequence as video planes (vol-stream, 1 Nov)
+
+`vol-raster` with `web-athv-video` merged in: a vdb2splat sequence -- warm frames, every gaussian in its slot,
+carried by the grid's `vel` -- written as the `.athv` the sparrow's route streams, a ladder of budgets, and
+decoded back into a medium the path tracer and the raster draw.
+
+**The merge.** The two branches had each reshaped `lod::StreamingPool`: vol-raster with one store shared by
+every streamed prim (`StreamingShare`, the payload joined), web-athv-video with chunk sources and live epochs.
+The live sources' pool is kept; the shared store is not ported to it (Engine opens a store a prim, as before the
+share; its test is taken out), and the curvature bit (6) of the `.athc`, the cut's residency count and the cut
+of a live cloud (copied whole, in the instances' order: placed among the batched cuts it was taken for one of
+them and the frame read past them) are carried over. `athenea_lod_tests` (bar the transfer case below),
+`athenea_video_tests`, `athenea_volume_tests`, `athenea_usd_tests "[live]"`, `"[volume]"` and `"[vdb2splat]"`
+pass (the live soak below aside).
+
+**A medium's gaussian as a splat.** `vdb2splat --sequence --cloud f_####.ply` writes each frame's slots as 3DGS
+splats (`vsExportPly`): place, deviations and rotation in the world, the albedo as the base colour, and the
+medium's own values in the first rest coefficients of red -- ln σ in `f_rest_0` (held over −10, where a dead
+slot sits as a speck at the origin, so a frame keeps every slot and the planes' range is not stretched), the
+temperature in `f_rest_1`. `video-encode --each-a-frame` takes the files as a sequence (stable order, the
+lossless geometry layer for place, scale and rotation, the rest through the HEVC luma planes, degree 1, 8 bits,
+no chroma: colour in chroma averages four splats, which would average ln σ). `vdb2splat --sequence --from-athv`
+decodes the video frame by frame through the hardware decoder and the planes kernels into a store
+(`AthvFrames`, video-decode's loop) and `vsImportSplats` turns each splat back into a record -- the covariance
+pulled into index space, its precision's Cholesky factor, σ = exp(f_rest_0) -- which is then given back and
+judged as a fit is; `-o` writes the decoded frames as ParticleFields for the raster.
+
+**Measured** (`~/luc/athenea-gpu/volstream_e1.sh`, `volstream_e2run.sh`, `volstream_pt.sh`; release, M5 Pro,
+VideoToolbox, the shared GPU lock, the Mac's interactive use not known). The blob-sequence fixture at 128³
+(voxel 0.05, 30 frames, the blob carried by a known flow), its density as NanoVDB 17.1 MB a frame (2.4 MB as
+`.vdb`); the ladder fitted warm at four budgets, encoded at quality 0.9, 30 frames a second, a geometry key every
+30. Density relative L2 over the active voxels and flicker, means over the 30 frames; the f32 cloud is the fit's,
+"decoded" what the video gives back:
+
+| rung | MB a frame | Mbit/s at 24 / 30 | video / geometry layer MB | L2 f32 | L2 decoded | L2 decoded against f32 | flicker f32 / decoded | fit s a frame (warm) |
+|---|---|---|---|---|---|---|---|---|
+| 50k | 0.487 | 93.5 / 116.9 | 0.024 / 0.462 | 0.0193 | 0.0230 | 0.0111 | 0.251 / 0.278 | 0.19 |
+| 20k | 0.196 | 37.6 / 47.0 | 0.010 / 0.186 | 0.0225 | 0.0244 | 0.0090 | 0.274 / 0.287 | 0.12 |
+| 10k | 0.101 | 19.4 / 24.3 | 0.005 / 0.096 | 0.0234 | 0.0247 | 0.0079 | 0.273 / 0.280 | 0.10 |
+| 5k | 0.053 | 10.1 / 12.6 | 0.003 / 0.050 | 0.0282 | 0.0288 | 0.0062 | 0.311 / 0.313 | 0.09 |
+| 20k, quality 0.95 | 0.200 | 38.4 / 48.1 | 0.014 / 0.186 | | 0.0233 | 0.0058 | 0.281 | |
+| 20k, geometry 11 / 8 / 8 bits | 0.130 | 25.0 / 31.3 | 0.010 / 0.121 | | 0.0256 | 0.0118 | 0.303 | |
+| 20k, quality 0.6 | 0.188 | 36.1 / 45.1 | 0.002 / 0.186 | | 0.0730 | 0.0684 | 0.492 | |
+
+Per picture (medians): planes laid 1.0–1.7 ms, encoded 2.3–3.7 ms, decoded by the hardware 1.0–2.2 ms and turned
+back into gaussians 1.4–2.2 ms; the geometry layer's position error 33–36 µm (a voxel is 5 cm), rotation under
+0.05°, scale 0.2 %. At quality 0.6 the luma planes crushed ln σ (the codec's error three times the fit's); from
+0.9 the video adds 3–20 % to the fit's density error and the geometry layer is 95 % of the bytes -- 9.3 B a
+gaussian a frame at 50k, against 1 B for all the luma planes. 20k gaussians a frame stream at 47 Mbit/s against
+17.1 MB a frame of NanoVDB (87 times) or 2.4 MB of `.vdb` (12 times).
+
+Frame 15 path traced (E1b's light, 4096 paths, 512², masked where the original lets through less than 99 %) and
+the decoded gaussians drawn by the raster as a medium, against the original's path trace:
+
+| rung | PT, grid from the f32 cloud | PT, grid from the decoded video | raster of the decoded medium | raster ms a frame |
+|---|---|---|---|---|
+| 50k | 9.7·10⁻⁵ (51.4 dB) | 1.05·10⁻⁴ (51.2) | 0.030 (26.7) | 9.3 |
+| 20k | 2.9·10⁻⁴ (46.7) | 2.9·10⁻⁴ (46.6) | 0.026 (27.3) | 9.2 |
+| 10k | 4.6·10⁻⁴ (44.8) | 4.6·10⁻⁴ (44.8) | 0.025 (27.4) | 7.0 |
+| 5k | 7.0·10⁻⁴ (43.1) | 7.0·10⁻⁴ (43.1) | 0.024 (27.6) | 4.7 |
+
+(the original's path trace: 87.8 ms for 64 paths). The raster's error is its own lighting model's (single
+scattering and octaves against 4 bounces, as in VOL105's E1), not the video's.
+
+**Not done.** A real sequence (no animated `.vdb` was at hand: the explosion and smoke2 are single frames); the
+NanoVDB Fp4/Fp8 of the same frames (only the f32 grid's size is compared); the rungs' keys aligned by rendition
+in a ladder index (each rung is its own `.athv`, keys at the same frames because every rung keeps 30); the
+geometry in the video (`--geometry-video`) for volumes; the store streamed prims shared, after the merge. The
+`.athc` transfer case crashed on reading back after the merge -- the live sources' chunk format did not carry
+the curvature word, so the reader sliced a level's block short; it does now, and `athenea_lod_tests` passes
+whole (37 cases). The live soak of `athenea_usd_tests "[live]"` (`test_live_qa`, epochs shown against epochs
+pushed over a timed run) passed once and failed once on its last count, under the background priority the
+GPU jobs run at; not followed.

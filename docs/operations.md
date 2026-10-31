@@ -559,6 +559,7 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 | `--rate` | frames a second | the sequence's, or 30 | stored in the file; `athenea stream` plays at it |
 | `--hevc` | path | none | the video alone as Annex B, for `ffprobe`; its pictures are planes, not an image |
 | `--check` | flag | off | each picture decoded again by the hardware decoder, turned back into splats on the device and measured against its source |
+| `--each-a-frame` | flag | off | the splat files given are a sequence, each file one frame in the order given; without it they are the pages of one frame |
 
 **Sizes.** A picture is at most 8192 x 8192 in area and 16384 a side (the
 hardware encoder refused 10240 x 9600). A frame whose planes need more is cut
@@ -913,6 +914,8 @@ renders as it renders any volume.
 | `--warm-learning-rate` | number | `0.03` | Adam's step on a warm frame |
 | `--no-advect` | flag | off | a warm frame starts where the frame before left its gaussians |
 | `--dt` | number | `1` | frames the flow carries the gaussians over, frame to frame |
+| `--cloud` | path with a run of `#` | none | a sequence: each frame's gaussians, every slot (a dead one a speck of ln σ −30 at the origin, so the slots keep their places), as a 3DGS PLY: position, deviations and rotation in the world, the albedo as the base colour, ln σ in `f_rest_0` and the temperature in `f_rest_1` (the first two rest coefficients of red), opacity as `-o` writes it for a viewer. What `video-encode --each-a-frame` takes |
+| `--from-athv` | `.athv` | none | a sequence: each frame's gaussians decoded from this video of `--cloud`'s splats (in order, through the hardware decoder) instead of fitted, then given back and judged as a fit is: the density error against `input`'s frame, the flicker, `--back`. `input` may be the grids a fit gave back, to judge the video against the f32 cloud |
 
 A sequence prints, a frame: the gaussians alive, the density's relative L2 error given back, the fit's time, and from the second frame on the flicker -- sqrt(Σ((b₁ − b₀) − (o₁ − o₀))² / Σ(o₁ − o₀)²) over the active voxels, what the frame-to-frame change of the grid given back gets wrong of the original's -- and how many of the frame before's gaussians are alive in the same slot, and how far they moved over their mean deviation. `--measure` prints the temperature's error too, weighed by the density (the fit's own measure: where there is no density a gaussian's temperature says nothing) and unweighted. `--make-fixture blob-sequence` writes `--frames` of the noise blob carried by a known flow -- a turn about the vertical through it of 2π/120 a frame and a rise of 0.3 voxels a frame -- each with its `density` and `vel` (world units a frame).
 

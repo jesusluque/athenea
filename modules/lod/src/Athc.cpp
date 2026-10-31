@@ -319,6 +319,7 @@ ChunkFormat formatOf(const Layout& layout) {
     f.transferCount = x.transferCount;
     f.transferWords = x.transferWords;
     f.shadowWords = x.shadowWords;
+    f.curvatureWords = x.curvatureWords;
     return f;
 }
 ExtraHeader extraOf(const ChunkFormat& f) {
@@ -328,6 +329,7 @@ ExtraHeader extraOf(const ChunkFormat& f) {
     x.transferCount = f.transferCount;
     x.transferWords = f.transferWords;
     x.shadowWords = f.shadowWords;
+    x.curvatureWords = f.curvatureWords;
     return x;
 }
 

@@ -25,6 +25,7 @@
 // Cholesky factor of the precision: G(x) = exp(-|A^T (x - mu)|^2 / 2),
 // stopped at 3.5 deviations as the fit stops it.
 import athenea.volume.medium;
+import athenea.common.packing;
 
 #define PNANOVDB_HLSL
 #include "nanovdb/PNanoVDB.h"
@@ -50,6 +51,11 @@ struct VsParams {
     uint  seed;
     float tolerance;        // vsRays: what discretisation may cost a transmittance
 
+    uint  shWords;          // vsImportSplats: the cloud's harmonics words a splat
+    uint  restPerColour;    // and its rest coefficients a colour
+    uint  pad0;
+    uint  pad1;
+
     float4 motion;          // vsFixture kind 2: (angular speed about y, rad a frame; rise, voxels a frame; the
                             // frame; the voxel size). vsPackLeaves kind 3: w the scale from vel to voxels a frame
 };
@@ -63,7 +69,11 @@ StructuredBuffer<float4>   gaussiansB; // vsSlots: the frame's records, slot for
 StructuredBuffer<float4>   gaussians;  // records, 4 a gaussian
 RWStructuredBuffer<float4> leavesOut;  // vsPackLeaves: the picture
 RWStructuredBuffer<float>  sums;       // per leaf or per ray partial sums, then the totals
-RWStructuredBuffer<float>  exported;   // vsExport: 14 floats a gaussian, then 5 more
+RWStructuredBuffer<float>  exported;   // vsExport: 14 floats a gaussian, then 5 more; vsExportPly: 62 a gaussian
+StructuredBuffer<float4>   splatPositions;   // vsImportSplats: a cloud's (GpuSplats, common/packing.slang)
+StructuredBuffer<uint>     splatShape;
+StructuredBuffer<uint>     splatSh;
+RWStructuredBuffer<float4> recordsOut;       // vsImportSplats: records, 4 a gaussian
 ConstantBuffer<VsParams>   params;
 
 static const uint kNone = 0xFFFFFFFFu;
@@ -664,6 +674,14 @@ void vsExport(uint3 tid: SV_DispatchThreadID) {
     const float4 r0 = gaussians[g * 4 + 0];
     const float4 r1 = gaussians[g * 4 + 1];
     const float4 r2 = gaussians[g * 4 + 2];
+    if (!(gaussians[g * 4 + 3].w > 0.5)) {
+        // A dead slot (a sequence keeps every one): nothing, at the origin.
+        for (uint k = 0; k < 14; ++k) exported[g * 14 + k] = 0.0;
+        for (uint k = 4; k < 7; ++k) exported[g * 14 + k] = 1e-6;
+        exported[g * 14 + 7] = 1.0;
+        for (uint k = 0; k < 5; ++k) exported[params.count * 14 + g * 5 + k] = 0.0;
+        return;
+    }
     const float a00 = r1.x, a10 = r1.y, a11 = r1.z, a20 = r1.w, a21 = r2.x, a22 = r2.y;
     // B = A^-1, Sigma = B^T B (index space).
     const float b00 = 1.0 / a00, b11 = 1.0 / a11, b22 = 1.0 / a22;
@@ -701,4 +719,135 @@ void vsExport(uint3 tid: SV_DispatchThreadID) {
     exported[e + 2] = asfloat(halfBits(colour.y));
     exported[e + 3] = asfloat(halfBits(colour.z));
     exported[e + 4] = asfloat(halfBits(r2.z));
+}
+
+// --- A cloud of splats that carries a medium (a sequence's frames as video planes) --------
+
+/// A medium's gaussian as a 3DGS splat a standard file and the video planes
+/// carry (`athenea vdb2splat --cloud`): its place, deviations and rotation in
+/// the world, the albedo as the base colour, and the medium's own values in
+/// the first rest coefficients of red, f_rest_0 = ln sigma and f_rest_1 = the
+/// temperature; opacity is vsExport's, for a viewer. 62 floats, INRIA's PLY
+/// order. ln sigma is held at kFloorLogSigma or over -- the planes quantise
+/// it over its range, which a far floor would widen -- and a dead slot (a
+/// sequence keeps every one) is a speck at the floor at the origin, so the
+/// slots keep their order.
+static const float kSplatC0 = 0.28209479177387814;
+static const float kFloorLogSigma = -10.0;
+static const float kDeadLogSigma = kFloorLogSigma;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vsExportPly(uint3 tid: SV_DispatchThreadID) {
+    const uint g = tid.x;
+    if (g >= params.count) return;
+    const uint o = g * 62;
+    for (uint k = 0; k < 62; ++k) exported[o + k] = 0.0;
+    const float4 r0 = gaussians[g * 4 + 0];
+    const float4 r1 = gaussians[g * 4 + 1];
+    const float4 r2 = gaussians[g * 4 + 2];
+    const float4 r3 = gaussians[g * 4 + 3];
+    if (!(r3.w > 0.5) || !(r0.w > 0.0)) {
+        for (uint a = 0; a < 3; ++a) exported[o + 55 + a] = log(1e-6);
+        exported[o + 9] = kDeadLogSigma;
+        exported[o + 54] = -20.0;
+        exported[o + 58] = 1.0;
+        return;
+    }
+    const float a00 = r1.x, a10 = r1.y, a11 = r1.z, a20 = r1.w, a21 = r2.x, a22 = r2.y;
+    const float b00 = 1.0 / a00, b11 = 1.0 / a11, b22 = 1.0 / a22;
+    const float b10 = -a10 * b00 / a11;
+    const float b21 = -a21 * b11 / a22;
+    const float b20 = -(a20 * b00 + a21 * b10) / a22;
+    const float3x3 b = float3x3(b00, 0, 0, b10, b11, 0, b20, b21, b22);
+    const float3x3 m = float3x3(params.indexToWorld0.xyz, params.indexToWorld1.xyz, params.indexToWorld2.xyz);
+    float3x3 cov = mul(m, mul(mul(transpose(b), b), transpose(m)));
+    float3x3 axes;
+    jacobi3(cov, axes);
+    const float3 scale = sqrt(max(float3(cov[0][0], cov[1][1], cov[2][2]), 1e-20));
+    if (determinant(axes) < 0.0) {
+        axes[0][2] = -axes[0][2]; axes[1][2] = -axes[1][2]; axes[2][2] = -axes[2][2];
+    }
+    const float4 q = quaternionOf(axes);   // w x y z
+    const float3 position = indexToWorld(r0.xyz - kVoxelCentre);
+    const float meanStd = pow(scale.x * scale.y * scale.z, 1.0 / 3.0);
+    const float alpha = clamp(1.0 - exp(-r0.w * params.densityScale * 2.50662827 * meanStd), 1.0 / 254.0, 0.999);
+    const float3 colour = unpackColour(r2.w);
+    exported[o + 0] = position.x; exported[o + 1] = position.y; exported[o + 2] = position.z;
+    exported[o + 6] = (colour.x - 0.5) / kSplatC0;
+    exported[o + 7] = (colour.y - 0.5) / kSplatC0;
+    exported[o + 8] = (colour.z - 0.5) / kSplatC0;
+    exported[o + 9] = max(log(r0.w), kFloorLogSigma + 0.5);   // f_rest_0: red, basis 1
+    exported[o + 10] = r2.z;        // f_rest_1: red, basis 2
+    exported[o + 54] = log(alpha / (1.0 - alpha));
+    for (uint a = 0; a < 3; ++a) exported[o + 55 + a] = log(scale[a]);
+    exported[o + 58] = q.x; exported[o + 59] = q.y; exported[o + 60] = q.z; exported[o + 61] = q.w;
+}
+
+float halfOf(uint word, uint high) { return f16tof32(high != 0 ? (word >> 16) : (word & 0xFFFFu)); }
+
+/// The rest coefficient of `colour` (0 red) at basis `basis` (1..), from a
+/// cloud's harmonics words: rgb per basis, two halves a word.
+float restOf(uint g, uint basis, uint colour) {
+    const uint h = (basis - 1) * 3 + colour;
+    return halfOf(splatSh[g * params.shWords + h / 2], h % 2);
+}
+
+/// The way back from vsExportPly, after whatever carried the splats (the
+/// video planes): one thread a splat of a cloud (GpuSplats), its record in
+/// the fit's frame -- the covariance pulled back into index space, its
+/// precision's Cholesky factor, sigma = exp(f_rest_0), the temperature
+/// f_rest_1, the base colour as Cd. A splat of ln sigma within a quarter of
+/// the floor is a dead slot.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vsImportSplats(uint3 tid: SV_DispatchThreadID) {
+    const uint g = tid.x;
+    if (g >= params.count) return;
+    const float logSigma = params.restPerColour >= 1 ? restOf(g, 1, 0) : kDeadLogSigma;
+    const float temperature = params.restPerColour >= 2 ? restOf(g, 2, 0) : 0.0;
+    if (!(logSigma > kFloorLogSigma + 0.25)) {
+        for (uint k = 0; k < 4; ++k) recordsOut[g * 4 + k] = float4(0.0);
+        return;
+    }
+    const float4 p = splatPositions[g];
+    const uint s0 = splatShape[g * 4 + 0], s1 = splatShape[g * 4 + 1];
+    const uint s2 = splatShape[g * 4 + 2], s3 = splatShape[g * 4 + 3];
+    const float3 scale = exp(float3(halfOf(s1, 0), halfOf(s1, 1), halfOf(s2, 0)));
+    const float3 colour = float3(halfOf(s2, 1), halfOf(s3, 0), halfOf(s3, 1));
+    const float3x3 r = axesOfQuaternion(decodeQuaternion(s0));
+    const float3x3 covWorld = mul(r, mul(float3x3(scale.x * scale.x, 0, 0, 0, scale.y * scale.y, 0, 0, 0,
+                                                  scale.z * scale.z), transpose(r)));
+    const float3x3 m = float3x3(params.indexToWorld0.xyz, params.indexToWorld1.xyz, params.indexToWorld2.xyz);
+    // M^-1 by the adjugate (index to world is a voxel's scale and turn).
+    const float det = determinant(m);
+    float3x3 inv;
+    inv[0][0] = (m[1][1] * m[2][2] - m[1][2] * m[2][1]) / det;
+    inv[0][1] = (m[0][2] * m[2][1] - m[0][1] * m[2][2]) / det;
+    inv[0][2] = (m[0][1] * m[1][2] - m[0][2] * m[1][1]) / det;
+    inv[1][0] = (m[1][2] * m[2][0] - m[1][0] * m[2][2]) / det;
+    inv[1][1] = (m[0][0] * m[2][2] - m[0][2] * m[2][0]) / det;
+    inv[1][2] = (m[0][2] * m[1][0] - m[0][0] * m[1][2]) / det;
+    inv[2][0] = (m[1][0] * m[2][1] - m[1][1] * m[2][0]) / det;
+    inv[2][1] = (m[0][1] * m[2][0] - m[0][0] * m[2][1]) / det;
+    inv[2][2] = (m[0][0] * m[1][1] - m[0][1] * m[1][0]) / det;
+    const float3 t = float3(params.indexToWorld0.w, params.indexToWorld1.w, params.indexToWorld2.w);
+    const float3 mu = mul(inv, p.xyz - t) + kVoxelCentre;
+    const float3x3 c = mul(inv, mul(covWorld, transpose(inv)));
+    // The precision by the adjugate, then its lower Cholesky factor (the fit's
+    // gaussFromCovariance).
+    const float sxx = c[0][0], sxy = c[0][1], sxz = c[0][2], syy = c[1][1], syz = c[1][2], szz = c[2][2];
+    const float c00 = syy * szz - syz * syz, c01 = sxz * syz - sxy * szz, c02 = sxy * syz - sxz * syy;
+    const float c11 = sxx * szz - sxz * sxz, c12 = sxy * sxz - sxx * syz, c22 = sxx * syy - sxy * sxy;
+    const float d = max(sxx * c00 + sxy * c01 + sxz * c02, 1e-30);
+    const float a00 = sqrt(max(c00 / d, 1e-12));
+    const float a10 = (c01 / d) / a00, a20 = (c02 / d) / a00;
+    const float a11 = sqrt(max(c11 / d - a10 * a10, 1e-12));
+    const float a21 = (c12 / d - a10 * a20) / a11;
+    const float a22 = sqrt(max(c22 / d - a20 * a20 - a21 * a21, 1e-12));
+    const float3 extent = kReach * sqrt(max(float3(sxx, syy, szz), 1e-12));
+    recordsOut[g * 4 + 0] = float4(mu, exp(logSigma));
+    recordsOut[g * 4 + 1] = float4(a00, a10, a11, a20);
+    recordsOut[g * 4 + 2] = float4(a21, a22, temperature, packColour(colour));
+    recordsOut[g * 4 + 3] = float4(extent, 1.0);
 }

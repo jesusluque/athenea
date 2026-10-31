@@ -59,6 +59,7 @@ struct ChunkFormat {
     uint32_t transferCount = 0;
     uint32_t transferWords = 0;
     uint32_t shadowWords = 0;
+    uint32_t curvatureWords = 0;  ///< 1 where it carries the shape operator, packed
 
     /// Staging an SPZ chunk takes: a header, then its six streams (the most
     /// a splat's take, degree 4: 9 + 1 + 3 + 3 + 4 + 72 bytes), each on a word.

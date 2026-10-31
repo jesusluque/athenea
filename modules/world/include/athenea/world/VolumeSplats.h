@@ -153,9 +153,24 @@ public:
     void exportRecords(gpu::CommandBatch& batch, const gpu::Buffer& gaussians, uint32_t count,
                        const std::array<double, 16>& indexToWorld, float densityScale, const gpu::Buffer& out) const;
 
+    /// THE GAUSSIANS AS 3DGS SPLATS, for a file and the video planes: 62
+    /// floats a record in INRIA's PLY order (io::writePly3dgs), the medium's
+    /// own values in the first rest coefficients of red -- f_rest_0 ln sigma,
+    /// f_rest_1 the temperature -- and the albedo as the base colour; a dead
+    /// slot is a speck of ln sigma -30, so every slot keeps its place.
+    void exportPly(gpu::CommandBatch& batch, const gpu::Buffer& gaussians, uint32_t count,
+                   const std::array<double, 16>& indexToWorld, float densityScale, const gpu::Buffer& out) const;
+    /// The way back: a cloud of such splats (positions, shape and harmonics
+    /// as the store packs them, `restPerColour` at least 2) into records, 4
+    /// float4 a gaussian, in the fit's frame.
+    void importSplats(gpu::CommandBatch& batch, const gpu::Buffer& positions, const gpu::Buffer& shape,
+                      const gpu::Buffer& sh, uint32_t shWords, uint32_t restPerColour, uint32_t count,
+                      const std::array<double, 16>& indexToWorld, const gpu::Buffer& out) const;
+
 private:
     gpu::Device*       device_ = nullptr;
-    gpu::ComputeKernel pack_, back_, fixture_, mixture_, compare_, reduce_, rays_, export_, slots_, flicker_;
+    gpu::ComputeKernel pack_, back_, fixture_, mixture_, compare_, reduce_, rays_, export_, slots_, flicker_,
+        exportPly_, import_;
 };
 
 }   // namespace athenea::world
