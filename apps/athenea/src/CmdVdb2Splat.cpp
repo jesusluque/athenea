@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -54,6 +55,9 @@ struct Options {
     uint32_t                 emIterations = 40;
     bool                     noBins = false;
     bool                     profile = false;
+    std::string              quantise;   // "half" or "byte": the compact record, then measured from it
+    std::string              compactOut; // the compact records as a file
+    std::string              against;    // a .vdb of the same topology: its density measured against input's
     double                   binSlack = 0.0;
     bool                     checkerboard = false;
     double                   splitShare = 0.5;
@@ -238,6 +242,29 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
     }
     auto density = io::readVdbGrid(o.input, o.density);
     if (!density) return std::move(density).error();
+    if (!o.against.empty()) {
+        // Another grid of the same topology (a NanoVDB quantisation of the
+        // input brought back to floats, say) measured against the input.
+        auto other = io::readVdbGrid(o.against, o.density);
+        if (!other) return std::move(other).error();
+        if (other->leafCount != density->leafCount || other->words.size() != density->words.size()) {
+            return Error::make(ErrorCode::InvalidArgument, "'{}' and '{}' do not share a topology ({} and {} leaves)",
+                               o.input, o.against, density->leafCount, other->leafCount);
+        }
+        world::PackedGrids a = world::PackedGrids::of(*density, nullptr, nullptr);
+        world::PackedGrids b = world::PackedGrids::of(*other, nullptr, nullptr);
+        auto wa = wordsOn(library.device(), a.words, "vdb2splat.input");
+        if (!wa) return std::move(wa).error();
+        auto wb = wordsOn(library.device(), b.words, "vdb2splat.against");
+        if (!wb) return std::move(wb).error();
+        auto splats = world::VolumeSplats::create(library);
+        if (!splats) return std::move(splats).error();
+        auto error = splats->compare(*wb, *wa, a.density, a.leafCount);
+        if (!error) return std::move(error).error();
+        cli::out("vdb2splat: %s against %s: density relative L2 %.5f, largest difference %.5g\n", o.against.c_str(),
+                 o.input.c_str(), error->relativeL2, error->largest);
+        return ok();
+    }
     std::optional<io::NanoGrid> temperature;
     std::optional<io::NanoGrid> colour;
     if (has(o.temperature)) {
@@ -336,6 +363,47 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
     if (count == 0) return Error(ErrorCode::InvalidArgument, "vdb2splat: no gaussian came out");
     auto gaussians = viewOf(context, *rendered, "vdb2splat.records");
     if (!gaussians) return std::move(gaussians).error();
+    if (!o.quantise.empty()) {
+        // THE COMPACT RECORD: what follows -- the way back, --measure, -o --
+        // reads the records the compact ones decode to.
+        const uint32_t mode = o.quantise == "byte" ? 1u : 0u;
+        const uint32_t words = mode == 0 ? 6u : 5u;
+        gpu::BufferDesc cd;
+        cd.bytes = uint64_t{count} * words * 4;
+        cd.elementBytes = 4;
+        cd.label = "vdb2splat.compact";
+        auto compact = gpu::Buffer::create(device, cd);
+        if (!compact) return std::move(compact).error();
+        gpu::BufferDesc dd;
+        dd.bytes = uint64_t{count} * 64;
+        dd.elementBytes = 16;
+        dd.label = "vdb2splat.dequantised";
+        auto dequantised = gpu::Buffer::create(device, dd);
+        if (!dequantised) return std::move(dequantised).error();
+        auto ranges = splats->quantise(*gaussians, count, mode, *compact, *dequantised);
+        if (!ranges) return std::move(ranges).error();
+        cli::out("vdb2splat: the compact record, the factor in %s: %u bytes a gaussian, %.2f MB for %u\n",
+                 mode == 0 ? "halves" : "bytes", words * 4, count * words * 4.0 / 1.0e6, count);
+        if (!o.compactOut.empty()) {
+            // The file: a 64-byte header (magic, version, count, mode, the
+            // twelve ranges), the index-to-world map as 16 doubles, the words.
+            std::vector<uint32_t> body(size_t{count} * words);
+            ATHENEA_TRY(compact->read(device, 0, body.size() * 4, body.data()));
+            std::vector<std::byte> bytes(64 + 128 + body.size() * 4);
+            const uint32_t head[4] = {0x47565441u, 1u, count, mode};   // "ATVG"
+            std::memcpy(bytes.data(), head, sizeof head);
+            std::memcpy(bytes.data() + 16, ranges->data(), 48);
+            std::memcpy(bytes.data() + 64, density->indexToWorld.data(), 128);
+            std::memcpy(bytes.data() + 192, body.data(), body.size() * 4);
+            ATHENEA_TRY(platform::writeAtomically(o.compactOut, [&](const std::filesystem::path& partial) {
+                std::ofstream out(partial, std::ios::binary);
+                out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+                return out ? ok() : Error(ErrorCode::IoFailure, "vdb2splat: cannot write " + partial.string());
+            }));
+            cli::out("vdb2splat: wrote %s (%zu bytes)\n", o.compactOut.c_str(), bytes.size());
+        }
+        gaussians = std::move(*dequantised);
+    }
 
     if (!o.output.empty()) {
         gpu::BufferDesc desc;
@@ -593,6 +661,11 @@ void addVdb2Splat(CLI::App& app) {
     cmd->add_option("--bin-slack", o->binSlack, "voxels a box is widened by in the leaves' lists, which are then "
                     "rebuilt only when a box leaves them (0: every iteration)");
     cmd->add_flag("--checkerboard", o->checkerboard, "each Adam step's gradient over half the voxels, alternating");
+    cmd->add_option("--quantise", o->quantise, "the compact record, measured from it: half (24 B a gaussian, the "
+                    "factor in halves) or byte (20 B)")->check(CLI::IsMember({"half", "byte"}));
+    cmd->add_option("--compact", o->compactOut, "with --quantise: the compact records as a file");
+    cmd->add_option("--against", o->against, "measure input's density against this .vdb's (the same topology) and "
+                    "stop");
     cmd->add_flag("--profile", o->profile, "wait for every kernel and print each one's time (slower; a breakdown)");
     cmd->add_option("--iterations", o->iterations, "Adam steps on the geometry, after the EM steps");
     cmd->add_option("--attribute-iterations", o->attributeIterations, "Jacobi steps on temperature and Cd");

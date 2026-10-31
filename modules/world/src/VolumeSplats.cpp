@@ -2,6 +2,7 @@
 #include "athenea/world/VolumeSplats.h"
 
 #include <algorithm>
+#include <cstring>
 
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Device.h"
@@ -68,6 +69,8 @@ Result<VolumeSplats> VolumeSplats::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(v.export_, "vsExport"));
     ATHENEA_TRY(make(v.slots_, "vsSlots"));
     ATHENEA_TRY(make(v.flicker_, "vsFlicker"));
+    ATHENEA_TRY(make(v.quantRange_, "vsQuantRange"));
+    ATHENEA_TRY(make(v.quantise_, "vsQuantise"));
     return v;
 }
 
@@ -320,6 +323,43 @@ void VolumeSplats::exportRecords(gpu::CommandBatch& batch, const gpu::Buffer& ga
         c["params"]["densityScale"].setData(densityScale);
         setRows(c["params"], indexToWorld);
     });
+}
+
+Result<std::array<float, 12>> VolumeSplats::quantise(const gpu::Buffer& gaussians, uint32_t count, uint32_t mode,
+                                                    const gpu::Buffer& compact, const gpu::Buffer& dequantised) const {
+    // Lows start at the largest ordered value, highs at the smallest.
+    std::array<uint32_t, 12> start{};
+    for (size_t k = 0; k < start.size(); ++k) {
+        const bool low = k < 3 || k == 6 || k == 8 || k == 10;
+        start[k] = low ? 0xFFFFFFFFu : 0u;
+    }
+    auto ranges = gpu::Buffer::fromSpan(*device_, std::span<const uint32_t>(start), "vdb2splat.ranges");
+    if (!ranges) return std::move(ranges).error();
+    gpu::CommandBatch batch(*device_);
+    quantRange_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) {
+        c["gaussians"].setBinding(gaussians.rhi());
+        c["ranges"].setBinding(ranges->rhi());
+        c["params"]["count"].setData(count);
+    });
+    quantise_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) {
+        c["gaussians"].setBinding(gaussians.rhi());
+        c["ranges"].setBinding(ranges->rhi());
+        c["compact"].setBinding(compact.rhi());
+        c["dequantised"].setBinding(dequantised.rhi());
+        c["params"]["count"].setData(count);
+        c["params"]["quantMode"].setData(mode);
+    });
+    ATHENEA_TRY(batch.submit(true));
+    std::array<uint32_t, 12> bits{};
+    ATHENEA_TRY(ranges->read(*device_, 0, sizeof bits, bits.data()));
+    std::array<float, 12> out{};
+    for (size_t k = 0; k < out.size(); ++k) {
+        // The ordered bits back into the float they order.
+        const uint32_t u = bits[k];
+        const uint32_t f = (u & 0x80000000u) != 0u ? (u & 0x7FFFFFFFu) : ~u;
+        std::memcpy(&out[k], &f, 4);
+    }
+    return out;
 }
 
 }   // namespace athenea::world

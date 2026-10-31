@@ -17369,3 +17369,33 @@ no round at all, and the small fixtures of `athenea_aofx_tests` are not refitted
 100-step line says the defaults themselves would gain (better and faster on smoke2), which wants the densify
 rounds given as a count rather than a period first. Why EM after Adam diverges on a warm frame is not looked at
 here.
+
+### Bytes a gaussian: the compact record (1 Nov)
+
+Proposal 104's lane, gaussians and quantisation only. `--quantise half|byte` quantises the fit's records
+(`vsQuantRange`, `vsQuantise`) and makes everything after -- the way back, `--measure`, `-o` -- from what the
+compact records decode to, so their cost is measured as a fit's is; `--compact` writes them (a 64-byte header
+with the twelve ranges, the index-to-world map, the words). The centre over the cloud's box and ln σ over its
+range in 16 bits each, the precision's factor as its diagonals' logs and its off-diagonals over the geometric mean
+of the diagonals beside them (which the fit holds within ±2) in halves (24 B) or in bytes over their ranges (20 B),
+Cd rgb8 and the temperature in 8 bits. Against NanoVDB's own quantisations of the same density grid
+(`nanovdb_convert --fp16/--fp8/--fp4/--fpN -r 0.01`, turned back into floats on the same topology and measured
+with `--against`). `~/luc/athenea-gpu/vdb2splat_opt3.sh`; release, M5 Pro, the shared GPU lock, the Mac's
+interactive use not known; masked path traces E1b's (4096 paths):
+
+| | bytes | B a gaussian | density relative L2 | PT ×1 | PT ×16 (smoke2) or ×1 (explosion) |
+|---|---|---|---|---|---|
+| smoke2 50k / 300 steps, usdc (f32 + halves) | 3.20 MB | 64 | 0.03772 | 6.4·10⁻⁴ | 5.9·10⁻³ |
+| the compact record, halves | 1.20 MB | 24 | 0.03777 | 6.4·10⁻⁴ | 5.9·10⁻³ |
+| the compact record, bytes | 1.00 MB | 20 | 0.03803 | 6.4·10⁻⁴ | 5.9·10⁻³ |
+| smoke2 as NanoVDB f32 / Fp16 / FpN 1 % / Fp8 / Fp4 | 22.6 / 12.2 / 12.0 / 7.0 / 4.5 MB | | 0 / 1·10⁻⁵ / 2·10⁻⁴ / 0.0031 / 0.0523 | – / 6·10⁻⁹ / 4·10⁻⁸ / 1.3·10⁻⁶ / 1.6·10⁻⁴ | – / 9·10⁻⁹ / 2·10⁻⁸ / 7.9·10⁻⁶ / 8.6·10⁻⁴ |
+| explosion 50k / 100 steps, usdc | 3.30 MB | 66 | 0.03673 | | 5.3·10⁻⁴ |
+| the compact record, halves / bytes | 1.20 / 1.00 MB | 24 / 20 | 0.03674 / 0.03689 | | 5.3·10⁻⁴ / 5.3·10⁻⁴ |
+| explosion as NanoVDB f32 / Fp16 / FpN / Fp8 / Fp4 | 23.0 / 12.4 / 11.0 / 7.2 / 4.5 MB | | 0 / 1·10⁻⁵ / 0.0010 / 0.0016 / 0.0261 | | – / 8·10⁻⁹ / 1.7·10⁻⁷ / 1.1·10⁻⁶ / 1.5·10⁻⁴ |
+
+The explosion's temperature (density-weighted relative L2) 0.2306 f32, 0.2306 with halves and bytes. The compact
+record costs the fit nothing measurable in halves and 0.8 % of its density error in bytes, at 37 % and 31 % of the
+usdc's bytes; NanoVDB's Fp4 is 4.5 times the bytes of the 20-byte cloud and further from the grid in density
+(0.052 against 0.038 on smoke2), but closer in the path trace (its error is noise at the voxels, the cloud's is
+missing detail); at Fp8 the grid is seven times the cloud and close to exact. Not done: the compact file read
+back on load (the decode exists only as the kernel's own round trip), entropy coding of the words.

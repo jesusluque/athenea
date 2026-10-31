@@ -153,9 +153,21 @@ public:
     void exportRecords(gpu::CommandBatch& batch, const gpu::Buffer& gaussians, uint32_t count,
                        const std::array<double, 16>& indexToWorld, float densityScale, const gpu::Buffer& out) const;
 
+    /// THE COMPACT RECORD (proposal 104's lane): the gaussians quantised --
+    /// mode 0, 24 bytes a gaussian (the factor in halves); mode 1, 20 bytes
+    /// (in bytes) -- into `compact` (6 or 5 words a gaussian), and the records
+    /// they decode to into `dequantised` (4 float4 a gaussian), measured then
+    /// as any fit. The ranges they are quantised over come back (12 floats:
+    /// the centres' box low and high, ln sigma's, the factor's log diagonal's,
+    /// the temperature's): the compact file's header.
+    [[nodiscard]] Result<std::array<float, 12>> quantise(const gpu::Buffer& gaussians, uint32_t count, uint32_t mode,
+                                                         const gpu::Buffer& compact,
+                                                         const gpu::Buffer& dequantised) const;
+
 private:
     gpu::Device*       device_ = nullptr;
-    gpu::ComputeKernel pack_, back_, fixture_, mixture_, compare_, reduce_, rays_, export_, slots_, flicker_;
+    gpu::ComputeKernel pack_, back_, fixture_, mixture_, compare_, reduce_, rays_, export_, slots_, flicker_,
+        quantRange_, quantise_;
 };
 
 }   // namespace athenea::world

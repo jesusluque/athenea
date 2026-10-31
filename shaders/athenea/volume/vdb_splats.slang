@@ -50,6 +50,11 @@ struct VsParams {
     uint  seed;
     float tolerance;        // vsRays: what discretisation may cost a transmittance
 
+    uint  quantMode;        // vsQuantise: 0 the factor in halves (24 B), 1 in bytes (20 B)
+    uint  quantPad0;
+    uint  quantPad1;
+    uint  quantPad2;
+
     float4 motion;          // vsFixture kind 2: (angular speed about y, rad a frame; rise, voxels a frame; the
                             // frame; the voxel size). vsPackLeaves kind 3: w the scale from vel to voxels a frame
 };
@@ -64,6 +69,9 @@ StructuredBuffer<float4>   gaussians;  // records, 4 a gaussian
 RWStructuredBuffer<float4> leavesOut;  // vsPackLeaves: the picture
 RWStructuredBuffer<float>  sums;       // per leaf or per ray partial sums, then the totals
 RWStructuredBuffer<float>  exported;   // vsExport: 14 floats a gaussian, then 5 more
+RWStructuredBuffer<uint>   ranges;     // vsQuantRange / vsQuantise: the cloud's ranges, ordered float bits
+RWStructuredBuffer<uint>   compact;    // vsQuantise: the compact records
+RWStructuredBuffer<float4> dequantised;// vsQuantise: the records again, from the compact ones
 ConstantBuffer<VsParams>   params;
 
 static const uint kNone = 0xFFFFFFFFu;
@@ -698,4 +706,129 @@ void vsExport(uint3 tid: SV_DispatchThreadID) {
     exported[e + 2] = asfloat(halfBits(colour.y));
     exported[e + 3] = asfloat(halfBits(colour.z));
     exported[e + 4] = asfloat(halfBits(r2.z));
+}
+
+// --- A compact record (proposal 104's lane): quantised, and back -----------------------
+
+uint orderedOf(float f) {
+    const uint u = asuint(f);
+    return (u & 0x80000000u) != 0u ? ~u : (u | 0x80000000u);
+}
+
+float floatOfOrdered(uint u) {
+    return asfloat((u & 0x80000000u) != 0u ? (u & 0x7FFFFFFFu) : ~u);
+}
+
+/// The ranges the compact record is quantised over, each a min and a max as
+/// ordered bits: 0-2 / 3-5 the centres' box, 6 / 7 ln sigma, 8 / 9 the ln of
+/// the factor's diagonals, 10 / 11 the temperature. The host clears them to
+/// (all ones, zero) first.
+static const uint kRangeCount = 12;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vsQuantRange(uint3 tid: SV_DispatchThreadID) {
+    const uint g = tid.x;
+    if (g >= params.count) return;
+    const float4 r0 = gaussians[g * 4 + 0];
+    const float4 r1 = gaussians[g * 4 + 1];
+    const float4 r2 = gaussians[g * 4 + 2];
+    if (!(gaussians[g * 4 + 3].w > 0.5) || !(r0.w > 0.0)) return;
+    for (uint k = 0; k < 3; ++k) {
+        InterlockedMin(ranges[k], orderedOf(r0[k]));
+        InterlockedMax(ranges[3 + k], orderedOf(r0[k]));
+    }
+    InterlockedMin(ranges[6], orderedOf(log(r0.w)));
+    InterlockedMax(ranges[7], orderedOf(log(r0.w)));
+    const float3 ld = log(float3(r1.x, r1.z, r2.y));
+    InterlockedMin(ranges[8], orderedOf(min(ld.x, min(ld.y, ld.z))));
+    InterlockedMax(ranges[9], orderedOf(max(ld.x, max(ld.y, ld.z))));
+    InterlockedMin(ranges[10], orderedOf(r2.z));
+    InterlockedMax(ranges[11], orderedOf(r2.z));
+}
+
+uint quantiseTo(float v, float lo, float hi, uint levels) {
+    const float t = hi > lo ? saturate((v - lo) / (hi - lo)) : 0.0;
+    return uint(round(t * float(levels)));
+}
+
+float dequantise(uint q, float lo, float hi, uint levels) {
+    return lo + (hi - lo) * float(q) / float(levels);
+}
+
+/// One thread a gaussian: its compact record -- the centre over the cloud's
+/// box in 16 bits an axis, ln sigma in 16 bits over its range, the
+/// precision's factor as its diagonals' logs and its off-diagonals over the
+/// geometric mean of the diagonals beside them (held within ±2 by the fit) in
+/// halves (mode 0, 6 words) or bytes (mode 1, 5 words), Cd rgb8 and the
+/// temperature in 8 bits over its range -- into `compact`, and the record it
+/// decodes to into `dequantised`, so what the bytes cost is measured as any
+/// fit is. A dead slot is all zero.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vsQuantise(uint3 tid: SV_DispatchThreadID) {
+    const uint g = tid.x;
+    if (g >= params.count) return;
+    const uint words = params.quantMode == 0 ? 6u : 5u;
+    const float4 r0 = gaussians[g * 4 + 0];
+    const float4 r1 = gaussians[g * 4 + 1];
+    const float4 r2 = gaussians[g * 4 + 2];
+    if (!(gaussians[g * 4 + 3].w > 0.5) || !(r0.w > 0.0)) {
+        for (uint k = 0; k < words; ++k) compact[g * words + k] = 0u;
+        for (uint k = 0; k < 4; ++k) dequantised[g * 4 + k] = float4(0.0);
+        return;
+    }
+    float range[kRangeCount];
+    for (uint k = 0; k < kRangeCount; ++k) range[k] = floatOfOrdered(ranges[k]);
+    const uint q16 = 65535u, q8 = 255u;
+    uint3 qp;
+    for (uint k = 0; k < 3; ++k) qp[k] = quantiseTo(r0[k], range[k], range[3 + k], q16);
+    const uint qs = quantiseTo(log(r0.w), range[6], range[7], q16);
+    const float3 ld = log(float3(r1.x, r1.z, r2.y));
+    const float o10 = r1.y / sqrt(r1.x * r1.z), o20 = r1.w / sqrt(r1.x * r2.y), o21 = r2.x / sqrt(r1.z * r2.y);
+    const uint qt = quantiseTo(r2.z, range[10], range[11], q8);
+    const uint rgb = asuint(r2.w) & 0x00FFFFFFu;
+    float3 dld;
+    float3 doff;
+    if (params.quantMode == 0) {
+        compact[g * 6 + 0] = qp.x | (qp.y << 16);
+        compact[g * 6 + 1] = qp.z | (qs << 16);
+        compact[g * 6 + 2] = halfBits(ld.x) | (halfBits(o10) << 16);
+        compact[g * 6 + 3] = halfBits(ld.y) | (halfBits(o20) << 16);
+        compact[g * 6 + 4] = halfBits(ld.z) | (halfBits(o21) << 16);
+        compact[g * 6 + 5] = rgb | (qt << 24);
+        dld = float3(f16tof32(halfBits(ld.x)), f16tof32(halfBits(ld.y)), f16tof32(halfBits(ld.z)));
+        doff = float3(f16tof32(halfBits(o10)), f16tof32(halfBits(o20)), f16tof32(halfBits(o21)));
+    } else {
+        const uint3 ql = uint3(quantiseTo(ld.x, range[8], range[9], q8), quantiseTo(ld.y, range[8], range[9], q8),
+                               quantiseTo(ld.z, range[8], range[9], q8));
+        const uint3 qo = uint3(quantiseTo(o10, -2.0, 2.0, q8), quantiseTo(o20, -2.0, 2.0, q8),
+                               quantiseTo(o21, -2.0, 2.0, q8));
+        compact[g * 5 + 0] = qp.x | (qp.y << 16);
+        compact[g * 5 + 1] = qp.z | (qs << 16);
+        compact[g * 5 + 2] = ql.x | (ql.y << 8) | (ql.z << 16) | (qo.x << 24);
+        compact[g * 5 + 3] = qo.y | (qo.z << 8) | (qt << 16);
+        compact[g * 5 + 4] = rgb;
+        dld = float3(dequantise(ql.x, range[8], range[9], q8), dequantise(ql.y, range[8], range[9], q8),
+                     dequantise(ql.z, range[8], range[9], q8));
+        doff = float3(dequantise(qo.x, -2.0, 2.0, q8), dequantise(qo.y, -2.0, 2.0, q8),
+                      dequantise(qo.z, -2.0, 2.0, q8));
+    }
+    // The record again, from the compact one alone (and its ranges).
+    float3 mu;
+    for (uint k = 0; k < 3; ++k) mu[k] = dequantise(qp[k], range[k], range[3 + k], q16);
+    const float sigma = exp(dequantise(qs, range[6], range[7], q16));
+    const float3 d = exp(dld);
+    const float a10 = doff.x * sqrt(d.x * d.y), a20 = doff.y * sqrt(d.x * d.z), a21 = doff.z * sqrt(d.y * d.z);
+    const float temperature = dequantise(qt, range[10], range[11], q8);
+    // The box at 3.5 deviations, from the covariance's diagonal (A^-T A^-1).
+    const float b00 = 1.0 / d.x, b11 = 1.0 / d.y, b22 = 1.0 / d.z;
+    const float b10 = -a10 * b00 / d.y;
+    const float b21 = -a21 * b11 / d.z;
+    const float b20 = -(a20 * b00 + a21 * b10) / d.z;
+    const float3 std = sqrt(float3(b00 * b00 + b10 * b10 + b20 * b20, b11 * b11 + b21 * b21, b22 * b22));
+    dequantised[g * 4 + 0] = float4(mu, sigma);
+    dequantised[g * 4 + 1] = float4(d.x, a10, d.y, a20);
+    dequantised[g * 4 + 2] = float4(a21, d.z, temperature, asfloat(rgb | (255u << 24)));
+    dequantised[g * 4 + 3] = float4(kReach * std, 1.0);
 }
