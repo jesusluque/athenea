@@ -16603,6 +16603,22 @@ unchanged from each blob's source. What SSF saves is the codec of phase 4 (posit
 radii and θ in 4–5 bits) and the appearance moved to the anchors' codebook; this phase shows that the layer
 holds the picture, not that it is smaller. The plan says to write this down before Mode B; it is.
 
+**The Corvette's grille, a cheap test** (`pieces/close/close_5120`: F_Grill, Chrome_Part_Grill and Front_Logo,
+404092 gaussians, a plain cloud converted on 12 Oct -- before the car's v8.2 rebake of the 14th, so not the
+car's current cloud), 1280 × 720 from its stage's `/CloseCam`, the same machine and load (2.8–4.1):
+
+| | |
+|---|---|
+| candidates / absorbed / blobs / residuals | 404092 / 331655 (82.1 %) / 327507 / 72437 |
+| read / solidify / write | 0.89 s / 0.34 s / 25 s |
+| frame, median of 29: original / written plain / Mode A | 18.5 / 17.4 / 14.3 ms (within this machine's noise under load) |
+| written plain against the original | 122.5 dB |
+| Mode A against the original | 46.7 dB, SSIM 0.9987, 8-bit p99 3 (the logo's metal edges and the grille's) |
+| sizes | 215.0 MB original, 214.7 written plain, 212.6 Mode A (−1.1 %) |
+
+The hood and the door, in 3–4 GB panels of whole trees, wait for a `--part` that keeps one part's gaussians
+before uploading the rest.
+
 ### A cut of a merge tree is not a tree (found on the pawn, 31 Oct)
 
 `decimate --cut-*` wrote its cuts into a copy of the tree's stage, and the copy kept the tree's
