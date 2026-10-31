@@ -59,6 +59,37 @@ Result<SolidifyStageStats> solidifyStage(gpu::ShaderLibrary& library, const std:
     if (!arrays) return std::move(arrays).error();
     auto cloud = uploadParticleField(library, *loader, input, where);
     if (!cloud) return std::move(cloud).error();
+    // A MERGE TREE IS READ AS ITS LEAVES (uploadParticleField), and written
+    // as a plain cloud of them: its bookkeeping -- links, sizes, pages, costs,
+    // spill -- names nodes these are no longer, so it is left out of the
+    // gathering and removed from the copy, with the flag that said the field
+    // was a tree. What a leaf holds of itself stays, gathered as any array:
+    // its coverage, and its occlusion mask's index into the codebook (a table
+    // of the field, kept as it is) -- without them the glass head's
+    // reflections drew in blocks.
+    std::vector<std::string> drop;
+    {
+        const auto treeOnly = [](const std::string& name) {
+            for (const char* tail : {"athenea:splat:lodParent", "athenea:splat:lodStart", "athenea:splat:lodSize",
+                                     "athenea:splat:lodPage", "athenea:splat:lodPageInfo",
+                                     "athenea:splat:lodPageBounds", "athenea:splat:lodCost", "athenea:splat:lodSpill",
+                                     "athenea:splat:lodTree"}) {
+                const std::string end(tail);
+                if (name.size() >= end.size() && name.compare(name.size() - end.size(), end.size(), end) == 0) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        for (const GaussianArray& a : *arrays) {
+            if (treeOnly(a.name)) drop.push_back(a.name);
+        }
+        std::erase_if(*arrays, [&](const GaussianArray& a) { return treeOnly(a.name); });
+        drop.push_back("primvars:athenea:splat:lodTree");
+        for (const char* table : {"primvars:athenea:splat:lodPageInfo", "primvars:athenea:splat:lodPageBounds"}) {
+            drop.push_back(table);   // tables, not a gaussian long: not among the arrays
+        }
+    }
     const Clock::time_point t1 = Clock::now();
 
     auto solidifier = lod::Solidifier::create(library);
@@ -149,7 +180,7 @@ Result<SolidifyStageStats> solidifyStage(gpu::ShaderLibrary& library, const std:
         ("athenea_solidify_" + output.stem().string() + "_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + "_" +
          std::to_string(serial.fetch_add(1)) + ".usdc");
     ATHENEA_TRY(writeParticleFieldStage(library, *kept, gaussians, options));
-    auto written = writeDecimatedStage(input, output, where, gaussians, gathered);
+    auto written = writeDecimatedStage(input, output, where, gaussians, gathered, drop);
     std::filesystem::remove(gaussians);
     if (!written) return std::move(written).error();
     const Clock::time_point t3 = Clock::now();

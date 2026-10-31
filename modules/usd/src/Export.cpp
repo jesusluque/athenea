@@ -1414,7 +1414,7 @@ Result<void> writeTreeOpacities(const std::filesystem::path& input, const std::f
 
 Result<void> writeDecimatedStage(const std::filesystem::path& input, const std::filesystem::path& output,
                                  const std::string& prim, const std::filesystem::path& gaussians,
-                                 const std::vector<GaussianArray>& arrays) {
+                                 const std::vector<GaussianArray>& arrays, const std::vector<std::string>& drop) {
     SdfLayerRefPtr source = SdfLayer::FindOrOpen(input.string());
     if (!source) {
         return Error::make(ErrorCode::IoFailure, "cannot open '{}'", input.string());
@@ -1449,6 +1449,11 @@ Result<void> writeDecimatedStage(const std::filesystem::path& input, const std::
         return Error::make(ErrorCode::NotFound, "'{}': no gaussian ParticleField to write into", output.string());
     }
     stage->SetEditTarget(stage->GetRootLayer());
+    // What the caller says no longer holds of these gaussians (a tree's
+    // bookkeeping, for gaussians that are no longer its nodes).
+    for (const std::string& name : drop) {
+        field.GetPrim().RemoveProperty(TfToken(name));
+    }
     // The schema's own arrays, as the gaussians are now.
     for (const char* name : {"positions", "orientations", "scales", "opacities",
                              "radiance:sphericalHarmonicsCoefficients", "radiance:sphericalHarmonicsDegree",

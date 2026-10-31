@@ -278,9 +278,13 @@ struct GaussianArray {
 /// `prim` the schema's arrays are replaced by those of the ParticleField at
 /// /World/Splats of `gaussians` (a stage `writeParticleFieldStage` wrote)
 /// and every array in `arrays` by its merged words.
+/// `drop` names properties of the field removed from the copy -- what no
+/// longer holds of the gaussians written (a merge tree's bookkeeping, where
+/// they are its leaves alone).
 [[nodiscard]] Result<void> writeDecimatedStage(const std::filesystem::path& input, const std::filesystem::path& output,
                                                const std::string& prim, const std::filesystem::path& gaussians,
-                                               const std::vector<GaussianArray>& arrays);
+                                               const std::vector<GaussianArray>& arrays,
+                                               const std::vector<std::string>& drop = {});
 
 /// A MERGE TREE WITH ITS OPACITIES REPLACED (`decimate --tree-coverage`):
 /// the root layer of `input` copied to `output` as `writeDecimatedStage`
