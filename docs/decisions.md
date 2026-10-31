@@ -18830,3 +18830,25 @@ p99 position.
 - Linux: built and run on Windows only; the Linux path differs in the library names alone.
 - Registering the codec's own mosaic buffer as NVENC's input (no copy at all): the mosaic and the second plane are
   two buffers, and NVENC wants one NV12 allocation, so one device copy remains.
+
+### The volume ladder through NVENC (1 Nov)
+
+With `nvenc` merged (its own section above): the same splat frames of the 20k and 50k rungs (PLY pages, a
+`stream.txt` naming them) encoded on CUDA (RTX 3070 Laptop, Windows, from the engine's device memory) with the
+Mac's settings, and the `.athv` decoded on the Mac -- VideoToolbox's decoder, the planes kernels, `vdb2splat
+--from-athv` -- and judged as the VideoToolbox files were (whether either machine was in interactive use is not
+known):
+
+| rung, setting | codec | MB a frame (video) | Mbit/s at 30 | planes laid / encoded ms a picture | L2 against the original | against the f32 cloud | flicker |
+|---|---|---|---|---|---|---|---|
+| 20k, quality 0.9 | VideoToolbox | 0.196 (0.010) | 47.0 | 1.3 / 2.4 | 0.0244 | 0.0090 | 0.287 |
+| 20k, quality 0.9 (QP 5) | NVENC | 0.197 (0.010) | 47.2 | 0.2 / 1.2 | 0.0258 | 0.0116 | 0.299 |
+| 20k, 2.4 Mbit/s of video | NVENC | 0.193 (0.006) | 46.2 | 0.1 / 1.1 | 0.0260 | 0.0127 | 0.299 |
+| 50k, quality 0.9 | VideoToolbox | 0.487 (0.024) | 116.9 | 1.7 / 3.7 | 0.0230 | 0.0111 | 0.278 |
+| 50k, quality 0.9 (QP 5) | NVENC | 0.489 (0.026) | 117.3 | 0.2 / 2.1 | 0.0247 | 0.0130 | 0.297 |
+| 50k, 5.8 Mbit/s of video | NVENC | 0.480 (0.017) | 115.1 | 0.2 / 2.1 | 0.0252 | 0.0148 | 0.298 |
+
+For these planes -- 13 of them, nine nearly constant (the rest coefficients the medium does not use) -- NVENC at
+the same bytes is a little further from the f32 cloud than VideoToolbox (0.0116 against 0.0090 at 20k), the
+reverse of the sparrow's planes in the NVENC section; it lays and encodes three to six times faster, reading the
+planes where the device wrote them. The geometry layer, the same bytes on both, is still 95 % of a frame.
