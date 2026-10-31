@@ -1098,7 +1098,7 @@ StageRenderer::VolumeCacheCounts StageRenderer::volumeCacheCounts() const {
         return {};
     }
     const Engine::VolumeCacheCounts c = engine->volumeCacheCounts();
-    return {c.bytes, c.grids, c.reads, c.evictions, c.deviceBytes};
+    return {c.bytes, c.grids, c.reads, c.evictions, c.deviceBytes, c.failed};
 }
 
 std::map<std::string, uint32_t> StageRenderer::cryptoManifest() const {

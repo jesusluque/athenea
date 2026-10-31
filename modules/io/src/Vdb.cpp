@@ -59,6 +59,15 @@ Result<VectorRole> vectorRoleFromHint(const std::string& hint) {
                        "Vector, Color", hint);
 }
 
+bool haveField3d() noexcept { return false; }
+
+Result<NanoGrid> readField3dGrid(const std::filesystem::path& path, const VdbSelection&) {
+    return Error::make(ErrorCode::Unsupported,
+                       "'{}' is a Field3D asset, and this build reads no Field3D (the library is not in its toolchain); "
+                       "convert it to OpenVDB",
+                       path.string());
+}
+
 bool haveOpenVdb() noexcept {
 #if defined(ATHENEA_HAVE_OPENVDB)
     return true;

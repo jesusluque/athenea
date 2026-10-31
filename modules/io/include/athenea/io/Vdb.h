@@ -93,6 +93,13 @@ struct VdbBox {
 /// Whether this build reads .vdb at all (OpenVDB in the toolchain).
 [[nodiscard]] bool haveOpenVdb() noexcept;
 
+/// Whether this build reads Field3D (.f3d) at all. No toolchain this engine
+/// builds with carries the Field3D library, so none does yet.
+[[nodiscard]] bool haveField3d() noexcept;
+
+/// One field of a Field3D file (a UsdVol Field3DAsset). In a build without
+/// Field3D -- every build so far -- an Unsupported error that says so.
+[[nodiscard]] Result<NanoGrid> readField3dGrid(const std::filesystem::path& path, const VdbSelection& selection);
 
 /// The names of the grids a .vdb file holds.
 [[nodiscard]] Result<std::vector<std::string>> vdbGridNames(const std::filesystem::path& path);

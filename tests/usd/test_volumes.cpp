@@ -404,3 +404,66 @@ TEST_CASE("an OpenVDBAsset's fieldIndex and fieldDataType choose the grid it rea
     CHECK(refused->p99 <= 1);
     CHECK(refused->over2 < 20);
 }
+
+// FIELD3D: a Volume whose density is a Field3DAsset. The bprim is made (the
+// delegate supports `field3dAsset`), and in a build without Field3D -- every
+// build so far -- reading it is an error, said once and kept in the cache
+// as a failure, so a second frame does not read it again; the frame draws
+// as one without the volume.
+TEST_CASE("a Field3DAsset is a field the delegate takes, refused once in a build without Field3D",
+          "[usd][gpu][volume][field3d]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    if (io::haveField3d()) {
+        SKIP("built with Field3D: the refusal is not this build's");
+    }
+    const fs::path path = scratch("field3d.usda");
+    {
+        std::ofstream out(path);
+        out << kPlaneAndSun
+            << "def Volume \"Smoke\"\n{\n"
+               "    rel field:density = </Smoke/density>\n"
+               "    def Field3DAsset \"density\"\n    {\n"
+               "        asset filePath = @" << scratch("smoke.f3d").string() << "@\n"
+               "        token fieldName = \"density\"\n    }\n}\n";
+    }
+    const fs::path none = scratch("field3d_none.usda");
+    {
+        std::ofstream out(none);
+        out << kPlaneAndSun;
+    }
+    const uint32_t w = 81, h = 61;
+    const auto setUp = [&](const fs::path& p) {
+        auto renderer = usd::StageRenderer::open(p);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setPathSamples(16);
+        (*renderer)->setPathBounces(0);
+        (*renderer)->setPathTotal(16);
+        return std::move(*renderer);
+    };
+    auto renderer = setUp(path);
+    auto image = renderer->render(frontCamera(), 1.0, w, h, "rt");
+    if (!image) FAIL(image.error().toString());
+    gpu::Buffer withField3d = upload(*gpu, *image);
+    auto again = renderer->render(frontCamera(), 2.0, w, h, "rt");
+    if (!again) FAIL(again.error().toString());
+    const usd::StageRenderer::VolumeCacheCounts counts = renderer->volumeCacheCounts();
+    auto plain = setUp(none);
+    auto plainImage = plain->render(frontCamera(), 1.0, w, h, "rt");
+    if (!plainImage) FAIL(plainImage.error().toString());
+    gpu::Buffer without = upload(*gpu, *plainImage);
+    auto same = render::compareImages(*gpu->library, withField3d, without, w, h);
+    REQUIRE(same);
+    std::printf("  a Field3D density: %llu read, %llu failed, %llu grids held; against no volume p99 %u, %llu over 2\n",
+                static_cast<unsigned long long>(counts.reads), static_cast<unsigned long long>(counts.failed),
+                static_cast<unsigned long long>(counts.grids), same->p99, static_cast<unsigned long long>(same->over2));
+    CHECK(counts.reads == 1);
+    CHECK(counts.failed == 1);
+    CHECK(counts.grids == 0);
+    CHECK(same->p99 <= 1);
+    CHECK(same->over2 < 20);
+}

@@ -1978,7 +1978,9 @@ elige la primera de ese nombre que lo tenga; `vectorDataRoleHint` (None,
 Point, Normal, Vector, Color) dice qué son los valores de un field
 vectorial, por encima del tipo vectorial del propio fichero. Un field que no
 nombra ninguna rejilla del fichero, o una de otro tipo, se rechaza con el
-motivo, dicho una vez, y su Volume no se dibuja si es la densidad.
+motivo, dicho una vez, y su Volume no se dibuja si es la densidad. Un
+`Field3DAsset` se acepta y se rechaza al leerlo -- dicho una vez -- porque
+ninguna compilación de este motor lee todavía Field3D.
 
 **Grupos de luces**, que todavía no declara ningún schema. Las lámparas de una
 nube son un primvar por grupo en su field, y sus grupos y estados son

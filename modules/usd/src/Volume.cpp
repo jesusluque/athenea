@@ -133,6 +133,7 @@ void HdAtheneaVolumeField::Sync(HdSceneDelegate* delegate, HdRenderParam* render
         };
         asset.dataType = tokenOf("fieldDataType");
         asset.roleHint = tokenOf("vectorDataRoleHint");
+        asset.field3d = _field3d;
         engine->setVolumeField(id, std::move(asset));
     }
     *dirtyBits = Clean;

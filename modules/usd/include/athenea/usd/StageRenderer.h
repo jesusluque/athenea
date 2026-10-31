@@ -586,6 +586,7 @@ public:
         uint64_t reads = 0;
         uint64_t evictions = 0;
         uint64_t deviceBytes = 0;
+        uint64_t failed = 0;   ///< grids that could not be read, each said once and kept as such
     };
     [[nodiscard]] VolumeCacheCounts volumeCacheCounts() const;
 

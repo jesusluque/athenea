@@ -856,6 +856,7 @@ Engine::VolumeCacheCounts Engine::volumeCacheCounts() const {
     counts.bytes = gridBytes_;
     for (const auto& [key, cached] : nanoGrids_) {
         counts.grids += cached.grid != nullptr ? 1 : 0;
+        counts.failed += cached.grid == nullptr ? 1 : 0;
     }
     counts.reads = gridReads_;
     counts.evictions = gridEvictions_;
@@ -3342,14 +3343,19 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                         const VolumeFieldAsset& asset = field->second;
                         const auto key = std::make_pair(asset.path, asset.gridName + '\x1f' +
                                                                         std::to_string(asset.fieldIndex) + '\x1f' +
-                                                                        asset.dataType);
+                                                                        asset.dataType + (asset.field3d ? "\x1f" "f3d" : ""));
                         auto cached = nanoGrids_.find(key);
                         if (cached == nanoGrids_.end()) {
                             io::VdbSelection selection;
                             selection.name = asset.gridName;
                             selection.index = asset.fieldIndex;
                             selection.dataType = asset.dataType;
-                            auto read = io::readVdbGrid(asset.path, selection);
+                            // A Field3D asset is read by its own reader, which
+                            // a build without Field3D has as an error: said
+                            // once, as any grid that fails to read, since the
+                            // cache keeps the failure.
+                            auto read = asset.field3d ? io::readField3dGrid(asset.path, selection)
+                                                      : io::readVdbGrid(asset.path, selection);
                             ++gridReads_;
                             if (!read) {
                                 log::warn("hdAthenea: volume {}: {}", id.GetString(), read.error().toString());

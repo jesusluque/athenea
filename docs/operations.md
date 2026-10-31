@@ -1917,7 +1917,8 @@ first of the name that holds it; `vectorDataRoleHint` (None, Point, Normal,
 Vector, Color) says what a vector field's values are, over the file's own
 vector type. A field that names no grid of the file, or one of another
 type, is refused with the reason, said once, and its Volume is not drawn
-if it is the density.
+if it is the density. A `Field3DAsset` is taken, and refused when read --
+said once -- since no build of this engine reads Field3D yet.
 
 **Light groups**, which no schema declares yet. A cloud's lamps are a primvar
 a group on its field, and its groups and states are attributes on Scope prims

@@ -3418,6 +3418,19 @@ grids are faint then dense draws the frame of a file holding the dense one
 alone (p99 0, 0 pixels over 2), the first draws 4941 pixels apart, and a
 `fieldDataType = "float3"` the grid does not hold draws as no volume.
 
+### Field3D assets
+
+`field3dAsset` is now a bprim the delegate supports, made as the same field
+class with a flag. No toolchain this engine builds with has the Field3D
+library, so `io::readField3dGrid` is an `Unsupported` error that names the
+file and says to convert it to OpenVDB; the cache keeps the failure, so it
+is said once and not read again (`VolumeCacheCounts::failed`), and a Volume
+whose density it is draws nothing.
+
+**Checked** (`[usd][volume][field3d]`): a Volume whose density is a
+`Field3DAsset`, drawn twice: one read, one failure, no grid held, and the
+frame of the stage without it (p99 0).
+
 ## End to end: Kitchen_set lit, and two defects only a real stage showed
 
 The plan closes with real stages through `athenea stage`. Kitchen_set with the

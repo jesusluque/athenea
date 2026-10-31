@@ -266,7 +266,7 @@ TfTokenVector HdAtheneaRenderDelegate::GetMaterialRenderContexts() const {
 
 TfTokenVector const& HdAtheneaRenderDelegate::GetSupportedBprimTypes() const {
     static const TfTokenVector types{HdPrimTypeTokens->renderBuffer, HdPrimTypeTokens->renderSettings,
-                                     TfToken("openvdbAsset")};
+                                     TfToken("openvdbAsset"), TfToken("field3dAsset")};
     return types;
 }
 
@@ -757,6 +757,9 @@ HdBprim* HdAtheneaRenderDelegate::CreateBprim(TfToken const& typeId, SdfPath con
     if (typeId == TfToken("openvdbAsset")) {
         return new HdAtheneaVolumeField(id);
     }
+    if (typeId == TfToken("field3dAsset")) {
+        return new HdAtheneaVolumeField(id, true);
+    }
     return typeId == HdPrimTypeTokens->renderBuffer ? new HdAtheneaRenderBuffer(id, _engine.get()) : nullptr;
 }
 
@@ -766,6 +769,9 @@ HdBprim* HdAtheneaRenderDelegate::CreateFallbackBprim(TfToken const& typeId) {
     }
     if (typeId == TfToken("openvdbAsset")) {
         return new HdAtheneaVolumeField(SdfPath::EmptyPath());
+    }
+    if (typeId == TfToken("field3dAsset")) {
+        return new HdAtheneaVolumeField(SdfPath::EmptyPath(), true);
     }
     return typeId == HdPrimTypeTokens->renderBuffer ? new HdAtheneaRenderBuffer(SdfPath::EmptyPath(), _engine.get())
                                                     : nullptr;

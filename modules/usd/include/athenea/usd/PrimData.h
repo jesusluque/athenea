@@ -148,6 +148,7 @@ struct VolumeFieldAsset {
     int         fieldIndex = -1;   ///< among the grids of that name (UsdVol fieldIndex); -1 unauthored
     std::string dataType;          ///< UsdVol fieldDataType; empty unauthored
     std::string roleHint;          ///< UsdVol vectorDataRoleHint; empty unauthored
+    bool        field3d = false;   ///< a Field3DAsset, not an OpenVDBAsset
 };
 
 /// A volume as Sync reads it: which field is its medium, where it stands,
