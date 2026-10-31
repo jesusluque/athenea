@@ -16459,3 +16459,44 @@ asserted at compile time); bit 7 without the extras leaves the extra header's pl
 **Not done:** `solidify` and `ssf2splat` (phase 2, as AOFX bundles with subcommands, the `mesh2splat`
 pattern); the field and its checks (phase 1, neighbours from the Morton cells); the codec and levels
 (phase 4).
+
+### Phase 1: the field and its oracles
+
+`lod::SolidField` evaluates F and its analytic gradient at points on the device
+(`lod/ssf_field.slang`, `lod/ssf_grid.slang`). **Neighbours from the Morton cells**, as `lod_morton` orders a
+cloud: the blobs' centres are given 30-bit codes over the layer's bounds widened by the largest support
+radius, sorted (`RadixSort`), and the level is the finest whose cells are at least that radius wide, so a
+point's blobs are in its cell and the 26 around it, each a run of the sorted codes found by binary search.
+No hash, no lists, and nothing read back: the bounds, the radius and the level are made by kernels into
+`gridInfo`, which the evaluation reads. The compact support is what makes this exact: past every reachable
+blob, F is `-tau` to the bit.
+
+**A blob's frame needs its normal**, which the layer does not store. `build` takes it as a buffer of
+`packNormal` words, derived; where it comes from (the conversion of phase 2 has each gaussian's
+thin axis; a layer on its own would take it from its neighbours) is phase 2's to say. The tangent frame is
+Duff et al.'s basis of that normal (2017), turned by θ.
+
+**Checked** (`tests/lod/test_ssf_field.cpp`, `test/ssf_field_check.slang`), on two layers made on the device
+-- 4000 blobs on a unit sphere (Fibonacci) and 9600 on a cube's faces (40 a face's edge), tangent half-axes
+0.06, thickness 0.05, τ 0.5 -- and 32768 probes within the blobs' supports, on Metal:
+
+| Check | Sphere | Cube |
+|---|---|---|
+| (a) analytic gradient against the fourth-order central difference (step 2⁻¹¹), relative error over max(\|∇F\|, w/10c) | 0 over 1e-3 of 22823; worst 2.4e-4 | 0 of 20228; worst 3.2e-4 |
+| the grid's field against the sum over every blob | 0 of 32768; worst 0 | 0 of 32768; worst 1e-6 |
+| (d) F is -τ exactly and ∇F zero where no blob reaches (inside the closed layer, outside its bounds) | 0 of 16384 | 0 of 16384 |
+
+(b) one blob alone (a 0.08 × 0.03 × 0.02 ellipsoid, turned): on 4096 directions F is within 2e-4 w of zero
+on its ellipsoid scaled by `sqrt(1 - (τ/w)^(1/3))`, positive inside it, negative between it and the support,
+and -τ exactly past it. (c) the smooth minimum, at k 0, 0.01, 0.2 and 1 over 16384 samples each: symmetric to
+the bit, the plain minimum where |a - b| ≥ k, its derivative the differences', continuous across |a - b| = k,
+and never more than k/4 below the minimum.
+
+What was learnt: a second-order difference is no oracle here -- it truncates by h² F⁽³⁾/6, a few 1e-3 of the
+gradient at c = 0.05 for any step float32 allows -- and neither is any stencil that crosses the edge of a
+support, where k is C2 only. Probes whose stencil may cross one are set apart, by a bound (|r - 1| over the
+largest inverse half-axis): a third of them on both layers, since a probe sees some ten blobs. Of the rest,
+none is off.
+
+**Not done:** smooth-min between anchors in the field itself (the function and its check are here; anchors
+that meet at an edge come with phase 2); CUDA (nothing on the L4 without the user's word).

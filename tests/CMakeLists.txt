@@ -100,7 +100,7 @@ athenea_test(athenea_technique_tests
 target_compile_definitions(athenea_technique_tests PRIVATE ATHENEA_MATERIALX_ROOT="${ATHENEA_USD_ROOT}")
 
 athenea_test(athenea_lod_tests
-    SOURCES lod/test_lod.cpp lod/test_athc_solid.cpp
+    SOURCES lod/test_lod.cpp lod/test_athc_solid.cpp lod/test_ssf_field.cpp
     LIBS athenea::lod)
 
 athenea_test(athenea_volume_tests
