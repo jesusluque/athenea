@@ -177,10 +177,15 @@ public:
                                                          const gpu::Buffer& compact,
                                                          const gpu::Buffer& dequantised) const;
 
+    /// A compact file's words (`compact`, 6 or 5 a gaussian by `mode`) and
+    /// ranges decoded into records on the device.
+    [[nodiscard]] Result<void> dequantise(const gpu::Buffer& compact, uint32_t count, uint32_t mode,
+                                          const std::array<float, 12>& ranges, const gpu::Buffer& records) const;
+
 private:
     gpu::Device*       device_ = nullptr;
     gpu::ComputeKernel pack_, back_, fixture_, mixture_, compare_, reduce_, rays_, export_, slots_, flicker_,
-        exportPly_, import_, quantRange_, quantise_;
+        exportPly_, import_, quantRange_, quantise_, dequantise_;
 };
 
 }   // namespace athenea::world

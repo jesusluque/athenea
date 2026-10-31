@@ -18588,6 +18588,7 @@ known; the fit the median of three runs):
 | the gradient a thread a pair, its voxels one after another | 5.21 | 0.03772 | yes (the explosion: 2.80 → 3.13 s, its large gaussians a thread's long loop) |
 | no box check when the lists are rebuilt anyway (slack 0): 351 readbacks fewer | 5.24 | 0.03772 | yes; the readbacks cost nothing measurable |
 | `--checkerboard`: each Adam step's gradient over the voxels of one parity, alternating, counted twice | 3.98 | 0.03949 | as an option: 4.7 % more error |
+| the gradient's pairs split over 2 / 4 / 8 threads, each a run of the leaf's x rows (no thread on a whole leaf) | 5.31 / 5.49 / 5.98 | 0.0377 | no: the gradient's kernel 2.85 → 2.39 s at 8, its gather 0.25 → 1.49 s |
 
 The fits after, against before (median of three each):
 
@@ -18611,6 +18612,11 @@ checkerboard 3.98 s (−37 %) at 4.7 % more density error. What is left: the gra
 time and the forward pass 26 %, each a few dozen voxels of a leaf for every gaussian whose box meets it,
 rebuilt every iteration (the lists' builds 13 %). Neither is limited by reading memory any more nor by the
 readbacks; the evaluation itself is what is left.
+
+On CUDA (an RTX 3070 Laptop under Windows, the vol-stream branch built there, its interactive use not known):
+`athenea_aofx_tests "[vdb2splat]"` passes with Metal's digits (16 gaussians 0.00940, the blob 0.09861 / 0.06186
+/ 0.03619, the rays' mean |ΔT| 0.00655, none beyond); smoke2 at 50k fits in 2.02 s at 100 steps (0.0623), 5.89 s
+at 300 (0.03765) and 5.14 s with `--checkerboard` (0.0399), one run each, against the M5 Pro's 1.84 / 5.21 / 3.98.
 
 ### The schedule, for error at a budget (1 Nov)
 
@@ -18852,6 +18858,21 @@ For these planes -- 13 of them, nine nearly constant (the rest coefficients the 
 the same bytes is a little further from the f32 cloud than VideoToolbox (0.0116 against 0.0090 at 20k), the
 reverse of the sparrow's planes in the NVENC section; it lays and encodes three to six times faster, reading the
 planes where the device wrote them. The geometry layer, the same bytes on both, is still 95 % of a frame.
+The 100-step defaults against the same steps with a first cut of 0.7, densify every 80 and every new slot a
+split, on more volumes (`~/luc/athenea-gpu/vdb2splat_opt2defaults.sh`, median of three):
+
+| | defaults s / L2 | the three knobs s / L2 |
+|---|---|---|
+| blob (E1's fixture, 96³) 10k | 0.39 / 0.0269 | 0.35 / 0.0303 |
+| blob 50k | 0.46 / 0.0119 | 0.33 / 0.0098 |
+| smoke2 10k | 1.39 / 0.1226 | 1.15 / 0.1227 |
+| smoke2 50k | 1.83 / 0.0622 | 1.61 / 0.0544 |
+| explosion 10k | 2.20 / 0.0796 | 2.06 / 0.0821 |
+| explosion 50k | 3.10 / 0.0367 | 2.56 / 0.0378 |
+
+Faster everywhere (8–28 %), better at 50k on the blob and smoke2, worse at 10k on the blob and on the explosion:
+not a default to change on this.
+
 ### Bytes a gaussian: the compact record (1 Nov)
 
 Proposal 104's lane, gaussians and quantisation only. `--quantise half|byte` quantises the fit's records
@@ -18879,8 +18900,14 @@ The explosion's temperature (density-weighted relative L2) 0.2306 f32, 0.2306 wi
 record costs the fit nothing measurable in halves and 0.8 % of its density error in bytes, at 37 % and 31 % of the
 usdc's bytes; NanoVDB's Fp4 is 4.5 times the bytes of the 20-byte cloud and further from the grid in density
 (0.052 against 0.038 on smoke2), but closer in the path trace (its error is noise at the voxels, the cloud's is
-missing detail); at Fp8 the grid is seven times the cloud and close to exact. Not done: the compact file read
-back on load (the decode exists only as the kernel's own round trip), entropy coding of the words.
+missing detail); at Fp8 the grid is seven times the cloud and close to exact.
+
+Read back: `--from-compact` takes the file, puts its words on the device and decodes them there
+(`vsDequantise`, the decode of `vsQuantise` from the words and the header's ranges alone) into records that are
+then given back, measured and written as a fit's. The four files above give the grids of the fits that wrote
+them to a relative L2 of 1–2·10⁻⁵ (the same density error to five digits: smoke2 0.03777 / 0.03803, the
+explosion 0.03674 / 0.03689, its temperature 0.2306). A dead slot is a record of zero words. Not done: the
+renderer reading the compact file itself (here it is the command's way in), entropy coding of the words.
 
 ### bunny_cloud on the device (1 Nov)
 

@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -60,7 +61,8 @@ struct Options {
     uint32_t                 deviceMb = 2048;   // the device pool's ceiling (unified memory)
     std::string              quantise;   // "half" or "byte": the compact record, then measured from it
     std::string              compactOut; // the compact records as a file
-    std::string              against;    // a .vdb of the same topology: its density measured against input's
+    std::string              against;
+    std::string              fromCompact; // a compact file (--compact's) instead of a fit    // a .vdb of the same topology: its density measured against input's
     double                   binSlack = 0.0;
     bool                     checkerboard = false;
     double                   splitShare = 0.5;
@@ -346,78 +348,117 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
     auto splats = world::VolumeSplats::create(library);
     if (!splats) return std::move(splats).error();
 
-    // The leaves, as the effect reads them.
-    auto leaves = image::Image::create(pictureFor(uint64_t{packed.leafCount} * world::VolumeSplats::kLeafEntries));
-    if (!leaves) return std::move(leaves).error();
-    {
-        auto view = viewOf(context, *leaves, "vdb2splat.leaves");
-        if (!view) return std::move(view).error();
-        gpu::CommandBatch batch(device);
-        splats->packLeaves(batch, *words, packed, *view);
-        ATHENEA_TRY(batch.submit(true));
-        (*leaves)->deviceWrote();
-    }
-    auto records = image::Image::create(pictureFor(uint64_t{o.target} * 4));
-    if (!records) return std::move(records).error();
+    uint32_t count = 0;
+    std::optional<gpu::Buffer> gaussians;
+    if (!o.fromCompact.empty()) {
+        // A COMPACT FILE (--compact's): its words on the device, decoded
+        // there into records; everything after reads them as a fit's.
+        std::ifstream in(o.fromCompact, std::ios::binary);
+        std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        uint32_t head[4] = {};
+        if (bytes.size() < 192) return Error::make(ErrorCode::InvalidArgument, "'{}' is no compact file", o.fromCompact);
+        std::memcpy(head, bytes.data(), sizeof head);
+        if (head[0] != 0x47565441u || head[1] != 1u || head[3] > 1u) {
+            return Error::make(ErrorCode::InvalidArgument, "'{}' is no compact file of version 1", o.fromCompact);
+        }
+        count = head[2];
+        const uint32_t mode = head[3];
+        const uint64_t words = uint64_t{count} * (mode == 0 ? 6u : 5u);
+        if (bytes.size() != 192 + words * 4) {
+            return Error::make(ErrorCode::InvalidArgument, "'{}' holds {} bytes, not the {} its header says",
+                               o.fromCompact, bytes.size(), 192 + words * 4);
+        }
+        std::array<float, 12> ranges{};
+        std::memcpy(ranges.data(), bytes.data() + 16, 48);
+        std::vector<uint32_t> body(words);
+        std::memcpy(body.data(), bytes.data() + 192, words * 4);
+        auto compact = wordsOn(device, body, "vdb2splat.compactIn");
+        if (!compact) return std::move(compact).error();
+        gpu::BufferDesc dd;
+        dd.bytes = std::max<uint64_t>(uint64_t{count} * 64, 64);
+        dd.elementBytes = 16;
+        dd.label = "vdb2splat.fromCompact";
+        auto records = gpu::Buffer::create(device, dd);
+        if (!records) return std::move(records).error();
+        ATHENEA_TRY(splats->dequantise(*compact, count, mode, ranges, *records));
+        gaussians = std::move(*records);
+        cli::out("vdb2splat: %u gaussians from %s (%zu bytes, %.1f a gaussian)\n", count, o.fromCompact.c_str(),
+                 bytes.size(), static_cast<double>(bytes.size()) / std::max(count, 1u));
+    } else {
+        // The leaves, as the effect reads them.
+        auto leaves = image::Image::create(pictureFor(uint64_t{packed.leafCount} * world::VolumeSplats::kLeafEntries));
+        if (!leaves) return std::move(leaves).error();
+        {
+            auto view = viewOf(context, *leaves, "vdb2splat.leaves");
+            if (!view) return std::move(view).error();
+            gpu::CommandBatch batch(device);
+            splats->packLeaves(batch, *words, packed, *view);
+            ATHENEA_TRY(batch.submit(true));
+            (*leaves)->deviceWrote();
+        }
+        auto records = image::Image::create(pictureFor(uint64_t{o.target} * 4));
+        if (!records) return std::move(records).error();
 
-    aofx_host::EffectJob job;
-    job.bounds = (*records)->bounds();
-    job.inputs.push_back({"Grid", *leaves});
-    number(job, "leaves", packed.leafCount);
-    number(job, "target", o.target);
-    number(job, "iterations", o.iterations);
-    number(job, "emIterations", o.emIterations);
-    number(job, "binned", o.noBins ? 0.0 : 1.0);
-    number(job, "profile", o.profile ? 1.0 : 0.0);
-    number(job, "binSlack", o.binSlack);
-    number(job, "checkerboard", o.checkerboard ? 1.0 : 0.0);
-    number(job, "splitShare", o.splitShare);
-    number(job, "attributeIterations", o.attributeIterations);
-    number(job, "maxBlock", o.maxBlock);
-    number(job, "emissionWeight", o.emissionWeight);
-    number(job, "initFraction", o.initFraction);
-    number(job, "densifyEvery", o.densifyEvery);
-    number(job, "learningRate", o.learningRate);
-    number(job, "hasTemperature", temperature ? 1.0 : 0.0);
-    number(job, "hasColour", colour ? 1.0 : 0.0);
-    const auto started = std::chrono::steady_clock::now();
-    auto rendered = aofx_host::renderEffect(context, effect, job);
-    if (!rendered) return std::move(rendered).error();
-    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-    const std::vector<float>* told = (*rendered)->attached("gaussians");
-    if (told == nullptr || told->size() < 8) {
-        return Error(ErrorCode::DeviceFailure, "the Vdb2Splat effect did not say how many gaussians it wrote");
-    }
-    const auto count = static_cast<uint32_t>((*told)[0]);
-    cli::out("vdb2splat: %u gaussians (budget %u; the cut began with %u, the coarsest blocks allow %u), blocks to "
-             "%u voxels; the fit's relative L2 error %.5f over the active voxels\n",
-             count, static_cast<uint32_t>((*told)[1]), static_cast<uint32_t>((*told)[4]),
-             static_cast<uint32_t>((*told)[7]), 1u << static_cast<uint32_t>((*told)[6]),
-             static_cast<double>((*told)[3]));
-    cli::out("vdb2splat: the fit took %.2f s (the effect, end to end)\n", seconds);
-    if (const std::vector<float>* syncs = (*rendered)->attached("syncs"); syncs != nullptr && syncs->size() >= 2) {
-        cli::out("vdb2splat: %u readbacks, the kernels loaded in %.1f ms, the leaves' lists built %u times\n",
-                 static_cast<uint32_t>((*syncs)[0]), static_cast<double>((*syncs)[1]),
-                 syncs->size() >= 3 ? static_cast<uint32_t>((*syncs)[2]) : 0u);
-    }
-    if (o.profile) {
-        // Each kernel's time, waited for one by one: the largest first.
-        std::vector<std::pair<double, std::string>> spent;
-        double total = 0.0;
-        for (const auto& [name, values] : (*rendered)->attachments()) {
-            if (name.rfind("profile:", 0) != 0 || values.empty()) continue;
-            spent.emplace_back(values[0], name.substr(8));
-            total += values[0];
+        aofx_host::EffectJob job;
+        job.bounds = (*records)->bounds();
+        job.inputs.push_back({"Grid", *leaves});
+        number(job, "leaves", packed.leafCount);
+        number(job, "target", o.target);
+        number(job, "iterations", o.iterations);
+        number(job, "emIterations", o.emIterations);
+        number(job, "binned", o.noBins ? 0.0 : 1.0);
+        number(job, "profile", o.profile ? 1.0 : 0.0);
+        number(job, "binSlack", o.binSlack);
+        number(job, "checkerboard", o.checkerboard ? 1.0 : 0.0);
+        number(job, "splitShare", o.splitShare);
+        number(job, "attributeIterations", o.attributeIterations);
+        number(job, "maxBlock", o.maxBlock);
+        number(job, "emissionWeight", o.emissionWeight);
+        number(job, "initFraction", o.initFraction);
+        number(job, "densifyEvery", o.densifyEvery);
+        number(job, "learningRate", o.learningRate);
+        number(job, "hasTemperature", temperature ? 1.0 : 0.0);
+        number(job, "hasColour", colour ? 1.0 : 0.0);
+        const auto started = std::chrono::steady_clock::now();
+        auto rendered = aofx_host::renderEffect(context, effect, job);
+        if (!rendered) return std::move(rendered).error();
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        const std::vector<float>* told = (*rendered)->attached("gaussians");
+        if (told == nullptr || told->size() < 8) {
+            return Error(ErrorCode::DeviceFailure, "the Vdb2Splat effect did not say how many gaussians it wrote");
         }
-        std::sort(spent.begin(), spent.end(), std::greater<>());
-        for (const auto& [ms, name] : spent) {
-            cli::out("vdb2splat: profile %-22s %9.1f ms %5.1f %%\n", name.c_str(), ms, 100.0 * ms / std::max(total, 1e-9));
+        count = static_cast<uint32_t>((*told)[0]);
+        cli::out("vdb2splat: %u gaussians (budget %u; the cut began with %u, the coarsest blocks allow %u), blocks to "
+                 "%u voxels; the fit's relative L2 error %.5f over the active voxels\n",
+                 count, static_cast<uint32_t>((*told)[1]), static_cast<uint32_t>((*told)[4]),
+                 static_cast<uint32_t>((*told)[7]), 1u << static_cast<uint32_t>((*told)[6]),
+                 static_cast<double>((*told)[3]));
+        cli::out("vdb2splat: the fit took %.2f s (the effect, end to end)\n", seconds);
+        if (const std::vector<float>* syncs = (*rendered)->attached("syncs"); syncs != nullptr && syncs->size() >= 2) {
+            cli::out("vdb2splat: %u readbacks, the kernels loaded in %.1f ms, the leaves' lists built %u times\n",
+                     static_cast<uint32_t>((*syncs)[0]), static_cast<double>((*syncs)[1]),
+                     syncs->size() >= 3 ? static_cast<uint32_t>((*syncs)[2]) : 0u);
         }
-        cli::out("vdb2splat: profile %-22s %9.1f ms\n", "(kernels, waited)", total);
+        if (o.profile) {
+            // Each kernel's time, waited for one by one: the largest first.
+            std::vector<std::pair<double, std::string>> spent;
+            double total = 0.0;
+            for (const auto& [name, values] : (*rendered)->attachments()) {
+                if (name.rfind("profile:", 0) != 0 || values.empty()) continue;
+                spent.emplace_back(values[0], name.substr(8));
+                total += values[0];
+            }
+            std::sort(spent.begin(), spent.end(), std::greater<>());
+            for (const auto& [ms, name] : spent) {
+                cli::out("vdb2splat: profile %-22s %9.1f ms %5.1f %%\n", name.c_str(), ms, 100.0 * ms / std::max(total, 1e-9));
+            }
+            cli::out("vdb2splat: profile %-22s %9.1f ms\n", "(kernels, waited)", total);
+        }
+        if (count == 0) return Error(ErrorCode::InvalidArgument, "vdb2splat: no gaussian came out");
+        auto view = viewOf(context, *rendered, "vdb2splat.records");
+        if (!view) return std::move(view).error();
+        gaussians = std::move(*view);
     }
-    if (count == 0) return Error(ErrorCode::InvalidArgument, "vdb2splat: no gaussian came out");
-    auto gaussians = viewOf(context, *rendered, "vdb2splat.records");
-    if (!gaussians) return std::move(gaussians).error();
     if (!o.quantise.empty()) {
         // THE COMPACT RECORD: what follows -- the way back, --measure, -o --
         // reads the records the compact ones decode to.
@@ -748,6 +789,8 @@ void addVdb2Splat(CLI::App& app) {
     cmd->add_option("--quantise", o->quantise, "the compact record, measured from it: half (24 B a gaussian, the "
                     "factor in halves) or byte (20 B)")->check(CLI::IsMember({"half", "byte"}));
     cmd->add_option("--compact", o->compactOut, "with --quantise: the compact records as a file");
+    cmd->add_option("--from-compact", o->fromCompact, "the gaussians of a compact file (--compact's), decoded on "
+                    "the device, instead of a fit: then --back, --measure and -o as after a fit");
     cmd->add_option("--against", o->against, "measure input's density against this .vdb's (the same topology) and "
                     "stop");
     cmd->add_option("--device-mb", o->deviceMb, "the device pool's ceiling in MB on unified memory: the fit's working "

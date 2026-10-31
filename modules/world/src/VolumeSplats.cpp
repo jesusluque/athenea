@@ -73,6 +73,7 @@ Result<VolumeSplats> VolumeSplats::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(v.import_, "vsImportSplats"));
     ATHENEA_TRY(make(v.quantRange_, "vsQuantRange"));
     ATHENEA_TRY(make(v.quantise_, "vsQuantise"));
+    ATHENEA_TRY(make(v.dequantise_, "vsDequantise"));
     return v;
 }
 
@@ -389,6 +390,28 @@ Result<std::array<float, 12>> VolumeSplats::quantise(const gpu::Buffer& gaussian
         std::memcpy(&out[k], &f, 4);
     }
     return out;
+}
+
+Result<void> VolumeSplats::dequantise(const gpu::Buffer& compact, uint32_t count, uint32_t mode,
+                                      const std::array<float, 12>& ranges, const gpu::Buffer& records) const {
+    // The ranges as the kernels keep them: ordered bits.
+    std::array<uint32_t, 12> ordered{};
+    for (size_t k = 0; k < ranges.size(); ++k) {
+        uint32_t u = 0;
+        std::memcpy(&u, &ranges[k], 4);
+        ordered[k] = (u & 0x80000000u) != 0u ? ~u : (u | 0x80000000u);
+    }
+    auto bits = gpu::Buffer::fromSpan(*device_, std::span<const uint32_t>(ordered), "vdb2splat.rangesIn");
+    if (!bits) return std::move(bits).error();
+    gpu::CommandBatch batch(*device_);
+    dequantise_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) {
+        c["compact"].setBinding(compact.rhi());
+        c["ranges"].setBinding(bits->rhi());
+        c["dequantised"].setBinding(records.rhi());
+        c["params"]["count"].setData(count);
+        c["params"]["quantMode"].setData(mode);
+    });
+    return batch.submit(true);
 }
 
 }   // namespace athenea::world
