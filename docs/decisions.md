@@ -17282,3 +17282,49 @@ path traces E1b's (a normalized sun alone, 4096 paths, 512², masked where the o
 The path traces are a little closer than before on the same fits (the references are of the merged path
 tracer, which reads the trilinear medium); the fit's times are what they were within the run-to-run spread of
 the earlier single runs.
+
+### The fit's time, kernel by kernel (1 Nov)
+
+`--profile` waits for every kernel and prints each one's time (a breakdown: the waits make the fit some 15 %
+slower than it is). At 50k and 300 Adam steps on smoke2 the kernels' 6.95 s were the gradient (`v2sBackward`, a
+group of 64 a gaussian) 43 %, the forward pass 34 %, the births' bisection (24 counted passes a densify round
+over every voxel) 5 %, building the leaves' lists every iteration 11 %. What was tried, each measured on its own
+(`~/luc/athenea-gpu/vdb2splat_opt1*.sh`; release, M5 Pro, the shared GPU lock, the Mac's interactive use not
+known; the fit the median of three runs):
+
+| change | smoke2 50k / 300 steps | relative L2 | kept |
+|---|---|---|---|
+| before (the merged branch) | 6.36 s | 0.03767 | |
+| the gradient a wave of 32 a (gaussian, leaf) pair, over the voxels of the leaf inside its box, then each gaussian's pairs added in its own order | 6.38 | 0.03773 | became the next |
+| and the lists kept over iterations, built over boxes widened by 2 voxels until one leaves its cells | 6.81 | 0.03773 | no: the lists are longer, the forward pass slower than the builds saved |
+| the gradient summed by the forward pass's own group, the mixture in its registers, each pair reduced over the group | 7.37 / 6.34 (second form) | 0.03766 | no: a reduction a gaussian a wave costs what the reads saved |
+| the forward pass's chunk walked to its entries, not its room (a leaf's list holds some forty gaussians and the loop ran 256) | 6.45 | 0.03773 | yes |
+| a wave of the forward pass a 4³ block, a gaussian whose box misses it passed over; the exponential behind a branch; the attributes' sums only in the attribute steps | (in the line above) | bit for bit | yes |
+| the births' threshold from two histograms of 2048 bins (the whole range, then the bin the count crosses in) instead of 24 counted passes | | | yes: `v2sUnder` 360 → 0 ms of the profile |
+| eight bytes a voxel (rho^, rho) for what reads the mixture back -- the gradient, the births -- instead of the voxel's 16 and the model's 32 | 5.31 | 0.03773 | yes |
+| the gradient a thread a pair, its voxels one after another | 5.21 | 0.03772 | yes (the explosion: 2.80 → 3.13 s, its large gaussians a thread's long loop) |
+| no box check when the lists are rebuilt anyway (slack 0): 351 readbacks fewer | 5.24 | 0.03772 | yes; the readbacks cost nothing measurable |
+| `--checkerboard`: each Adam step's gradient over the voxels of one parity, alternating, counted twice | 3.98 | 0.03949 | as an option: 4.7 % more error |
+
+The fits after, against before (median of three each):
+
+| | before s | after s | after, `--checkerboard` | relative L2 before → after |
+|---|---|---|---|---|
+| smoke2 10k, 100 steps | 2.66 | 1.39 | | 0.1227 → 0.1226 |
+| smoke2 50k, 100 steps | 2.44 | 1.84 | | 0.0620 → 0.0622 |
+| smoke2 10k, 300 steps | 6.57 | 4.18 | | 0.1002 → 0.1002 |
+| smoke2 50k, 300 steps | 6.36 | 5.21 | 3.98 (0.0395) | 0.0377 → 0.0377 |
+| smoke2 100k, 300 steps | 6.75 | 5.73 | | 0.0233 → 0.0228 |
+| explosion 50k, 100 steps | 3.85 | 3.13 | 2.66 (0.0369) | 0.0367 → 0.0367 |
+
+Masked path traces (E1b's, 4096 paths) of the grids given back, after: smoke2 50k / 300 steps ×1 6.4·10⁻⁴ (6.4·10⁻⁴
+before), ×16 5.9·10⁻³ (5.8·10⁻³), the explosion 5.3·10⁻⁴ (5.3·10⁻⁴); with `--checkerboard` 6.9·10⁻⁴, 6.2·10⁻³,
+5.3·10⁻⁴. The bytes do not change (3.20 MB at 50k). `--no-bins` still runs the old gradient and forward pass
+(smoke2 10k: 27.6 s, 0.1227). The sums are added in another order than before, so a fit is no longer the
+previous one to the bit but to its error; a fit is still the same from run to run.
+
+The target was half of 6.2 s at 50k and 300 steps with the error kept; the kept changes reach 5.21 s (−18 %), the
+checkerboard 3.98 s (−37 %) at 4.7 % more density error. What is left: the gradient is 47 % of the kernels'
+time and the forward pass 26 %, each a few dozen voxels of a leaf for every gaussian whose box meets it,
+rebuilt every iteration (the lists' builds 13 %). Neither is limited by reading memory any more nor by the
+readbacks; the evaluation itself is what is left.

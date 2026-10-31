@@ -740,7 +740,10 @@ renders as it renders any volume.
 | `--densify-every` | integer | `20` | iterations between densify-and-prune rounds; none after 70 % of them |
 | `--learning-rate` | number | `0.1` | Adam's step, in log units for the peak and the factor's diagonal and in deviations for the centre; it decays a hundredfold over the Adam steps |
 | `--split-share` | 0 to 1 | `0.5` | the share of a densify round's new slots that split the gaussians answerable for the most residual, each into two along its longest axis; the rest are born at the worst voxels |
-| `--no-bins` | flag | off | the forward pass over every gaussian for every leaf, culled by its box, instead of each leaf's list: the fit as it was before binning, for a timing |
+| `--no-bins` | flag | off | the forward pass over every gaussian for every leaf, culled by its box, instead of each leaf's list, and the gradient a group a gaussian: the fit as it was before binning, for a timing |
+| `--bin-slack` | number ≥ 0, voxels | `0` | how far a gaussian's box is widened in the leaves' lists, which are then kept over the iterations until a box leaves the leaf cells it was binned over; `0` rebuilds them every iteration. The result does not depend on it; on smoke2 a slack made the fit slower |
+| `--checkerboard` | flag | off | each Adam step's gradient summed over the voxels of one parity, alternating step to step, counted twice: half the voxels a step (smoke2 at 50k and 300 steps: 3.98 s against 5.21, the density error 0.0395 against 0.0377) |
+| `--profile` | flag | off | the processor waits for every kernel and prints each one's time, the largest first: a breakdown, slower than the fit it times |
 | `--density-scale` | number | `1` | density to extinction a world unit: for `--measure`'s rays and the opacity written for a standard viewer |
 | `--measure` | flag | off | prints the way back's relative L2 error over the active voxels and its largest difference, and the closed-form transmittance against ratio tracking through the input along `--rays` random segments |
 | `--rays` | integer | `4096` | `--measure` |
@@ -2567,7 +2570,9 @@ grid's leaves laid out by the host, 513 entries a leaf: the leaf's origin in
 index space, then its 512 voxels in NanoVDB's order (x slowest, z fastest),
 each (density, temperature, Cd as rgba8 in a float's bits, active 0 or 1).
 Its rows must not be padded, and neither must the output's. The output holds
-four entries a gaussian in the grid's index space -- (centre, σ), (A00, A10,
+four entries a gaussian in the grid's index space shifted by half a voxel
+(a voxel's value at ijk + 0.5; OpenVDB's and the path tracer's stand at ijk)
+-- (centre, σ), (A00, A10,
 A11, A20), (A21, A22, temperature, Cd rgba8), (the half extents of its box at
 3.5 deviations, 1) -- where A is the lower Cholesky factor of the precision,
 G(x) = exp(−|Aᵀ(x − μ)|² / 2); its size is the budget's room, a quarter of its
@@ -2582,6 +2587,9 @@ entries.
 | `pruneMass` | number | `1e-6` | a gaussian whose mass is under this share of the total goes |
 | `hasTemperature`, `hasColour` | boolean | `0` | whether `Grid` carries them (the host sets them) |
 | `binned` | boolean | `1` | `--no-bins`'s opposite |
+| `binSlack` | number ≥ 0, voxels | `0` | `--bin-slack` |
+| `checkerboard` | boolean | `0` | `--checkerboard` |
+| `profile` | boolean | `0` | `--profile`: each kernel waited for, its time attached as `profile:<kernel>` (ms) |
 | `splitShare` | 0 to 1 | `0.5` | `--split-share` |
 | `keepSlots` | boolean | `0` | every slot written in its place, the dead ones zero, so that a sequence's next frame starts from them; `gaussians` then says the capacity as written and the living ninth |
 | `dt` | number | `1` | with the `Previous` and `Velocity` clips (optional): frames the flow carries the gaussians over. `Previous` is the frame before's output (`keepSlots`); `Velocity` the flow at the leaves' voxels laid out as `Grid` is, (u, active) in voxels a frame |
@@ -2589,7 +2597,9 @@ entries.
 It attaches `gaussians`: written, the budget, leaves, the fit's relative L2
 error over the active voxels, the gaussians the first cut held, the
 iterations, the coarsest block's level (2^level voxels a side), and the
-fewest gaussians the coarsest blocks allow.
+fewest gaussians the coarsest blocks allow. And `syncs`: the readbacks the
+processor waited on, the kernels' loading in ms, and how many times the
+leaves' lists were built.
 
 ## 8. Reference
 
