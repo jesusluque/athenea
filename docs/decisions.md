@@ -17328,3 +17328,44 @@ checkerboard 3.98 s (−37 %) at 4.7 % more density error. What is left: the gra
 time and the forward pass 26 %, each a few dozen voxels of a leaf for every gaussian whose box meets it,
 rebuilt every iteration (the lists' builds 13 %). Neither is limited by reading memory any more nor by the
 readbacks; the evaluation itself is what is left.
+
+### The schedule, for error at a budget (1 Nov)
+
+The fit's knobs one at a time, then together, on smoke2 at 50k (`~/luc/athenea-gpu/vdb2splat_opt2sweep*.sh`, one
+run each, release, M5 Pro, the shared GPU lock, the Mac's interactive use not known), from the 300-step fit
+(5.21 s, density relative L2 0.0377):
+
+| change from the 300-step fit | fit s | relative L2 |
+|---|---|---|
+| `--init-fraction` 0.4 / 0.8 | 6.32 / 4.68 | 0.0392 / 0.0369 |
+| `--densify-every` 10 / 40 | 4.35 / 5.11 | 0.0558 / 0.0351 |
+| `--split-share` 0.25 / 0.75 | 4.71 / 5.55 | 0.0420 / 0.0343 |
+| `--em-iterations` 20 / 80 | 5.17 / 5.57 | 0.0397 / 0.0375 |
+| `--learning-rate` 0.05 / 0.2 | 5.17 / 6.18 | 0.0406 / 0.0393 |
+| 360 steps; 500 with `--checkerboard` | 6.37; 6.84 | 0.0352; 0.0342 |
+| a cut of 0.8, densify every 60, every new slot a split | 4.86 | 0.0339 |
+| the same, 520 checkerboard steps | 6.09 | 0.0317 |
+| a cut of 0.7, densify every 80, every new slot a split, 520 checkerboard steps, blocks to 32 | 6.33 | 0.0304 |
+
+Fewer densify rounds that each split more, from a larger first cut: the births at the worst voxels and the early
+rounds' slots spent on what the next rounds undo were where the 300-step fit lost. The last line against the
+300-step fit (median of three; masked path traces E1b's, 4096 paths):
+
+| | fit s | relative L2 | PT ×1 | PT ×16 | usdc |
+|---|---|---|---|---|---|
+| smoke2 50k, 300 steps | 5.21 | 0.0377 | 6.4·10⁻⁴ | 5.9·10⁻³ | 3.20 MB |
+| smoke2 50k, the schedule | 6.34 | 0.0304 | 4.1·10⁻⁴ | 4.4·10⁻³ | 3.20 MB |
+| smoke2 40k, the schedule | 6.22 | 0.0366 | | | 2.56 MB |
+| smoke2 35k, the schedule | 6.13 | 0.0407 | | 7.1·10⁻³ | 2.24 MB |
+| smoke2 10k, 300 steps / the schedule | 4.16 / 4.81 | 0.1002 / 0.0940 | | | 0.64 MB |
+| explosion 50k, 300 steps / the schedule | 7.63 / 8.73 | 0.0270 / 0.0241 | 3.5·10⁻⁴ / 2.8·10⁻⁴ | | 3.30 MB |
+| smoke2 50k, 100 steps: default / a cut of 0.7, densify every 80, all splits, blocks to 32 | 1.84 / 1.61 | 0.0622 / 0.0552 | | | 3.20 MB |
+
+At the time the 300-step fit took before this work (6.36 s) the density error goes 0.0377 → 0.0304 (−19 %), the
+target 0.030 within 1 %; the error of 50k gaussians before is reached by 40k (−20 % gaussians and bytes). The
+defaults are not changed: `densifyEvery` counts iterations, so the same 80 leaves a warm sequence frame (30 steps)
+no round at all, and the small fixtures of `athenea_aofx_tests` are not refitted with it; the schedule is
+`--iterations 520 --checkerboard --init-fraction 0.7 --densify-every 80 --split-share 1 --max-block 32`. The
+100-step line says the defaults themselves would gain (better and faster on smoke2), which wants the densify
+rounds given as a count rather than a period first. Why EM after Adam diverges on a warm frame is not looked at
+here.
