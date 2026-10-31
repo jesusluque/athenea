@@ -130,6 +130,7 @@ void addStage(CLI::App& app) {
         std::vector<std::string> variants;
         std::vector<std::string> splatOverrides;
         uint32_t lightSamples = 1;
+        std::string volumeFilter;
         uint32_t meshLightSamples = 0;
         bool     noMeshLights = false;
         bool denoise = false, frameAll = false, splatShadows = false, defaultLights = false;
@@ -182,6 +183,9 @@ void addStage(CLI::App& app) {
                     "rt: shutter slices for motion blur, 1 to 8 (the shutter is the camera's)");
     cmd->add_option("--refine", o->refine, "subdivision surfaces refined this many levels (0: the control mesh)");
     cmd->add_option("--light-samples", o->lightSamples, "samples per light per pixel");
+    cmd->add_option("--volume-filter", o->volumeFilter,
+                    "rt: how a volume's density is looked up between voxels (athenea:volumeFilter)")
+        ->check(CLI::IsMember({"trilinear", "nearest", "stochastic"}));
     cmd->add_option("--mesh-light-samples", o->meshLightSamples,
                     "raster: samples a pixel drawn from the mesh lights (0: closed form)");
     cmd->add_flag("--no-mesh-lights", o->noMeshLights, "emitting meshes are not clustered into lights");
@@ -279,6 +283,9 @@ void addStage(CLI::App& app) {
         }
         (*renderer)->setRefineLevel(o->refine);
         (*renderer)->setLightSamples(o->lightSamples);
+        if (!o->volumeFilter.empty()) {
+            (*renderer)->setVolumeFilter(o->volumeFilter);
+        }
         (*renderer)->setMeshLightSamples(o->meshLightSamples);
         (*renderer)->setMeshLights(!o->noMeshLights);
         (*renderer)->setSplatShadows(o->splatShadows);
@@ -445,6 +452,13 @@ void addStage(CLI::App& app) {
         }
         if (!image) {
             cli::fail(image.error());
+        }
+        // What the frame's volumes hold, where it has any: the grids read on
+        // the host and the one buffer of words on the device.
+        if (const usd::StageRenderer::VolumeCacheCounts v = (*renderer)->volumeCacheCounts(); v.grids > 0) {
+            std::printf("volumes: %llu grid(s) read, %.2f MB on the host, %.2f MB on the device\n",
+                        static_cast<unsigned long long>(v.grids), double(v.bytes) / 1048576.0,
+                        double(v.deviceBytes) / 1048576.0);
         }
         if (auto written = io::writeExr(o->output, width, height, image->rgba, image->depth); !written) {
             cli::fail(written.error());

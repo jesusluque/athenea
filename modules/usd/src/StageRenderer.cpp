@@ -1091,6 +1091,10 @@ void StageRenderer::setVolumeCacheMB(double megabytes) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:volumeCacheMB"), VtValue(megabytes));
 }
 
+void StageRenderer::setVolumeFilter(const std::string& filter) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:volumeFilter"), VtValue(TfToken(filter)));
+}
+
 StageRenderer::VolumeCacheCounts StageRenderer::volumeCacheCounts() const {
     auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
     Engine* engine = param != nullptr ? param->GetEngine() : nullptr;

@@ -374,6 +374,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--refine` | entero | `0` | niveles de subdivisión; 0 dibuja la malla de control |
 | `--light-samples` | entero | `1` | muestras por luz y píxel |
 | `--mesh-light-samples` | 0..64 | `0` | raster: muestras por píxel de las luces de malla; 0 ilumina por ellas en forma cerrada (`athenea:meshLightSamples`) |
+| `--volume-filter` | `trilinear`, `nearest`, `stochastic` | `trilinear` | rt: la densidad de un volumen entre vóxeles (`athenea:volumeFilter`) |
 | `--no-mesh-lights` | flag | luces de malla encendidas | las mallas emisoras no se agrupan en luces (`athenea:meshLights` apagado) |
 | `--no-transfer-indirect` | flag | se suma | dibujar una nube con transfer sin su mitad rebotada |
 | `--splat-display-blend` | flag | mezcla lineal | raster: los splats se mezclan como los mezcla un visor estándar, sumando valores sRGB (`athenea:splatDisplayBlend`) |
@@ -1634,6 +1635,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:cloudShadowTerms` | int | `0` | 1 es solo el total; 3, 5, 7 añaden pares de Fourier; 0 deja decidir a quien recibe |
 | `athenea:cloudShadowDensity` | float | `1.0` | multiplicador de la profundidad óptica de la nube |
 | `athenea:volumeCacheMB` | int o float, MB | `2048` | rt: las rejillas de volumen que se guardan leídas en el host; sale primero la dibujada hace más tiempo. Las rejillas que dibuja el frame se guardan diga lo que diga, y 0 guarda solo esas (§4.3, *Volúmenes*) |
+| `athenea:volumeFilter` | token | `trilinear` | rt: cómo consulta el medio su densidad entre vóxeles: `trilinear`, `nearest` o `stochastic` (un vóxel sorteado con los pesos trilineales); otro nombre se dice una vez y se usa `trilinear` (§4.3, *Volúmenes*) |
 
 Leídos pero no declarados:
 
@@ -1985,6 +1987,12 @@ todos los fields que nombra, hasta ocho (la densidad primero, luego en el
 orden de Hydra; el que pasa del octavo se dice y no se lee), cada uno por su
 nombre en el dispositivo; el medio se sombrea solo con su densidad, y los
 demás fields esperan al sombreado que los lea.
+La densidad se consulta entre vóxeles según dice `athenea:volumeFilter`,
+con los valores de los vóxeles en coordenadas de índice enteras, como en
+OpenVDB: `trilinear`, por defecto; `nearest`; o `stochastic`, uno de los
+ocho vóxeles alrededor del punto sorteado con los pesos trilineales -- más
+ruidoso a igual número de caminos, el valor trilineal en esperanza, una
+consulta cada vez.
 
 **Grupos de luces**, que todavía no declara ningún schema. Las lámparas de una
 nube son un primvar por grupo en su field, y sus grupos y estados son

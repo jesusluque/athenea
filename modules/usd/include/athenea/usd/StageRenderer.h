@@ -577,6 +577,9 @@ public:
     [[nodiscard]] MeshLightCounts meshLightCounts() const;
     /// The volume grid cache's budget (athenea:volumeCacheMB, in MB).
     void setVolumeCacheMB(double megabytes);
+    /// The medium's lookup between voxels (athenea:volumeFilter):
+    /// "trilinear" (the default), "nearest" or "stochastic".
+    void setVolumeFilter(const std::string& filter);
     /// What the volume grid cache holds -- its grids and their bytes on the
     /// host -- what it has read and evicted so far, and the bytes the
     /// frame's volumes hold on the device. Counts kept, nothing measured.

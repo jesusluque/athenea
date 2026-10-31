@@ -14,6 +14,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -40,6 +41,15 @@ enum class FieldRole : uint32_t { Other, Density, Temperature, Flame, Color, Vel
 
 /// FNV-1a of a field's name: how a kernel names the field it reads.
 [[nodiscard]] uint32_t fieldNameHash(std::string_view name) noexcept;
+
+/// How the medium looks a density up between voxels (athenea:volumeFilter):
+/// trilinear between the eight about the point; the nearest; or one of the
+/// eight drawn with the trilinear weights -- the trilinear value in
+/// expectation, at one lookup.
+enum class VolumeFilter : uint32_t { Trilinear = 0, Nearest = 1, Stochastic = 2 };
+
+/// A filter's name as the setting spells it; nullopt for another.
+[[nodiscard]] std::optional<VolumeFilter> volumeFilterFromName(std::string_view name) noexcept;
 
 /// One of a volume's fields: its typed grid, by name.
 struct VolumeFieldInput {
@@ -73,6 +83,7 @@ struct VolumeInput {
     /// Every field it names, the density among them, at most kMaxFields: a
     /// table in its record, read by name (shaders/athenea/volume/fields.slang).
     std::vector<VolumeFieldInput> fields;
+    VolumeFilter         filter = VolumeFilter::Trilinear;
 };
 
 /// Where one grid sits in the words, for a kernel that reads it.

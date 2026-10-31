@@ -3732,7 +3732,7 @@ TEST_CASE("the path tracer through an absorbing volume is Beer-Lambert's, pixel 
         const LensFrame without =
             renderLensPlane(*gpu, projection, w, h, -4.0, 4.0, 4.0, kPaths, {}, {nullptr, shadows});
         const LensFrame with = renderLensPlane(*gpu, projection, w, h, -4.0, 4.0, 4.0, kPaths, {}, {&*set, shadows});
-        gpu::Buffer counts = test::uintBuffer(*gpu->device, 5, "volume.render.counts");
+        gpu::Buffer counts = test::uintBuffer(*gpu->device, 7, "volume.render.counts");
         gpu::Buffer sumsBuffer = test::uintBuffer(*gpu->device, 4, "volume.render.sums");
         {
             gpu::CommandBatch batch(*gpu->device);
@@ -3742,8 +3742,11 @@ TEST_CASE("the path tracer through an absorbing volume is Beer-Lambert's, pixel 
                 c["toWorld"]["row0"].setData(rows.data(), sizeof(float) * 4);
                 c["toWorld"]["row1"].setData(rows.data() + 4, sizeof(float) * 4);
                 c["toWorld"]["row2"].setData(rows.data() + 8, sizeof(float) * 4);
+                // The box's voxels, 0..31 at 0.1, by their centres: voxel
+                // values stand at integer index points, and the medium looks them
+                // up trilinearly, which the check integrates exactly (voxel 0.1).
                 const float boxMin[3] = {0.0F, -1.6F, -3.8F};
-                const float boxMax[3] = {3.2F, 1.6F, -0.6F};
+                const float boxMax[3] = {3.1F, 1.5F, -0.7F};
                 const float towardLight[3] = {0.0F, 0.0F, 1.0F};   // the sun shines down -z
                 c["check"]["boxMin"].setData(boxMin, sizeof(boxMin));
                 c["check"]["boxMax"].setData(boxMax, sizeof(boxMax));
@@ -3753,6 +3756,7 @@ TEST_CASE("the path tracer through an absorbing volume is Beer-Lambert's, pixel 
                 c["check"]["paths"].setData(static_cast<float>(kPaths));
                 c["check"]["deviations"].setData(5.0F);
                 c["check"]["shadows"].setData(uint32_t{shadows ? 1u : 0u});
+                c["check"]["voxel"].setData(0.1F);
                 c["with"].setBinding(with.colour.rhi());
                 c["without"].setBinding(without.colour.rhi());
                 c["counts"].setBinding(counts.rhi());
@@ -3760,7 +3764,7 @@ TEST_CASE("the path tracer through an absorbing volume is Beer-Lambert's, pixel 
             });
             REQUIRE(batch.submit(true));
         }
-        uint32_t n[5] = {};
+        uint32_t n[7] = {};
         float sums[4] = {};
         REQUIRE(counts.read(*gpu->device, 0, sizeof(n), n));
         REQUIRE(sumsBuffer.read(*gpu->device, 0, sizeof(sums), sums));
@@ -3770,6 +3774,9 @@ TEST_CASE("the path tracer through an absorbing volume is Beer-Lambert's, pixel 
                     "untouched, %u of them changed\n",
                     shadows ? "on" : "off", n[0], n[1], meanSquare, n[0] ? sums[1] / n[0] : 0.0F,
                     n[0] ? sums[2] / n[0] : 0.0F, n[2], n[3]);
+        std::printf("  beyond the deviations without the three paths' slack: %u, %u of them where under 5 paths "
+                    "are expected\n",
+                    n[5], n[6]);
         {
             std::vector<float> rgba(size_t{w} * h * 4);
             REQUIRE(with.colour.read(*gpu->device, 0, rgba.size() * 4, rgba.data()));

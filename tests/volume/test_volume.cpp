@@ -58,7 +58,11 @@ TEST_CASE("a VDB grid laid out as NanoVDB holds the voxels it was filled with, a
     if (!grid) FAIL(grid.error().toString());
     std::printf("  %s: %zu words, %u leaves, voxel %.3f\n", grid->name.c_str(), grid->words.size(), grid->leafCount,
                 grid->voxelSize);
-    CHECK(grid->leafCount == 64 + 1);
+    // 64 + 1 leaves of the boxes, and the cells before them (in x, y, z and
+    // their diagonals) that a lookup in their last layer reaches into the
+    // boxes from: the dense box's 4^3 block grows to 5^3, the small box's
+    // leaf brings 7.
+    CHECK(grid->leafCount == 125 + 8);
     CHECK(grid->voxelSize == 0.1);
 
     auto set = world::VolumeSet::create(*gpu->library);
@@ -102,13 +106,13 @@ TEST_CASE("a VDB grid laid out as NanoVDB holds the voxels it was filled with, a
                 c[0], 32u * 32u * 32u + 8u * 8u * 8u, bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5],
                 c[1], c[2], static_cast<double>(majorant));
     CHECK(c[0] == 32u * 32u * 32u + 8u * 8u * 8u);
-    CHECK(bounds[0] == 0);
-    CHECK(bounds[1] == 0);
-    CHECK(bounds[2] == 0);
+    CHECK(bounds[0] == -8);
+    CHECK(bounds[1] == -8);
+    CHECK(bounds[2] == -8);
     CHECK(bounds[3] == 48);
     CHECK(bounds[4] == 32);
     CHECK(bounds[5] == 32);
-    CHECK(c[2] == 65);
+    CHECK(c[2] == 133);
     CHECK(c[1] == 0);
     CHECK(majorant == 2.0F);
 }
@@ -154,13 +158,18 @@ TEST_CASE("a medium on the grid is Beer-Lambert's within its own standard error,
         const char* name;
         uint32_t leaves;   // the leaf walk's expected count; 0: judge against the voxel walk
     };
-    // The chord a ray cuts through the dense box [0, 3.2)^3, for the
-    // expectation of an oblique ray (the fixture's geometry, by construction).
+    // The chord a ray cuts through the dense box, for the expectation of an
+    // oblique ray (the fixture's geometry, by construction). Voxel values
+    // stand at integer index points, so voxels 0..31 at 0.1 make, through
+    // the trilinear ramp a voxel wide at each face, a box that steps at
+    // half a voxel out: [-0.05, 3.15). (Exact along a face's normal; near an
+    // edge the two ramps multiply, which this ray's entry grazes for a few
+    // hundredths of a unit.)
     const auto chord = [](const float* o, const float* d) {
         float t0 = -1e9F, t1 = 1e9F;
         for (int a = 0; a < 3; ++a) {
-            float ta = (0.0F - o[a]) / d[a];
-            float tb = (3.2F - o[a]) / d[a];
+            float ta = (-0.05F - o[a]) / d[a];
+            float tb = (3.15F - o[a]) / d[a];
             if (ta > tb) std::swap(ta, tb);
             t0 = std::max(t0, ta);
             t1 = std::min(t1, tb);
@@ -169,20 +178,22 @@ TEST_CASE("a medium on the grid is Beer-Lambert's within its own standard error,
     };
     const float oblique[3] = {-0.5F, -0.3F, -0.2F};
     const float obliqueDir[3] = {0.68599F, 0.51449F, 0.51449F};   // (0.8, 0.6, 0.6) normalised
-    // Through the middle of the dense box along x: 4 leaves, 6 leaf cells
-    // with the empty ones past it; obliquely across it, judged against the
-    // voxel walk; and along x through the small box from beyond the dense
-    // one: 1 leaf.
+    // Through the middle of the dense box along x: 7 leaf cells, 5 with a
+    // majorant -- its 4 leaves, and the empty cell before it, whose last
+    // layer reads the first leaf's first (the bounds open a voxel below the
+    // leaves for it); obliquely across it, judged against the voxel walk;
+    // and along x through the small box from beyond the dense one: its leaf
+    // and the empty cell before it.
     const Ray cases[] = {
-        {{-1.0F, 1.6F, 1.6F}, {1.0F, 0.0F, 0.0F}, 0.0F, 10.0F, std::exp(-1.6F), "x through the dense box", 4},
+        {{-1.0F, 1.6F, 1.6F}, {1.0F, 0.0F, 0.0F}, 0.0F, 10.0F, std::exp(-1.6F), "x through the dense box", 5},
         {{oblique[0], oblique[1], oblique[2]}, {obliqueDir[0], obliqueDir[1], obliqueDir[2]}, 0.0F, 20.0F,
          std::exp(-0.5F * chord(oblique, obliqueDir)), "obliquely across the dense box", 0},
-        {{3.5F, 0.4F, 0.4F}, {1.0F, 0.0F, 0.0F}, 0.0F, 10.0F, std::exp(-2.0F * 0.8F), "x through the small box", 1},
+        {{3.5F, 0.4F, 0.4F}, {1.0F, 0.0F, 0.0F}, 0.0F, 10.0F, std::exp(-2.0F * 0.8F), "x through the small box", 2},
         // The same box, walked the other way along each axis: a negative
         // direction steps the leaf cells down.
-        {{4.2F, 1.6F, 1.6F}, {-1.0F, 0.0F, 0.0F}, 0.0F, 10.0F, std::exp(-1.6F), "-x through the dense box", 4},
-        {{1.6F, 4.2F, 1.6F}, {0.0F, -1.0F, 0.0F}, 0.0F, 10.0F, std::exp(-1.6F), "-y through the dense box", 4},
-        {{1.6F, 1.5F, 4.2F}, {0.0F, 0.0F, -1.0F}, 0.0F, 10.0F, std::exp(-1.6F), "-z through the dense box", 4},
+        {{4.2F, 1.6F, 1.6F}, {-1.0F, 0.0F, 0.0F}, 0.0F, 10.0F, std::exp(-1.6F), "-x through the dense box", 5},
+        {{1.6F, 4.2F, 1.6F}, {0.0F, -1.0F, 0.0F}, 0.0F, 10.0F, std::exp(-1.6F), "-y through the dense box", 5},
+        {{1.6F, 1.5F, 4.2F}, {0.0F, 0.0F, -1.0F}, 0.0F, 10.0F, std::exp(-1.6F), "-z through the dense box", 5},
     };
     for (const Ray& ray : cases) {
         const auto bind = [&](rhi::ShaderCursor c) {
@@ -747,6 +758,110 @@ TEST_CASE("a volume's fields are each reachable on the device by name, at their 
     tooMany.fields.push_back(input.fields[0]);
     gpu::CommandBatch batch(*gpu->device);
     CHECK_FALSE(set->set(batch, std::span<const world::VolumeInput>(&tooMany, 1)));
+}
+
+// FILTERS (athenea:volumeFilter): through the middle of the dense box every
+// filter is Beer-Lambert's exp(-1.6); along x a quarter voxel inside its
+// top face (index y 31.75: the last voxel row at 0.25 of its weight) the
+// trilinear density is 0.25 x 0.5 for an optical depth of 0.4, which the
+// stochastic filter -- one voxel drawn with the trilinear weights -- holds in
+// expectation; the nearest voxel there is outside the box, density 0. Each
+// within the standard error its own rays measure, never over the majorant.
+TEST_CASE("the trilinear, nearest and stochastic filters each track the density they define",
+          "[volume][gpu][medium][filter]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    auto grid = io::readVdbGrid(boxesFixture(), "density");
+    if (!grid) FAIL(grid.error().toString());
+    auto rays = gpu::ComputeKernel::create(*gpu->library, "athenea/test/medium_check", "mediumRays");
+    auto reduce = gpu::ComputeKernel::create(*gpu->library, "athenea/test/medium_check", "mediumReduce");
+    auto majorant = gpu::ComputeKernel::create(*gpu->library, "athenea/test/medium_check", "mediumMajorant");
+    if (!rays) FAIL(rays.error().toString());
+    if (!reduce) FAIL(reduce.error().toString());
+    if (!majorant) FAIL(majorant.error().toString());
+    constexpr uint32_t kRays = 16384;
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 6, "filter.counts");
+    gpu::Buffer sums = test::uintBuffer(*gpu->device, 4, "filter.sums");
+    gpu::Buffer perRay = test::uintBuffer(*gpu->device, uint64_t{kRays} * 2, "filter.perRay");
+    struct Filter {
+        const char*         name;
+        world::VolumeFilter filter;
+        float               edgeT;   // along x at index y 31.75
+    };
+    const Filter filters[] = {{"trilinear", world::VolumeFilter::Trilinear, std::exp(-0.4F)},
+                              {"nearest", world::VolumeFilter::Nearest, 1.0F},
+                              {"stochastic", world::VolumeFilter::Stochastic, std::exp(-0.4F)}};
+    for (const Filter& filter : filters) {
+        auto set = world::VolumeSet::create(*gpu->library);
+        if (!set) FAIL(set.error().toString());
+        world::VolumeInput input;
+        input.grid = &*grid;
+        input.filter = filter.filter;
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            REQUIRE(set->set(batch, std::span<const world::VolumeInput>(&input, 1)));
+            REQUIRE(batch.submit(true));
+        }
+        struct Ray {
+            float origin[3];
+            float expected;
+            const char* name;
+        };
+        const Ray cases[] = {{{-1.0F, 1.6F, 1.6F}, std::exp(-1.6F), "through the middle"},
+                             {{-1.0F, 3.175F, 1.6F}, filter.edgeT, "a quarter voxel inside the top face"}};
+        for (const Ray& ray : cases) {
+            const float direction[3] = {1.0F, 0.0F, 0.0F};
+            const auto bind = [&](rhi::ShaderCursor c) {
+                c["medium"]["rays"].setData(kRays);
+                c["medium"]["volume"].setData(uint32_t{0});
+                c["medium"]["expectedT"].setData(ray.expected);
+                c["medium"]["origin"].setData(ray.origin, sizeof(ray.origin));
+                c["medium"]["tMin"].setData(0.0F);
+                c["medium"]["direction"].setData(direction, sizeof(direction));
+                c["medium"]["tMax"].setData(10.0F);
+                const float boxMin[3] = {0.0F, 0.0F, 0.0F};
+                const float boxMax[3] = {4.8F, 3.2F, 3.2F};
+                c["medium"]["boxMin"].setData(boxMin, sizeof(boxMin));
+                c["medium"]["boxMax"].setData(boxMax, sizeof(boxMax));
+                c["words"].setBinding(set->words().rhi());
+                c["counts"].setBinding(counts.rhi());
+                c["sums"].setBinding(sums.rhi());
+                c["perRay"].setBinding(perRay.rhi());
+            };
+            const uint32_t zeros[6] = {};
+            REQUIRE(counts.write(*gpu->device, 0, sizeof(zeros), zeros));
+            {
+                gpu::CommandBatch batch(*gpu->device);
+                rays->dispatch(batch, {kRays, 1, 1}, bind);
+                reduce->dispatch(batch, {1, 1, 1}, bind);
+                majorant->dispatch(batch, {kRays, 1, 1}, bind);
+                REQUIRE(batch.submit(true));
+            }
+            uint32_t c[6] = {};
+            float sm[4] = {};
+            REQUIRE(counts.read(*gpu->device, 0, sizeof(c), c));
+            REQUIRE(sums.read(*gpu->device, 0, sizeof(sm), sm));
+            const double n = kRays;
+            const double meanT = sm[0] / n;
+            const double varT = std::max(sm[1] / n - meanT * meanT, 0.0);
+            const double meanS = sm[2] / n;
+            const double varS = std::max(sm[3] / n - meanS * meanS, 0.0);
+            // A transmittance of exactly 1 has no spread: then it must be 1.
+            const double zT = varT > 0.0 ? (meanT - ray.expected) / std::sqrt(varT / n) : (meanT - ray.expected) * 1e9;
+            const double zS = varS > 0.0 ? (meanS - (1.0 - ray.expected)) / std::sqrt(varS / n)
+                                         : (meanS - (1.0 - ray.expected)) * 1e9;
+            std::printf("  %s, %s: T %.4f (expected %.4f, z %.2f), scattered %.4f (z %.2f); %u of %u probes over "
+                        "their majorant\n",
+                        filter.name, ray.name, meanT, double(ray.expected), zT, meanS, zS, c[1], c[5]);
+            CHECK(std::abs(zT) < 3.5);
+            CHECK(std::abs(zS) < 3.5);
+            CHECK(c[1] == 0);
+        }
+    }
+    CHECK(world::volumeFilterFromName("stochastic") == world::VolumeFilter::Stochastic);
+    CHECK_FALSE(world::volumeFilterFromName("cubic"));
 }
 
 // THE MEDIUM'S RANDOM STREAMS DO NOT MEET. One pixel's streams as the path

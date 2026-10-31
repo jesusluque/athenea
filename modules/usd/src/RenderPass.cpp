@@ -234,6 +234,7 @@ void HdAtheneaRenderPass::_Execute(HdRenderPassStateSharedPtr const& state, TfTo
         _engine->setMeshLights(_delegate->GetMeshLights());
         _engine->setMeshLightSamples(_delegate->GetMeshLightSamples());
         _engine->setVolumeCacheBytes(_delegate->GetVolumeCacheBytes());
+        _engine->setVolumeFilter(_delegate->GetVolumeFilter());
         _engine->setEmissionLevels(_delegate->GetLightLevels());
         _engine->setGlassShadows(_delegate->GetGlassShadows());
         _engine->setPathError(_delegate->GetPathError());

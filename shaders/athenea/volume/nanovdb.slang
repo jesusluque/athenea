@@ -178,3 +178,14 @@ public bool nvActiveAt(StructuredBuffer<uint> buf, NvGrid g, int3 ijk) {
     return pnanovdb_readaccessor_is_active(g.type, buf, acc, c);
 }
 
+/// The size of the node a coordinate's value comes from: 1 a leaf's voxel,
+/// 8, 128 or 4096 a tile of a lower, upper or root node, larger the background.
+public uint nvDimAt(StructuredBuffer<uint> buf, NvGrid g, int3 ijk) {
+    pnanovdb_readaccessor_t acc;
+    pnanovdb_readaccessor_init(acc, rootOf(buf, g));
+    pnanovdb_coord_t c;
+    c.x = ijk.x;
+    c.y = ijk.y;
+    c.z = ijk.z;
+    return pnanovdb_readaccessor_get_dim(g.type, buf, acc, c);
+}

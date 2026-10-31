@@ -3517,6 +3517,128 @@ a ratio of 5.03 where independent paths give (1/1024 - 1/16384) / (1/4096 -
 1/16384) = 5. Frame times are the same (10.7 s / 26.7 s / 90.4 s before,
 10.3 s / 27.3 s / 95.8 s after, wall clock with loading, one run each).
 
+### Filtering, and where a voxel's value stands
+
+The medium read the voxel a point fell in, `floor(p)`: a voxel's value
+stood for the cube [i, i + 1). OpenVDB puts a voxel's value at its index
+point i, the cube's centre, so every lookup sat half a voxel off -- a box
+of voxels 0..31 at 0.1 was drawn over [0, 3.2) where OpenVDB has it over
+[-0.05, 3.15). Values now stand at integer index coordinates, and
+`athenea:volumeFilter` says how a point between them reads: **trilinear**,
+the default, between the eight about it; **nearest**, `floor(p + 0.5)`;
+**stochastic**, one of the eight drawn with the trilinear weights
+(`floor(p + u)`, u uniform per axis from the path's own random numbers --
+not a blue-noise offset, which the medium's walk has no table for). Its
+expectation is the trilinear value, and delta and ratio tracking stay
+unbiased with a density that is an unbiased estimate (the acceptance and
+the ratio are linear in it), at one lookup instead of eight.
+
+A lookup in a cell [o, o + 8) reads voxels up to o + 8, so the majorants
+had to grow with it. A leaf's maximum is now over [o, o + 8] on each axis
+(729 voxels through the accessor, active or not, its neighbours' first
+layer included). And a cell before a leaf -- along x, y, z or their
+diagonals -- reads that leaf's first layer from its own last one, though
+it holds nothing. The first attempt gave such an empty cell a majorant
+from its seven neighbours at +8 (eight tree lookups a cell instead of one,
+then a second per-leaf word for the low faces' maximum): the smoke's frame
+went from 560 ms to 1272 ms at nearest, the walk crossing far more empty
+cells than leaves, and the face-maximum variant broke the majorant on 1%
+of the probes for a reason not found before it was replaced. What stands
+instead is structural: as a grid is read, **every cell whose lookups reach
+a leaf is made a leaf** (`touchLeavesBelow`: OpenVDB's `touchLeaf` at the
+seven offsets of -8, inactive, each value the tile's or the background it
+stood in -- no value read or made). The walk then finds them like any
+leaf, their maxima cover what they read, and a cell that is still no leaf
+reads only its own tile: one lookup, as before. It costs leaves -- the
+dense fixture's 4^3 block becomes 5^3 -- and the record's bounds follow
+the leaves, a cell lower.
+
+What this changes in the checks, honestly:
+
+- The leaf walk visits one cell more where the bounds open (the cell
+  before the box is a leaf now): the dense box's axis rays cross 7 cells,
+  5 with a leaf (4 before), the small box's 2 and 2; the fixture has 133
+  leaves where it had 65, its bounds [-8, 48) x [-8, 32)^2. The walk
+  voxel by voxel that the leaf walk is checked against now steps a
+  hundredth of a voxel: at a tenth it missed a cell an oblique ray cuts for
+  a sliver near the new lower bound (14 cells against 13).
+- The oblique ray's Beer-Lambert expectation is the chord through
+  [-0.05, 3.15)^3, where the voxels stand; the trilinear ramp at each face
+  integrates to that step.
+- **The pixel-by-pixel Beer-Lambert checks** (technique and Hydra) took the
+  box as [0, 3.2) with a constant density inside. A camera at x = 0 looks
+  along the box's x = 0 face, so many pixels' rays run inside the face's
+  trilinear ramp for their whole chord: with the box only shifted, 833 and
+  930 pixels were beyond five deviations, mean z^2 11.4. The check now
+  integrates the trilinear density along each pixel's ray exactly -- the
+  hat-filtered box is a product of three piecewise linear functions, a
+  cubic between breakpoints, which Simpson's rule integrates exactly piece
+  by piece -- and reads mean z^2 0.992 and 0.974 (sun shadows off and on) and 0.983 through
+  Hydra. Rays that graze a ramp's tail
+  have an expected loss of a fraction of a path in 1024, where the normal
+  criterion is wrong (one path is already three deviations): 3 pixels of
+  14399 crossed five deviations by that alone, all of them with fewer than
+  five paths expected. The criterion keeps five deviations and adds a
+  slack of three paths' worth (3/N, it was 1e-4), with which 0 pixels of 14399 fail
+  (3 without the slack, every one of them under five paths expected).
+- The emitting panel in a medium against a rect light (`[meshlights]
+  [volume]`) read 6% apart with the new leaves until the medium's random
+  streams were keyed (above): more draws a path, more streams met.
+- The furnace and the level set are unchanged in what they expect: the
+  level set's band is linear in its distance and reads sigma (L -
+  halfWidth) under any of the filters (z 1.06, 1.06, 1.06 along x, -y and z; 342
+  leaves now, 208 before, the cells before the band made leaves).
+
+**Checked** (`[volume][filter]`): along x through the middle of the dense
+box all three filters are Beer-Lambert's exp(-1.6); a quarter voxel inside
+its top face (index y 31.75), trilinear reads 0.6719 and stochastic 0.6758
+against exp(-0.4) = 0.6703 (z 0.95 and 1.51), nearest exactly 1 (that
+voxel is outside); no density over its majorant at 16384 random points for
+each.
+
+**Timings and sizes** -- `athenea stage --frames 5`, the median of the last
+four, 1024 x 1024, 64 paths a frame (16 a pass), 8 bounces, the RelWithDebInfo
+builds of mesh-lights 5d5aede, stage A (dc6e1ee) and this stage, on the M5
+Pro, one GPU job at a time through the shared queue (other sessions' jobs
+in between, the Mac otherwise in use). The stills: smoke2 x40 density and
+explosion x0.1, a sun and a dome (`~/luc/athenea-renders/volumes`).
+
+| | 5d5aede | stage A | B nearest | B trilinear | B stochastic |
+|---|---|---|---|---|---|
+| smoke2, ms a frame | 445 | 560 | 616 | 881 | 616 |
+| smoke2, ms a path a pixel-frame (/64) | 6.9 | 8.7 | 9.6 | 13.8 | 9.6 |
+| explosion, ms a frame | 653 | 811 | 887 | 1042 | 887 |
+| explosion, ms /64 | 10.2 | 12.7 | 13.9 | 16.3 | 13.9 |
+
+| | on disk (.vdb, all grids) | density on the device, A | density on the device, B |
+|---|---|---|---|
+| smoke2 | 30.5 MB (density and v) | 21.6 MB | 28.4 MB (+31%) |
+| explosion | 78.5 MB (density, temperature, v) | 21.9 MB | 27.1 MB (+24%) |
+
+The device's growth is the leaves before the leaves (the medium's reach);
+the record grew by 512 bytes. Nearest costs B 10% over A (the new leaves'
+walk); trilinear's eight lookups a collision 43% on smoke2 and 29% on the
+explosion over nearest; stochastic is nearest's cost. The first majorant
+scheme (empty cells reading their neighbours) ran smoke2 at 1272 ms nearest.
+Measured again after the keyed streams and the depth kept over passes: 617,
+867 and 621 ms (smoke2) and 898, 1037 and 889 ms (explosion) -- the same
+within 2%.
+
+### Not done
+
+- The raster technique draws no volume, and the engine says so once.
+- Only float grids, one field a volume (density); no temperature, emission
+  or colour fields, no `UsdVol` material networks -- the medium's
+  parameters are the three primvars.
+- Shadow linking does not apply to media: a volume dims every light that
+  casts shadows, whatever the light's `shadowLink` says.
+- Light groups do not collect light scattered in a medium differently from
+  a surface's: a collision's light goes to its light's group, as a
+  surface's does.
+- In a medium lights are chosen by power, not through the light BVH.
+- No MIS in media; no spectral tracking for a coloured extinction.
+- Verified on Metal; the L4 run of these tests is M11's.
+
 ## End to end: Kitchen_set lit, and two defects only a real stage showed
 
 The plan closes with real stages through `athenea stage`. Kitchen_set with the

@@ -45,6 +45,13 @@ uint32_t fieldNameHash(std::string_view name) noexcept {
     return h;
 }
 
+std::optional<VolumeFilter> volumeFilterFromName(std::string_view name) noexcept {
+    if (name == "trilinear") return VolumeFilter::Trilinear;
+    if (name == "nearest") return VolumeFilter::Nearest;
+    if (name == "stochastic") return VolumeFilter::Stochastic;
+    return std::nullopt;
+}
+
 FieldRole fieldRoleOf(std::string_view name) noexcept {
     if (name == "density") return FieldRole::Density;
     if (name == "temperature" || name == "temp") return FieldRole::Temperature;
@@ -193,7 +200,8 @@ Result<void> VolumeSet::set(gpu::CommandBatch& batch, std::span<const VolumeInpu
             words[b + 28] = bitsOf(in.emission[0]);
             words[b + 29] = bitsOf(in.emission[1]);
             words[b + 30] = bitsOf(in.emission[2]);
-            words[b + 31] = in.grid->levelSet ? 1u : 0u;   // flags: a level set, read as a fog
+            // Flags: a level set, read as a fog (bit 0); the filter (bits 8-9).
+            words[b + 31] = (in.grid->levelSet ? 1u : 0u) | (static_cast<uint32_t>(in.filter) << 8);
             words[b + 32] = bitsOf(in.grid->background);
             words[b + 33] = static_cast<uint32_t>(in.categories & 0xFFFFFFFFu);
             words[b + 34] = static_cast<uint32_t>(in.categories >> 32);

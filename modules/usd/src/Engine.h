@@ -553,6 +553,9 @@ public:
     /// The grid cache's budget, in bytes (athenea:volumeCacheMB).
     void setVolumeCacheBytes(uint64_t bytes) noexcept { volumeCacheBytes_.store(bytes); }
     static constexpr uint64_t kDefaultVolumeCacheBytes = uint64_t{2048} << 20;
+    /// How the medium looks densities up (athenea:volumeFilter); a change
+    /// lays the volumes out again.
+    void setVolumeFilter(world::VolumeFilter filter);
     /// What the grid cache holds and has done, and what the frame's volumes
     /// hold on the device.
     struct VolumeCacheCounts {
@@ -833,6 +836,7 @@ private:
     uint64_t                                  gridReads_ = 0;
     uint64_t                                  gridEvictions_ = 0;
     std::atomic<uint64_t>                     volumeCacheBytes_{kDefaultVolumeCacheBytes};
+    world::VolumeFilter                       volumeFilter_ = world::VolumeFilter::Trilinear;   ///< under guard_
     /// An instanced volume's instances, composed on the device from its
     /// instancers' arrays, and the instancer versions they were composed at.
     struct VolumeChain {

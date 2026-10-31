@@ -21,7 +21,8 @@ struct RenderCheck {
     float  planeZ;        // the lit plane, facing +z
     float  deviations;
     uint   shadows;       // 1: the sun's light crosses the box too
-    uint   pad0; uint pad1;
+    float  voxel;         // > 0: boxMin and boxMax are the first and last voxels' centres, looked up trilinearly
+    uint   pad1;
 };
 
 struct Rows {
@@ -35,10 +36,76 @@ ConstantBuffer<Rows>         toWorld;   // view to world
 ConstantBuffer<RenderCheck>  check;
 StructuredBuffer<float4>     with;
 StructuredBuffer<float4>     without;
-RWStructuredBuffer<uint>     counts;    // [through the box, beyond the deviations, outside it, outside and changed, uncovered]
+RWStructuredBuffer<uint>     counts;    // [through the box, beyond the deviations (and three paths), outside it, outside and changed, uncovered, beyond the deviations alone, of those with under 5 paths expected]
 RWStructuredBuffer<uint>     zBits;     // the sum of z^2 over pixels through the box, as float bits (one thread writes it)
 
+/// The trilinear density of a box of voxels (centres lo..hi, a voxel apart)
+/// relative to its inside: per axis 1 between the centres, falling to 0 a
+/// voxel beyond -- the hat-filtered indicator -- and the product of the three.
+float boxDensity(float3 p) {
+    const float v = check.voxel;
+    const float3 below = saturate((p - (check.boxMin - v)) / v);
+    const float3 above = saturate(((check.boxMax + v) - p) / v);
+    const float3 f = below * above;
+    return f.x * f.y * f.z;
+}
+
+/// The optical length (density times distance, over the inside's density)
+/// along a ray through that box, exactly: the density along the ray is a
+/// product of three piecewise linear functions, a cubic between the points
+/// where a coordinate crosses lo - v, lo, hi or hi + v, and Simpson's rule
+/// is exact for a cubic on each piece.
+float trilinearLength(float3 o, float3 d) {
+    const float v = check.voxel;
+    float t0 = 0.0;
+    float t1 = 1.0e30;
+    for (int a = 0; a < 3; ++a) {
+        if (abs(d[a]) < 1e-12) {
+            if (o[a] <= check.boxMin[a] - v || o[a] >= check.boxMax[a] + v) return 0.0;
+            continue;
+        }
+        float ta = (check.boxMin[a] - v - o[a]) / d[a];
+        float tb = (check.boxMax[a] + v - o[a]) / d[a];
+        if (ta > tb) { const float s = ta; ta = tb; tb = s; }
+        t0 = max(t0, ta);
+        t1 = min(t1, tb);
+    }
+    if (t1 <= t0) return 0.0;
+    // The breakpoints inside [t0, t1], sorted (twelve at most).
+    float knots[14];
+    uint count = 0;
+    knots[count++] = t0;
+    for (int a = 0; a < 3; ++a) {
+        if (abs(d[a]) < 1e-12) continue;
+        const float edges[4] = {check.boxMin[a] - v, check.boxMin[a], check.boxMax[a], check.boxMax[a] + v};
+        for (int e = 0; e < 4; ++e) {
+            const float t = (edges[e] - o[a]) / d[a];
+            if (t > t0 && t < t1) knots[count++] = t;
+        }
+    }
+    knots[count++] = t1;
+    for (uint i = 1; i < count; ++i) {
+        for (uint j = i; j > 0 && knots[j - 1] > knots[j]; --j) {
+            const float s = knots[j];
+            knots[j] = knots[j - 1];
+            knots[j - 1] = s;
+        }
+    }
+    float length = 0.0;
+    for (uint i = 0; i + 1 < count; ++i) {
+        const float a = knots[i];
+        const float b = knots[i + 1];
+        if (b <= a) continue;
+        length += (b - a) / 6.0 *
+                  (boxDensity(o + d * a) + 4.0 * boxDensity(o + d * (0.5 * (a + b))) + boxDensity(o + d * b));
+    }
+    return length;
+}
+
 float chordThroughBox(float3 o, float3 d) {
+    if (check.voxel > 0.0) {
+        return trilinearLength(o, d);
+    }
     float t0 = 0.0;
     float t1 = 1.0e30;
     for (int a = 0; a < 3; ++a) {
@@ -98,7 +165,14 @@ void volumeRenderCheck(uint3 tid: SV_DispatchThreadID) {
             ratios += ratio;
             expected += T;
             chords += chord;
-            if (abs(ratio - T) > check.deviations * sd + 1e-4) counts[1] += 1;
+            // Beyond the deviations, with a slack of three paths: a binomial
+            // whose mean is a few paths -- a ray grazing a trilinear face, an
+            // optical depth of 1e-3 -- is not the normal its deviation
+            // describes, and one path in 1024 is already 3 deviations there.
+            const bool beyond = abs(ratio - T) > check.deviations * sd + 1e-4;
+            if (beyond) counts[5] += 1;   // the normal criterion alone, for the record
+            if (beyond && check.paths * min(T, 1.0 - T) < 5.0) counts[6] += 1;   // ...where under 5 paths are expected
+            if (abs(ratio - T) > check.deviations * sd + 3.0 / check.paths) counts[1] += 1;
         }
     }
     zBits[0] = asuint(zSquares);

@@ -105,6 +105,26 @@ Result<std::vector<std::string>> vdbGridNames(const std::filesystem::path& path)
 
 namespace {
 
+/// THE MEDIUM'S REACH: a lookup between voxels (values stand at integer
+/// index points) in the last layer of a cell reads the next cell's first,
+/// so a cell before a leaf -- along x, y, z or a diagonal of them -- reads
+/// density though it holds none. Each such cell is made a leaf of its own
+/// (OpenVDB's touchLeaf: inactive, every value the tile's or the
+/// background it stood in), so the medium's walk finds it and its leaf
+/// maximum covers what it reads, and a cell that is still no leaf reads
+/// nothing but its own tile. Structure only: no value is read or made.
+void touchLeavesBelow(openvdb::FloatTree& tree) {
+    std::vector<openvdb::Coord> origins;
+    for (auto leaf = tree.cbeginLeaf(); leaf; ++leaf) {
+        origins.push_back(leaf->origin());
+    }
+    for (const openvdb::Coord& o : origins) {
+        for (int k = 1; k < 8; ++k) {
+            tree.touchLeaf(o.offsetBy((k & 1) ? -8 : 0, (k & 2) ? -8 : 0, (k & 4) ? -8 : 0));
+        }
+    }
+}
+
 /// A grid's value type from its header (a metadata-only grid will do).
 std::optional<VdbType> typeOf(const openvdb::GridBase& grid) {
     if (grid.isType<openvdb::FloatGrid>()) return VdbType::Float;
@@ -258,6 +278,7 @@ Result<NanoGrid> readVdbGrid(const std::filesystem::path& path, const VdbSelecti
         openvdb::FloatGrid::Ptr topology = openvdb::FloatGrid::create(0.0F);
         topology->setTransform(typed.transform().copy());
         topology->tree().topologyUnion(typed.tree());
+        touchLeavesBelow(topology->tree());
         nanovdb::GridHandle<nanovdb::HostBuffer> h =
             nanovdb::openToNanoVDB(*topology, nanovdb::StatsMode::Disable, nanovdb::ChecksumMode::Disable);
         scalar = std::make_shared<NanoGrid>();
@@ -275,6 +296,9 @@ Result<NanoGrid> readVdbGrid(const std::filesystem::path& path, const VdbSelecti
             return Error::make(ErrorCode::IoFailure, "grid '{}': not the type it names", base->getName());
         }
         typed->tree().voxelizeActiveTiles();
+        if constexpr (std::is_same_v<std::decay_t<decltype(*typed)>, openvdb::FloatGrid>) {
+            touchLeavesBelow(typed->tree());   // a float grid is the medium's own
+        }
         handle = nanovdb::openToNanoVDB(*typed, nanovdb::StatsMode::Disable, nanovdb::ChecksumMode::Disable);
         scalarOf(*typed);
         return ok();

@@ -366,6 +366,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--refine` | integer | `0` | subdivision levels; 0 draws the control mesh |
 | `--light-samples` | integer | `1` | samples per light per pixel |
 | `--mesh-light-samples` | 0..64 | `0` | raster: samples a pixel from the mesh lights; 0 lights by them in closed form (`athenea:meshLightSamples`) |
+| `--volume-filter` | `trilinear`, `nearest`, `stochastic` | `trilinear` | rt: a volume's density between voxels (`athenea:volumeFilter`) |
 | `--no-mesh-lights` | flag | mesh lights on | emitting meshes are not clustered into lights (`athenea:meshLights` off) |
 | `--no-transfer-indirect` | flag | the half is added | draw a transferred cloud without its bounced half |
 | `--splat-display-blend` | flag | linear blend | raster: splats blended as a standard viewer blends them, sRGB values summed (`athenea:splatDisplayBlend`) |
@@ -1589,6 +1590,7 @@ found and does not.
 | `athenea:cloudShadowTerms` | int | `0` | 1 is the total; 3, 5, 7 add Fourier pairs; 0 lets what receives decide |
 | `athenea:cloudShadowDensity` | float | `1.0` | multiplier on the cloud's optical depth |
 | `athenea:volumeCacheMB` | int or float, MB | `2048` | rt: the volume grids kept read on the host, least recently drawn out first; the grids the frame draws are kept whatever it says, and 0 keeps those alone (§4.3, *Volumes*) |
+| `athenea:volumeFilter` | token | `trilinear` | rt: how the medium looks its density up between voxels: `trilinear`, `nearest` or `stochastic` (one voxel drawn with the trilinear weights); another name is said once and `trilinear` used (§4.3, *Volumes*) |
 
 Read but not declared:
 
@@ -1923,6 +1925,11 @@ keeps every field it names, up to eight (the density first, then in
 Hydra's order; one past the eighth is said and not read), each by its
 name on the device; the medium is shaded by its density alone, and the
 other fields wait for the shading that reads them.
+The density is looked up between voxels as `athenea:volumeFilter` says,
+voxel values standing at integer index coordinates as in OpenVDB:
+`trilinear`, the default; `nearest`; or `stochastic`, one of the eight
+voxels about the point drawn with the trilinear weights -- noisier at a
+given path count, the trilinear value in expectation, one lookup each.
 
 **Light groups**, which no schema declares yet. A cloud's lamps are a primvar
 a group on its field, and its groups and states are attributes on Scope prims

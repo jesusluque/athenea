@@ -3,7 +3,8 @@
 // A converted grid against what it was made of: the active voxels
 // counted through the leaf masks (a count known by construction from the
 // boxes the fixture filled), and each leaf's maximum recomputed through
-// the accessor, voxel by voxel, against the prepare kernel's.
+// the accessor, voxel by voxel over the voxels a lookup in its cell reads,
+// against the prepare kernel's.
 import athenea.volume.nanovdb;
 
 struct CheckParams {
@@ -37,15 +38,13 @@ void volumeLeafMaxCheck(uint3 tid: SV_DispatchThreadID) {
     if (i >= check.leafCount) return;
     const NvGrid grid = nvGrid(words, check.gridWord);
     const int3 origin = nvLeafOrigin(words, nvLeaf(words, grid, i));
-    // Again, the other way: every voxel of the leaf through the accessor.
+    // Again, the other way: every voxel a lookup in the leaf's cell reads,
+    // [origin, origin + 8] on each axis, through the accessor, z outermost.
     float largest = 0.0;
-    for (int z = 0; z < 8; ++z) {
-        for (int y = 0; y < 8; ++y) {
-            for (int x = 0; x < 8; ++x) {
-                const int3 ijk = origin + int3(x, y, z);
-                if (nvActiveAt(words, grid, ijk)) {
-                    largest = max(largest, nvScalar(nvValueAt(words, grid, ijk)));
-                }
+    for (int z = 0; z <= 8; ++z) {
+        for (int y = 0; y <= 8; ++y) {
+            for (int x = 0; x <= 8; ++x) {
+                largest = max(largest, nvScalar(nvValueAt(words, grid, origin + int3(x, y, z))));
             }
         }
     }
