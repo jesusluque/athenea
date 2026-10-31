@@ -17330,6 +17330,11 @@ time and the forward pass 26 %, each a few dozen voxels of a leaf for every gaus
 rebuilt every iteration (the lists' builds 13 %). Neither is limited by reading memory any more nor by the
 readbacks; the evaluation itself is what is left.
 
+On CUDA (an RTX 3070 Laptop under Windows, the vol-stream branch built there, its interactive use not known):
+`athenea_aofx_tests "[vdb2splat]"` passes with Metal's digits (16 gaussians 0.00940, the blob 0.09861 / 0.06186
+/ 0.03619, the rays' mean |ΔT| 0.00655, none beyond); smoke2 at 50k fits in 2.02 s at 100 steps (0.0623), 5.89 s
+at 300 (0.03765) and 5.14 s with `--checkerboard` (0.0399), one run each, against the M5 Pro's 1.84 / 5.21 / 3.98.
+
 ### The schedule, for error at a budget (1 Nov)
 
 The fit's knobs one at a time, then together, on smoke2 at 50k (`~/luc/athenea-gpu/vdb2splat_opt2sweep*.sh`, one
