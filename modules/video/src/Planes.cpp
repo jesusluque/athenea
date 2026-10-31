@@ -610,7 +610,7 @@ Result<std::vector<AttributeError>> PlanesCodec::compare(const PlaneLayout& layo
         out[k].maxSteps = words[k * 4] / 16.0;
         const double sum = static_cast<double>(words[k * 4 + 1]) + 4294967296.0 * words[k * 4 + 2];
         out[k].meanSteps = sum / 16.0 / layout.splats;
-        out[k].far = words[k * 4 + 3];
+        out[k].farSplats = words[k * 4 + 3];
     }
     return out;
 }

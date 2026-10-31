@@ -129,7 +129,7 @@ TEST_CASE("video planes give a cloud back within half a step, the position high 
                 const bool rotation = a >= 7 && a < 11;
                 const double most = rotation ? (bits > 8 ? 4.0 : 2.5) : (bits > 8 ? 1.25 : 0.75);
                 CHECK(errors[a].maxSteps <= most);
-                CHECK(errors[a].far == 0);
+                CHECK(errors[a].farSplats == 0);
             }
         }
     }
@@ -240,7 +240,7 @@ TEST_CASE("positions over their block's box: the high parts exact, fewer of them
             const std::vector<video::AttributeError> errors = roundTrip(device, *codec, *cloud, e, luma->rhi());
             for (size_t a = 0; a < errors.size(); ++a) {
                 CAPTURE(a, errors[a].maxSteps, errors[a].meanSteps);
-                CHECK(errors[a].far == 0);
+                CHECK(errors[a].farSplats == 0);
                 if (a < 3 && high == 8) {
                     // 16 bits over a block's box are finer than over the frame's.
                     CHECK(errors[a].maxSteps <= 0.75);
@@ -288,7 +288,7 @@ TEST_CASE("colour in chroma: Y a plane, Co and Cg one a 2 x 2 block of four Mort
         roundTrip(device, *codec, *cloud, e, luma->rhi(), chroma->rhi());
     for (size_t a = 0; a < errors.size(); ++a) {
         CAPTURE(a, errors[a].maxSteps, errors[a].meanSteps);
-        CHECK(errors[a].far == 0);
+        CHECK(errors[a].farSplats == 0);
         const bool rotation = a >= 7 && a < 11;
         const bool colour = a >= 11;
         if (a < 11) {
@@ -487,7 +487,7 @@ TEST_CASE("the hardware video codec keeps the position high parts exact", "[vide
     const std::vector<video::AttributeError> errors = roundTrip(device, *codec, *cloud, e, luma->texture.get());
     for (size_t a = 0; a < 3; ++a) {
         CAPTURE(a, errors[a].maxSteps);
-        CHECK(errors[a].far == 0);   // the high parts went beside the video, exact
+        CHECK(errors[a].farSplats == 0);   // the high parts went beside the video, exact
     }
     for (size_t a = 0; a < errors.size(); ++a) {
         CAPTURE(a, errors[a].maxSteps, errors[a].meanSteps);

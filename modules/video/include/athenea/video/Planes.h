@@ -211,7 +211,7 @@ struct GeometryFrame {
 struct AttributeError {
     double   maxSteps = 0.0;
     double   meanSteps = 0.0;
-    uint64_t far = 0;   ///< positions: splats whose high part is not the source's
+    uint64_t farSplats = 0;   ///< positions: splats whose high part is not the source's
 };
 
 class PlanesCodec {

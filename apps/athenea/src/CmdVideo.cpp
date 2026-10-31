@@ -1226,7 +1226,7 @@ void addVideo(CLI::App& app) {
                     }
                     for (size_t a = 0; a < errors->size(); ++a) {
                         worst[a].maxSteps = std::max(worst[a].maxSteps, (*errors)[a].maxSteps);
-                        worst[a].far += (*errors)[a].far;
+                        worst[a].farSplats += (*errors)[a].farSplats;
                         meanSum[a] += (*errors)[a].meanSteps;
                     }
                     ++checked;
@@ -1268,12 +1268,12 @@ void addVideo(CLI::App& app) {
                      median(checkMs));
             // Grouped: the worst attribute of each group, in its own steps.
             std::map<std::string, std::pair<double, double>> groups;   // max, mean
-            uint64_t far = 0;
+            uint64_t farSplats = 0;
             for (size_t a = 0; a < worst.size(); ++a) {
                 auto& g = groups[groupOf(static_cast<uint32_t>(a))];
                 g.first = std::max(g.first, worst[a].maxSteps);
                 g.second = std::max(g.second, meanSum[a] / static_cast<double>(checked));
-                if (a < 3) far += worst[a].far;
+                if (a < 3) farSplats += worst[a].farSplats;
             }
             for (const char* name : {"position", "opacity", "log scale", "rotation", "base colour", "rest"}) {
                 const auto it = groups.find(name);
@@ -1298,7 +1298,7 @@ void addVideo(CLI::App& app) {
                          q(3, 1e-7, 0.5) * 1e6, q(3, 1e-7, 0.99) * 1e6, q(3, 1e-7, 0.999) * 1e6);
             }
             cli::out("video-encode: position high parts %s: %llu splat axes whose high part is not the source's\n",
-                     far == 0 ? "exact" : "NOT exact", static_cast<unsigned long long>(far));
+                     farSplats == 0 ? "exact" : "NOT exact", static_cast<unsigned long long>(farSplats));
         }
     });
 
