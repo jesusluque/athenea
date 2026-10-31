@@ -30,7 +30,9 @@ class ShaderLibrary;
 
 namespace athenea::world {
 
-/// One volume: a grid, where it stands, and how it scatters.
+/// One volume: a grid, where it stands, and how it scatters. A grid of any
+/// type: one not of floats is walked as its float topology (NanoGrid::scalar),
+/// filled on the device with its scalar.
 struct VolumeInput {
     const io::NanoGrid*  grid = nullptr;   ///< shared: volumes naming one grid lay it out once
     render::Mat4         objectToWorld = render::Mat4::identity();   ///< the prim's; the grid's index-to-world composes under it
@@ -85,7 +87,8 @@ public:
 
 private:
     gpu::Device*                     device_ = nullptr;
-    gpu::ComputeKernel               boundsKernel_, leafMaxKernel_, instancesKernel_, finishKernel_, levelSetKernel_;
+    gpu::ComputeKernel               boundsKernel_, leafMaxKernel_, instancesKernel_, finishKernel_, levelSetKernel_,
+                                     fillKernel_;
     gpu::Buffer                      words_, bounds_, majorant_;
     std::vector<VolumeGridPlacement> placements_;
     uint32_t                         records_ = 0;

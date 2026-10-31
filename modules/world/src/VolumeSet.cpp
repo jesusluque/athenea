@@ -24,6 +24,9 @@ Result<VolumeSet> VolumeSet::create(gpu::ShaderLibrary& library) {
     if (!finish) return std::move(finish).error();
     auto fog = gpu::ComputeKernel::create(library, "athenea/volume/volume_prepare", "volumeLevelSetToFog");
     if (!fog) return std::move(fog).error();
+    auto fill = gpu::ComputeKernel::create(library, "athenea/volume/volume_prepare", "volumeScalarFill");
+    if (!fill) return std::move(fill).error();
+    set.fillKernel_ = std::move(*fill);
     set.levelSetKernel_ = std::move(*fog);
     set.boundsKernel_ = std::move(*bounds);
     set.leafMaxKernel_ = std::move(*leafMax);
@@ -45,9 +48,24 @@ uint32_t bitsOf(float v) {
 Result<void> VolumeSet::set(gpu::CommandBatch& batch, std::span<const VolumeInput> volumes) {
     placements_.clear();
     // Each grid once, in the order the volumes first name it; a volume's
-    // records follow one another, one an instance.
+    // records follow one another, one an instance. The medium walks a float
+    // grid: a grid of another type is laid out as its float topology (the
+    // medium's) and itself (what fills it).
     std::vector<uint32_t> gridOf(volumes.size(), 0u);
     std::vector<const io::NanoGrid*> grids;
+    std::vector<bool> medium;                  // a grid a medium walks: bounds and leaf maxima taken
+    std::vector<std::pair<uint32_t, uint32_t>> fills;   // (float grid, the typed grid it is filled from)
+    const auto place = [&](const io::NanoGrid* grid, bool walked) {
+        const auto at = std::find(grids.begin(), grids.end(), grid);
+        if (at != grids.end()) {
+            const auto g = static_cast<size_t>(at - grids.begin());
+            medium[g] = medium[g] || walked;
+            return static_cast<uint32_t>(g);
+        }
+        grids.push_back(grid);
+        medium.push_back(walked);
+        return static_cast<uint32_t>(grids.size() - 1);
+    };
     std::vector<uint32_t> firstRecord(volumes.size(), 0u);
     uint32_t records = 0;
     for (size_t v = 0; v < volumes.size(); ++v) {
@@ -58,10 +76,14 @@ Result<void> VolumeSet::set(gpu::CommandBatch& batch, std::span<const VolumeInpu
         if (in.instanceRows != nullptr && !in.instanceRows->valid()) {
             return Error(ErrorCode::InvalidArgument, "volumes: an instanced volume with no instance rows");
         }
-        const auto at = std::find(grids.begin(), grids.end(), in.grid);
-        gridOf[v] = static_cast<uint32_t>(at - grids.begin());
-        if (at == grids.end()) {
-            grids.push_back(in.grid);
+        if (in.grid->scalar != nullptr) {
+            const bool fresh = std::find(grids.begin(), grids.end(), in.grid->scalar.get()) == grids.end();
+            gridOf[v] = place(in.grid->scalar.get(), true);
+            if (fresh) {
+                fills.emplace_back(gridOf[v], place(in.grid, false));
+            }
+        } else {
+            gridOf[v] = place(in.grid, true);
         }
         firstRecord[v] = records;
         records += in.instanceRows != nullptr ? in.instanceCount : 1u;
@@ -159,7 +181,19 @@ Result<void> VolumeSet::set(gpu::CommandBatch& batch, std::span<const VolumeInpu
     };
     for (uint32_t g = 0; g < placements_.size(); ++g) {
         if (placements_[g].leafCount > 0) {
+            if (!medium[g]) {
+                continue;   // read by a kernel, not walked
+            }
             const auto bind = [&](rhi::ShaderCursor cursor) { bindGrid(cursor, g); };
+            // A grid of another type fills its float topology first.
+            for (const auto& [target, source] : fills) {
+                if (target == g) {
+                    fillKernel_.dispatch(batch, {placements_[g].leafCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                        bindGrid(cursor, g);
+                        cursor["params"]["sourceWord"].setData(placements_[source].gridWord);
+                    });
+                }
+            }
             // A level set is made a fog first, on the device: its leaves'
             // maxima are then the fog's.
             if (grids[g]->levelSet) {

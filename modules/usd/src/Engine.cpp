@@ -3341,7 +3341,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                             }
                             CachedGrid entry;
                             if (read) {
-                                entry.bytes = read->words.size() * sizeof(uint32_t);
+                                entry.bytes = (read->words.size() + (read->scalar ? read->scalar->words.size() : 0)) *
+                                              sizeof(uint32_t);
                                 entry.grid = std::make_shared<const io::NanoGrid>(std::move(*read));
                             }
                             gridBytes_ += entry.bytes;

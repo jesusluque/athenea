@@ -1964,7 +1964,12 @@ de clase `level set`, como una superficie convertida en volumen) se lee como
 una niebla: densidad 0 fuera, 1 desde la mitad del ancho de la banda hacia
 dentro, y una rampa lineal entre ambas -- `clamp(-distancia / semiancho, 0,
 1)`, siendo el semiancho el valor de fondo de la rejilla -- con su interior
-lleno.
+lleno. Una rejilla se lee en su propio tipo de valor: float (también una que
+el fichero guarda en half), double, int32, vec3f, vec3d y máscara. Leída como
+densidad, una rejilla vectorial es su longitud, una de enteros su valor y una
+máscara 1 donde está activa. Las rejillas bool, int64 y de vectores enteros
+se rechazan con un error que nombra el tipo, y un level set ha de ser de
+floats.
 
 **Grupos de luces**, que todavía no declara ningún schema. Las lámparas de una
 nube son un primvar por grupo en su field, y sus grupos y estados son

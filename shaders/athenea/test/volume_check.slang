@@ -22,7 +22,7 @@ ConstantBuffer<CheckParams> check;
 void volumeCountActive(uint3 tid: SV_DispatchThreadID) {
     const uint i = tid.x;
     if (i >= check.leafCount) return;
-    const NvLeaf leaf = nvLeaf(words, nvGrid(check.gridWord), i);
+    const NvLeaf leaf = nvLeaf(words, nvGrid(words, check.gridWord), i);
     uint active = 0;
     for (uint n = 0; n < 512; ++n) {
         active += nvLeafActive(words, leaf, n) ? 1u : 0u;
@@ -35,7 +35,7 @@ void volumeCountActive(uint3 tid: SV_DispatchThreadID) {
 void volumeLeafMaxCheck(uint3 tid: SV_DispatchThreadID) {
     const uint i = tid.x;
     if (i >= check.leafCount) return;
-    const NvGrid grid = nvGrid(check.gridWord);
+    const NvGrid grid = nvGrid(words, check.gridWord);
     const int3 origin = nvLeafOrigin(words, nvLeaf(words, grid, i));
     // Again, the other way: every voxel of the leaf through the accessor.
     float largest = 0.0;
@@ -44,7 +44,7 @@ void volumeLeafMaxCheck(uint3 tid: SV_DispatchThreadID) {
             for (int x = 0; x < 8; ++x) {
                 const int3 ijk = origin + int3(x, y, z);
                 if (nvActiveAt(words, grid, ijk)) {
-                    largest = max(largest, nvValueAt(words, grid, ijk));
+                    largest = max(largest, nvScalar(nvValueAt(words, grid, ijk)));
                 }
             }
         }
@@ -53,4 +53,37 @@ void volumeLeafMaxCheck(uint3 tid: SV_DispatchThreadID) {
     if (largest != asfloat(words[check.leafBase + i])) {
         InterlockedAdd(counts[1], 1u);
     }
+}
+
+// --- Grid types: every voxel of a region about a box, read through the
+// typed accessor, against the value the box was filled with (0 outside).
+
+struct TypedParams {
+    uint   gridWord;
+    uint   type;       // the NanoVDB GridType code the header must hold
+    int    lo;         // the region, [lo, hi)^3, in index space
+    int    hi;
+    float4 inside;     // the box's value: xyz, w components
+    int3   boxMin;     // the box, [boxMin, boxMax)
+    int    pad0;
+    int3   boxMax;
+    int    pad1;
+};
+
+ConstantBuffer<TypedParams> typed;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void volumeTypedCheck(uint3 tid: SV_DispatchThreadID) {
+    const int side = typed.hi - typed.lo;
+    if (tid.x >= uint(side * side * side)) return;
+    const int3 ijk = int3(typed.lo + int(tid.x) % side, typed.lo + (int(tid.x) / side) % side,
+                          typed.lo + int(tid.x) / (side * side));
+    const NvGrid grid = nvGrid(words, typed.gridWord);
+    const bool inBox = all(ijk >= typed.boxMin) && all(ijk < typed.boxMax);
+    const float4 expected = inBox ? typed.inside : float4(0.0, 0.0, 0.0, typed.inside.w);
+    const float4 v = nvValueAt(words, grid, ijk);
+    InterlockedAdd(counts[2], 1u);
+    if (any(v != expected)) InterlockedAdd(counts[0], 1u);
+    if (tid.x == 0 && grid.type != typed.type) InterlockedAdd(counts[1], 1u);
 }

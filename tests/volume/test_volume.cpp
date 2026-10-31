@@ -18,7 +18,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <array>
 #include <filesystem>
+#include <string>
 
 #include "athenea/io/Vdb.h"
 #include "athenea/world/VolumeSet.h"
@@ -336,5 +338,155 @@ TEST_CASE("a level set volume is read as a fog: Beer-Lambert through its interio
         CHECK(std::abs(zT) < 3.5);
         CHECK(std::abs(zS) < 3.5);
         CHECK(c[1] == 0);
+    }
+}
+
+// GRID TYPES: a box filled in each value type a .vdb holds -- float, a
+// float stored as half, double, int32, Vec3f, Vec3d and a mask -- read and
+// laid out as NanoVDB's own grid of that type. Every voxel of a region
+// about the box, read on the device through the typed accessor, is the
+// value it was filled with (a double or a half that a float holds exactly,
+// so the comparison is equality), and 0 outside; and the medium on each
+// is Beer-Lambert's with the scalar it reads -- a vector's length, an
+// int's value, a mask's 1 -- within its own standard error.
+TEST_CASE("every grid type reads on the device as it was filled, and a medium on each is Beer-Lambert's",
+          "[volume][gpu][medium][types]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const fs::path dir = fs::temp_directory_path() / "athenea-tests" / "volume";
+    fs::create_directories(dir);
+    struct Case {
+        const char* name;
+        io::VdbType type;
+        bool        half;
+        uint32_t    nanoType;   // PNANOVDB_GRID_TYPE_*
+        double      written[3]; // what the box is filled with (a scalar: the first)
+        float       inside[4];  // the value read back: xyz, components
+        float       scalar;     // what the medium reads
+    };
+    // Written values a float does not hold exactly show the conversions: a
+    // half stores 0.1 as 0.0999755859375, read back as that; a double 0.1
+    // reads as the float nearest it, 0.1F, which a truncation would miss by
+    // one bit; 0.3 and 0.4 as doubles become the floats nearest them.
+    const Case cases[] = {
+        {"float", io::VdbType::Float, false, 1, {0.5, 0, 0}, {0.5F, 0.0F, 0.0F, 1.0F}, 0.5F},
+        {"float saved as half", io::VdbType::Float, true, 1, {0.1, 0, 0}, {0.0999755859375F, 0.0F, 0.0F, 1.0F},
+         0.0999755859375F},
+        {"double", io::VdbType::Double, false, 2, {0.1, 0, 0}, {0.1F, 0.0F, 0.0F, 1.0F}, 0.1F},
+        {"int32", io::VdbType::Int32, false, 4, {2.0, 0, 0}, {2.0F, 0.0F, 0.0F, 1.0F}, 2.0F},
+        {"vec3f", io::VdbType::Vec3f, false, 6, {0.375, 0.5, 0}, {0.375F, 0.5F, 0.0F, 3.0F}, 0.625F},
+        {"vec3d", io::VdbType::Vec3d, false, 7, {0.3, 0.4, 0}, {0.3F, 0.4F, 0.0F, 3.0F}, 0.5F},
+        {"mask", io::VdbType::Mask, false, 8, {1.0, 0, 0}, {1.0F, 0.0F, 0.0F, 1.0F}, 1.0F},
+    };
+    auto typedKernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/volume_check", "volumeTypedCheck");
+    auto rays = gpu::ComputeKernel::create(*gpu->library, "athenea/test/medium_check", "mediumRays");
+    auto reduce = gpu::ComputeKernel::create(*gpu->library, "athenea/test/medium_check", "mediumReduce");
+    if (!typedKernel) FAIL(typedKernel.error().toString());
+    if (!rays) FAIL(rays.error().toString());
+    if (!reduce) FAIL(reduce.error().toString());
+    constexpr uint32_t kRays = 16384;
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 6, "types.counts");
+    gpu::Buffer typedCounts = test::uintBuffer(*gpu->device, 4, "types.typedCounts");
+    gpu::Buffer scalarCounts = test::uintBuffer(*gpu->device, 4, "types.scalarCounts");
+    gpu::Buffer sums = test::uintBuffer(*gpu->device, 4, "types.sums");
+    gpu::Buffer perRay = test::uintBuffer(*gpu->device, uint64_t{kRays} * 2, "types.perRay");
+    for (const Case& tc : cases) {
+        const fs::path path = dir / (std::string("typed_") + std::to_string(int(tc.type)) + (tc.half ? "h" : "") + ".vdb");
+        io::VdbBox box{{0, 0, 0}, {16, 16, 16}, tc.written[0], {tc.written[0], tc.written[1], tc.written[2]}};
+        if (auto written = io::writeVdbBoxes(path, "field", 0.1, std::span<const io::VdbBox>(&box, 1), tc.type, tc.half);
+            !written) {
+            FAIL(written.error().toString());
+        }
+        auto grid = io::readVdbGrid(path, "field");
+        if (!grid) FAIL(grid.error().toString());
+        CHECK(grid->type == tc.type);
+        CHECK(grid->savedAsHalf == tc.half);
+        CHECK(grid->nanoType == tc.nanoType);
+        auto set = world::VolumeSet::create(*gpu->library);
+        if (!set) FAIL(set.error().toString());
+        world::VolumeInput input;
+        input.grid = &*grid;
+        input.densityScale = 1.0F;
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            REQUIRE(set->set(batch, std::span<const world::VolumeInput>(&input, 1)));
+            REQUIRE(batch.submit(true));
+        }
+        const uint32_t zeros[6] = {};
+        REQUIRE(counts.write(*gpu->device, 0, sizeof(zeros), zeros));
+        REQUIRE(typedCounts.write(*gpu->device, 0, 16, zeros));
+        REQUIRE(scalarCounts.write(*gpu->device, 0, 16, zeros));
+        const float expectedT = std::exp(-tc.scalar * 1.6F);
+        const float origin[3] = {-1.0F, 0.75F, 0.75F};
+        const float direction[3] = {1.0F, 0.0F, 0.0F};
+        // A grid not of floats is laid out after its float topology, which
+        // the medium walks: the typed grid is placement 1, the filled
+        // float one placement 0.
+        CHECK((grid->scalar != nullptr) == (tc.nanoType != 1));
+        CHECK(set->count() == (grid->scalar != nullptr ? 2u : 1u));
+        const uint32_t typedPlacement = grid->scalar != nullptr ? 1u : 0u;
+        const float scalarInside[4] = {tc.scalar, 0.0F, 0.0F, 1.0F};
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            const auto check = [&](gpu::Buffer& into, uint32_t placement, uint32_t type, const float* inside) {
+                typedKernel->dispatch(batch, {20 * 20 * 20, 1, 1}, [&](rhi::ShaderCursor c) {
+                    c["words"].setBinding(set->words().rhi());
+                    c["counts"].setBinding(into.rhi());
+                    c["typed"]["gridWord"].setData(set->placement(placement).gridWord);
+                    c["typed"]["type"].setData(type);
+                    c["typed"]["lo"].setData(int32_t{-2});
+                    c["typed"]["hi"].setData(int32_t{18});
+                    c["typed"]["inside"].setData(inside, sizeof(float) * 4);
+                    const int32_t lo[3] = {0, 0, 0};
+                    const int32_t hi[3] = {16, 16, 16};
+                    c["typed"]["boxMin"].setData(lo, sizeof(lo));
+                    c["typed"]["boxMax"].setData(hi, sizeof(hi));
+                });
+            };
+            check(typedCounts, typedPlacement, tc.nanoType, tc.inside);
+            check(scalarCounts, 0, 1u, scalarInside);
+            const auto bind = [&](rhi::ShaderCursor c) {
+                c["medium"]["rays"].setData(kRays);
+                c["medium"]["volume"].setData(uint32_t{0});
+                c["medium"]["expectedT"].setData(expectedT);
+                c["medium"]["origin"].setData(origin, sizeof(origin));
+                c["medium"]["tMin"].setData(0.0F);
+                c["medium"]["direction"].setData(direction, sizeof(direction));
+                c["medium"]["tMax"].setData(10.0F);
+                c["words"].setBinding(set->words().rhi());
+                c["counts"].setBinding(counts.rhi());
+                c["sums"].setBinding(sums.rhi());
+                c["perRay"].setBinding(perRay.rhi());
+            };
+            rays->dispatch(batch, {kRays, 1, 1}, bind);
+            reduce->dispatch(batch, {1, 1, 1}, bind);
+            REQUIRE(batch.submit(true));
+        }
+        uint32_t c[4] = {};
+        uint32_t f[4] = {};
+        float s[4] = {};
+        REQUIRE(typedCounts.read(*gpu->device, 0, sizeof(c), c));
+        REQUIRE(scalarCounts.read(*gpu->device, 0, sizeof(f), f));
+        REQUIRE(sums.read(*gpu->device, 0, sizeof(s), s));
+        const double n = kRays;
+        const double meanT = s[0] / n;
+        const double varT = std::max(s[1] / n - meanT * meanT, 0.0);
+        const double zT = (meanT - expectedT) / std::max(std::sqrt(varT / n), 1e-9);
+        const double meanS = s[2] / n;
+        const double varS = std::max(s[3] / n - meanS * meanS, 0.0);
+        const double zS = (meanS - (1.0 - expectedT)) / std::max(std::sqrt(varS / n), 1e-9);
+        std::printf("  %s: %zu words, %u leaves; %u of %u voxels off their value, header type %s; the medium's "
+                    "float grid %u of %u off its scalar; T %.4f (expected %.4f, z %.2f), scattered z %.2f\n",
+                    tc.name, grid->words.size(), grid->leafCount, c[0], c[2], c[1] == 0 ? "right" : "WRONG", f[0],
+                    f[2], meanT, double(expectedT), zT, zS);
+        CHECK(f[0] == 0);
+        CHECK(f[1] == 0);
+        CHECK(c[2] == 20u * 20u * 20u);
+        CHECK(c[0] == 0);
+        CHECK(c[1] == 0);
+        CHECK(std::abs(zT) < 3.5);
+        CHECK(std::abs(zS) < 3.5);
     }
 }

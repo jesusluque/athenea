@@ -18,6 +18,7 @@ struct PrepareParams {
     uint recordCount;
     uint levelSet;      // 1: the grid is a level set, its values signed distances
     float background;   // a level set's background: its band's half width
+    uint sourceWord;    // volumeScalarFill: the typed grid the float one is filled from
     float4 prototype0;  // the volume's world to index without its instance, 3x4 rows
     float4 prototype1;
     float4 prototype2;
@@ -38,7 +39,7 @@ static const uint kRecordWords = 40;
 void volumeBounds(uint3 tid: SV_DispatchThreadID) {
     const uint i = tid.x;
     if (i >= params.leafCount) return;
-    const NvGrid grid = nvGrid(params.gridWord);
+    const NvGrid grid = nvGrid(words, params.gridWord);
     const int3 origin = nvLeafOrigin(words, nvLeaf(words, grid, i));
     const uint base = params.slot * 6u;
     InterlockedMin(bounds[base + 0], origin.x);
@@ -60,11 +61,32 @@ void volumeBounds(uint3 tid: SV_DispatchThreadID) {
 void volumeLevelSetToFog(uint3 tid: SV_DispatchThreadID) {
     const uint i = tid.x;
     if (i >= params.leafCount) return;
-    const NvLeaf leaf = nvLeaf(words, nvGrid(params.gridWord), i);
+    const NvLeaf leaf = nvLeaf(words, nvGrid(words, params.gridWord), i);
     const float width = max(params.background, 1e-30);
     for (uint n = 0; n < 512; ++n) {
         const uint word = nvLeafValueWord(words, leaf, n);
         wordsOut[word] = asuint(saturate(-asfloat(words[word]) / width));
+    }
+}
+
+/// A GRID OF ANOTHER TYPE AS THE MEDIUM'S FLOAT GRID: the float grid has its
+/// topology (io::NanoGrid::scalar, every value 0) and each of its voxels,
+/// active or not, takes the typed grid's scalar at the same coordinate --
+/// a double converted, an int widened, a vector's length, a mask's active
+/// state -- with negative values read as 0. One thread a leaf of the float
+/// grid; the typed grid is read through its accessor, so the two leaf
+/// arrays need not be in the same order.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void volumeScalarFill(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.leafCount) return;
+    const NvLeaf leaf = nvLeaf(words, nvGrid(words, params.gridWord), i);
+    const NvGrid source = nvGrid(words, params.sourceWord);
+    const int3 origin = nvLeafOrigin(words, leaf);
+    for (uint n = 0; n < 512; ++n) {
+        const int3 ijk = origin + int3(int((n >> 6) & 7u), int((n >> 3) & 7u), int(n & 7u));
+        wordsOut[nvLeafValueWord(words, leaf, n)] = asuint(max(nvScalar(nvValueAt(words, source, ijk)), 0.0));
     }
 }
 
@@ -73,13 +95,13 @@ void volumeLevelSetToFog(uint3 tid: SV_DispatchThreadID) {
 void volumeLeafMax(uint3 tid: SV_DispatchThreadID) {
     const uint i = tid.x;
     if (i >= params.leafCount) return;
-    const NvGrid grid = nvGrid(params.gridWord);
+    const NvGrid grid = nvGrid(words, params.gridWord);
     const NvLeaf leaf = nvLeaf(words, grid, i);
     float largest = 0.0;
     for (uint n = 0; n < 512; ++n) {
         // A level set's inactive voxels are density too, once made fog.
         if (params.levelSet != 0u || nvLeafActive(words, leaf, n)) {
-            largest = max(largest, nvLeafValue(words, leaf, n));
+            largest = max(largest, nvScalar(nvLeafValue(words, leaf, n)));
         }
     }
     wordsOut[params.leafBase + i] = asuint(largest);
@@ -140,5 +162,5 @@ void volumeFinish(uint3 tid: SV_DispatchThreadID) {
         wordsOut[b + 19 + k] = asuint(any ? float(bounds[base + 3 + k]) : 0.0);
     }
     wordsOut[b + 27] = majorant[params.slot];
-    wordsOut[b + 3] = any ? nvLeaf(words, nvGrid(params.gridWord), 0u).byteOffset / 4u : 0u;
+    wordsOut[b + 3] = any ? nvLeaf(words, nvGrid(words, params.gridWord), 0u).byteOffset / 4u : 0u;
 }

@@ -1904,7 +1904,11 @@ level set (an OpenVDB grid of class `level set`, such as a surface converted
 to a volume) is read as a fog: density 0 outside, 1 from half the band's
 width inside on, a linear ramp between -- `clamp(-distance / halfWidth, 0,
 1)`, the half width being the grid's background value -- with its interior
-filled.
+filled. A grid is read in its own value type: float (also one the file
+stores as half floats), double, int32, vec3f, vec3d and mask. Read as a
+density, a vector grid is its length, an int grid its value and a mask 1
+where active. Bool, int64 and integer vector grids are refused with an error
+naming the type, and a level set must be of floats.
 
 **Light groups**, which no schema declares yet. A cloud's lamps are a primvar
 a group on its field, and its groups and states are attributes on Scope prims

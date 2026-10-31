@@ -3339,20 +3339,57 @@ as well; no density over its majorant at 16384 random points in and about
 the box. The grid has 208 leaves of the 216 leaf cells over its bounds: the
 8 inside are the tiles the medium filled.
 
-### Not done
+### Grid types
 
-- The raster technique draws no volume, and the engine says so once.
-- Only float grids, one field a volume (density); no temperature, emission
-  or colour fields, no `UsdVol` material networks -- the medium's
-  parameters are the three primvars.
-- Shadow linking does not apply to media: a volume dims every light that
-  casts shadows, whatever the light's `shadowLink` says.
-- Light groups do not collect light scattered in a medium differently from
-  a surface's: a collision's light goes to its light's group, as a
-  surface's does.
-- In a medium lights are chosen by power, not through the light BVH.
-- No MIS in media; no spectral tracking for a coloured extinction.
-- Verified on Metal; the L4 run of these tests is M11's.
+Only float grids were read; anything else was refused. `readVdbGrid` now
+lays a grid out as **NanoVDB's own grid of its value type** -- float,
+double, int32, Vec3f, Vec3d and mask -- so no value is converted on the
+host, and `NanoGrid` carries the type and the header's GridType code.
+NanoVDB 32.4's OpenVDB converter names no grid type for Vec3d (it throws
+"unsupported value type"), so a Vec3d grid goes through NanoVDB's
+`GridBuilder` instead: each active voxel's value copied into the builder's
+tree, the same copy the converter makes. A float grid the file stores as
+half (`is_saved_as_half_float`, Houdini's 16-bit VDBs) is decoded by OpenVDB
+as it reads, as decompression is, and is a float grid from there. NanoVDB
+32.4 has a half build type but no half leaf, so no grid is laid out as half
+on the device; `nvRead` still reads PNanoVDB's half type, for a NanoVDB that
+makes one. Bool, int64 and the integer vectors are refused with the type in
+the error; a level set must be float, since its fog is rewritten in place.
+
+On the device every read goes by the grid's type, read from its header:
+`nanovdb.slang`'s `NvGrid` and `NvLeaf` carry it, leaves are strided by its
+leaf size, and `nvRead` returns a value as xyz and a component count --
+a double converted to the nearest float with integer arithmetic (Metal has
+no double), an int widened, a vector's three components. A mask's value is
+its active state.
+
+**The medium still walks floats only.** The first version read the density
+grid by its type inside `medium.slang`: one tree walk with the type known
+at run time. The tracking functions are inlined at every call of the path
+tracer's kernel, and a run-time type makes each walk index PNanoVDB's table
+of type constants dynamically; the volumes variant of the kernel then took
+the Metal compiler service down (`XPC_ERROR_CONNECTION_INTERRUPTED` at
+pipeline creation) while every small test kernel compiled. So a grid of any
+other type carries a **float grid of its topology** (`NanoGrid::scalar`:
+OpenVDB's `topologyUnion` onto an empty float grid, every value 0 -- a copy
+of structure, no value read), laid out beside it; `volumeScalarFill` writes
+each of its voxels, active or not, from the typed grid's scalar at the same
+coordinate -- a vector's length, an int's value, a mask's active state,
+negative values as 0 -- before its bounds and leaf maxima are taken. The
+medium's code is as it was, and the typed grid stays on the device for what
+reads it by name (the fields, below).
+
+**Checked** (`[volume][types]`): a 16^3 box at voxel 0.1 in each type, every
+voxel of the 20^3 region about it read on the device against the value it
+was filled with (0 outside), bit for bit: 0 of 8000 off in all seven, and
+the header's type the expected one. The values are chosen to show each
+conversion: 0.1 stored as half reads 0.0999755859375; a double 0.1 reads
+0.1F, the nearest float, which truncating the mantissa would miss by a bit;
+a Vec3d (0.3, 0.4, 0) reads (0.3F, 0.4F, 0). The medium's float grid,
+read the same way, holds the scalar in every voxel (0 of 8000 off). Through
+each, ratio and delta tracking along an axis are Beer-Lambert's with that
+scalar (the vectors' length, the int's 2, the mask's 1) within 1.7 standard
+errors.
 
 ## End to end: Kitchen_set lit, and two defects only a real stage showed
 
