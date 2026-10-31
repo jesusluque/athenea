@@ -25,6 +25,8 @@
 //                  them (or pushed by a live source, SplatStream.h), placed
 //                  in a store of fixed size, most wanted first, and dropped
 //                  when it is full and they are wanted least
+//   StreamingShare one store for several file pools, its slots given to the
+//                  chunks most wanted across them
 //
 // Threads (ChunkSource.h): the pool's open, want and update run on the frame
 // thread -- the thread that opened it -- and are refused on any other; its
@@ -89,7 +91,8 @@ enum class LiveSync : uint8_t { Latest, Clock };
 struct StreamingSettings {
     /// The store's size in splats, rounded down to whole chunks (at least one;
     /// a file's at most its chunks, a live stream's at most twice them, since
-    /// an epoch is built beside the one shown).
+    /// an epoch is built beside the one shown). In a StreamingShare, what this
+    /// pool adds to the one store they share.
     uint64_t budgetSplats = uint64_t{4} << 20;
     uint32_t loaders = 2;
     /// The most chunk bytes an update places; a chunk past it waits for the
@@ -112,22 +115,42 @@ struct StreamingSettings {
     bool     growStore = false;
 };
 
+/// ONE STORE FOR SEVERAL POOLS (a car's panels): the pools that open into it
+/// give it their budgets and take their slots from it as the view wants them
+/// -- the chunk most wanted, whichever cloud it is of, first -- rather than
+/// each keeping a fixed number of its own. Pools of one share read files laid
+/// out alike (the same ChunkFormat); each keeps its own loaders and staging,
+/// and its levels. A live source keeps a store of its own: its epochs are
+/// placed beside the one shown and flip whole, which slots another cloud may
+/// take at any frame would not leave room for. Frame thread, as the pools.
+struct StreamingShare;
+[[nodiscard]] std::shared_ptr<StreamingShare> makeStreamingShare(gpu::Device& device);
+
 class StreamingPool {
 public:
     /// Frame thread: the thread that calls this is the pool's frame thread.
+    /// With a share, the pool takes no store of its own: its slots come
+    /// from the share's (refused for a live source, or a file laid out unlike
+    /// the share's others).
     [[nodiscard]] static Result<std::unique_ptr<StreamingPool>> open(gpu::Device& device,
                                                                      const std::filesystem::path& path,
-                                                                     const StreamingSettings& settings = {});
+                                                                     const StreamingSettings& settings = {},
+                                                                     std::shared_ptr<StreamingShare> share = {});
     /// The same over any source; the pool owns it.
     [[nodiscard]] static Result<std::unique_ptr<StreamingPool>> open(gpu::Device& device,
                                                                      std::unique_ptr<ChunkSource> source,
-                                                                     const StreamingSettings& settings = {});
+                                                                     const StreamingSettings& settings = {},
+                                                                     std::shared_ptr<StreamingShare> share = {});
     /// Frame thread.
     ~StreamingPool();
 
     /// Frame thread. Cut this, as any cloud; it changes only in update(). A
-    /// live source's shows one whole epoch, the last one complete.
+    /// live source's shows one whole epoch, the last one complete. In a
+    /// share, the first call after a pool joined or left lays the shared
+    /// store out again (every chunk leaves it) and may fail: `ready()` says
+    /// it did not.
     [[nodiscard]] const LodCloud& cloud() const noexcept;
+    [[nodiscard]] bool ready() const noexcept;
 
     /// Frame thread: the instant, PTP nanoseconds, the next update's frame
     /// shows (LiveSync::Clock). An epoch already shown stays shown when the
@@ -158,6 +181,9 @@ public:
     ///
     /// Either way, at most `bytesPerFrame` chunk bytes are placed. Frame
     /// thread only: a call from any other is refused.
+    ///
+    /// In a share, the first pool's update after the wants does every
+    /// pool's, and the others' return 0.
     [[nodiscard]] Result<uint32_t> update(bool wait = false);
 
     struct Status {
@@ -187,6 +213,7 @@ public:
     [[nodiscard]] scene::Bounds chunkBounds(uint32_t chunk) const;
 
 private:
+    friend struct StreamingShare;
     StreamingPool();
     struct Impl;
     std::unique_ptr<Impl> impl_;

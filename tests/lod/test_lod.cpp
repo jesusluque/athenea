@@ -684,9 +684,51 @@ TEST_CASE("a .athc reads back as it was built, and a stream settles on the same 
         CHECK(compare(behindMemory, behind).max == 0);
     }
 
-    // ONE STORE FOR TWO CLOUDS (lod::StreamingShare) is not in this branch:
-    // its StreamingPool is the live sources' (web-athv-video), written apart
-    // from the share.
+    // ONE STORE FOR TWO CLOUDS, given by the view: the same file twice, one
+    // near and one thirty units behind it, each with the budget that alone
+    // left chunks missing. The near one takes slots its own budget would not
+    // have had, and a frame that changes nothing waits for nothing.
+    SECTION("two clouds share one store, and the nearer has the slots") {
+        auto share = lod::makeStreamingShare(*gpu->device);
+        auto a = lod::StreamingPool::open(*gpu->device, path, {8000, 2}, share);
+        auto b = lod::StreamingPool::open(*gpu->device, path, {8000, 2}, share);
+        if (!a) FAIL(a.error().toString());
+        if (!b) FAIL(b.error().toString());
+        render::Mat4 behind = render::Mat4::identity();
+        behind.at(2, 3) = -30.0;
+        std::vector<lod::CutStats> stats;
+        const auto frame = [&] {
+            const std::vector<lod::LodInstance> instances{{&(*a)->cloud(), render::Mat4::identity()},
+                                                          {&(*b)->cloud(), behind}};
+            auto selected = h->cut.select(near, instances, 36.0F, &stats);
+            if (!selected) FAIL(selected.error().toString());
+            REQUIRE(stats.size() == 2);
+            (*a)->want(stats[0].needs);
+            (*b)->want(stats[1].needs);
+            auto placedA = (*a)->update(true);
+            auto placedB = (*b)->update(true);
+            REQUIRE(placedA);
+            REQUIRE(placedB);
+            return *placedA + *placedB;
+        };
+        int rounds = 1;
+        while (frame() > 0 && rounds < 16) {
+            ++rounds;
+        }
+        const auto nearStatus = (*a)->status();
+        const auto farStatus = (*b)->status();
+        std::printf("  two clouds, 16 shared slots, threshold 36 px: near %u resident (%u missing), far %u (%u "
+                    "missing), %d rounds\n",
+                    nearStatus.resident, nearStatus.missing, farStatus.resident, farStatus.missing, rounds);
+        CHECK((*a)->ready());
+        CHECK(nearStatus.slots == 16);
+        CHECK(nearStatus.resident > 8);
+        CHECK(nearStatus.resident + farStatus.resident <= 16);
+        CHECK(nearStatus.resident >= farStatus.resident);
+        const uint64_t syncs = gpu->device->syncs();
+        CHECK(frame() == 0);
+        CHECK(gpu->device->syncs() == syncs);
+    }
 
     std::filesystem::remove(path);
 }

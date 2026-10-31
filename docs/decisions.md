@@ -18667,8 +18667,8 @@ decoded back into a medium the path tracer and the raster draw.
 
 **The merge.** The two branches had each reshaped `lod::StreamingPool`: vol-raster with one store shared by
 every streamed prim (`StreamingShare`, the payload joined), web-athv-video with chunk sources and live epochs.
-The live sources' pool is kept; the shared store is not ported to it (Engine opens a store a prim, as before the
-share; its test is taken out), and the curvature bit (6) of the `.athc`, the cut's residency count and the cut
+The live sources' pool is kept; the shared store was not ported to it in the merge (Engine opened a store a
+prim, as before the share, and its test was taken out; it is back since, below), and the curvature bit (6) of the `.athc`, the cut's residency count and the cut
 of a live cloud (copied whole, in the instances' order: placed among the batched cuts it was taken for one of
 them and the frame read past them) are carried over. `athenea_lod_tests` (bar the transfer case below),
 `athenea_video_tests`, `athenea_volume_tests`, `athenea_usd_tests "[live]"`, `"[volume]"` and `"[vdb2splat]"`
@@ -18726,12 +18726,31 @@ scattering and octaves against 4 bounces, as in VOL105's E1), not the video's.
 **Not done.** A real sequence (no animated `.vdb` was at hand: the explosion and smoke2 are single frames); the
 NanoVDB Fp4/Fp8 of the same frames (only the f32 grid's size is compared); the rungs' keys aligned by rendition
 in a ladder index (each rung is its own `.athv`, keys at the same frames because every rung keeps 30); the
-geometry in the video (`--geometry-video`) for volumes; the store streamed prims shared, after the merge. The
+geometry in the video (`--geometry-video`) for volumes. The
 `.athc` transfer case crashed on reading back after the merge -- the live sources' chunk format did not carry
 the curvature word, so the reader sliced a level's block short; it does now, and `athenea_lod_tests` passes
 whole (37 cases). The live soak of `athenea_usd_tests "[live]"` (`test_live_qa`, epochs shown against epochs
 pushed over a timed run) passed once and failed once on its last count, under the background priority the
 GPU jobs run at; not followed.
+
+**The shared store on the live sources' pool** (`vol-stream-share`). `lod::StreamingShare` is back, added to
+the pool the live sources shaped rather than the other way round. A pool opened with a share takes no store of
+its own; the first `cloud()` after a pool joined or left lays one out for all of them -- slots for the sum of
+their budgets, made as the first pool's own store would be, the others taking its buffers and keeping their own
+chunk flags and levels -- and every chunk leaves it. The payload is not joined to the levels as it was in
+vol-raster: a pool of its own does not join it on this branch either, and a cut reads the store's extras by slot
+and the levels' where they are. The first pool's update after the wants does every pool's: the chunks wanted,
+most wanted first whichever pool's, against the store's cheapest slots, as one pool's update does. Each pool
+keeps its loaders, its staging ring and its fence; a placement and the eviction it makes are recorded in the
+placing pool's batch, submitted against that pool's fence, and a slot is placed at most once an update, so the
+batches' order does not matter. A pool's `bytesPerFrame` holds for what it places. A frame that places nothing
+submits nothing, `wait` or not. The engine opens every file-backed streamed prim into one share; a file laid out
+unlike the others (another `ChunkFormat`) falls back to a store of its own. A live source is refused a share and
+keeps its own store: its epochs are built in slots beside the one shown and flip whole, and a slot another cloud
+may take at any frame would leave an epoch half placed. The test is back (`athenea_lod_tests "a .athc reads back*"`, "two clouds share one store, and the nearer has the
+slots"): two copies of a cloud, one thirty units behind the other, each with the 8 slots that alone left chunks
+missing -- the near one takes 13 of the 16 and the far one none in 2 rounds, as on vol-raster, and the frame after
+adds no host wait. `athenea_lod_tests` passes whole (37 cases).
 ## NVENC: the video planes' encoder on CUDA (31 Oct)
 
 `athenea video-encode` on Linux and Windows: NVIDIA's hardware HEVC encoder behind the same `VideoEncoder` as
