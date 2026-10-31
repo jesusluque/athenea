@@ -794,8 +794,10 @@ las posiciones, orientaciones, escalas y `radiance:base` del esquema:
 Las posiciones y las escalas están en el mundo de la grid (su mapa de índice
 a mundo). `radiance:base` guarda Cd y, como opacidad, 1 − exp(−τ) a través
 del centro de la gaussiana a lo largo de su desviación media,
-τ = σ · `--density-scale` · √(2π) · s: lo que dibuja un visor estándar, no lo
-que ha de dibujar el raster de este motor para un medio (propuesta 105). El
+τ = σ · `--density-scale` · √(2π) · s, nunca por debajo de 1/254 (un cargador
+descarta lo que es más tenue que 1/255): lo que dibuja un visor estándar. El
+raster de este motor dibuja el medio mismo (§4.3, un medio de gaussianas) y no
+lee ninguna opacidad. El
 presupuesto cuenta las gaussianas que se escriben; se escriben menos donde los
 bloques más gruesos que tiene el volumen ya son más que `--init-fraction` de
 él.
@@ -2028,8 +2030,8 @@ Material que lo diga.
 Un Material con un terminal `volume` es la manera estándar de decir lo mismo,
 y donde hay uno atado, gana.
 
-**Volúmenes**: se trazan con path tracing (`rt`); el raster no dibuja ninguno.
-Cada rejilla que nombra un field se lee una vez por fichero y nombre de
+**Volúmenes**: se trazan con path tracing (`rt`); el raster no dibuja ningún
+prim Volume, pero dibuja un medio de gaussianas (abajo). Cada rejilla que nombra un field se lee una vez por fichero y nombre de
 rejilla y se guarda leída en el host, en una caché de `athenea:volumeCacheMB`
 (2048 MB por defecto): pasado ese tamaño, las rejillas que el frame no dibuja
 salen, primero la dibujada hace más tiempo, y una que se vuelve a dibujar se
@@ -2066,6 +2068,29 @@ todos los fields que nombra, hasta ocho (la densidad primero, luego en el
 orden de Hydra; el que pasa del octavo se dice y no se lee), cada uno por su
 nombre en el dispositivo; el medio se sombrea solo con su densidad, y los
 demás fields esperan al sombreado que los lea.
+
+**Un medio de gaussianas** es un ParticleField con
+`primvars:athenea:splat:volume = true` y un `primvars:athenea:volume:sigma`
+por gaussiana (lo que escribe `athenea vdb2splat`, §2.8.3). El raster lo dibuja
+como un medio participante: el alfa de cada gaussiana en un píxel es
+1 − exp(−τ), con τ la profundidad óptica exacta del rayo del píxel a través de
+ella (la cuerda que cortan sus 3,5 desviaciones, recortada en la cámara y en
+la capa opaca bajo los splats), y su color (1 − albedo) por la emisión del
+medio: emisión y absorción, todavía sin luz dispersada. Sus gaussianas se
+ordenan y se mezclan con todos los demás splats. Las `opacities` del fichero
+no se leen. Las constantes del medio son primvars del field, con los nombres
+del Volume donde un Volume tiene lo mismo:
+
+| Atributo | Tipo | Por defecto | Significado |
+|---|---|---|---|
+| `primvars:athenea:densityScale` | float | `1` | de densidad a extinción por unidad de mundo: lo que multiplica la sigma de cada gaussiana |
+| `primvars:athenea:albedo` | color3f | `(0.8, 0.8, 0.8)` | el albedo de scattering, por el de cada gaussiana (`primvars:athenea:volume:albedo`, 1 donde el fichero no tiene) |
+| `primvars:athenea:volume:emission` | color3f | `(0, 0, 0)` | radiancia de la parte que absorbe: el medio emite (1 − albedo) por ella, como el `uniform_edf` de un Volume |
+
+El medio se dibuja solo a través de una cámara pinhole (una ortográfica lo
+deja fuera, dicho una vez), y un frame trazado solo de splats (`rt` sin mallas
+ni Volume) lo deja fuera, dicho una vez; con mallas, `rt` lo compone como
+compone cualquier nube. Todavía no proyecta sombra.
 
 **Grupos de luces**, que todavía no declara ningún schema. Las lámparas de una
 nube son un primvar por grupo en su field, y sus grupos y estados son

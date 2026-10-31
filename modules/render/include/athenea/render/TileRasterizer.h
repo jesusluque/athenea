@@ -21,6 +21,7 @@
 #include "athenea/render/Camera.h"
 #include "athenea/render/Flatten.h"
 #include "athenea/render/Points.h"
+#include "athenea/render/SplatVolume.h"
 #include "athenea/scene/GpuClouds.h"
 
 namespace athenea::gpu {
@@ -144,6 +145,11 @@ struct SplatInstance {
     /// constants (FrameParams::lightWeights), not as a buffer, since the TX
     /// projection binds as many buffers as Metal allows.
     const float*            lightWeights = nullptr;
+    /// A MEDIUM: what the stage says of a cloud whose gaussians carry an
+    /// extinction (`scene::GpuSplats::hasVolume`), and the radiance a frame
+    /// baked for them. Read only for such a cloud, which is drawn by its
+    /// optical depth along each pixel's ray (splat/splat_volume.slang).
+    SplatVolume             volume;
 };
 
 /// The frame's lights, as a renderer that must not depend on the light module
@@ -392,6 +398,10 @@ private:
     gpu::ComputeKernel projectCatcher_;
     /// A light catcher's (splatProjectLightCatcher): the lamps' layers, added.
     gpu::ComputeKernel projectLightCatcher_;
+    /// A medium's (splat_volume.slang): the ray's exact optical depth through
+    /// each gaussian, the radiance a frame baked for it.
+    gpu::ComputeKernel projectVolume_;
+    bool               volumeOrthoSaid_ = false;
     /// A transfer cloud's view-independent terms, a splat each, kept while
     /// the lights, the sky, the cloud and its place stand (`txCaches_`).
     gpu::ComputeKernel viewless_;

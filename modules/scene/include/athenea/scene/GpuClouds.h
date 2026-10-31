@@ -159,6 +159,14 @@ struct GpuSplats {
     gpu::Buffer visibilityPartOf;
     gpu::Buffer visibilityAmbient;   ///< a probe's mean over its directions, for domes
     uint32_t    visibilityPartCount = 0;
+    /// A PARTICIPATING MEDIUM, NOT A SURFACE (`primvars:athenea:splat:volume`,
+    /// proposal 105): two uint a splat, the extinction's peak sigma and the
+    /// temperature as halves, then the albedo as rgba8
+    /// (scene/volume_pack.slang). Where it is there the cloud is drawn by
+    /// its optical depth along each pixel's ray, not by an opacity, and
+    /// `positions.w` is 1. Empty for every other cloud; `hasVolume` is how
+    /// a kernel's host asks.
+    gpu::Buffer volume;
     Bounds      bounds;
     /// THE BOX IT WAS BOUND IN, where `positions` are a pose of another
     /// cloud's (a skinned cloud's posed copy): what does not breathe with
@@ -172,6 +180,7 @@ struct GpuSplats {
     /// answered "the same cloud" to a bird that had flown off its bind pose.
     uint32_t    revision = 0;
 
+    [[nodiscard]] bool hasVolume() const noexcept { return volume.valid(); }
     [[nodiscard]] bool hasPbr() const noexcept { return pbr.valid(); }
     [[nodiscard]] bool hasCrypto() const noexcept { return crypto.valid(); }
     [[nodiscard]] bool hasNormals() const noexcept { return normals.valid(); }
@@ -303,6 +312,15 @@ struct SplatStreams {
     /// records (`CloudLoader::uploadLightLayers`), at most
     /// `GpuSplats::kMaxLightGroups`.
     std::vector<std::pair<std::string, FloatStream>> lightLayers;
+    /// A VOLUMETRIC CLOUD'S MEDIUM, where the field says it is one
+    /// (`primvars:athenea:splat:volume`): the extinction's peak a splat
+    /// (`primvars:athenea:volume:sigma`), its albedo (`:albedo`, rgb) and its
+    /// temperature (`:temperature`, optional). Uploaded apart from the
+    /// records (`CloudLoader::uploadVolume`).
+    bool        volume = false;
+    FloatStream volumeSigma;
+    FloatStream volumeAlbedo;
+    FloatStream volumeTemperature;
     /// BLENDER'S LAYOUT. Four floats a splat, the DC coefficient's rgb and the
     /// opacity (a Gaussian-splat PointCloud's `radiance:base`); where present
     /// it stands for `opacities` and for the DC of `sh`.
@@ -354,6 +372,15 @@ public:
     /// `GpuSplats::kMaxLightGroups` the rest are.
     [[nodiscard]] Result<void> uploadLightLayers(GpuSplats& splats,
                                                  const std::vector<std::pair<std::string, FloatStream>>& layers);
+
+    /// A VOLUMETRIC CLOUD'S MEDIUM onto a cloud just uploaded from the same
+    /// arrays (`SplatStreams::volume`): sigma, albedo and temperature packed
+    /// two words a record on the device (volume_pack.slang), then to the
+    /// splats validation kept, into `GpuSplats::volume`; and the box its
+    /// gaussians reach, 3.5 deviations out, into `restBounds` (what a shadow
+    /// map is sized from). Nothing where the
+    /// streams do not say it is a medium or sigma is not one a record.
+    [[nodiscard]] Result<void> uploadVolume(GpuSplats& splats, const SplatStreams& streams);
 
     /// `byRecord`, `words` 32-bit words a record of the file `splats` came
     /// from, packed to the splats validation kept (`GpuSplats::origin`).
@@ -413,6 +440,8 @@ private:
     gpu::ComputeKernel boundsChunks_;
     gpu::ComputeKernel boundsReduce_;
     gpu::ComputeKernel lightLayerPack_;
+    gpu::ComputeKernel volumePack_;
+    gpu::ComputeKernel volumeReach_;
 };
 
 /// Whether `path` names a SOG: a .sog bundle or an unbundled meta.json.

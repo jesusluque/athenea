@@ -235,6 +235,24 @@ public static const float kLightCatcherMark = 0.0625;
 /// A record whose sharp lobe the blend draws per pixel (splat_project's
 /// SplatSlope sharp lobe): `slopes` holds its mirror and the mirror's turn.
 public static const float kSharpMark = 0.375;
+/// A record of a MEDIUM's gaussian (splat_volume.slang): its alpha at a pixel
+/// is the exact optical depth of the pixel's ray through it, and what it
+/// needs for that is in the record and its `slopes` slot (splat_volume says
+/// where).
+public static const float kVolumeMark = 0.4375;
+/// A medium's gaussian stops at 3.5 deviations, as `athenea vdb2splat` fits
+/// it: squared, the furthest its least distance to a ray is counted at.
+public static const float kVolumeTruncation = 12.25;
+
+/// erf, Abramowitz and Stegun 7.1.26: an absolute error under 1.5e-7.
+public float volumeErf(float x) {
+    const float s = sign(x);
+    const float a = abs(x);
+    const float t = 1.0 / (1.0 + 0.3275911 * a);
+    const float y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t +
+                           0.254829592) * t * exp(-a * a);
+    return s * y;
+}
 
 public struct ProjRecord {
     public float4 screen;   // centre.xy, view z, cutoff power

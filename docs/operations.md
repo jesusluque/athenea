@@ -773,9 +773,10 @@ the schema's positions, orientations, scales and `radiance:base`:
 
 The positions and scales are in the grid's world (its index-to-world map).
 `radiance:base` holds Cd and, as opacity, 1 − exp(−τ) through the gaussian's
-middle along its mean deviation, τ = σ · `--density-scale` · √(2π) · s: what
-a standard viewer draws, not what the raster of this engine is to draw for a
-medium (proposal 105). The budget counts the gaussians that are written;
+middle along its mean deviation, τ = σ · `--density-scale` · √(2π) · s, never
+under 1/254 (a loader drops what is fainter than 1/255): what a standard
+viewer draws. This engine's raster draws the medium itself (§4.3, a medium
+of gaussians) and reads no opacity. The budget counts the gaussians that are written;
 fewer are written where the coarsest blocks the volume holds are already
 more than `--init-fraction` of it.
 
@@ -1968,7 +1969,8 @@ bound to say it.
 A Material with a `volume` terminal is the standard way to say the same
 thing, and where one is bound it wins.
 
-**Volumes** are path traced (`rt`); the raster draws none. Each grid a
+**Volumes** are path traced (`rt`); the raster draws no Volume prim, but
+draws a medium of gaussians (below). Each grid a
 field names is read once per file and grid name and kept read on the host,
 in a cache of `athenea:volumeCacheMB` (default 2048 MB): past it, the grids
 the frame does not draw leave, least recently drawn first, and one drawn
@@ -2002,6 +2004,29 @@ keeps every field it names, up to eight (the density first, then in
 Hydra's order; one past the eighth is said and not read), each by its
 name on the device; the medium is shaded by its density alone, and the
 other fields wait for the shading that reads them.
+
+**A medium of gaussians** is a ParticleField with
+`primvars:athenea:splat:volume = true` and a `primvars:athenea:volume:sigma`
+a gaussian (what `athenea vdb2splat` writes, §2.8.3). The raster draws it as
+a participating medium: each gaussian's alpha at a pixel is 1 − exp(−τ), τ
+the exact optical depth of the pixel's ray through it (the chord its 3.5
+deviations cut, clipped at the camera and at the opaque layer under the
+splats), and its colour (1 − albedo) times the medium's emission: emission
+and absorption, no light scattered yet. Its gaussians are sorted and blended
+with every other splat. The file's `opacities` are not read. The medium's
+constants are primvars on the field, the Volume's names where a Volume has
+the same thing:
+
+| Attribute | Type | Default | Meaning |
+|---|---|---|---|
+| `primvars:athenea:densityScale` | float | `1` | density to extinction a world unit: what each gaussian's sigma is multiplied by |
+| `primvars:athenea:albedo` | color3f | `(0.8, 0.8, 0.8)` | the scattering albedo, times each gaussian's (`primvars:athenea:volume:albedo`, 1 where the file has none) |
+| `primvars:athenea:volume:emission` | color3f | `(0, 0, 0)` | radiance of the absorbing part: the medium gives off (1 − albedo) times it, as a Volume's `uniform_edf` |
+
+The medium is drawn through a pinhole camera only (an orthographic one
+leaves it out, said once), and a traced frame of splats alone (`rt` with no
+mesh and no Volume) leaves it out, said once; with meshes, `rt` composites
+it as it composites every cloud. It casts no shadow yet.
 
 **Light groups**, which no schema declares yet. A cloud's lamps are a primvar
 a group on its field, and its groups and states are attributes on Scope prims

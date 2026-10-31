@@ -16,6 +16,7 @@
 #include <pxr/usd/sdf/path.h>
 
 #include "athenea/render/Camera.h"
+#include "athenea/render/SplatVolume.h"
 
 #include <pxr/base/vt/value.h>
 
@@ -127,6 +128,16 @@ struct ParticleFieldArrays {
     pxr::VtValue visibilityTexels; ///< VtIntArray (words)
     pxr::VtValue visibilityPartOf; ///< VtIntArray, one a gaussian
     pxr::VtValue visibilityAmbient;///< VtIntArray (words), a probe's mean, for domes
+    /// A PARTICIPATING MEDIUM (`primvars:athenea:splat:volume`, proposal
+    /// 105, what `athenea vdb2splat` writes): the extinction's peak a
+    /// gaussian, its albedo and its temperature, and the medium's constants
+    /// as a Volume's primvars name them (`athenea:densityScale`,
+    /// `athenea:albedo`, `athenea:anisotropy`) and its emission.
+    bool                volume = false;
+    pxr::VtValue        volumeSigma;         ///< VtHalfArray or VtFloatArray
+    pxr::VtValue        volumeAlbedo;        ///< VtVec3hArray or VtVec3fArray
+    pxr::VtValue        volumeTemperature;   ///< VtHalfArray or VtFloatArray
+    render::SplatVolume volumeLook;
     /// BLENDER'S GAUSSIAN-SPLAT POINT CLOUD, arriving as a UsdGeomPoints
     /// (HdAtheneaPoints): `primvars:radiance:base`, the DC coefficient and
     /// the opacity a splat, in place of `opacities` and the DC; and

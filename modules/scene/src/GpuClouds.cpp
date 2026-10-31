@@ -104,6 +104,8 @@ Result<CloudLoader> CloudLoader::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(loader.boundsChunks_, "athenea/scene/bounds_chunks", "boundsChunks"));
     ATHENEA_TRY(make(loader.boundsReduce_, "athenea/scene/bounds_reduce", "boundsReduce"));
     ATHENEA_TRY(make(loader.lightLayerPack_, "athenea/scene/light_layers", "lightLayerPack"));
+    ATHENEA_TRY(make(loader.volumePack_, "athenea/scene/volume_pack", "volumePack"));
+    ATHENEA_TRY(make(loader.volumeReach_, "athenea/scene/volume_pack", "volumeReach"));
     return loader;
 }
 
@@ -371,6 +373,64 @@ Result<void> CloudLoader::uploadLightLayers(GpuSplats& splats,
     for (const auto* layer : kept) {
         splats.lightGroups.push_back(layer->first);
     }
+    return ok();
+}
+
+Result<void> CloudLoader::uploadVolume(GpuSplats& splats, const SplatStreams& streams) {
+    splats.volume = {};
+    const uint64_t n = splats.declared;
+    if (!streams.volume || n == 0 || streams.volumeSigma.isDouble || streams.volumeSigma.values() < n) {
+        return ok();
+    }
+    const auto kindOf = [n](const FloatStream& stream, uint64_t per) -> uint32_t {
+        return stream.isDouble || stream.values() < n * per ? 0u : stream.kind();
+    };
+    const uint32_t albedoKind = kindOf(streams.volumeAlbedo, 3);
+    const uint32_t temperatureKind = kindOf(streams.volumeTemperature, 1);
+    auto sigma = streamBuffer(streams.volumeSigma, "splats.stream.volumeSigma");
+    if (!sigma) return std::move(sigma).error();
+    auto albedo = streamBuffer(albedoKind != 0 ? streams.volumeAlbedo : FloatStream{}, "splats.stream.volumeAlbedo");
+    if (!albedo) return std::move(albedo).error();
+    auto temperature = streamBuffer(temperatureKind != 0 ? streams.volumeTemperature : FloatStream{},
+                                    "splats.stream.volumeTemperature");
+    if (!temperature) return std::move(temperature).error();
+    auto byRecord = deviceBuffer(*device_, n * 2, 4, "splats.volume.records");
+    if (!byRecord) return std::move(byRecord).error();
+    {
+        gpu::CommandBatch batch(*device_);
+        volumePack_.dispatch(batch, {splats.declared, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["sigmaStream"].setBinding(sigma->rhi());
+            cursor["albedoStream"].setBinding(albedo->rhi());
+            cursor["temperatureStream"].setBinding(temperature->rhi());
+            cursor["packedVolume"].setBinding(byRecord->rhi());
+            rhi::ShaderCursor p = cursor["volumePackParams"];
+            p["count"].setData(splats.declared);
+            p["sigmaHalf"].setData(uint32_t{streams.volumeSigma.half ? 1u : 0u});
+            p["albedoKind"].setData(albedoKind);
+            p["temperatureKind"].setData(temperatureKind);
+        });
+        ATHENEA_TRY(batch.submit(true));
+    }
+    auto kept = keptOnly(splats, *byRecord, 2, "splats.volume");
+    if (!kept) return std::move(kept).error();
+    splats.volume = std::move(*kept);
+    // Where the medium reaches, its gaussians' widths included: the box a
+    // shadow map is sized from (`restBounds`).
+    auto corners = deviceBuffer(*device_, uint64_t{splats.count} * 2, 16, "splats.volume.reach");
+    if (!corners) return std::move(corners).error();
+    {
+        gpu::CommandBatch batch(*device_);
+        volumeReach_.dispatch(batch, {splats.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["reachPositions"].setBinding(splats.positions.rhi());
+            cursor["reachShape"].setBinding(splats.shape.rhi());
+            cursor["reachCorners"].setBinding(corners->rhi());
+            cursor["reachParams"]["count"].setData(splats.count);
+        });
+        ATHENEA_TRY(batch.submit(true));
+    }
+    auto reach = boundsOf(*corners, splats.count * 2);
+    if (!reach) return std::move(reach).error();
+    splats.restBounds = *reach;
     return ok();
 }
 

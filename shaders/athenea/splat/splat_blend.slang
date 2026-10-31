@@ -163,6 +163,42 @@ float surfelPower(ProjRecord record, float2 pixel, float2 d) {
                               : dot(at, at);
     return min(own, filter);
 }
+/// A MEDIUM'S GAUSSIAN AT THIS PIXEL (splat_volume.slang): 1 - exp(-tau), tau
+/// the optical depth of the pixel's ray through it in closed form -- the
+/// chord its 3.5-deviation ellipsoid cuts, from the camera to `tFar`, the
+/// opaque layer under the splats where there is one.
+float volumeAlpha(ProjRecord record, uint4 extra, float2 pixel, float tFar) {
+    const float3 r = float3((pixel.x - params.centreX) / params.focalX, (pixel.y - params.centreY) / params.focalY, 1.0);
+    const float l00 = asfloat(record.surfel.x);
+    const float l10 = asfloat(record.surfel.y);
+    const float l20 = asfloat(record.surfel.z);
+    const float l11 = asfloat(record.surfel.w);
+    const float l21 = asfloat(extra.x);
+    const float l22 = asfloat(extra.y);
+    const float3 u = float3(l00 * r.x + l10 * r.y + l20 * r.z, l11 * r.y + l21 * r.z, l22 * r.z);
+    const float3 m = record.colour.xyz;
+    const float a = dot(u, u);
+    if (!(a > 1.0e-30)) {
+        return 0.0;
+    }
+    const float ts = dot(u, m) / a;
+    const float3 off = ts * u - m;
+    const float d2 = dot(off, off);
+    if (d2 > record.screen.w) {
+        return 0.0;
+    }
+    const float chord = sqrt(max(kVolumeTruncation - d2, 0.0) / a);
+    const float t0 = max(ts - chord, 0.0);
+    const float t1 = min(ts + chord, tFar);
+    if (!(t1 > t0)) {
+        return 0.0;
+    }
+    const float k = sqrt(0.5 * a);
+    const float integral = exp(-0.5 * d2) * sqrt(3.14159265358979 / (2.0 * a)) *
+                           (volumeErf(k * (t1 - ts)) - volumeErf(k * (t0 - ts)));
+    const float tau = record.conic.w * length(r) * max(integral, 0.0);
+    return 1.0 - exp(-tau);
+}
 groupshared uint       sSplats[kBatch];
 // The colour's slope across the footprint, where the record is marked so
 // (frame.slang's kSlopeMark): x then y, rgb each, as halves.
@@ -227,7 +263,10 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             sSplats[lane] = splat;
             sRecords[lane] = proj[splat];
             const float mark = sRecords[lane].colour.w;
-            sSlopes[lane] = abs(mark - kSlopeMark) < 0.01 || abs(mark - kSharpMark) < 0.01 ? slopes[splat] : uint4(0u);
+            sSlopes[lane] = abs(mark - kSlopeMark) < 0.01 || abs(mark - kSharpMark) < 0.01 ||
+                                    abs(mark - kVolumeMark) < 0.01
+                                ? slopes[splat]
+                                : uint4(0u);
         }
         GroupMemoryBarrierWithGroupSync();
         const uint count = min(kBatch, end - first);
@@ -244,14 +283,19 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             const bool adds = abs(record.colour.w - kLightCatcherMark) < 0.01;
             const bool catcher = abs(record.colour.w - kCatcherMark) < 0.01;
             const bool lying = (catcher || adds) && screen.z <= underZ * 1.015;
-            if (underHit && screen.z >= underZ && !lying) {
+            // A medium's gaussian whose centre is behind the layer under the
+            // splats may still reach in front of it: its chord is clipped
+            // there (volumeAlpha), and the walk goes on.
+            const bool medium = abs(record.colour.w - kVolumeMark) < 0.01;
+            if (underHit && screen.z >= underZ && !lying && !medium) {
                 done = true;
                 break;
             }
             const float2 d = pixel - screen.xy;
             const float4 conic = record.conic;
-            const float power = conic.w < 0.0 ? surfelPower(record, pixel, d)
-                                              : conic.x * d.x * d.x + 2.0 * conic.y * d.x * d.y + conic.z * d.y * d.y;
+            const float power = medium ? 0.0
+                                : conic.w < 0.0 ? surfelPower(record, pixel, d)
+                                                : conic.x * d.x * d.x + 2.0 * conic.y * d.x * d.y + conic.z * d.y * d.y;
             if (power > screen.w) {
                 continue;
             }
@@ -268,10 +312,12 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
                 done = true;
                 break;
             }
-            const float alpha = min(0.99, falloffAlpha(abs(conic.w), exp(-0.5 * power)));
+            const float alpha = medium ? min(0.9999, volumeAlpha(record, sSlopes[j], pixel, underHit ? underZ : 3.0e38))
+                                       : min(0.99, falloffAlpha(abs(conic.w), exp(-0.5 * power)));
             // A shadow catcher is not cut at 1/255: its faint gaussians are
-            // a faint shadow (splat_project, kCatcherLeast).
-            if (alpha < 1.0 / 255.0 && !catcher) {
+            // a faint shadow (splat_project, kCatcherLeast). Nor is a
+            // medium's: a smoke is thousands of faint gaussians in a row.
+            if (medium ? !(alpha > 1.0e-7) : (alpha < 1.0 / 255.0 && !catcher)) {
                 continue;
             }
             const float weight = transmittance * alpha;
@@ -311,7 +357,11 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             // colour at this pixel is the centre's plus its slope over the
             // step from the centre (splat_project's SplatSlope).
             float3 shade = record.colour.xyz;
-            if (abs(record.colour.w - kSlopeMark) < 0.01) {
+            if (medium) {
+                // A medium's record holds geometry in its colour; its
+                // radiance is in its `slopes` slot.
+                shade = float3(lowHalf(sSlopes[j].z), highHalf(sSlopes[j].z), lowHalf(sSlopes[j].w));
+            } else if (abs(record.colour.w - kSlopeMark) < 0.01) {
                 const uint3 w = sSlopes[j].xyz;
                 const float3 slopeX = float3(lowHalf(w.x), highHalf(w.x), lowHalf(w.y));
                 const float3 slopeY = float3(highHalf(w.y), lowHalf(w.z), highHalf(w.z));

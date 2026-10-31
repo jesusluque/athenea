@@ -106,6 +106,9 @@ struct SplatEntry {
     std::array<double, 16>              transformStep{};
     bool                                visible = true;
     render::SplatEdit                   edit;
+    /// A MEDIUM's constants, where the cloud is one (`gpu->hasVolume()`):
+    /// read with its arrays, handed to every frame's instance.
+    render::SplatVolume                 volumeLook;
     /// AtheneaSplatLightingAPI: relit by the scene's lights rather than shown as
     /// it was baked.
     bool                                relight = false;

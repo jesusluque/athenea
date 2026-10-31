@@ -315,6 +315,39 @@ void HdAtheneaParticleField::Sync(HdSceneDelegate* delegate, HdRenderParam* rend
         // And how hard a merged disc's edge is (a hard surfel's p).
         static const TfToken kHardness("athenea:splat:hardness");
         arrays.hardness = held(kHardness);
+        // A MEDIUM (proposal 105, what `athenea vdb2splat` writes): the
+        // extinction's peak, the albedo and the temperature a gaussian, and
+        // the medium's constants under the names a Volume gives them.
+        static const TfToken kVolume("athenea:splat:volume");
+        arrays.volume = boolOf(held(kVolume), false);
+        if (arrays.volume) {
+            static const TfToken kSigma("athenea:volume:sigma");
+            static const TfToken kAlbedo("athenea:volume:albedo");
+            static const TfToken kTemperature("athenea:volume:temperature");
+            arrays.volumeSigma = held(kSigma);
+            arrays.volumeAlbedo = held(kAlbedo);
+            arrays.volumeTemperature = held(kTemperature);
+            static const TfToken kDensityScale("athenea:densityScale");
+            static const TfToken kMediumAlbedo("athenea:albedo");
+            static const TfToken kAnisotropy("athenea:anisotropy");
+            static const TfToken kMediumEmission("athenea:volume:emission");
+            static const TfToken kEmissionScale("athenea:volume:emissionScale");
+            static const TfToken kTemperatureScale("athenea:volume:temperatureScale");
+            static const TfToken kTemperatureOffset("athenea:volume:temperatureOffset");
+            athenea::render::SplatVolume& look = arrays.volumeLook;
+            look.densityScale = floatOf(delegate->Get(id, kDensityScale), look.densityScale);
+            look.albedo = vec3Of(delegate->Get(id, kMediumAlbedo), look.albedo);
+            look.anisotropy = floatOf(delegate->Get(id, kAnisotropy), look.anisotropy);
+            look.emission = vec3Of(delegate->Get(id, kMediumEmission), look.emission);
+            look.emissionScale = floatOf(delegate->Get(id, kEmissionScale), look.emissionScale);
+            look.temperatureScale = floatOf(delegate->Get(id, kTemperatureScale), look.temperatureScale);
+            look.temperatureOffset = floatOf(delegate->Get(id, kTemperatureOffset), look.temperatureOffset);
+            static const TfToken kOctaves("athenea:volume:octaves");
+            const VtValue octaves = delegate->Get(id, kOctaves);
+            if (octaves.IsHolding<int>()) {
+                look.octaves = static_cast<uint32_t>(std::clamp(octaves.UncheckedGet<int>(), 1, 16));
+            }
+        }
         // And what its material layered over the base: specular, coat, sheen.
         static const TfToken kSpecularWeight("athenea:splat:specularWeight");
         static const TfToken kSpecularColour("athenea:splat:specularColor");

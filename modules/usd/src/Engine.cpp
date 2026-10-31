@@ -1484,6 +1484,7 @@ Result<size_t> Engine::commit() {
         entry.lodGroup = entry.pending->lodGroup;
         entry.lodCell = entry.pending->lodCell;
         entry.lodThreshold = entry.pending->lodThreshold;
+        entry.volumeLook = entry.pending->volumeLook;
         const CloudIdentity identity = identityOf(*entry.pending);
         const bool sameCloud = entry.gpu != nullptr && identity == entry.uploaded;
         if (!sameCloud) {
@@ -1505,6 +1506,24 @@ Result<size_t> Engine::commit() {
                     entry.gpu.reset();
                 } else {
                     entry.gpu = std::make_unique<scene::GpuSplats>(std::move(*splats));
+                    // A MEDIUM's own arrays, where the field is one: the
+                    // extinction, albedo and temperature a gaussian
+                    // (proposal 105), beside the cloud.
+                    if (streams.volume) {
+                        if (auto medium = loader_->uploadVolume(*entry.gpu, streams); !medium) {
+                            if (medium.error().code() == ErrorCode::OutOfMemory) {
+                                return Error::make(ErrorCode::OutOfMemory, "{}: {}", id.GetString(),
+                                                   medium.error().message());
+                            }
+                            log::warn("hdAthenea: {}: its medium did not upload: {}", id.GetString(),
+                                      medium.error().toString());
+                        }
+                        if (!entry.gpu->hasVolume()) {
+                            log::warn("hdAthenea: {} says it is a medium but carries no sigma a gaussian; drawn as "
+                                      "plain gaussians",
+                                      id.GetString());
+                        }
+                    }
                     // THE LAMPS' LAYERS, where the field carries them: a
                     // column a group, beside the cloud (docs/decisions.md,
                     // light groups). A cloud without them is drawn as ever.
@@ -2574,6 +2593,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 splats.back().reflectCloud = splatReflections_.load();
                 splats.back().ior = entry.ior;
                 splats.back().catcher = entry.catcher;
+                splats.back().volume = entry.volumeLook;
                 // What the shutter moved each gaussian, where a skeleton
                 // carries the cloud and the camera's is open. The rasteriser
                 // smears the splat along it; the tracer ignores it, since its
@@ -2896,6 +2916,28 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 log::warn("hdAthenea: a traced frame of splats alone leaves the points out");
             }
         }
+        // A MEDIUM's gaussians are not surfaces the tracer can stop at: they
+        // are the rasteriser's (proposal 105), and a traced frame of splats
+        // alone leaves them out, saying so once.
+        if (std::any_of(splats.begin(), splats.end(), [](const render::SplatInstance& s) {
+                return s.splats != nullptr && s.splats->hasVolume();
+            })) {
+            static bool said = false;
+            if (!said) {
+                said = true;
+                log::warn("hdAthenea: a traced frame of splats alone leaves a medium's gaussians out; the raster "
+                          "draws them");
+            }
+            const bool paired = instancePrims.size() == splats.size();
+            for (size_t k = splats.size(); k-- > 0;) {
+                if (splats[k].splats != nullptr && splats[k].splats->hasVolume()) {
+                    splats.erase(splats.begin() + static_cast<std::ptrdiff_t>(k));
+                    if (paired) {
+                        instancePrims.erase(instancePrims.begin() + static_cast<std::ptrdiff_t>(k));
+                    }
+                }
+            }
+        }
         if (!rayTracer_.has_value()) {
             auto made = render::GaussianRayTracer::create(*library_);
             if (!made) return std::move(made).error();
@@ -3183,8 +3225,10 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 // edged blocks under goegap's sun, and the mesh car's frame a
                 // third dark.
                 // A light catcher is light on the ground: it casts nothing.
+                // A medium has no opacity to cast with: what it stops is its
+                // own optical depth, which the map does not take yet.
                 if (instance.splats == nullptr || instance.splats->count == 0 || instance.catcher ||
-                    instance.lightCatcher) {
+                    instance.lightCatcher || instance.splats->hasVolume()) {
                     continue;
                 }
                 technique::ShadowMapCaster caster;

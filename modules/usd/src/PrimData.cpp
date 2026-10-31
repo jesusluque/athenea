@@ -122,6 +122,16 @@ scene::SplatStreams splatStreams(const ParticleFieldArrays& a, std::string sourc
     s.rotations = streamOf(a.orientations);
     s.scales = streamOf(a.scales);
     s.opacities = streamOf(a.opacities);
+    // A MEDIUM HAS NO OPACITY: what its file writes there is a hint for a
+    // viewer that draws plain gaussians, and validation would drop the faint
+    // ones a smoke is made of. Opacity 1, and the medium's own arrays.
+    if (a.volume) {
+        s.opacities = {};
+        s.volume = true;
+        s.volumeSigma = streamOf(a.volumeSigma);
+        s.volumeAlbedo = streamOf(a.volumeAlbedo);
+        s.volumeTemperature = streamOf(a.volumeTemperature);
+    }
     const int degree = std::clamp(a.shDegree, 0, 3);
     s.coefficients = static_cast<uint32_t>((degree + 1) * (degree + 1));
     s.sh = streamOf(a.shCoefficients);

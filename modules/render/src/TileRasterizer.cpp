@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstring>
 
+#include "athenea/core/Log.h"
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
@@ -79,6 +80,7 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(r.projectFirst_, "athenea/splat/splat_project", "splatProjectFirst"));
     ATHENEA_TRY(make(r.projectCatcher_, "athenea/splat/splat_project", "splatProjectCatcher"));
     ATHENEA_TRY(make(r.projectLightCatcher_, "athenea/splat/splat_project", "splatProjectLightCatcher"));
+    ATHENEA_TRY(make(r.projectVolume_, "athenea/splat/splat_volume", "splatProjectVolume"));
     ATHENEA_TRY(make(r.viewless_, "athenea/splat/splat_project", "splatTransferViewless"));
     ATHENEA_TRY(make(r.catcherViewless_, "athenea/splat/splat_project", "splatCatcherViewless"));
     ATHENEA_TRY(make(r.compact_, "athenea/splat/splat_compact", "splatCompact"));
@@ -386,6 +388,50 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     for (const SplatInstance& instance : instances) {
         const scene::GpuSplats* cloud = instance.splats;
         if (cloud == nullptr || cloud->count == 0) {
+            continue;
+        }
+        // A MEDIUM (splat_volume.slang): its own projection, the exact
+        // optical depth of each pixel's ray through each gaussian; nothing of
+        // a surface's shading. A flatten has nothing to fit of it.
+        if (cloud->hasVolume()) {
+            if (settings.flatten != nullptr) {
+                base += cloud->count;
+                continue;
+            }
+            if (projection.orthographic && !volumeOrthoSaid_) {
+                volumeOrthoSaid_ = true;
+                log::warn("splats: a medium's gaussians are drawn through a pinhole only; an orthographic camera "
+                          "leaves {} out",
+                          cloud->source);
+            }
+            const Mat4 objectToView = projection.worldToView * instance.objectToWorld;
+            const Vec3 eyeObject = aofx::xform::inverseAffine(instance.objectToWorld).point(projection.eyeWorld);
+            const SplatVolume& look = instance.volume;
+            projectVolume_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["positions"].setBinding(cloud->positions.rhi());
+                cursor["shape"].setBinding(cloud->shape.rhi());
+                cursor["volume"].setBinding(cloud->volume.rhi());
+                cursor["volumeRadiance"].setBinding(look.radiance != nullptr ? look.radiance->rhi()
+                                                                             : cloud->volume.rhi());
+                cursor["proj"].setBinding(proj_.rhi());
+                cursor["slopes"].setBinding(slopes_.rhi());
+                cursor["cryptoIds"].setBinding(cryptoIds_.rhi());
+                cursor["visible"].setBinding(visible_.rhi());
+                cursor["tileRects"].setBinding(tileRects_.rhi());
+                cursor["tilesTouched"].setBinding(tilesTouched_.rhi());
+                cursor["depthKeys"].setBinding(depthKeys_.rhi());
+                setFrame(cursor, common);
+                cursor["params"]["cryptoMode"].setData(uint32_t{settings.cryptomatte ? 2u : 0u});
+                setObject(cursor, objectToView, eyeObject);
+                cursor["params"]["count"].setData(cloud->count);
+                cursor["params"]["base"].setData(base);
+                rhi::ShaderCursor v = cursor["volumeParams"];
+                v["densityScale"].setData(look.densityScale);
+                v["hasRadiance"].setData(uint32_t{look.radiance != nullptr ? 1u : 0u});
+                v["albedo"].setData(look.albedo.data(), sizeof(float) * 3);
+                v["emission"].setData(look.emission.data(), sizeof(float) * 3);
+            });
+            base += cloud->count;
             continue;
         }
         // A TRANSFER THE STAGE TURNED reads the sky in the cloud's own frame

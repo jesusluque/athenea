@@ -44,7 +44,7 @@ coinciden, la cabecera tiene razón.
 | 7 | gpu_host | `gpu_host/Context.h` — un dispositivo, dos runtimes encima, un hilo que le habla |
 | 8 | colour | `colour/ColourCompiler.h` (OpenColorIO como compilador de funciones Slang y LUTs), `colour/ColourNames.h` (qué significa el nombre de un espacio de color) |
 | 9 | scene | `scene/GpuClouds.h` — el layout de nube que leen todos los renderers |
-| 10 | render | `render/TileRasterizer.h` y `shaders/athenea/splat/frame.slang` (el pipeline), `render/GaussianRayTracer.h`, `render/Flatten.h` (una nube TX como armónicos estándar) |
+| 10 | render | `render/TileRasterizer.h` y `shaders/athenea/splat/frame.slang` (el pipeline), `render/GaussianRayTracer.h`, `render/Flatten.h` (una nube TX como armónicos estándar), `render/SplatVolume.h` (un medio de gaussianas, §6.14) |
 | 11 | geom | `geom/Skinner.h`, `geom/Subdivision.h` |
 | 12 | material | `material/MaterialCompiler.h` — MaterialX a Slang |
 | 13 | light | `light/LightTable.h` — una luz en el dispositivo; la región de las luces de malla al principio de sus palabras de luz, dispuesta en `shaders/athenea/light/mesh_lights.slang`; `light/LtcTable.h` — la tabla LTC, ajustada en el dispositivo (`ltc_fit.slang`), y `ltc.slang`, el factor de forma y la integral LTC de un polígono |
@@ -1543,6 +1543,43 @@ vuelta (se reutiliza la de la entrada); partir una gaussiana que pasa del
 tope de tamaño (el tope es un recorte de la diagonal del factor); el
 binning para la vuelta y para los rayos, que aún visitan todas las
 gaussianas por hoja o por rayo.
+
+### 6.14 Un medio de gaussianas en el raster
+
+Propuesta 105 §3: las gaussianas que escribe `athenea vdb2splat`, dibujadas
+por el raster como el medio que son. Las piezas, en el orden en que las
+encuentra un frame:
+
+- **Subida.** Un ParticleField con `primvars:athenea:splat:volume` llega a
+  `scene::CloudLoader` sin sus `opacities` (`usd::splatStreams`: la
+  validación descartaría las gaussianas tenues de las que está hecho un humo,
+  y un medio no tiene opacidad); `CloudLoader::uploadVolume` empaqueta sigma,
+  la temperatura y el albedo en dos palabras por gaussiana
+  (`scene/volume_pack.slang`) en `GpuSplats::volume`, que es lo que dice que
+  una nube es un medio. Las constantes del medio van en la instancia
+  (`render::SplatVolume`).
+- **Proyección** (`splat/splat_volume.slang`, el `projectVolume_` de
+  `TileRasterizer`). La precisión en la vista, P = N⁻ᵀ N⁻¹ con N la parte
+  lineal de la vista por R S, y su factor de Cholesky superior U: lo que
+  necesita el blend es U (seis floats), m = U c y la extinción de pico, y van
+  en conic.w, colour.xyz y surfel del registro y en la entrada de `slopes` del
+  slot, con el registro marcado `kVolumeMark`. Los tiles son la imagen del
+  elipsoide al nivel del corte -- la cónica (cᵀPc − k) P − (Pc)(Pc)ᵀ en las
+  coordenadas del rayo -- una décima más ancha que el corte; donde el
+  elipsoide cruza el plano de la cámara la gaussiana toma todos los tiles. La
+  clave de profundidad es la del centro.
+- **Blend** (`volumeAlpha` de `splat_blend.slang`). En un píxel, para su rayo
+  r = ((x − cx)/fx, (y − cy)/fy, 1): u = U r, t* = u·m / |u|², d² = |t* u − m|²,
+  y la integral de G sobre la cuerda que corta el elipsoide de 3,5
+  desviaciones, recortada en t = 0 y en la capa bajo los splats, con erf. Un
+  registro de un medio detrás de esa capa no para el recorrido: su cuerda
+  puede llegar por delante de ella.
+
+Lo que no hace: la luz dispersada en el medio y sus sombras (la radiancia es
+(1 − albedo) por la emisión), el §2b de la propuesta (las gaussianas como
+medio del path tracer), los momentos para un blend independiente del orden
+(§3, b), las ediciones sobre un medio, un medio en un `.athc` o bajo niveles
+de detalle, y `UsdVol` convertido en medio al cargar (§5).
 
 ## 7. Dependencias y toolchain
 

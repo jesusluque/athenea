@@ -16981,3 +16981,48 @@ ends better (0.026 against 0.028 at frame 29), at a quarter of the time, with ev
 what `.athv` needs. Path traced at frame 29 (masked): 2.1·10⁻⁴ warm, 2.6·10⁻⁴ independent. EM steps after
 Adam's are off in a warm frame: on a frame given twice, ten EM steps from the Adam-refined gaussians took the
 error from 0.044 to 9.5, while Adam alone took it to 0.035; why EM is unstable there is not settled.
+
+## A medium of gaussians in the raster (VOL105, 31 Oct)
+
+Proposal 105 §3: the gaussians `athenea vdb2splat` writes (VOL103) drawn by the raster as the medium they are,
+in the same sort as every other splat; the path tracer stays the reference.
+
+### The design
+
+**A medium is a cloud that carries a sigma a gaussian.** `primvars:athenea:splat:volume` and
+`primvars:athenea:volume:sigma` on a ParticleField make `CloudLoader::uploadVolume` pack sigma, the temperature
+and the albedo two words a gaussian (`GpuSplats::volume`); the file's `opacities` are not read, since validation
+drops what is under 1/255 and a smoke is made of faint gaussians. The medium's constants -- the Volume's
+`athenea:densityScale`, `athenea:albedo`, `athenea:anisotropy`, and an emission -- are primvars on the field and
+ride on the instance (`render::SplatVolume`).
+
+**Alpha is the exact optical depth of the pixel's ray.** With U the upper Cholesky factor of the precision in the
+view and c the centre, for the pixel's ray r = ((x − cx)/fx, (y − cy)/fy, 1): u = U r, m = U c,
+t* = u·m / |u|², d² = |t* u − m|², and τ = densityScale σ |r| ∫ G dt over the chord the 3.5-deviation ellipsoid
+cuts from the ray -- exp(−d²/2) √(π/2a) [erf(k(t₁ − t*)) − erf(k(t₀ − t*))], a = |u|², k = √(a/2) -- clipped at
+the camera and at the opaque layer under the splats, so smoke standing on a ground is integrated up to the ground.
+α = 1 − exp(−τ). The record carries U (six floats), m and the peak extinction in fields the blend already loads
+(the conic's w, the colour, the surfel words and the slot's `slopes` entry), marked `kVolumeMark`: no buffer
+more, and the blend's other branches untouched. The transmittance is a product, so the order the depth sort puts
+overlapping gaussians in changes how their radiances are weighed and never how much light gets through; with one
+radiance for the whole medium (emission alone) the frame does not depend on the order at all.
+
+**The tiles are the image of the ellipsoid**, the conic (cᵀPc − k)P − (Pc)(Pc)ᵀ in the ray's coordinates at the
+level k where the optical depth falls under 1/1024 of the peak (or 3.5 deviations), a tenth wider than the cut,
+so the float arithmetic of a far gaussian loses no pixel the blend would draw. A gaussian across the camera's
+plane takes every tile. Where the record's centre is behind the opaque layer the walk does not stop at it: its
+chord may still reach in front.
+
+**The export lost the faint gaussians.** `vdb2splat`'s ParticleField was written through the cloud decode, which
+drops a record of opacity under 1/255 and wrote its shape as zeros beside its sigma: of the 50k gaussians of the
+smoke2 fit of E1b's densify round (`--density-scale` 1), 30 577 had scales (0, 0, 0). The grids given back were
+right (they come from the device records), the files were not. The opacity written for a standard viewer is now
+held at 1/254, and the E1 fits below were made again.
+
+### Measured
+
+Emission-absorption alone (albedo 0, a uniform emission of 1, no light): the medium sends L(1 − T) along a ray
+whatever its order, so the raster and the path tracer through the grid the same gaussians give back must agree.
+`athenea_usd_tests "[vdb2splat][raster]"`, a 12-gaussian mixture inside a 32³ box, 160 × 120, the path tracer at
+2048 paths: mean 0.10486 against 0.10544, relMSE 9.1·10⁻⁴ over the frame (held to 5·10⁻³). The 8-bit p99 is 12
+codes, the paths' noise in faint pixels once sRGB-encoded, and is not held.

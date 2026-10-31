@@ -678,7 +678,10 @@ void vsExport(uint3 tid: SV_DispatchThreadID) {
     const float4 q = quaternionOf(axes);
     const float3 position = indexToWorld(r0.xyz);
     const float meanStd = pow(scale.x * scale.y * scale.z, 1.0 / 3.0);
-    const float opacity = 1.0 - exp(-r0.w * params.densityScale * 2.50662827 * meanStd);
+    // Never under 1/255: a loader drops a gaussian fainter than that (the
+    // 3DGS rule), and the export's own decode did, writing a faint one's
+    // shape as zeros beside its sigma -- 61% of a 50k smoke at density 1.
+    const float opacity = max(1.0 - exp(-r0.w * params.densityScale * 2.50662827 * meanStd), 1.0 / 254.0);
     const float3 colour = unpackColour(r2.w);
     const uint o = g * 14;
     exported[o + 0] = position.x; exported[o + 1] = position.y; exported[o + 2] = position.z;
