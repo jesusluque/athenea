@@ -2224,6 +2224,8 @@ R"(    bool firstShaded = false;
         cur.valid = false;
         bool   lightStep = false;     // the next step shades the light point, not the path
         uint   lightStepBounce = 0;   // and the bounce of the vertex that chose it
+)"
+R"(
         Found  lightPoint;
         float3 lightScale = float3(0.0);
         bool   mediumResume = false;   // the light point was a medium collision's, and the path goes on from it
@@ -2517,6 +2519,8 @@ R"(                    }
                     }
                 }
                 if (kBake && bounce == 0 && materialMode) {
+)"
+R"(
                     // The whole material, before the body is kept: the
                     // conversion reads its coat and its metal back as well.
                     bakeMaterialAdd(materialSums, cur.stack, at);

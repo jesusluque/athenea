@@ -46,6 +46,9 @@ if(ATHENEA_HAVE_OPENVDB)
         target_include_directories(athenea_io SYSTEM PRIVATE "${_athenea_boost_dir}")
     endif()
     target_compile_definitions(athenea_io PRIVATE ATHENEA_HAVE_OPENVDB=1)
+    # OpenVDB's trees, instantiated for every grid type the reader lays out,
+    # pass MSVC's limit on an object file's sections.
+    target_compile_options(athenea_io PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/bigobj>")
     # NanoVDB's GridBuilder still names std::result_of, which MSVC's C++20
     # library leaves out unless asked.
     target_compile_definitions(athenea_io PRIVATE
