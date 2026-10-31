@@ -17418,8 +17418,14 @@ The explosion's temperature (density-weighted relative L2) 0.2306 f32, 0.2306 wi
 record costs the fit nothing measurable in halves and 0.8 % of its density error in bytes, at 37 % and 31 % of the
 usdc's bytes; NanoVDB's Fp4 is 4.5 times the bytes of the 20-byte cloud and further from the grid in density
 (0.052 against 0.038 on smoke2), but closer in the path trace (its error is noise at the voxels, the cloud's is
-missing detail); at Fp8 the grid is seven times the cloud and close to exact. Not done: the compact file read
-back on load (the decode exists only as the kernel's own round trip), entropy coding of the words.
+missing detail); at Fp8 the grid is seven times the cloud and close to exact.
+
+Read back: `--from-compact` takes the file, puts its words on the device and decodes them there
+(`vsDequantise`, the decode of `vsQuantise` from the words and the header's ranges alone) into records that are
+then given back, measured and written as a fit's. The four files above give the grids of the fits that wrote
+them to a relative L2 of 1–2·10⁻⁵ (the same density error to five digits: smoke2 0.03777 / 0.03803, the
+explosion 0.03674 / 0.03689, its temperature 0.2306). A dead slot is a record of zero words. Not done: the
+renderer reading the compact file itself (here it is the command's way in), entropy coding of the words.
 
 ### bunny_cloud on the device (1 Nov)
 

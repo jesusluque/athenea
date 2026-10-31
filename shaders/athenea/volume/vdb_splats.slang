@@ -832,3 +832,58 @@ void vsQuantise(uint3 tid: SV_DispatchThreadID) {
     dequantised[g * 4 + 2] = float4(a21, d.z, temperature, asfloat(rgb | (255u << 24)));
     dequantised[g * 4 + 3] = float4(kReach * std, 1.0);
 }
+
+/// The record a compact one decodes to (vsQuantise's own decode, from the
+/// words and the ranges alone): a compact file's records on the device.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vsDequantise(uint3 tid: SV_DispatchThreadID) {
+    const uint g = tid.x;
+    if (g >= params.count) return;
+    const uint words = params.quantMode == 0 ? 6u : 5u;
+    uint w[6];
+    bool any = false;
+    for (uint k = 0; k < 6; ++k) {
+        w[k] = k < words ? compact[g * words + k] : 0u;
+        any = any || w[k] != 0u;
+    }
+    if (!any) {
+        for (uint k = 0; k < 4; ++k) dequantised[g * 4 + k] = float4(0.0);
+        return;
+    }
+    float range[kRangeCount];
+    for (uint k = 0; k < kRangeCount; ++k) range[k] = floatOfOrdered(ranges[k]);
+    const uint q16 = 65535u, q8 = 255u;
+    const uint3 qp = uint3(w[0] & 0xFFFFu, w[0] >> 16, w[1] & 0xFFFFu);
+    const uint qs = w[1] >> 16;
+    float3 dld, doff;
+    uint qt, rgb;
+    if (params.quantMode == 0) {
+        dld = float3(f16tof32(w[2] & 0xFFFFu), f16tof32(w[3] & 0xFFFFu), f16tof32(w[4] & 0xFFFFu));
+        doff = float3(f16tof32(w[2] >> 16), f16tof32(w[3] >> 16), f16tof32(w[4] >> 16));
+        rgb = w[5] & 0x00FFFFFFu;
+        qt = w[5] >> 24;
+    } else {
+        dld = float3(dequantise(w[2] & 255u, range[8], range[9], q8), dequantise((w[2] >> 8) & 255u, range[8], range[9], q8),
+                     dequantise((w[2] >> 16) & 255u, range[8], range[9], q8));
+        doff = float3(dequantise(w[2] >> 24, -2.0, 2.0, q8), dequantise(w[3] & 255u, -2.0, 2.0, q8),
+                      dequantise((w[3] >> 8) & 255u, -2.0, 2.0, q8));
+        qt = (w[3] >> 16) & 255u;
+        rgb = w[4] & 0x00FFFFFFu;
+    }
+    float3 mu;
+    for (uint k = 0; k < 3; ++k) mu[k] = dequantise(qp[k], range[k], range[3 + k], q16);
+    const float sigma = exp(dequantise(qs, range[6], range[7], q16));
+    const float3 d = exp(dld);
+    const float a10 = doff.x * sqrt(d.x * d.y), a20 = doff.y * sqrt(d.x * d.z), a21 = doff.z * sqrt(d.y * d.z);
+    const float temperature = dequantise(qt, range[10], range[11], q8);
+    const float b00 = 1.0 / d.x, b11 = 1.0 / d.y, b22 = 1.0 / d.z;
+    const float b10 = -a10 * b00 / d.y;
+    const float b21 = -a21 * b11 / d.z;
+    const float b20 = -(a20 * b00 + a21 * b10) / d.z;
+    const float3 std = sqrt(float3(b00 * b00 + b10 * b10 + b20 * b20, b11 * b11 + b21 * b21, b22 * b22));
+    dequantised[g * 4 + 0] = float4(mu, sigma);
+    dequantised[g * 4 + 1] = float4(d.x, a10, d.y, a20);
+    dequantised[g * 4 + 2] = float4(a21, d.z, temperature, asfloat(rgb | (255u << 24)));
+    dequantised[g * 4 + 3] = float4(kReach * std, 1.0);
+}
