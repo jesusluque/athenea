@@ -895,9 +895,11 @@ renders as it renders any volume.
 | `--iterations` | integer | `100` | Adam steps on the geometry, after them |
 | `--attribute-iterations` | integer | `20` | Jacobi steps on temperature and Cd, the geometry fixed; none without either grid |
 | `--max-block` | `8`, `16`, `32`, `64`, `128` | `64` | voxels a side of the largest block one gaussian starts from; a third of it is the largest deviation a gaussian may take |
+| `--min-std` | 0.05 to 10 | `0.5` | voxels: the smallest deviation a gaussian may take. Under about one voxel the mixture can match the grid at the voxel centres alone and differ between them, which a warm frame carried by the flow off the lattice shows (see decisions.md, "the smallest deviation") |
 | `--emission-weight` | number ≥ 0 | `1` | what the temperature's spread in a block counts beside the density's error, the temperature scaled to the density's range |
 | `--init-fraction` | 0.01 to 1 | `0.6` | the share of the budget the first cut holds; the rest is born where the residual is largest |
 | `--densify-every` | integer | `20` | iterations between densify-and-prune rounds; none after 70 % of them |
+| `--densify-rounds` | 0 to 64 | `0` | densify-and-prune rounds as a count: round k after k / (n + 3) of the iterations (EM and Adam), so the schedule scales with `--iterations` (4 over the default 140: every 20, as `--densify-every 20`; over 560: every 80); 0 uses `--densify-every`. A sequence's warm frames keep `--warm-densify-every` |
 | `--learning-rate` | number | `0.1` | Adam's step, in log units for the peak and the factor's diagonal and in deviations for the centre; it decays a hundredfold over the Adam steps |
 | `--split-share` | 0 to 1 | `0.5` | the share of a densify round's new slots that split the gaussians answerable for the most residual, each into two along its longest axis; the rest are born at the worst voxels |
 | `--no-bins` | flag | off | the forward pass over every gaussian for every leaf, culled by its box, instead of each leaf's list, and the gradient a group a gaussian: the fit as it was before binning, for a timing |
@@ -925,6 +927,7 @@ renders as it renders any volume.
 | `--warm-em` | integer | `0` | EM steps of a warm frame (EM after Adam's steps moves gaussians far: off by default) |
 | `--warm-iterations` | integer | `30` | Adam steps of a warm frame |
 | `--warm-learning-rate` | number | `0.03` | Adam's step on a warm frame |
+| `--warm-densify-every` | integer | `20` | steps between a warm frame's densify-and-prune rounds (none after 70 % of them; 30 steps: one round): a full fit's schedule does not reach a warm frame |
 | `--no-advect` | flag | off | a warm frame starts where the frame before left its gaussians |
 | `--dt` | number | `1` | frames the flow carries the gaussians over, frame to frame |
 | `--cloud` | path with a run of `#` | none | a sequence: each frame's gaussians, every slot (a dead one a speck of ln σ −30 at the origin, so the slots keep their places), as a 3DGS PLY: position, deviations and rotation in the world, the albedo as the base colour, ln σ in `f_rest_0` and the temperature in `f_rest_1` (the first two rest coefficients of red), opacity as `-o` writes it for a viewer. What `video-encode --each-a-frame` takes |
@@ -2892,7 +2895,7 @@ entries.
 |---|---|---|---|
 | `leaves` | integer | `0` | how many leaves `Grid` holds; the host sets it, and 0 is refused |
 | `target` | integer | `20000` | the budget, bounded by the output's room |
-| `emIterations`, `iterations`, `attributeIterations`, `maxBlock`, `emissionWeight`, `initFraction`, `densifyEvery`, `learningRate` | | as §2.8.3 | the options of the same names |
+| `emIterations`, `iterations`, `attributeIterations`, `maxBlock`, `emissionWeight`, `initFraction`, `densifyEvery`, `densifyRounds`, `learningRate` | | as §2.8.3 | the options of the same names |
 | `minStd` | number, voxels | `0.5` | the smallest deviation a gaussian may take; below about half a voxel a gaussian sampled at the voxel centres no longer holds the mass its integral says, which the EM steps assume |
 | `pruneMass` | number | `1e-6` | a gaussian whose mass is under this share of the total goes |
 | `hasTemperature`, `hasColour` | boolean | `0` | whether `Grid` carries them (the host sets them) |

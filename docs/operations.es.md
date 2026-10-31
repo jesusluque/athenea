@@ -921,9 +921,11 @@ tracer dibuja como dibuja cualquier volumen.
 | `--iterations` | entero | `100` | pasos de Adam sobre la geometría, después de ellos |
 | `--attribute-iterations` | entero | `20` | pasos de Jacobi sobre temperatura y Cd, con la geometría fija; ninguno sin una de las dos grids |
 | `--max-block` | `8`, `16`, `32`, `64`, `128` | `64` | vóxeles de lado del bloque mayor del que arranca una gaussiana; un tercio de él es la desviación mayor que puede tomar una gaussiana |
+| `--min-std` | 0.05 a 10 | `0.5` | vóxeles: la desviación menor que puede tomar una gaussiana. Por debajo de un vóxel, más o menos, la mezcla puede coincidir con la rejilla solo en los centros de los vóxeles y diferir entre ellos, lo que muestra un frame en caliente llevado por el flujo fuera de la red (véase decisions.md, «la desviación menor») |
 | `--emission-weight` | número ≥ 0 | `1` | lo que cuenta la dispersión de la temperatura en un bloque junto al error de la densidad, con la temperatura escalada al rango de la densidad |
 | `--init-fraction` | de 0,01 a 1 | `0.6` | la parte del presupuesto que tiene el primer corte; el resto nace donde el residuo es mayor |
 | `--densify-every` | entero | `20` | iteraciones entre rondas de densificar y podar; ninguna después del 70 % de ellas |
+| `--densify-rounds` | 0 a 64 | `0` | las rondas de densificar y podar como un número: la ronda k tras k / (n + 3) de las iteraciones (EM y Adam), así que el calendario escala con `--iterations` (4 sobre las 140 por defecto: cada 20, como `--densify-every 20`; sobre 560: cada 80); 0 usa `--densify-every`. Los frames en caliente de una secuencia siguen con `--warm-densify-every` |
 | `--learning-rate` | número | `0.1` | el paso de Adam, en unidades de log para el pico y la diagonal del factor y en desviaciones para el centro; decae cien veces a lo largo de los pasos de Adam |
 | `--split-share` | de 0 a 1 | `0.5` | la parte de los huecos nuevos de una ronda de densificación que parte las gaussianas responsables de más residuo, cada una en dos a lo largo de su eje más largo; el resto nace en los peores vóxeles |
 | `--no-bins` | flag | apagado | la pasada hacia delante sobre todas las gaussianas para cada hoja, descartadas por su caja, en vez de la lista de cada hoja, y el gradiente un grupo por gaussiana: el ajuste como era antes del binning, para medir tiempos |
@@ -951,6 +953,7 @@ tracer dibuja como dibuja cualquier volumen.
 | `--warm-em` | entero | `0` | pasos de EM de un frame en caliente (EM después de los pasos de Adam mueve mucho las gaussianas: apagado por defecto) |
 | `--warm-iterations` | entero | `30` | pasos de Adam de un frame en caliente |
 | `--warm-learning-rate` | número | `0.03` | el paso de Adam en un frame en caliente |
+| `--warm-densify-every` | entero | `20` | pasos entre las rondas de densificar y podar de un frame en caliente (ninguna después del 70 % de ellos; 30 pasos: una ronda): el calendario de un ajuste completo no llega a un frame en caliente |
 | `--no-advect` | flag | apagado | un frame en caliente arranca donde el anterior dejó sus gaussianas |
 | `--dt` | número | `1` | frames sobre los que el flujo lleva las gaussianas, de un frame al siguiente |
 | `--cloud` | ruta con una tira de `#` | ninguna | una secuencia: las gaussianas de cada frame, todos los huecos (uno muerto es una mota de ln σ −30 en el origen, para que los huecos conserven su sitio), como PLY de 3DGS: posición, desviaciones y rotación en el mundo, el albedo como color base, ln σ en `f_rest_0` y la temperatura en `f_rest_1` (los dos primeros coeficientes de resto del rojo), la opacidad como la escribe `-o` para un visor. Lo que toma `video-encode --each-a-frame` |
@@ -2985,7 +2988,7 @@ del presupuesto, un cuarto de sus entradas.
 |---|---|---|---|
 | `leaves` | entero | `0` | cuántas hojas tiene `Grid`; lo pone el host, y 0 se rechaza |
 | `target` | entero | `20000` | el presupuesto, acotado por el hueco de la salida |
-| `emIterations`, `iterations`, `attributeIterations`, `maxBlock`, `emissionWeight`, `initFraction`, `densifyEvery`, `learningRate` | | como en §2.8.3 | las opciones del mismo nombre |
+| `emIterations`, `iterations`, `attributeIterations`, `maxBlock`, `emissionWeight`, `initFraction`, `densifyEvery`, `densifyRounds`, `learningRate` | | como en §2.8.3 | las opciones del mismo nombre |
 | `minStd` | número, vóxeles | `0.5` | la desviación menor que puede tomar una gaussiana; por debajo de medio vóxel, más o menos, una gaussiana muestreada en los centros de los vóxeles ya no tiene la masa que dice su integral, que es lo que suponen los pasos de EM |
 | `pruneMass` | número | `1e-6` | se va una gaussiana cuya masa es menor que esta parte del total |
 | `hasTemperature`, `hasColour` | booleano | `0` | si `Grid` las lleva (las pone el host) |

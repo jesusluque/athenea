@@ -169,8 +169,11 @@ public:
                T::Double, 1.0, 0.0, 1e6);
         number("initFraction", "Initial share", "The share of the budget the cut starts with; the rest is born "
                "where the residual is largest.", T::Double, 0.6, 0.01, 1.0);
-        number("densifyEvery", "Densify every", "Iterations between densify-and-prune rounds (none after 70%).",
-               T::Integer, 20, 1, 100000);
+        number("densifyEvery", "Densify every", "Iterations between densify-and-prune rounds (none after 70%); "
+               "with Densify rounds above 0, unused.", T::Integer, 20, 1, 100000);
+        number("densifyRounds", "Densify rounds", "Densify-and-prune rounds as a count: round k after k / (n + 3) "
+               "of the iterations, so 4 rounds over 140 iterations fall every 20 and over 560 every 80. 0: by "
+               "Densify every.", T::Integer, 0, 0, 64);
         number("learningRate", "Learning rate", "Adam's step: log units for sigma and the factor's diagonal, "
                "deviations for the centre. Decays a hundredfold over the Adam steps.", T::Double, 0.1, 0.0, 1.0);
         number("minStd", "Smallest deviation", "In voxels: below about half a voxel a gaussian sampled at the voxel centres no longer holds the mass its integral says, which the EM steps assume.", T::Double, 0.5, 0.05, 10.0);
@@ -415,6 +418,8 @@ private:
             const uint32_t attributeSteps =
                 static_cast<uint32_t>(std::max(request.number("attributeIterations", 20.0), 0.0));
             const uint32_t densifyEvery = static_cast<uint32_t>(std::max(request.number("densifyEvery", 20.0), 1.0));
+            const uint32_t densifyRounds =
+                static_cast<uint32_t>(std::clamp(request.number("densifyRounds", 0.0), 0.0, 64.0));
             const double initFraction = std::clamp(request.number("initFraction", 0.6), 0.01, 1.0);
             const float learningRate = static_cast<float>(std::clamp(request.number("learningRate", 0.1), 0.0, 1.0));
             const double splitShare = std::clamp(request.number("splitShare", 0.5), 0.0, 1.0);
@@ -574,9 +579,20 @@ private:
 
             // 4, 5: refinement, densify and prune.
             const uint32_t lastDensify = static_cast<uint32_t>(iterations * 7 / 10);
+            // A ROUND AFTER iteration `it`: every densifyEvery, or with a
+            // count, round k after floor(k x iterations / (n + 3)) -- the
+            // schedule scales with the budget (none after 70 % either way).
+            const auto densifyAfter = [&](uint32_t it) {
+                if (densifyRounds == 0) return (it + 1) % densifyEvery == 0;
+                const uint64_t span = densifyRounds + 3;
+                for (uint64_t k = 1; k <= densifyRounds; ++k) {
+                    if ((k * iterations) / span == uint64_t{it} + 1) return true;
+                }
+                return false;
+            };
             uint32_t roundsLeft = 0;
             for (uint32_t it = 0; it < lastDensify; ++it) {
-                if ((it + 1) % densifyEvery == 0) ++roundsLeft;
+                if (densifyAfter(it)) ++roundsLeft;
             }
             float stats[4] = {};
             for (uint32_t it = 0; it < iterations; ++it) {
@@ -600,7 +616,7 @@ private:
                     u.checkerboard = 0;
                     if (!stepped) return false;
                 }
-                if ((it + 1) % densifyEvery != 0 || it >= lastDensify) continue;
+                if (!densifyAfter(it) || it >= lastDensify) continue;
                 if (!lossPass(leafThreads, stats)) return false;
                 if (!dispatch("v2sPrune", u.capacity)) return false;
                 uint32_t free = 0;

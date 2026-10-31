@@ -68,9 +68,11 @@ struct Options {
     double                   splitShare = 0.5;
     uint32_t                 attributeIterations = 20;
     uint32_t                 maxBlock = 64;
+    double                   minStd = 0.5;      // voxels: the smallest deviation a gaussian may take
     double                   emissionWeight = 1.0;
     double                   initFraction = 0.6;
     uint32_t                 densifyEvery = 20;
+    uint32_t                 densifyRounds = 0;   // > 0: rounds as a count over the budget, densifyEvery unused
     double                   learningRate = 0.1;
     double                   densityScale = 1.0;
     bool                     measure = false;
@@ -93,6 +95,7 @@ struct Options {
     bool                     independent = false;
     uint32_t                 warmEm = 0;
     uint32_t                 warmIterations = 30;
+    uint32_t                 warmDensifyEvery = 20;
     double                   dt = 1.0;
     bool                     noAdvect = false;
     double                   warmLearningRate = 0.03;
@@ -413,9 +416,11 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
         number(job, "splitShare", o.splitShare);
         number(job, "attributeIterations", o.attributeIterations);
         number(job, "maxBlock", o.maxBlock);
+        number(job, "minStd", o.minStd);
         number(job, "emissionWeight", o.emissionWeight);
         number(job, "initFraction", o.initFraction);
         number(job, "densifyEvery", o.densifyEvery);
+        number(job, "densifyRounds", o.densifyRounds);
         number(job, "learningRate", o.learningRate);
         number(job, "hasTemperature", temperature ? 1.0 : 0.0);
         number(job, "hasColour", colour ? 1.0 : 0.0);
@@ -654,8 +659,12 @@ Result<void> runSequence(gpu_host::Context& context, gpu::ShaderLibrary& library
             number(job, "iterations", warm ? o.warmIterations : o.iterations);
             number(job, "emIterations", warm ? o.warmEm : o.emIterations);
             number(job, "maxBlock", o.maxBlock);
+            number(job, "minStd", o.minStd);
             number(job, "initFraction", o.initFraction);
-            number(job, "densifyEvery", o.densifyEvery);
+            // A warm frame's few steps keep a period of their own: a full fit's
+            // schedule (a count, or a long period) would leave them no round.
+            number(job, "densifyEvery", warm ? o.warmDensifyEvery : o.densifyEvery);
+            number(job, "densifyRounds", warm ? 0 : o.densifyRounds);
             number(job, "learningRate", warm ? o.warmLearningRate : o.learningRate);
             number(job, "splitShare", o.splitShare);
             number(job, "keepSlots", 1.0);
@@ -803,7 +812,12 @@ void addVdb2Splat(CLI::App& app) {
     cmd->add_option("--emission-weight", o->emissionWeight, "the temperature's spread beside the density's error");
     cmd->add_option("--init-fraction", o->initFraction, "the share of the budget the cut starts with")
         ->check(CLI::Range(0.01, 1.0));
+    cmd->add_option("--min-std", o->minStd, "the smallest deviation a gaussian may take, in voxels")
+        ->check(CLI::Range(0.05, 10.0));
     cmd->add_option("--densify-every", o->densifyEvery, "iterations between densify-and-prune rounds");
+    cmd->add_option("--densify-rounds", o->densifyRounds,
+                    "densify-and-prune rounds as a count, round k after k / (n + 3) of the steps (0: --densify-every)")
+        ->check(CLI::Range(0u, 64u));
     cmd->add_option("--learning-rate", o->learningRate, "Adam's step");
     cmd->add_option("--density-scale", o->densityScale, "density to extinction a world unit, for --measure's rays "
                                                          "and the exported opacity");
@@ -828,6 +842,9 @@ void addVdb2Splat(CLI::App& app) {
     cmd->add_option("--warm-iterations", o->warmIterations, "a sequence: Adam steps of a warm frame");
     cmd->add_flag("--no-advect", o->noAdvect, "a sequence: warm frames start where the frame before left them");
     cmd->add_option("--warm-learning-rate", o->warmLearningRate, "a sequence: Adam's step on a warm frame");
+    cmd->add_option("--warm-densify-every", o->warmDensifyEvery,
+                    "a sequence: steps between a warm frame's densify-and-prune rounds")
+        ->check(CLI::Range(1u, 100000u));
     cmd->add_option("--dt", o->dt, "a sequence: frames the flow carries the gaussians over, frame to frame");
     cmd->callback([o] {
         const auto fail = [](const Error& error) {
