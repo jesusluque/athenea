@@ -3250,6 +3250,27 @@ paths agree to relMSE 5.2e-6 through the flat table and 5.0e-6 through the
 tree, and at 32 paths the panel's frames read 9.3e-4 and 8.9e-4 against the
 rect light's 8.6e-4 -- as noisy as the light is.
 
+### The grid cache, held to a budget
+
+The engine read each grid once per file and name and kept it for good, so
+an animated `filePath` -- a file a frame -- grew the host's memory by a
+grid every frame it showed. The cache (`nanoGrids_`) is now least recently
+used under a byte budget, `athenea:volumeCacheMB` (default 2048 MB, about
+a dozen frames of a mid-sized explosion at 150 MB a frame): after each
+layout of the frame's volumes, while the bytes held pass the budget, the
+grid drawn longest ago that this frame does not draw leaves. A frame's own
+grids are never evicted, so a budget of 0 keeps exactly those. On the
+device there was never more than the frame's: `VolumeSet` copies the
+frame's grids into its one buffer of words, which each layout replaces, so
+an evicted grid's device copy went with the layout that stopped drawing it.
+What the cache holds, reads and evicts, and the words' size on the device,
+are counted (`StageRenderer::volumeCacheCounts`).
+
+**Checked** (`[usd][volume][cache]`): eight frames of a sequence, a 1.34 MB
+grid each, under a 3 MB budget: two grids held from the second frame on
+(2.68 MB), eight read, six evicted, the device at one grid throughout; and
+frame 1 drawn again reads its grid again and draws the same frame, p99 0.
+
 ### Not done
 
 - The raster technique draws no volume, and the engine says so once.

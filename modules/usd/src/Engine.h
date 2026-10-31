@@ -550,6 +550,19 @@ public:
     /// Volumes and the field assets they read. The medium is path traced;
     /// the raster technique draws no volume, and says so once.
     void setVolume(const pxr::SdfPath& id, VolumeArrays arrays);
+    /// The grid cache's budget, in bytes (athenea:volumeCacheMB).
+    void setVolumeCacheBytes(uint64_t bytes) noexcept { volumeCacheBytes_.store(bytes); }
+    static constexpr uint64_t kDefaultVolumeCacheBytes = uint64_t{2048} << 20;
+    /// What the grid cache holds and has done, and what the frame's volumes
+    /// hold on the device.
+    struct VolumeCacheCounts {
+        uint64_t bytes = 0;
+        uint64_t grids = 0;
+        uint64_t reads = 0;
+        uint64_t evictions = 0;
+        uint64_t deviceBytes = 0;
+    };
+    [[nodiscard]] VolumeCacheCounts volumeCacheCounts() const;
     void removeVolume(const pxr::SdfPath& id);
     void setVolumeField(const pxr::SdfPath& id, VolumeFieldAsset asset);
     void removeVolumeField(const pxr::SdfPath& id);
@@ -804,9 +817,21 @@ private:
     uint64_t                                  lightRadiusRevision_ = ~uint64_t{0};
     std::map<pxr::SdfPath, VolumeArrays>      volumes_;
     std::map<pxr::SdfPath, VolumeFieldAsset>  volumeFields_;
-    /// Grids read, by file and grid name; null for one that failed to read
-    /// (reported once).
-    std::map<std::pair<std::string, std::string>, std::shared_ptr<const io::NanoGrid>> nanoGrids_;
+    /// THE GRID CACHE: grids read, by file and grid name, least recently
+    /// used first out once the bytes they hold pass `volumeCacheBytes_`
+    /// (athenea:volumeCacheMB); a grid the frame draws is never evicted. Null
+    /// for one that failed to read (reported once, and costing nothing).
+    struct CachedGrid {
+        std::shared_ptr<const io::NanoGrid> grid;
+        uint64_t                            bytes = 0;
+        uint64_t                            lastUse = 0;   ///< the volume layout that last drew it
+    };
+    std::map<std::pair<std::string, std::string>, CachedGrid> nanoGrids_;
+    uint64_t                                  gridUse_ = 0;         ///< volume layouts so far
+    uint64_t                                  gridBytes_ = 0;       ///< what the cache's grids hold
+    uint64_t                                  gridReads_ = 0;
+    uint64_t                                  gridEvictions_ = 0;
+    std::atomic<uint64_t>                     volumeCacheBytes_{kDefaultVolumeCacheBytes};
     std::optional<world::VolumeSet>           volumeSet_;
     uint64_t                                  volumesVersion_ = 1;   ///< raised by any volume or field change
     uint64_t                                  volumesBuilt_ = 0;     ///< the version volumeSet_ holds

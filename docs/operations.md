@@ -1588,6 +1588,7 @@ found and does not.
 | `athenea:cloudShadowResolution` | int | `1024` | texels a side, per light |
 | `athenea:cloudShadowTerms` | int | `0` | 1 is the total; 3, 5, 7 add Fourier pairs; 0 lets what receives decide |
 | `athenea:cloudShadowDensity` | float | `1.0` | multiplier on the cloud's optical depth |
+| `athenea:volumeCacheMB` | int or float, MB | `2048` | rt: the volume grids kept read on the host, least recently drawn out first; the grids the frame draws are kept whatever it says, and 0 keeps those alone (§4.3, *Volumes*) |
 
 Read but not declared:
 
@@ -1887,6 +1888,14 @@ bound to say it.
 
 A Material with a `volume` terminal is the standard way to say the same
 thing, and where one is bound it wins.
+
+**Volumes** are path traced (`rt`); the raster draws none. Each grid a
+field names is read once per file and grid name and kept read on the host,
+in a cache of `athenea:volumeCacheMB` (default 2048 MB): past it, the grids
+the frame does not draw leave, least recently drawn first, and one drawn
+again is read again. A `filePath` sampled in time, a file a frame, holds
+what the budget allows rather than every frame shown. The device holds the
+frame's grids alone.
 
 **Light groups**, which no schema declares yet. A cloud's lamps are a primvar
 a group on its field, and its groups and states are attributes on Scope prims

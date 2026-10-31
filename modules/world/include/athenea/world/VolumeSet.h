@@ -58,6 +58,8 @@ public:
 
     [[nodiscard]] uint32_t count() const noexcept { return static_cast<uint32_t>(placements_.size()); }
     [[nodiscard]] const VolumeGridPlacement& placement(uint32_t i) const noexcept { return placements_[i]; }
+    /// The words' size on the device: what the frame's volumes hold there.
+    [[nodiscard]] uint64_t deviceBytes() const noexcept { return words_.valid() ? words_.bytes() : 0; }
     /// The one buffer: medium.slang's layout.
     [[nodiscard]] const gpu::Buffer& words() const noexcept { return words_; }
     /// Six ints a grid: min xyz, max xyz (exclusive), in index space.

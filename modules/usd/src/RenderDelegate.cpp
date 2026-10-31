@@ -407,6 +407,10 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     antialias.name = "Antialias a gathered frame (a sub-pixel offset a pass)";
     antialias.key = TfToken("athenea:antialias");
     antialias.defaultValue = VtValue(true);
+    HdRenderSettingDescriptor volumeCache;
+    volumeCache.name = "Volume grids kept read, in MB (rt; the frame's are always kept)";
+    volumeCache.key = TfToken("athenea:volumeCacheMB");
+    volumeCache.defaultValue = VtValue(2048);
     HdRenderSettingDescriptor cloudDensity;
     cloudDensity.name = "Cloud shadow density (1 is what the cloud's opacity says)";
     cloudDensity.key = TfToken("athenea:cloudShadowDensity");
@@ -414,7 +418,17 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
             total,     denoise,     adaptive,    error,       mis,        glassShadows, motion,     transferIndirect, displayBlend, reflectCloud, splatShadows,
             cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, domePrefiltered, domeVisible, splatView,
-            screenSpaceReflections, meshAntialias, meshLights, meshLightSamples};
+            screenSpaceReflections, meshAntialias, meshLights, meshLightSamples, volumeCache};
+}
+
+uint64_t HdAtheneaRenderDelegate::GetVolumeCacheBytes() const {
+    const VtValue value = GetRenderSetting(TfToken("athenea:volumeCacheMB"));
+    double mb = 2048.0;
+    if (value.IsHolding<int>()) mb = value.UncheckedGet<int>();
+    else if (value.IsHolding<float>()) mb = value.UncheckedGet<float>();
+    else if (value.IsHolding<double>()) mb = value.UncheckedGet<double>();
+    else if (value.IsHolding<int64_t>()) mb = double(value.UncheckedGet<int64_t>());
+    return static_cast<uint64_t>(std::max(mb, 0.0) * 1048576.0);
 }
 
 athenea::usd::MeshVisibility HdAtheneaRenderDelegate::GetMeshVisibility() const {

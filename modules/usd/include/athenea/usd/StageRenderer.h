@@ -575,6 +575,19 @@ public:
         uint32_t clusters = 0;
     };
     [[nodiscard]] MeshLightCounts meshLightCounts() const;
+    /// The volume grid cache's budget (athenea:volumeCacheMB, in MB).
+    void setVolumeCacheMB(double megabytes);
+    /// What the volume grid cache holds -- its grids and their bytes on the
+    /// host -- what it has read and evicted so far, and the bytes the
+    /// frame's volumes hold on the device. Counts kept, nothing measured.
+    struct VolumeCacheCounts {
+        uint64_t bytes = 0;
+        uint64_t grids = 0;
+        uint64_t reads = 0;
+        uint64_t evictions = 0;
+        uint64_t deviceBytes = 0;
+    };
+    [[nodiscard]] VolumeCacheCounts volumeCacheCounts() const;
 
     /// WHAT THE LAST FRAME HELD: splats handed over, splats a tile kept, the
     /// pairs the blend walked, the scene's instances and the frame's lights.

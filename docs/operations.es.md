@@ -1633,6 +1633,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:cloudShadowResolution` | int | `1024` | texels por lado, por luz |
 | `athenea:cloudShadowTerms` | int | `0` | 1 es solo el total; 3, 5, 7 añaden pares de Fourier; 0 deja decidir a quien recibe |
 | `athenea:cloudShadowDensity` | float | `1.0` | multiplicador de la profundidad óptica de la nube |
+| `athenea:volumeCacheMB` | int o float, MB | `2048` | rt: las rejillas de volumen que se guardan leídas en el host; sale primero la dibujada hace más tiempo. Las rejillas que dibuja el frame se guardan diga lo que diga, y 0 guarda solo esas (§4.3, *Volúmenes*) |
 
 Leídos pero no declarados:
 
@@ -1945,6 +1946,15 @@ Material que lo diga.
 
 Un Material con un terminal `volume` es la manera estándar de decir lo mismo,
 y donde hay uno atado, gana.
+
+**Volúmenes**: se trazan con path tracing (`rt`); el raster no dibuja ninguno.
+Cada rejilla que nombra un field se lee una vez por fichero y nombre de
+rejilla y se guarda leída en el host, en una caché de `athenea:volumeCacheMB`
+(2048 MB por defecto): pasado ese tamaño, las rejillas que el frame no dibuja
+salen, primero la dibujada hace más tiempo, y una que se vuelve a dibujar se
+vuelve a leer. Un `filePath` muestreado en el tiempo, un fichero por frame,
+guarda lo que permite el presupuesto y no todos los frames mostrados. El
+dispositivo guarda solo las rejillas del frame.
 
 **Grupos de luces**, que todavía no declara ningún schema. Las lámparas de una
 nube son un primvar por grupo en su field, y sus grupos y estados son

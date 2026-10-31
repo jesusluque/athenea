@@ -1087,6 +1087,20 @@ StageRenderer::MeshLightCounts StageRenderer::meshLightCounts() const {
     return counts;
 }
 
+void StageRenderer::setVolumeCacheMB(double megabytes) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:volumeCacheMB"), VtValue(megabytes));
+}
+
+StageRenderer::VolumeCacheCounts StageRenderer::volumeCacheCounts() const {
+    auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
+    Engine* engine = param != nullptr ? param->GetEngine() : nullptr;
+    if (engine == nullptr) {
+        return {};
+    }
+    const Engine::VolumeCacheCounts c = engine->volumeCacheCounts();
+    return {c.bytes, c.grids, c.reads, c.evictions, c.deviceBytes};
+}
+
 std::map<std::string, uint32_t> StageRenderer::cryptoManifest() const {
     auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
     Engine* engine = param != nullptr ? param->GetEngine() : nullptr;

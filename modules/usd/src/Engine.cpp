@@ -850,6 +850,19 @@ void Engine::setVolume(const pxr::SdfPath& id, VolumeArrays arrays) {
     ++volumesVersion_;
 }
 
+Engine::VolumeCacheCounts Engine::volumeCacheCounts() const {
+    const std::lock_guard<std::mutex> held(guard_);
+    VolumeCacheCounts counts;
+    counts.bytes = gridBytes_;
+    for (const auto& [key, cached] : nanoGrids_) {
+        counts.grids += cached.grid != nullptr ? 1 : 0;
+    }
+    counts.reads = gridReads_;
+    counts.evictions = gridEvictions_;
+    counts.deviceBytes = volumeSet_.has_value() ? volumeSet_->deviceBytes() : 0;
+    return counts;
+}
+
 void Engine::removeVolume(const pxr::SdfPath& id) {
     revision_.fetch_add(1);
     const std::lock_guard<std::mutex> held(guard_);
@@ -3271,7 +3284,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             frame.groups = {&lightGroupColour_, lightGroupCount_};
         }
         // The frame's volumes, laid out again whenever a volume or a field
-        // changed: each grid read once per file and name.
+        // changed: each grid read once per file and name, and kept in the
+        // grid cache while its budget allows (nanoGrids_).
         if (pathTracing) {
             std::vector<world::VolumeInput> inputs;
             std::vector<std::shared_ptr<const io::NanoGrid>> holding;
@@ -3281,6 +3295,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                 rebuild = volumesVersion_ != volumesBuilt_;
                 if (rebuild) {
                     volumesBuilt_ = volumesVersion_;
+                    ++gridUse_;
                     for (const auto& [id, volume] : volumes_) {
                         if (!volume.visible || volume.field.IsEmpty()) {
                             continue;
@@ -3293,19 +3308,24 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                         auto cached = nanoGrids_.find(key);
                         if (cached == nanoGrids_.end()) {
                             auto read = io::readVdbGrid(field->second.path, field->second.gridName);
+                            ++gridReads_;
                             if (!read) {
                                 log::warn("hdAthenea: volume {}: {}", id.GetString(), read.error().toString());
                             }
-                            cached = nanoGrids_
-                                         .emplace(key, read ? std::make_shared<const io::NanoGrid>(std::move(*read))
-                                                            : std::shared_ptr<const io::NanoGrid>())
-                                         .first;
+                            CachedGrid entry;
+                            if (read) {
+                                entry.bytes = read->words.size() * sizeof(uint32_t);
+                                entry.grid = std::make_shared<const io::NanoGrid>(std::move(*read));
+                            }
+                            gridBytes_ += entry.bytes;
+                            cached = nanoGrids_.emplace(key, std::move(entry)).first;
                         }
-                        if (cached->second == nullptr) {
+                        cached->second.lastUse = gridUse_;
+                        if (cached->second.grid == nullptr) {
                             continue;
                         }
                         world::VolumeInput input;
-                        input.grid = cached->second.get();
+                        input.grid = cached->second.grid.get();
                         input.objectToWorld = volume.objectToWorld;
                         input.densityScale = volume.densityScale;
                         input.albedo = volume.albedo;
@@ -3336,7 +3356,30 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                             }
                         }
                         inputs.push_back(input);
-                        holding.push_back(cached->second);
+                        holding.push_back(cached->second.grid);
+                    }
+                    // Over the budget, the grids this layout does not draw
+                    // leave, least recently drawn first: an animated
+                    // sequence holds what the budget allows, not every
+                    // frame it has shown. Only the host's copy is held
+                    // here; the device holds the frame's grids alone, in
+                    // the volume set's words, which the layout below
+                    // replaces.
+                    const uint64_t budget = volumeCacheBytes_.load();
+                    while (gridBytes_ > budget) {
+                        auto oldest = nanoGrids_.end();
+                        for (auto it = nanoGrids_.begin(); it != nanoGrids_.end(); ++it) {
+                            if (it->second.lastUse != gridUse_ && it->second.grid != nullptr &&
+                                (oldest == nanoGrids_.end() || it->second.lastUse < oldest->second.lastUse)) {
+                                oldest = it;
+                            }
+                        }
+                        if (oldest == nanoGrids_.end()) {
+                            break;   // what is left, the frame draws
+                        }
+                        gridBytes_ -= oldest->second.bytes;
+                        ++gridEvictions_;
+                        nanoGrids_.erase(oldest);
                     }
                 }
             }
