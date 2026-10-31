@@ -1895,7 +1895,8 @@ in a cache of `athenea:volumeCacheMB` (default 2048 MB): past it, the grids
 the frame does not draw leave, least recently drawn first, and one drawn
 again is read again. A `filePath` sampled in time, a file a frame, holds
 what the budget allows rather than every frame shown. The device holds the
-frame's grids alone.
+frame's grids alone. A Volume under a `PointInstancer` or a native instance
+is drawn at every instance, each reading the same grid, laid out once.
 
 **Light groups**, which no schema declares yet. A cloud's lamps are a primvar
 a group on its field, and its groups and states are attributes on Scope prims

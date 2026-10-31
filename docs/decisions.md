@@ -3271,6 +3271,27 @@ grid each, under a 3 MB budget: two grids held from the second frame on
 (2.68 MB), eight read, six evicted, the device at one grid throughout; and
 frame 1 drawn again reads its grid again and draws the same frame, p99 0.
 
+### Instanced volumes
+
+A Volume under an instancer was drawn once, at its prototype's transform:
+the instancer chain was read for visibility alone. `HdAtheneaVolume` now
+reads the chain as a mesh does (innermost first, the elements each level
+takes), the engine composes it on the device with `world::Instancing` --
+recomposed when an instancer's version moves -- and `VolumeSet` lays out
+**one record an instance**: the host writes each the prototype's world to
+index (`inverse(objectToWorld * indexToObject)`, as before), and
+`volumeInstances` composes the instance's inverse under it on the device,
+`worldToIndex_k = prototype * inverse(chain_k)`. Grids are laid out once
+however many records read them -- by pointer, so two Volumes naming one file
+and grid share it too -- and the bounds and leaf-maximum kernels run once a
+grid; the finish kernel writes the grid's bounds and majorant into each of
+its records. A collision walks every record, so a thousand instances cost a
+thousand walks a ray; no structure over the instances yet.
+
+**Checked** (`[usd][volume][instancing]`): two absorbing boxes as a
+PointInstancer's instances against the same two authored as Volumes where
+it puts them, over a sun-lit plane: the same frame, p99 0 and max 0, and 17888 of the 19481 pixels more than 2 off the frame without them.
+
 ### Not done
 
 - The raster technique draws no volume, and the engine says so once.

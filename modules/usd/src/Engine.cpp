@@ -867,6 +867,7 @@ void Engine::removeVolume(const pxr::SdfPath& id) {
     revision_.fetch_add(1);
     const std::lock_guard<std::mutex> held(guard_);
     volumes_.erase(id);
+    volumeChains_.erase(id);
     ++volumesVersion_;
 }
 
@@ -3289,10 +3290,36 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         if (pathTracing) {
             std::vector<world::VolumeInput> inputs;
             std::vector<std::shared_ptr<const io::NanoGrid>> holding;
+            // The instance rows the inputs point at, held past the lock.
+            std::vector<gpu::Buffer> holdingRows;
             bool rebuild = false;
             {
                 const std::lock_guard<std::mutex> held(guard_);
-                rebuild = volumesVersion_ != volumesBuilt_;
+                // An instanced volume is laid out again when an instancer in
+                // its chain changed, as an instanced mesh's chain is composed
+                // again.
+                const auto chainVersions = [&](const VolumeArrays& volume, bool& complete) {
+                    std::vector<uint64_t> versions;
+                    complete = true;
+                    for (const InstancerLink& link : volume.instancing) {
+                        const auto found = instancers_.find(link.instancer);
+                        complete = complete && found != instancers_.end();
+                        versions.push_back(found != instancers_.end() ? found->second.version : 0);
+                    }
+                    return versions;
+                };
+                bool chainsMoved = false;
+                for (const auto& [id, volume] : volumes_) {
+                    if (!volume.instancing.empty()) {
+                        bool complete = false;
+                        const std::vector<uint64_t> versions = chainVersions(volume, complete);
+                        const auto found = volumeChains_.find(id);
+                        chainsMoved = chainsMoved ||
+                                      (complete && (found == volumeChains_.end() || found->second.versions != versions));
+                    }
+                }
+                rebuild = volumesVersion_ != volumesBuilt_ || chainsMoved;
+                holdingRows.reserve(volumes_.size());
                 if (rebuild) {
                     volumesBuilt_ = volumesVersion_;
                     ++gridUse_;
@@ -3327,6 +3354,39 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                         world::VolumeInput input;
                         input.grid = cached->second.grid.get();
                         input.objectToWorld = volume.objectToWorld;
+                        // INSTANCED: one record an instance, each the chain's
+                        // transform before the prototype's, composed on the
+                        // device (world::Instancing) and then into each
+                        // record's world to index by VolumeSet's kernel. The
+                        // grid is laid out once.
+                        if (!volume.instancing.empty()) {
+                            bool complete = false;
+                            std::vector<uint64_t> versions = chainVersions(volume, complete);
+                            if (!complete) {
+                                continue;   // an instancer has not arrived
+                            }
+                            VolumeChain& vc = volumeChains_[id];
+                            if (vc.versions != versions || !vc.chain.rows.valid()) {
+                                if (!instancing_.has_value()) {
+                                    auto made = world::Instancing::create(*library_);
+                                    if (!made) return std::move(made).error();
+                                    instancing_.emplace(std::move(*made));
+                                }
+                                world::InstanceChain start;
+                                world::InstanceChain end;
+                                double timeStart = 0.0;
+                                double timeEnd = 0.0;
+                                ATHENEA_TRY(composeChains(*instancing_, instancers_, volume.instancing, vc.chain, start,
+                                                          end, timeStart, timeEnd));
+                                vc.versions = std::move(versions);
+                            }
+                            if (vc.chain.count == 0 || !vc.chain.rows.valid()) {
+                                continue;
+                            }
+                            holdingRows.push_back(vc.chain.rows);
+                            input.instanceRows = &holdingRows.back();
+                            input.instanceCount = vc.chain.count;
+                        }
                         input.densityScale = volume.densityScale;
                         input.albedo = volume.albedo;
                         input.g = volume.g;

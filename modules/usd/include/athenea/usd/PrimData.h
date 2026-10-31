@@ -137,6 +137,11 @@ struct ParticleFieldArrays {
 };
 
 /// A volume's field asset, as UsdVolOpenVDBAsset names it.
+struct InstancerLink {
+    pxr::SdfPath      instancer;
+    pxr::VtArray<int> indices;
+};
+
 struct VolumeFieldAsset {
     std::string path;       ///< the .vdb, resolved
     std::string gridName;   ///< the grid in it; empty: the first
@@ -156,6 +161,9 @@ struct VolumeArrays {
     std::array<float, 3> albedo{0.8F, 0.8F, 0.8F};
     float                g = 0.0F;
     bool                 visible = true;
+    /// The instancers above it, innermost first (as a mesh's): one record
+    /// an instance, every one reading the same grid.
+    std::vector<InstancerLink> instancing;
 };
 
 struct PointsArrays {
@@ -280,11 +288,6 @@ struct MeshTransforms {
     std::optional<render::Mat4> end;
     double                      timeStart = 0.0;   ///< the samples' times, in frames about the frame
     double                      timeEnd = 0.0;
-};
-
-struct InstancerLink {
-    pxr::SdfPath      instancer;
-    pxr::VtArray<int> indices;
 };
 
 /// A coordinate system bound to a prim (UsdShadeCoordSysAPI), by the name a

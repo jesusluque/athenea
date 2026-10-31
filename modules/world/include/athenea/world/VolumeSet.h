@@ -1,9 +1,10 @@
 // Copyright (c) 2026 jesus luque.
 //
 // The frame's volumes on the device, in one buffer of words: a header, a
-// record a volume (grid offsets, world-to-index, extinction scale, albedo,
-// phase, and -- written by kernels -- its index bounds and majorant), the
-// NanoVDB grids, and each leaf's largest value. The path tracer reads it
+// record a volume instance (grid offsets, world-to-index, extinction scale,
+// albedo, phase, and -- written by kernels -- its index bounds and
+// majorant), the NanoVDB grids, each once however many records read it, and
+// each leaf's largest value. The path tracer reads it
 // all from that one buffer (shaders/athenea/volume/medium.slang), since a
 // Metal kernel binds at most 31 and the traced one stands at the limit.
 // Nothing here reads a value on the host: the host places words, counts
@@ -30,8 +31,13 @@ namespace athenea::world {
 
 /// One volume: a grid, where it stands, and how it scatters.
 struct VolumeInput {
-    const io::NanoGrid*  grid = nullptr;
+    const io::NanoGrid*  grid = nullptr;   ///< shared: volumes naming one grid lay it out once
     render::Mat4         objectToWorld = render::Mat4::identity();   ///< the prim's; the grid's index-to-world composes under it
+    /// An instanced volume: its instances' transforms, 3 float4 rows each
+    /// (world::InstanceChain), each composed before `objectToWorld`, and one
+    /// record each, written by a kernel. Null for a volume drawn once.
+    const gpu::Buffer*   instanceRows = nullptr;
+    uint32_t             instanceCount = 0;
     float                densityScale = 1.0F;   ///< density to extinction, per world unit
     std::array<float, 3> albedo{1.0F, 1.0F, 1.0F};
     float                g = 0.0F;
@@ -52,12 +58,15 @@ class VolumeSet {
 public:
     [[nodiscard]] static Result<VolumeSet> create(gpu::ShaderLibrary& library);
 
-    /// Lays the volumes out and runs the bounds, leaf maximum and finish
-    /// kernels over them.
+    /// Lays the volumes out and runs the bounds, leaf maximum, instance and
+    /// finish kernels over them.
     [[nodiscard]] Result<void> set(gpu::CommandBatch& batch, std::span<const VolumeInput> volumes);
 
+    /// The grids laid out, each once, in the order the volumes first name them.
     [[nodiscard]] uint32_t count() const noexcept { return static_cast<uint32_t>(placements_.size()); }
     [[nodiscard]] const VolumeGridPlacement& placement(uint32_t i) const noexcept { return placements_[i]; }
+    /// The records: one a volume, one an instance of an instanced one.
+    [[nodiscard]] uint32_t records() const noexcept { return records_; }
     /// The words' size on the device: what the frame's volumes hold there.
     [[nodiscard]] uint64_t deviceBytes() const noexcept { return words_.valid() ? words_.bytes() : 0; }
     /// The one buffer: medium.slang's layout.
@@ -72,9 +81,10 @@ public:
 
 private:
     gpu::Device*                     device_ = nullptr;
-    gpu::ComputeKernel               boundsKernel_, leafMaxKernel_, finishKernel_;
+    gpu::ComputeKernel               boundsKernel_, leafMaxKernel_, instancesKernel_, finishKernel_;
     gpu::Buffer                      words_, bounds_, majorant_;
     std::vector<VolumeGridPlacement> placements_;
+    uint32_t                         records_ = 0;
 };
 
 }   // namespace athenea::world

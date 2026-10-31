@@ -832,6 +832,13 @@ private:
     uint64_t                                  gridReads_ = 0;
     uint64_t                                  gridEvictions_ = 0;
     std::atomic<uint64_t>                     volumeCacheBytes_{kDefaultVolumeCacheBytes};
+    /// An instanced volume's instances, composed on the device from its
+    /// instancers' arrays, and the instancer versions they were composed at.
+    struct VolumeChain {
+        world::InstanceChain  chain;
+        std::vector<uint64_t> versions;
+    };
+    std::map<pxr::SdfPath, VolumeChain>       volumeChains_;
     std::optional<world::VolumeSet>           volumeSet_;
     uint64_t                                  volumesVersion_ = 1;   ///< raised by any volume or field change
     uint64_t                                  volumesBuilt_ = 0;     ///< the version volumeSet_ holds

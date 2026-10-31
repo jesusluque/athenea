@@ -1954,7 +1954,9 @@ rejilla y se guarda leída en el host, en una caché de `athenea:volumeCacheMB`
 salen, primero la dibujada hace más tiempo, y una que se vuelve a dibujar se
 vuelve a leer. Un `filePath` muestreado en el tiempo, un fichero por frame,
 guarda lo que permite el presupuesto y no todos los frames mostrados. El
-dispositivo guarda solo las rejillas del frame.
+dispositivo guarda solo las rejillas del frame. Un Volume bajo un
+`PointInstancer` o una instancia nativa se dibuja en cada instancia, y todas
+leen la misma rejilla, dispuesta una sola vez.
 
 **Grupos de luces**, que todavía no declara ningún schema. Las lámparas de una
 nube son un primvar por grupo en su field, y sus grupos y estados son

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 jesus luque.
 //
 // VOLUMES THROUGH HYDRA (M9), past the first medium: the grid cache held to
-// its budget over an animated sequence. Fixtures are written by
+// its budget over an animated sequence, and instanced volumes. Fixtures are written by
 // io::writeVdbBoxes; frames are compared on the device, and what the host
 // reads back are counters.
 #include "../gpu/GpuTest.h"
@@ -151,4 +151,82 @@ TEST_CASE("an animated volume's grid cache stays within its budget, and a frame 
                 static_cast<unsigned long long>(same->over2));
     CHECK(same->p99 <= 1);
     CHECK(same->over2 < 10);
+}
+
+// INSTANCED VOLUMES: a PointInstancer whose prototype is a Volume, two
+// instances side by side, draws the frame two Volumes authored where the
+// instancer puts them draw -- one record an instance, the grid laid out
+// once -- and not the frame without them.
+TEST_CASE("a PointInstancer of a volume draws its instances where two authored volumes stand",
+          "[usd][gpu][volume][instancing]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const fs::path vdb = scratch("instanced_box.vdb");
+    const io::VdbBox box{{0, 0, 0}, {16, 16, 16}, 0.8F};
+    REQUIRE(io::writeVdbBoxes(vdb, "density", 0.1, std::span<const io::VdbBox>(&box, 1)));
+    const auto volume = [&](const std::string& name, const std::string& at, const std::string& translate) {
+        return "def Volume \"" + name + "\"\n{\n" +
+               (translate.empty() ? std::string()
+                                  : "    double3 xformOp:translate = " + translate +
+                                        "\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n") +
+               "    rel field:density = <" + at + "/density>\n"
+               "    float primvars:athenea:densityScale = 1\n"
+               "    color3f primvars:athenea:albedo = (0, 0, 0)\n"
+               "    def OpenVDBAsset \"density\"\n    {\n"
+               "        asset filePath = @" + vdb.string() + "@\n"
+               "        token fieldName = \"density\"\n    }\n}\n";
+    };
+    const fs::path authored = scratch("volumes_authored.usda");
+    {
+        std::ofstream out(authored);
+        out << kPlaneAndSun << volume("Left", "/Left", "(-1.7, -0.8, -3.8)")
+            << volume("Right", "/Right", "(0.1, -0.8, -3.8)");
+    }
+    const fs::path instanced = scratch("volumes_instanced.usda");
+    {
+        std::ofstream out(instanced);
+        out << kPlaneAndSun
+            << "def PointInstancer \"Fogs\"\n{\n"
+               "    point3f[] positions = [(-1.7, -0.8, -3.8), (0.1, -0.8, -3.8)]\n"
+               "    int[] protoIndices = [0, 0]\n"
+               "    rel prototypes = </Fogs/Prototypes/Fog>\n"
+               "    def Scope \"Prototypes\"\n    {\n"
+            << volume("Fog", "/Fogs/Prototypes/Fog", "") << "    }\n}\n";
+    }
+    const fs::path empty = scratch("volumes_none.usda");
+    {
+        std::ofstream out(empty);
+        out << kPlaneAndSun;
+    }
+    const uint32_t w = 161, h = 121;
+    const auto frame = [&](const fs::path& path) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setPathSamples(256);
+        (*renderer)->setPathBounces(0);
+        (*renderer)->setPathTotal(256);
+        auto image = (*renderer)->render(frontCamera(), 1.0, w, h, "rt");
+        if (!image) FAIL(image.error().toString());
+        return upload(*gpu, *image);
+    };
+    gpu::Buffer byInstancer = frame(instanced);
+    gpu::Buffer byPrims = frame(authored);
+    gpu::Buffer without = frame(empty);
+    auto same = render::compareImages(*gpu->library, byInstancer, byPrims, w, h);
+    auto differs = render::compareImages(*gpu->library, byInstancer, without, w, h);
+    REQUIRE(same);
+    REQUIRE(differs);
+    std::printf("  instanced against authored: p99 %u max %u, %llu pixels over 2; against no volume: %llu over 2\n",
+                same->p99, same->max, static_cast<unsigned long long>(same->over2),
+                static_cast<unsigned long long>(differs->over2));
+    CHECK(same->p99 <= 1);
+    CHECK(same->over2 < 40);
+    CHECK(differs->over2 > 2000);
 }

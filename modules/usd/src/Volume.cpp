@@ -36,7 +36,7 @@ float floatOf(VtValue const& value, float fallback) {
 HdDirtyBits HdAtheneaVolume::GetInitialDirtyBitsMask() const {
     return HdChangeTracker::Clean | HdChangeTracker::InitRepr | HdChangeTracker::DirtyPrimvar |
            HdChangeTracker::DirtyTransform | HdChangeTracker::DirtyVisibility | HdChangeTracker::DirtyVolumeField |
-           HdChangeTracker::DirtyMaterialId;
+           HdChangeTracker::DirtyMaterialId | HdChangeTracker::DirtyInstancer | HdChangeTracker::DirtyInstanceIndex;
 }
 
 void HdAtheneaVolume::Sync(HdSceneDelegate* delegate, HdRenderParam* renderParam, HdDirtyBits* dirtyBits,
@@ -48,6 +48,21 @@ void HdAtheneaVolume::Sync(HdSceneDelegate* delegate, HdRenderParam* renderParam
         return;
     }
     athenea::usd::VolumeArrays arrays;
+    // The chain of instancers above it, innermost first, with the elements
+    // each level takes of the one above, as a mesh's: one record an
+    // instance, every one reading the same grid.
+    _UpdateInstancer(delegate, dirtyBits);
+    HdInstancer::_SyncInstancerAndParents(delegate->GetRenderIndex(), GetInstancerId());
+    {
+        SdfPath child = id;
+        SdfPath instancer = GetInstancerId();
+        while (!instancer.IsEmpty()) {
+            arrays.instancing.push_back({instancer, delegate->GetInstanceIndices(instancer, child)});
+            HdInstancer* level = delegate->GetRenderIndex().GetInstancer(instancer);
+            child = instancer;
+            instancer = level != nullptr ? level->GetParentId() : SdfPath();
+        }
+    }
     // The medium is the field named density, else the first field.
     for (const HdVolumeFieldDescriptor& field : delegate->GetVolumeFieldDescriptors(id)) {
         if (arrays.field.IsEmpty() || field.fieldName == _atheneaVolumeTokens->density) {
