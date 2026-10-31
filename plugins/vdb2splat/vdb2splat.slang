@@ -87,7 +87,12 @@ struct V2sParams {
     uint  bornCount;       // how many voxels were chosen to be born at
     uint  freeBase;        // where in `list` the free slots are
     uint  outCount;        // gaussians written to the output
-    uint  pad;
+    uint  splitCount;      // gaussians split this round (v2sSplit)
+
+    uint  warm;            // 1: the slots start from `previous` (a sequence's frame before), not from a cut
+    uint  hasVelocity;     // 1: `velocity` holds the frame before's flow, voxels a frame: the slots are advected
+    uint  keepSlots;       // 1: the output is every slot in its place, the dead ones zero (a sequence's)
+    float dt;              // frames the advection covers
 };
 
 StructuredBuffer<float4>   leaves;     // 0: the grid, 513 entries a leaf
@@ -105,6 +110,8 @@ RWStructuredBuffer<float4> model;      // 11: per voxel: (rho^, sum w T, sum w R
 RWStructuredBuffer<uint>   list;       // 12: compactions' output
 RWStructuredBuffer<uint>   bins;       // 13: per leaf: its count, where its list starts, a cursor
 RWStructuredBuffer<uint>   pairs;      // 14: the leaves' lists of slots, one after another
+StructuredBuffer<float4>   previous;   // 15: the frame before's output, slot for slot (warm)
+StructuredBuffer<float4>   velocity;   // 16: the flow at the leaves' voxels, as `leaves` is laid out
 ConstantBuffer<V2sParams>  params;
 
 static const uint kNodesPerLeaf = 73;
@@ -114,6 +121,7 @@ static const uint kCounterTMax = 7;
 static const uint kCounterCount = 8;     // a count a pass makes
 static const uint kCounterErrMax = 9;    // float bits: the largest block error
 static const uint kCounterTotal = 10;    // a compaction's total
+static const uint kCounterSplitMax = 11; // float bits: the largest gaussian error (v2sSplitFlags)
 static const uint kCounterStats = 12;    // 4 floats: sum r^2, sum rho^2, sum rho, relative L2
 static const uint kBias = 1u << 30;
 static const float kTwoPi32 = 15.7496099;   // (2 pi)^(3/2)
@@ -309,6 +317,7 @@ void v2sClear(uint3 tid: SV_DispatchThreadID) {
     if (tid.x != 0) return;
     if (params.mode == 1) {
         counters[kCounterCount] = 0u;
+        counters[kCounterSplitMax] = 0u;
         return;
     }
     for (uint k = 0; k < 3; ++k) {
@@ -927,7 +936,7 @@ groupshared float gGrad[64 * 14];
 
 /// One group a slot: its gradient over the voxels in its box. `mode` 0 the
 /// geometry's (10 parameters, of the density loss sum (rho^ - rho)^2); 1
-/// the attributes' (of sum rho (attr^ - attr)^2), with the Jacobi diagonal;
+/// the attributes' (of sum rho (attr^ - attr)^2), with the Hessian's row sums;
 /// 2 the raw moments, about its centre, of the density it is responsible
 /// for (rho w / rho^): an EM step's.
 [shader("compute")]
@@ -985,6 +994,10 @@ void v2sBackward(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
                             acc[7] += r2 * (-w * d.z * u0);
                             acc[8] += r2 * (-w * d.z * u1);
                             acc[9] += r2 * (-w * d.z * u2) * g.a22;
+                            // What the gaussian is answerable for of the residual:
+                            // its share of the voxel times the square, for the
+                            // densify round's split (v2sSplitFlags).
+                            if (mv.x > 1e-20) acc[10] += (w / mv.x) * 0.25 * r2 * r2;
                         } else if (params.mode == 2) {
                             // EM: the voxel's density, shared by responsibility.
                             if (mv.x > 1e-20) {
@@ -1004,7 +1017,12 @@ void v2sBackward(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
                             acc[1] += 2.0 * rho * (cHat.x - targetColour.x) * share;
                             acc[2] += 2.0 * rho * (cHat.y - targetColour.y) * share;
                             acc[3] += 2.0 * rho * (cHat.z - targetColour.z) * share;
-                            acc[4] += 2.0 * rho * share * share;
+                            // The Hessian's row sum, not its diagonal: the shares at
+                            // a voxel add to one, so this bounds the coupling
+                            // between overlapping gaussians (Gershgorin) and the
+                            // step cannot overshoot. The diagonal alone did, by
+                            // about the overlap, and drove temperatures to 0.
+                            acc[4] += 2.0 * rho * share;
                         }
                     }
                 }
@@ -1120,7 +1138,7 @@ void v2sAttributes(uint3 tid: SV_DispatchThreadID) {
     if (!(h > 1e-20)) return;
     float4 s2 = state[slot * 4 + 2];
     float4 s3 = state[slot * 4 + 3];
-    const float damp = 0.7;
+    const float damp = 1.0;
     if (params.hasTemperature != 0) s2.z = max(s2.z - damp * g0.x / h, 0.0);
     if (params.hasColour != 0) s3.xyz = saturate(s3.xyz - damp * g0.yzw / h);
     state[slot * 4 + 2] = s2;
@@ -1245,7 +1263,150 @@ void v2sBinSort(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
     for (uint i = t; i < n; i += 256) pairs[first + i] = gSort[i];
 }
 
+// --- A sequence: the frame before, carried by the flow --------------------------------
+
+/// The flow at a point (voxels a frame), at the voxel under it; zero outside
+/// the leaves.
+float3 flowAt(float3 p) {
+    const int3 ijk = int3(floor(p));
+    const int leaf = leafAtCell(floorDiv8(ijk) - params.cellLo.xyz);
+    if (leaf < 0) return float3(0.0);
+    const uint3 c = uint3(ijk - leafOrigin(uint(leaf)));
+    const float4 v = velocity[uint(leaf) * params.leafEntries + 1 + voxelIndex(c)];
+    return v.w > 0.5 ? v.xyz : float3(0.0);
+}
+
+/// One thread a slot: the frame before's gaussian in its own slot -- carried
+/// by the flow where there is one, its centre by a midpoint step (RK2) and
+/// its covariance by the flow's gradient, F = I + dt grad u, Sigma' = F Sigma
+/// F^T (SplashSplat's deformation), its mass kept -- or empty where the
+/// slot was. A slot keeps its gaussian from frame to frame: that is what a
+/// sequence's planes are indexed by.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void v2sWarm(uint3 tid: SV_DispatchThreadID) {
+    const uint slot = tid.x;
+    if (slot >= params.capacity) return;
+    const float4 r0 = previous[slot * 4 + 0];
+    const float4 r1 = previous[slot * 4 + 1];
+    const float4 r2 = previous[slot * 4 + 2];
+    const float4 r3 = previous[slot * 4 + 3];
+    if (!(r3.w > 0.5)) {
+        for (uint k = 0; k < 4; ++k) state[slot * 4 + k] = float4(0.0);
+        return;
+    }
+    Gauss g;
+    g.mu = r0.xyz; g.sigma = r0.w;
+    g.a00 = r1.x; g.a10 = r1.y; g.a11 = r1.z; g.a20 = r1.w; g.a21 = r2.x; g.a22 = r2.y;
+    if (params.hasVelocity != 0) {
+        const float dt = params.dt;
+        const float3 mid = g.mu + 0.5 * dt * flowAt(g.mu);
+        const float3 moved = g.mu + dt * flowAt(mid);
+        // The gradient by central differences a voxel apart; its columns
+        // are the flow's derivative along each axis.
+        float3x3 f = float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1);
+        for (uint k = 0; k < 3; ++k) {
+            float3 e = float3(0.0);
+            e[k] = 1.0;
+            const float3 du = 0.5 * (flowAt(g.mu + e) - flowAt(g.mu - e));
+            f[0][k] += dt * du.x; f[1][k] += dt * du.y; f[2][k] += dt * du.z;
+        }
+        const float b00 = 1.0 / g.a00, b11 = 1.0 / g.a11, b22 = 1.0 / g.a22;
+        const float b10 = -g.a10 * b00 / g.a11;
+        const float b21 = -g.a21 * b11 / g.a22;
+        const float b20 = -(g.a20 * b00 + g.a21 * b10) / g.a22;
+        const float3x3 b = float3x3(b00, 0, 0, b10, b11, 0, b20, b21, b22);
+        const float3x3 sigma = mul(f, mul(mul(transpose(b), b), transpose(f)));
+        const float mass = g.sigma * kTwoPi32 / (g.a00 * g.a11 * g.a22);
+        Gauss n = gaussFromCovariance(moved, mass, sigma[0][0], sigma[0][1], sigma[0][2], sigma[1][1], sigma[1][2],
+                                      sigma[2][2]);
+        if (holdFactor(n)) g = n;
+        else g.mu = moved;
+    }
+    holdFactor(g);
+    storeState(slot, g, r2.z, unpackColour(r2.w));
+}
+
 // --- 5. Densify and prune ---------------------------------------------------------
+
+/// One thread a slot: its residual error (the geometry gather's 11th sum),
+/// `mode` 0 into the largest, 1 counted against `threshold`, 2 flagged.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void v2sSplitFlags(uint3 tid: SV_DispatchThreadID) {
+    const uint slot = tid.x;
+    if (slot >= params.capacity) return;
+    const float err = aliveSlot(slot) ? grad[slot * 4 + 2].z : 0.0;
+    if (params.mode == 0) {
+        InterlockedMax(counters[kCounterSplitMax], asuint(max(err, 0.0)));
+    } else if (params.mode == 1) {
+        if (err > params.threshold) InterlockedAdd(counters[kCounterCount], 1u);
+    } else {
+        flags[slot] = err > params.threshold ? 1u : 0u;
+    }
+}
+
+/// Eigen-decomposition of a symmetric 3x3 by Jacobi rotations (values on
+/// the diagonal, vectors in the columns of `v`).
+void jacobi3(inout float3x3 a, out float3x3 v) {
+    v = float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1);
+    for (uint sweep = 0; sweep < 12; ++sweep) {
+        for (uint pq = 0; pq < 3; ++pq) {
+            const uint p = pq == 2 ? 1u : 0u;
+            const uint q = pq == 0 ? 1u : 2u;
+            const float apq = a[p][q];
+            if (abs(apq) < 1e-12 * (abs(a[p][p]) + abs(a[q][q])) + 1e-30) continue;
+            const float theta = (a[q][q] - a[p][p]) / (2.0 * apq);
+            const float t = sign(theta + 1e-30) / (abs(theta) + sqrt(theta * theta + 1.0));
+            const float c = 1.0 / sqrt(t * t + 1.0);
+            const float s = t * c;
+            float3x3 j = float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1);
+            j[p][p] = c; j[q][q] = c; j[p][q] = s; j[q][p] = -s;
+            a = mul(transpose(j), mul(a, j));
+            v = mul(v, j);
+        }
+    }
+}
+
+/// One thread a split: the k-th worst gaussian becomes two, half its mass
+/// each, a deviation apart along its longest axis (each at half a deviation
+/// from the centre, that axis's variance down by a quarter of it, so the
+/// pair keeps the one's second moment), the second into the k-th free slot
+/// -- Gaussian Fluids' reseeding, by the residual.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void v2sSplit(uint3 tid: SV_DispatchThreadID) {
+    const uint k = tid.x;
+    if (k >= params.splitCount) return;
+    const uint slot = list[params.listBase + k];
+    const uint other = list[params.freeBase + k];
+    const Gauss g = gaussOfState(slot);
+    const float b00 = 1.0 / g.a00, b11 = 1.0 / g.a11, b22 = 1.0 / g.a22;
+    const float b10 = -g.a10 * b00 / g.a11;
+    const float b21 = -g.a21 * b11 / g.a22;
+    const float b20 = -(g.a20 * b00 + g.a21 * b10) / g.a22;
+    const float3x3 b = float3x3(b00, 0, 0, b10, b11, 0, b20, b21, b22);
+    const float3x3 sigma = mul(transpose(b), b);
+    float3x3 e = sigma;
+    float3x3 axes;
+    jacobi3(e, axes);
+    uint major = 0;
+    if (e[1][1] > e[major][major]) major = 1;
+    if (e[2][2] > e[major][major]) major = 2;
+    const float variance = max(e[major][major], 1e-8);
+    const float3 axis = float3(axes[0][major], axes[1][major], axes[2][major]);
+    const float a = 0.5 * sqrt(variance);
+    const float3x3 shrunk = sigma - (a * a) * float3x3(axis.x * axis, axis.y * axis, axis.z * axis);
+    const float mass = g.sigma * kTwoPi32 / (g.a00 * g.a11 * g.a22);
+    const float4 s2 = state[slot * 4 + 2];
+    const float4 s3 = state[slot * 4 + 3];
+    for (uint h = 0; h < 2; ++h) {
+        Gauss n = gaussFromCovariance(g.mu + (h == 0 ? a : -a) * axis, 0.5 * mass, shrunk[0][0], shrunk[0][1],
+                                      shrunk[0][2], shrunk[1][1], shrunk[1][2], shrunk[2][2]);
+        if (!holdFactor(n)) return;
+        storeState(h == 0 ? slot : other, n, s2.z, s3.xyz);
+    }
+}
 
 /// One thread a slot: a gaussian whose mass is a negligible share goes.
 /// Then flags the free slots below the capacity for the compaction.

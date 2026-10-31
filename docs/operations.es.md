@@ -758,17 +758,28 @@ tracer dibuja como dibuja cualquier volumen.
 | `--init-fraction` | de 0,01 a 1 | `0.6` | la parte del presupuesto que tiene el primer corte; el resto nace donde el residuo es mayor |
 | `--densify-every` | entero | `20` | iteraciones entre rondas de densificar y podar; ninguna después del 70 % de ellas |
 | `--learning-rate` | número | `0.1` | el paso de Adam, en unidades de log para el pico y la diagonal del factor y en desviaciones para el centro; decae cien veces a lo largo de los pasos de Adam |
+| `--split-share` | de 0 a 1 | `0.5` | la parte de los huecos nuevos de una ronda de densificación que parte las gaussianas responsables de más residuo, cada una en dos a lo largo de su eje más largo; el resto nace en los peores vóxeles |
 | `--no-bins` | flag | apagado | la pasada hacia delante sobre todas las gaussianas para cada hoja, descartadas por su caja, en vez de la lista de cada hoja: el ajuste como era antes del binning, para medir tiempos |
 | `--density-scale` | número | `1` | de densidad a extinción por unidad del mundo: para los rayos de `--measure` y la opacidad que se escribe para un visor estándar |
 | `--measure` | flag | apagado | imprime el error L2 relativo de la vuelta sobre los vóxeles activos y su mayor diferencia, y la transmitancia en forma cerrada frente al ratio tracking a través de la entrada a lo largo de `--rays` segmentos aleatorios |
 | `--rays` | entero | `4096` | `--measure` |
 | `--ray-samples` | entero | `64` | estimaciones de ratio tracking por rayo |
-| `--make-fixture` | `mixture` \| `blob` | ninguno | escribe `input` y termina: una caja de `--fixture-size` vóxeles de lado, todos activos, rellena en el dispositivo con una mezcla conocida de `--fixture-gaussians` gaussianas aleatorias o con una bola de ruido suave, con una grid de temperatura |
+| `--make-fixture` | `mixture` \| `blob` \| `blob-sequence` | ninguno | escribe `input` y termina: una caja de `--fixture-size` vóxeles de lado, todos activos, rellena en el dispositivo con una mezcla conocida de `--fixture-gaussians` gaussianas aleatorias o con una bola de ruido suave, con una grid de temperatura |
 | `--fixture-size` | entero | `96` | vóxeles de lado |
 | `--fixture-gaussians` | entero | `64` | `mixture` |
 | `--voxel-size` | número | `0.05` | el vóxel del fixture, en unidades del mundo |
 | `--seed` | entero | `1` | el del fixture y el de los rayos |
 | `--path` | directorio ‹repetible› | ninguno | directorios de bundles que se buscan después de `$AOFX_PLUGIN_PATH` |
+| `--sequence` | flag | apagado | `input` (y `--back`) nombran los frames con una racha de `#`, con ceros hasta la longitud de la racha; con `--frames` |
+| `--frames` | `PRIMERO ÚLTIMO` | `0 0` | los frames de una secuencia, los dos incluidos; también los de `--make-fixture blob-sequence` |
+| `--independent` | flag | apagado | cada frame un ajuste completo propio; si no, cada frame tras el primero arranca de las gaussianas del anterior en sus mismos huecos, llevadas por su `vel` donde el fichero la tiene |
+| `--warm-em` | entero | `0` | pasos de EM de un frame en caliente (EM después de los pasos de Adam mueve mucho las gaussianas: apagado por defecto) |
+| `--warm-iterations` | entero | `30` | pasos de Adam de un frame en caliente |
+| `--warm-learning-rate` | número | `0.03` | el paso de Adam en un frame en caliente |
+| `--no-advect` | flag | apagado | un frame en caliente arranca donde el anterior dejó sus gaussianas |
+| `--dt` | número | `1` | frames sobre los que el flujo lleva las gaussianas, de un frame al siguiente |
+
+Una secuencia imprime, por frame: las gaussianas vivas, el error L2 relativo de la densidad devuelta, el tiempo del ajuste y, desde el segundo frame, el parpadeo -- sqrt(Σ((b₁ − b₀) − (o₁ − o₀))² / Σ(o₁ − o₀)²) sobre los vóxeles activos, lo que el cambio de un frame al siguiente de la grid devuelta tiene de mal frente al del original -- y cuántas de las gaussianas del frame anterior siguen vivas en el mismo hueco, y cuánto se movieron frente a su desviación media. `--measure` imprime también el error de la temperatura, ponderado por la densidad (la medida del propio ajuste: donde no hay densidad la temperatura de una gaussiana no dice nada) y sin ponderar. `--make-fixture blob-sequence` escribe `--frames` de la bola de ruido llevada por un flujo conocido -- un giro alrededor de su vertical de 2π/120 por frame y una subida de 0,3 vóxeles por frame --, cada uno con su `density` y su `vel` (unidades del mundo por frame).
 
 Lo que guarda el stage en su `UsdVolParticleField3DGaussianSplat`, además de
 las posiciones, orientaciones, escalas y `radiance:base` del esquema:
@@ -2644,6 +2655,9 @@ del presupuesto, un cuarto de sus entradas.
 | `pruneMass` | número | `1e-6` | se va una gaussiana cuya masa es menor que esta parte del total |
 | `hasTemperature`, `hasColour` | booleano | `0` | si `Grid` las lleva (las pone el host) |
 | `binned` | booleano | `1` | lo contrario de `--no-bins` |
+| `splitShare` | de 0 a 1 | `0.5` | `--split-share` |
+| `keepSlots` | booleano | `0` | cada hueco escrito en su sitio, los muertos a cero, para que el siguiente frame de una secuencia arranque de ellos; `gaussians` dice entonces la capacidad como escritas y las vivas en noveno lugar |
+| `dt` | número | `1` | con los clips `Previous` y `Velocity` (opcionales): frames sobre los que el flujo lleva las gaussianas. `Previous` es la salida del frame anterior (`keepSlots`); `Velocity`, el flujo en los vóxeles de las hojas dispuesto como `Grid`, (u, activo) en vóxeles por frame |
 
 Adjunta `gaussians`: las escritas, el presupuesto, las hojas, el error L2
 relativo del ajuste sobre los vóxeles activos, las gaussianas que tenía el

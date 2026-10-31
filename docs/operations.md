@@ -738,17 +738,28 @@ renders as it renders any volume.
 | `--init-fraction` | 0.01 to 1 | `0.6` | the share of the budget the first cut holds; the rest is born where the residual is largest |
 | `--densify-every` | integer | `20` | iterations between densify-and-prune rounds; none after 70 % of them |
 | `--learning-rate` | number | `0.1` | Adam's step, in log units for the peak and the factor's diagonal and in deviations for the centre; it decays a hundredfold over the Adam steps |
+| `--split-share` | 0 to 1 | `0.5` | the share of a densify round's new slots that split the gaussians answerable for the most residual, each into two along its longest axis; the rest are born at the worst voxels |
 | `--no-bins` | flag | off | the forward pass over every gaussian for every leaf, culled by its box, instead of each leaf's list: the fit as it was before binning, for a timing |
 | `--density-scale` | number | `1` | density to extinction a world unit: for `--measure`'s rays and the opacity written for a standard viewer |
 | `--measure` | flag | off | prints the way back's relative L2 error over the active voxels and its largest difference, and the closed-form transmittance against ratio tracking through the input along `--rays` random segments |
 | `--rays` | integer | `4096` | `--measure` |
 | `--ray-samples` | integer | `64` | ratio-tracking estimates a ray |
-| `--make-fixture` | `mixture` \| `blob` | none | writes `input` and stops: a box of `--fixture-size` voxels a side, every voxel active, filled on the device with a known mixture of `--fixture-gaussians` random gaussians or a smooth noise ball, with a temperature grid |
+| `--make-fixture` | `mixture` \| `blob` \| `blob-sequence` | none | writes `input` and stops: a box of `--fixture-size` voxels a side, every voxel active, filled on the device with a known mixture of `--fixture-gaussians` random gaussians or a smooth noise ball, with a temperature grid |
 | `--fixture-size` | integer | `96` | voxels a side |
 | `--fixture-gaussians` | integer | `64` | `mixture` |
 | `--voxel-size` | number | `0.05` | the fixture's voxel, world units |
 | `--seed` | integer | `1` | the fixture's and the rays' |
 | `--path` | directory ‹repeatable› | none | bundle directories searched after `$AOFX_PLUGIN_PATH` |
+| `--sequence` | flag | off | `input` (and `--back`) name frames by a run of `#`, zero-padded to the run; with `--frames` |
+| `--frames` | `FIRST LAST` | `0 0` | a sequence's frames, both included; also `--make-fixture blob-sequence`'s |
+| `--independent` | flag | off | every frame a full fit of its own; otherwise each frame after the first starts from the frame before's gaussians in their own slots, carried by its `vel` where the file has one |
+| `--warm-em` | integer | `0` | EM steps of a warm frame (EM after Adam's steps moves gaussians far: off by default) |
+| `--warm-iterations` | integer | `30` | Adam steps of a warm frame |
+| `--warm-learning-rate` | number | `0.03` | Adam's step on a warm frame |
+| `--no-advect` | flag | off | a warm frame starts where the frame before left its gaussians |
+| `--dt` | number | `1` | frames the flow carries the gaussians over, frame to frame |
+
+A sequence prints, a frame: the gaussians alive, the density's relative L2 error given back, the fit's time, and from the second frame on the flicker -- sqrt(Σ((b₁ − b₀) − (o₁ − o₀))² / Σ(o₁ − o₀)²) over the active voxels, what the frame-to-frame change of the grid given back gets wrong of the original's -- and how many of the frame before's gaussians are alive in the same slot, and how far they moved over their mean deviation. `--measure` prints the temperature's error too, weighed by the density (the fit's own measure: where there is no density a gaussian's temperature says nothing) and unweighted. `--make-fixture blob-sequence` writes `--frames` of the noise blob carried by a known flow -- a turn about the vertical through it of 2π/120 a frame and a rise of 0.3 voxels a frame -- each with its `density` and `vel` (world units a frame).
 
 What the stage holds, on its `UsdVolParticleField3DGaussianSplat`, besides
 the schema's positions, orientations, scales and `radiance:base`:
@@ -2564,6 +2575,9 @@ entries.
 | `pruneMass` | number | `1e-6` | a gaussian whose mass is under this share of the total goes |
 | `hasTemperature`, `hasColour` | boolean | `0` | whether `Grid` carries them (the host sets them) |
 | `binned` | boolean | `1` | `--no-bins`'s opposite |
+| `splitShare` | 0 to 1 | `0.5` | `--split-share` |
+| `keepSlots` | boolean | `0` | every slot written in its place, the dead ones zero, so that a sequence's next frame starts from them; `gaussians` then says the capacity as written and the living ninth |
+| `dt` | number | `1` | with the `Previous` and `Velocity` clips (optional): frames the flow carries the gaussians over. `Previous` is the frame before's output (`keepSlots`); `Velocity` the flow at the leaves' voxels laid out as `Grid` is, (u, active) in voxels a frame |
 
 It attaches `gaussians`: written, the budget, leaves, the fit's relative L2
 error over the active voxels, the gaussians the first cut held, the

@@ -66,6 +66,8 @@ Result<VolumeSplats> VolumeSplats::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(v.reduce_, "vsReduce"));
     ATHENEA_TRY(make(v.rays_, "vsRays"));
     ATHENEA_TRY(make(v.export_, "vsExport"));
+    ATHENEA_TRY(make(v.slots_, "vsSlots"));
+    ATHENEA_TRY(make(v.flicker_, "vsFlicker"));
     return v;
 }
 
@@ -120,6 +122,96 @@ void VolumeSplats::fixture(gpu::CommandBatch& batch, const gpu::Buffer& words, c
     });
 }
 
+void VolumeSplats::packVelocity(gpu::CommandBatch& batch, const gpu::Buffer& words, const PackedGrids& grids,
+                                float scale, const gpu::Buffer& out) const {
+    pack_.dispatch(batch, {grids.leafCount * 512, 1, 1}, [&](rhi::ShaderCursor c) {
+        c["words"].setBinding(words.rhi());
+        c["leavesOut"].setBinding(out.rhi());
+        c["params"]["densityWord"].setData(grids.density);
+        c["params"]["leafCount"].setData(grids.leafCount);
+        c["params"]["temperatureWord"].setData(PackedGrids::kNoGrid);
+        c["params"]["colourWord"].setData(grids.colour);
+        c["params"]["kind"].setData(3u);
+        const float motion[4] = {0.0F, 0.0F, 0.0F, scale};
+        c["params"]["motion"].setData(motion, sizeof(motion));
+    });
+}
+
+void VolumeSplats::sequenceFixture(gpu::CommandBatch& batch, const gpu::Buffer& words, const PackedGrids& grids,
+                                   std::array<float, 3> centre, float radius, uint32_t seed, float omega, float rise,
+                                   float frame, float voxelSize) const {
+    fixture_.dispatch(batch, {grids.leafCount * 512, 1, 1}, [&](rhi::ShaderCursor c) {
+        c["words"].setBinding(words.rhi());
+        c["wordsOut"].setBinding(words.rhi());
+        c["params"]["densityWord"].setData(grids.density);
+        c["params"]["leafCount"].setData(grids.leafCount);
+        c["params"]["temperatureWord"].setData(grids.temperature);
+        c["params"]["colourWord"].setData(grids.colour);
+        c["params"]["kind"].setData(2u);
+        const float at[4] = {centre[0], centre[1], centre[2], radius};
+        c["params"]["centre"].setData(at, sizeof(at));
+        c["params"]["seed"].setData(seed);
+        const float motion[4] = {omega, rise, frame, voxelSize};
+        c["params"]["motion"].setData(motion, sizeof(motion));
+    });
+}
+
+Result<SlotStability> VolumeSplats::slots(const gpu::Buffer& before, const gpu::Buffer& now, uint32_t count) const {
+    gpu::BufferDesc desc;
+    desc.bytes = (uint64_t{count} * 3 + 4) * 4;
+    desc.elementBytes = 4;
+    desc.label = "vdb2splat.slots";
+    auto sums = gpu::Buffer::create(*device_, desc);
+    if (!sums) return std::move(sums).error();
+    gpu::CommandBatch batch(*device_);
+    const auto bind = [&](rhi::ShaderCursor c) {
+        c["gaussians"].setBinding(before.rhi());
+        c["gaussiansB"].setBinding(now.rhi());
+        c["sums"].setBinding(sums->rhi());
+        c["params"]["count"].setData(count);
+        c["params"]["kind"].setData(3u);
+    };
+    slots_.dispatch(batch, {count, 1, 1}, bind);
+    reduce_.dispatch(batch, {256, 1, 1}, bind);
+    ATHENEA_TRY(batch.submit(true));
+    float total[4] = {};
+    ATHENEA_TRY(sums->read(*device_, uint64_t{count} * 12, sizeof(total), total));
+    SlotStability s;
+    s.aliveBoth = static_cast<uint32_t>(total[0] + 0.5F);
+    s.aliveBefore = static_cast<uint32_t>(total[1] + 0.5F);
+    s.meanMove = s.aliveBoth > 0 ? total[2] / static_cast<double>(s.aliveBoth) : 0.0;
+    return s;
+}
+
+Result<double> VolumeSplats::flicker(const gpu::Buffer& judged, const gpu::Buffer& reference,
+                                     const gpu::Buffer& judgedBefore, const gpu::Buffer& referenceBefore,
+                                     uint32_t densityWord, uint32_t leafCount) const {
+    gpu::BufferDesc desc;
+    desc.bytes = (uint64_t{leafCount} * 3 + 4) * 4;
+    desc.elementBytes = 4;
+    desc.label = "vdb2splat.flicker";
+    auto sums = gpu::Buffer::create(*device_, desc);
+    if (!sums) return std::move(sums).error();
+    gpu::CommandBatch batch(*device_);
+    const auto bind = [&](rhi::ShaderCursor c) {
+        c["words"].setBinding(judged.rhi());
+        c["other"].setBinding(reference.rhi());
+        c["prevJudged"].setBinding(judgedBefore.rhi());
+        c["prevOther"].setBinding(referenceBefore.rhi());
+        c["sums"].setBinding(sums->rhi());
+        c["params"]["densityWord"].setData(densityWord);
+        c["params"]["leafCount"].setData(leafCount);
+        c["params"]["count"].setData(leafCount);
+        c["params"]["kind"].setData(0u);
+    };
+    flicker_.dispatch(batch, {leafCount * 256, 1, 1}, bind);
+    reduce_.dispatch(batch, {256, 1, 1}, bind);
+    ATHENEA_TRY(batch.submit(true));
+    float total[4] = {};
+    ATHENEA_TRY(sums->read(*device_, uint64_t{leafCount} * 12, sizeof(total), total));
+    return static_cast<double>(total[3]);
+}
+
 void VolumeSplats::randomMixture(gpu::CommandBatch& batch, const gpu::Buffer& out, uint32_t count,
                                  std::array<float, 3> extent, float margin, float minStd, float maxStd,
                                  uint32_t seed) const {
@@ -136,6 +228,12 @@ void VolumeSplats::randomMixture(gpu::CommandBatch& batch, const gpu::Buffer& ou
 
 Result<GridError> VolumeSplats::compare(const gpu::Buffer& judged, const gpu::Buffer& reference, uint32_t densityWord,
                                         uint32_t leafCount) const {
+    return compareWeighted(judged, reference, densityWord, leafCount, PackedGrids::kNoGrid);
+}
+
+Result<GridError> VolumeSplats::compareWeighted(const gpu::Buffer& judged, const gpu::Buffer& reference,
+                                                uint32_t densityWord, uint32_t leafCount,
+                                                uint32_t temperatureWord) const {
     gpu::BufferDesc desc;
     desc.bytes = (uint64_t{leafCount} * 3 + 4) * 4;
     desc.elementBytes = 4;
@@ -150,7 +248,8 @@ Result<GridError> VolumeSplats::compare(const gpu::Buffer& judged, const gpu::Bu
         c["params"]["densityWord"].setData(densityWord);
         c["params"]["leafCount"].setData(leafCount);
         c["params"]["count"].setData(leafCount);
-        c["params"]["kind"].setData(0u);
+        c["params"]["kind"].setData(temperatureWord == PackedGrids::kNoGrid ? 0u : 1u);
+        c["params"]["temperatureWord"].setData(temperatureWord);
     };
     compare_.dispatch(batch, {leafCount * 256, 1, 1}, bind);
     reduce_.dispatch(batch, {256, 1, 1}, bind);

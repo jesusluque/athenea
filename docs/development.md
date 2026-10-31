@@ -1428,12 +1428,26 @@ a product that does not care what order its factors come in. The pieces:
      gradient is gathered by the gaussian, one group each over the voxels of
      its box, reduced in group memory: no atomics on floats anywhere.
   5. *Densify and prune* every `densifyEvery` iterations until 70 % of them:
-     a gaussian of a negligible share of the mass is freed, and new ones are
+     a gaussian of a negligible share of the mass is freed; `splitShare` of
+     the round's new slots split the gaussians answerable for the most
+     residual (Σ over their voxels of their share times the squared
+     residual, gathered with the gradient) in two along their longest axis,
+     a deviation apart, each with half the mass and the pair keeping the
+     one's second moment; and the rest are
      born at the voxels the mixture leaves most under (the host bisects the
      residual threshold on the count) into the free slots, in slot order.
   6. *Attributes* last, the geometry fixed: a voxel's temperature and Cd are
      Σ c_i w_i / Σ w_i with w_i = σ_i G_i(x), linear in c, fitted by
-     density-weighted least squares with damped Jacobi steps.
+     density-weighted least squares, each step preconditioned by the
+     Hessian's row sum (the shares at a voxel add to one, so it bounds the
+     coupling between overlapping gaussians; the diagonal alone overshot by
+     about the overlap and drove temperatures to zero).
+  7. *A sequence* (`Previous`, `Velocity`, `keepSlots`): a frame starts from
+     the frame before's gaussians in their own slots (v2sWarm), each carried
+     by the flow -- its centre by a midpoint step, its covariance by
+     F Σ Fᵀ with F = I + dt ∇u by central differences -- and refined by
+     Adam; the output keeps every slot in its place, so a slot is one
+     gaussian from frame to frame.
 
   What crosses to the processor is counts: the leaves' box (to size the
   scratch), how many blocks a τ keeps and how many voxels a threshold leaves
@@ -1446,8 +1460,8 @@ the same box -- so the fit's own error is the way back's to the digits
 back is a grid like any other to `world::VolumeSet` and medium.slang: nothing
 in the path tracer knows it was gaussians.
 
-What it does not do yet: sequences (§3.5 of the proposal: advection by `vel`,
-slots kept from frame to frame); a topology of its own for the way back (the
+What it does not do yet: births and deaths kept apart in a sequence's slots beyond
+what densify and prune do, and the loop of §3.5 of the proposal; a topology of its own for the way back (the
 input's is reused); splitting a gaussian over the size cap (the cap is a
 clamp on the factor's diagonal); binning for the way back and the rays,
 which still visit every gaussian a leaf or a ray.

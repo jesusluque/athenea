@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,7 @@ struct Options {
     uint32_t                 iterations = 100;
     uint32_t                 emIterations = 40;
     bool                     noBins = false;
+    double                   splitShare = 0.5;
     uint32_t                 attributeIterations = 20;
     uint32_t                 maxBlock = 64;
     double                   emissionWeight = 1.0;
@@ -67,7 +69,28 @@ struct Options {
     double                   voxelSize = 0.05;
     uint32_t                 seed = 1;
     std::vector<std::string> paths;
+    // A sequence: `input` (and `--back`) with a run of '#' standing for the
+    // frame number, frames [first, last].
+    bool                     sequence = false;
+    std::vector<int>         frames{0, 0};
+    bool                     independent = false;
+    uint32_t                 warmEm = 0;
+    uint32_t                 warmIterations = 30;
+    double                   dt = 1.0;
+    bool                     noAdvect = false;
+    double                   warmLearningRate = 0.03;
 };
+
+/// `pattern` with its run of '#' replaced by `frame`, zero-padded to the run.
+std::string framePath(const std::string& pattern, int frame) {
+    const size_t at = pattern.find('#');
+    if (at == std::string::npos) return pattern;
+    size_t run = 0;
+    while (at + run < pattern.size() && pattern[at + run] == '#') ++run;
+    std::string number = std::to_string(frame);
+    while (number.size() < run) number.insert(number.begin(), '0');
+    return pattern.substr(0, at) + number + pattern.substr(at + run);
+}
 
 constexpr uint32_t kRowEntries = 4096;
 
@@ -96,7 +119,56 @@ Result<gpu::Buffer> wordsOn(gpu::Device& device, const std::vector<uint32_t>& wo
 /// A fixture: a box of `size` voxels a side, every voxel active, filled on
 /// the device -- `mixture` the sum of known random gaussians, `blob` a smooth
 /// noise ball -- with a temperature grid beside its density.
+/// A sequence fixture: the noise blob carried by a known flow -- a turn
+/// about the vertical through it of 2 pi / 120 a frame and a rise of 0.3
+/// voxels a frame -- frame by frame, each with its density and its `vel`
+/// (world units a frame) on one box topology.
+Result<void> makeSequenceFixture(gpu::ShaderLibrary& library, const Options& o) {
+    gpu::Device& device = library.device();
+    const std::filesystem::path first(framePath(o.input, o.frames[0]));
+    const std::filesystem::path topology =
+        (first.parent_path().empty() ? std::filesystem::path(".") : first.parent_path()) / "sequence.topology.vdb";
+    const int32_t s = static_cast<int32_t>(o.fixtureSize);
+    io::VdbGridSpec densitySpec;
+    densitySpec.name = "density";
+    densitySpec.voxelSize = o.voxelSize;
+    densitySpec.boxes = {io::VdbBox{{0, 0, 0}, {s, s, s}, 0.0F}};
+    io::VdbGridSpec velSpec = densitySpec;
+    velSpec.name = "vel";
+    velSpec.type = io::VdbType::Vec3f;
+    const std::array<io::VdbGridSpec, 2> specs{densitySpec, velSpec};
+    ATHENEA_TRY(io::writeVdbGrids(topology, specs));
+    auto density = io::readVdbGrid(topology, "density");
+    if (!density) return std::move(density).error();
+    auto vel = io::readVdbVec3Grid(topology, "vel");
+    if (!vel) return std::move(vel).error();
+    std::filesystem::remove(topology);
+    auto splats = world::VolumeSplats::create(library);
+    if (!splats) return std::move(splats).error();
+    const float half = static_cast<float>(s) * 0.5F;
+    for (int frame = o.frames[0]; frame <= o.frames[1]; ++frame) {
+        world::PackedGrids packed = world::PackedGrids::of(*density, nullptr, &*vel);
+        auto words = wordsOn(device, packed.words, "vdb2splat.sequence");
+        if (!words) return std::move(words).error();
+        {
+            gpu::CommandBatch batch(device);
+            splats->sequenceFixture(batch, *words, packed, {half, static_cast<float>(s) * 0.4F, half},
+                                    static_cast<float>(s) * 0.3F, o.seed, 6.28318531F / 120.0F, 0.3F,
+                                    static_cast<float>(frame - o.frames[0]), static_cast<float>(o.voxelSize));
+            ATHENEA_TRY(batch.submit(true));
+        }
+        ATHENEA_TRY(words->read(device, 0, packed.words.size() * 4, packed.words.data()));
+        const std::array<io::NanoGrid, 2> grids{packed.unpack(packed.density, *density),
+                                                packed.unpack(packed.colour, *vel)};
+        ATHENEA_TRY(io::writeNanoGrids(framePath(o.input, frame), grids));
+    }
+    cli::out("vdb2splat: wrote the blob-sequence fixture %s, frames %d to %d (%d^3 voxels, density and vel)\n",
+             o.input.c_str(), o.frames[0], o.frames[1], s);
+    return ok();
+}
+
 Result<void> makeFixture(gpu::ShaderLibrary& library, const Options& o) {
+    if (o.fixture == "blob-sequence") return makeSequenceFixture(library, o);
     gpu::Device& device = library.device();
     const std::filesystem::path dir = std::filesystem::path(o.input).parent_path();
     const std::filesystem::path topology =
@@ -210,6 +282,7 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
     number(job, "iterations", o.iterations);
     number(job, "emIterations", o.emIterations);
     number(job, "binned", o.noBins ? 0.0 : 1.0);
+    number(job, "splitShare", o.splitShare);
     number(job, "attributeIterations", o.attributeIterations);
     number(job, "maxBlock", o.maxBlock);
     number(job, "emissionWeight", o.emissionWeight);
@@ -289,6 +362,18 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
             if (!error) return std::move(error).error();
             cli::out("vdb2splat: back on the input's topology: relative L2 %.5f, largest difference %.5g\n",
                      error->relativeL2, error->largest);
+            if (temperature) {
+                // Weighed by the density, as the fit weighs it: where there is
+                // no density a gaussian's temperature says nothing.
+                auto heat = splats->compareWeighted(*returned, *words, packed.density, packed.leafCount,
+                                                    packed.temperature);
+                if (!heat) return std::move(heat).error();
+                auto plain = splats->compare(*returned, *words, packed.temperature, temperature->leafCount);
+                if (!plain) return std::move(plain).error();
+                cli::out("vdb2splat: the temperature back on its grid: density-weighted relative L2 %.5f (largest "
+                         "difference where there is density %.5g); unweighted over its active voxels %.5f\n",
+                         heat->relativeL2, heat->largest, plain->relativeL2);
+            }
             auto set = world::VolumeSet::create(library);
             if (!set) return std::move(set).error();
             world::VolumeInput input;
@@ -322,6 +407,145 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
     return ok();
 }
 
+/// A SEQUENCE, frame by frame. Warm (the default): each frame starts from
+/// the frame before's gaussians in their own slots, carried by the frame
+/// before's `vel` where the file has one, and refines them for `warmEm` EM
+/// and `warmIterations` Adam steps; the first frame is a full fit.
+/// `--independent`: every frame a full fit of its own. Each frame's mixture
+/// is given back on its grid and judged there: its density error, the
+/// flicker (what its frame-to-frame change gets wrong of the original's),
+/// and, slot for slot, how many of the frame before's gaussians are alive
+/// in the same slot and how far they moved over their size.
+Result<void> runSequence(gpu_host::Context& context, gpu::ShaderLibrary& library, aofx::Effect& effect,
+                         const Options& o) {
+    gpu::Device& device = library.device();
+    auto splats = world::VolumeSplats::create(library);
+    if (!splats) return std::move(splats).error();
+    image::ImagePtr before;          // the frame before's output, slot for slot
+    image::ImagePtr flowBefore;      // its flow, as the effect reads it
+    std::optional<gpu::Buffer> backBefore, originalBefore;
+    world::PackedGrids packedBefore;
+    double errorSum = 0.0, flickerSum = 0.0, keptSum = 0.0, secondsSum = 0.0;
+    uint32_t frames = 0, judged = 0;
+    for (int frame = o.frames[0]; frame <= o.frames[1]; ++frame) {
+        const std::string path = framePath(o.input, frame);
+        auto density = io::readVdbGrid(path, o.density);
+        if (!density) return std::move(density).error();
+        auto names = io::vdbGridNames(path);
+        if (!names) return std::move(names).error();
+        std::optional<io::NanoGrid> vel;
+        if (std::find(names->begin(), names->end(), "vel") != names->end()) {
+            auto read = io::readVdbVec3Grid(path, "vel");
+            if (!read) return std::move(read).error();
+            vel = std::move(*read);
+        }
+        world::PackedGrids packed = world::PackedGrids::of(*density, nullptr, vel ? &*vel : nullptr);
+        auto words = wordsOn(device, packed.words, "vdb2splat.frame");
+        if (!words) return std::move(words).error();
+        auto leaves = image::Image::create(pictureFor(uint64_t{packed.leafCount} * world::VolumeSplats::kLeafEntries));
+        if (!leaves) return std::move(leaves).error();
+        {
+            auto view = viewOf(context, *leaves, "vdb2splat.leaves");
+            if (!view) return std::move(view).error();
+            gpu::CommandBatch batch(device);
+            splats->packLeaves(batch, *words, packed, *view);
+            ATHENEA_TRY(batch.submit(true));
+            (*leaves)->deviceWrote();
+        }
+        const bool warm = !o.independent && before != nullptr;
+        auto records = image::Image::create(pictureFor(uint64_t{o.target} * 4));
+        if (!records) return std::move(records).error();
+        aofx_host::EffectJob job;
+        job.bounds = (*records)->bounds();
+        job.inputs.push_back({"Grid", *leaves});
+        if (warm) {
+            job.inputs.push_back({"Previous", before});
+            if (flowBefore && !o.noAdvect) job.inputs.push_back({"Velocity", flowBefore});
+        }
+        number(job, "leaves", packed.leafCount);
+        number(job, "target", o.target);
+        number(job, "iterations", warm ? o.warmIterations : o.iterations);
+        number(job, "emIterations", warm ? o.warmEm : o.emIterations);
+        number(job, "maxBlock", o.maxBlock);
+        number(job, "initFraction", o.initFraction);
+        number(job, "densifyEvery", o.densifyEvery);
+        number(job, "learningRate", warm ? o.warmLearningRate : o.learningRate);
+        number(job, "splitShare", o.splitShare);
+        number(job, "keepSlots", 1.0);
+        number(job, "dt", o.dt);
+        const auto started = std::chrono::steady_clock::now();
+        auto rendered = aofx_host::renderEffect(context, effect, job);
+        if (!rendered) return std::move(rendered).error();
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        const std::vector<float>* told = (*rendered)->attached("gaussians");
+        if (told == nullptr || told->size() < 9) {
+            return Error(ErrorCode::DeviceFailure, "the Vdb2Splat effect did not say how many gaussians it wrote");
+        }
+        const auto slotsOut = static_cast<uint32_t>((*told)[0]);
+        const auto alive = static_cast<uint32_t>((*told)[8]);
+        auto gaussians = viewOf(context, *rendered, "vdb2splat.records");
+        if (!gaussians) return std::move(gaussians).error();
+        auto returned = wordsOn(device, packed.words, "vdb2splat.back");
+        if (!returned) return std::move(returned).error();
+        ATHENEA_TRY(splats->splatToGrid(*gaussians, slotsOut, *returned, packed.density, packed.leafCount));
+        auto error = splats->compare(*returned, *words, packed.density, packed.leafCount);
+        if (!error) return std::move(error).error();
+        std::string line = "vdb2splat: frame " + std::to_string(frame) + (warm ? " (warm)" : "") + ": " +
+                           std::to_string(alive) + " gaussians, density relative L2 " +
+                           std::to_string(error->relativeL2) + ", fit " + std::to_string(seconds) + " s";
+        if (backBefore && packedBefore.leafCount == packed.leafCount && packedBefore.words.size() == packed.words.size()) {
+            auto flick = splats->flicker(*returned, *words, *backBefore, *originalBefore, packed.density,
+                                         packed.leafCount);
+            if (!flick) return std::move(flick).error();
+            auto before0 = viewOf(context, before, "vdb2splat.before");
+            if (!before0) return std::move(before0).error();
+            auto kept = splats->slots(*before0, *gaussians, slotsOut);
+            if (!kept) return std::move(kept).error();
+            const double share = kept->aliveBefore > 0 ? double(kept->aliveBoth) / kept->aliveBefore : 0.0;
+            line += ", flicker " + std::to_string(*flick) + ", slots kept " + std::to_string(kept->aliveBoth) + "/" +
+                    std::to_string(kept->aliveBefore) + " (" + std::to_string(share) + "), mean move " +
+                    std::to_string(kept->meanMove) + " deviations";
+            flickerSum += *flick;
+            keptSum += share;
+            ++judged;
+        }
+        cli::out("%s\n", line.c_str());
+        errorSum += error->relativeL2;
+        secondsSum += seconds;
+        ++frames;
+        if (!o.back.empty()) {
+            std::vector<uint32_t> back(packed.words.size());
+            ATHENEA_TRY(returned->read(device, 0, back.size() * 4, back.data()));
+            world::PackedGrids out = packed;
+            out.words = std::move(back);
+            const std::array<io::NanoGrid, 1> grids{out.unpack(out.density, *density)};
+            ATHENEA_TRY(io::writeNanoGrids(framePath(o.back, frame), grids));
+        }
+        // What the next frame starts from: this frame's slots, and its flow.
+        before = *rendered;
+        flowBefore = nullptr;
+        if (vel) {
+            auto flow = image::Image::create(pictureFor(uint64_t{packed.leafCount} * world::VolumeSplats::kLeafEntries));
+            if (!flow) return std::move(flow).error();
+            auto view = viewOf(context, *flow, "vdb2splat.flow");
+            if (!view) return std::move(view).error();
+            gpu::CommandBatch batch(device);
+            splats->packVelocity(batch, *words, packed, static_cast<float>(1.0 / density->voxelSize), *view);
+            ATHENEA_TRY(batch.submit(true));
+            (*flow)->deviceWrote();
+            flowBefore = *flow;
+        }
+        backBefore = std::move(*returned);
+        originalBefore = std::move(*words);
+        packedBefore = std::move(packed);
+    }
+    cli::out("vdb2splat: %u frames (%s): mean density relative L2 %.5f, mean flicker %.5f, mean slots kept %.4f, "
+             "mean fit %.2f s a frame\n",
+             frames, o.independent ? "independent" : "warm", frames ? errorSum / frames : 0.0,
+             judged ? flickerSum / judged : 0.0, judged ? keptSum / judged : 0.0, frames ? secondsSum / frames : 0.0);
+    return ok();
+}
+
 }   // namespace
 
 void addVdb2Splat(CLI::App& app) {
@@ -335,6 +559,9 @@ void addVdb2Splat(CLI::App& app) {
     cmd->add_option("--colour", o->colour, "the Cd grid's name (vec3), read where there is one");
     cmd->add_option("-n,--target", o->target, "how many gaussians, at most");
     cmd->add_option("--em-iterations", o->emIterations, "EM steps on the geometry, first");
+    cmd->add_option("--split-share", o->splitShare, "a densify round's share of new slots that split the worst "
+                                                      "gaussians (the rest are born at the worst voxels)")
+        ->check(CLI::Range(0.0, 1.0));
     cmd->add_flag("--no-bins", o->noBins, "the forward pass over every gaussian for every leaf (for a timing)");
     cmd->add_option("--iterations", o->iterations, "Adam steps on the geometry, after the EM steps");
     cmd->add_option("--attribute-iterations", o->attributeIterations, "Jacobi steps on temperature and Cd");
@@ -351,12 +578,20 @@ void addVdb2Splat(CLI::App& app) {
     cmd->add_option("--rays", o->rays, "--measure's random rays");
     cmd->add_option("--ray-samples", o->raySamples, "ratio-tracking estimates a ray");
     cmd->add_option("--make-fixture", o->fixture, "write a generated volume to `input` and stop")
-        ->check(CLI::IsMember({"mixture", "blob"}));
+        ->check(CLI::IsMember({"mixture", "blob", "blob-sequence"}));
     cmd->add_option("--fixture-size", o->fixtureSize, "the fixture's voxels a side");
     cmd->add_option("--fixture-gaussians", o->fixtureGaussians, "a mixture fixture's gaussians");
     cmd->add_option("--voxel-size", o->voxelSize, "the fixture's voxel, world units");
     cmd->add_option("--seed", o->seed, "the fixture's and the rays' seed");
     cmd->add_option("--path", o->paths, "extra bundle directories (after $AOFX_PLUGIN_PATH)");
+    cmd->add_flag("--sequence", o->sequence, "input (and --back) name frames by a run of '#'; --frames first last");
+    cmd->add_option("--frames", o->frames, "a sequence's first and last frame")->expected(2);
+    cmd->add_flag("--independent", o->independent, "a sequence: every frame a full fit of its own, no warm start");
+    cmd->add_option("--warm-em", o->warmEm, "a sequence: EM steps of a warm frame");
+    cmd->add_option("--warm-iterations", o->warmIterations, "a sequence: Adam steps of a warm frame");
+    cmd->add_flag("--no-advect", o->noAdvect, "a sequence: warm frames start where the frame before left them");
+    cmd->add_option("--warm-learning-rate", o->warmLearningRate, "a sequence: Adam's step on a warm frame");
+    cmd->add_option("--dt", o->dt, "a sequence: frames the flow carries the gaussians over, frame to frame");
     cmd->callback([o] {
         const auto fail = [](const Error& error) {
             cli::err("vdb2splat: ");
@@ -388,7 +623,9 @@ void addVdb2Splat(CLI::App& app) {
         if (effect == nullptr) {
             fail(Error(ErrorCode::NotFound, "no Vdb2Splat bundle on the AOFX search path (try `athenea aofx list`)"));
         }
-        auto ran = context->run([&] { inside = convert(*context, library, *effect, *o); });
+        auto ran = context->run([&] {
+            inside = o->sequence ? runSequence(*context, library, *effect, *o) : convert(*context, library, *effect, *o);
+        });
         if (!ran) fail(ran.error());
         if (!inside) fail(inside.error());
     });

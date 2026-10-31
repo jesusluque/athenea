@@ -395,14 +395,25 @@ Result<void> writeNanoGrids(const std::filesystem::path& path, std::span<const N
     try {
         openvdb::GridPtrVec out;
         for (const NanoGrid& grid : grids) {
-            if (grid.components != 1) {
-                return Error::make(ErrorCode::Unsupported, "'{}': only float grids are written", grid.name);
+            if (grid.components != 1 && grid.components != 3) {
+                return Error::make(ErrorCode::Unsupported, "'{}': only float and vec3 grids are written", grid.name);
             }
             // NanoVDB wants its buffer 32-byte aligned, which a vector of
             // words does not promise: the words are copied into one that is.
             auto buffer = nanovdb::HostBuffer::create(grid.words.size() * 4);
             std::memcpy(buffer.data(), grid.words.data(), grid.words.size() * 4);
             nanovdb::GridHandle<nanovdb::HostBuffer> handle(std::move(buffer));
+            if (grid.components == 3) {
+                // A vec3 grid (a velocity): written as OpenVDB's vec3s.
+                const nanovdb::NanoGrid<nanovdb::Vec3f>* vec = handle.grid<nanovdb::Vec3f>();
+                if (vec == nullptr) {
+                    return Error::make(ErrorCode::InvalidArgument, "'{}': not a NanoVDB vec3f grid", grid.name);
+                }
+                openvdb::Vec3SGrid::Ptr back = nanovdb::nanoToOpenVDB(*vec);
+                back->setName(grid.name);
+                out.push_back(back);
+                continue;
+            }
             const nanovdb::NanoGrid<float>* nano = handle.grid<float>();
             if (nano == nullptr) {
                 return Error::make(ErrorCode::InvalidArgument, "'{}': not a NanoVDB float grid", grid.name);

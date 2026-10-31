@@ -1502,14 +1502,28 @@ importa en qué orden llegan sus factores. Las piezas:
      sobre los vóxeles de su caja, reducido en memoria de grupo: en ningún
      sitio hay atómicos sobre floats.
   5. *Densificar y podar* cada `densifyEvery` iteraciones hasta el 70 % de
-     ellas: se libera una gaussiana con una parte despreciable de la masa, y
-     nacen otras en los vóxeles que la mezcla deja más por debajo (el host
+     ellas: se libera una gaussiana con una parte despreciable de la masa;
+     `splitShare` de los huecos nuevos de la ronda parten las gaussianas
+     responsables de más residuo (Σ sobre sus vóxeles de su parte por el
+     residuo al cuadrado, recogido con el gradiente) en dos a lo largo de su
+     eje más largo, separadas una desviación, cada una con la mitad de la
+     masa y el par conservando el segundo momento de la una; y el resto
+     nacen en los vóxeles que la mezcla deja más por debajo (el host
      biseca el umbral del residuo sobre la cuenta) en los huecos libres, en
      orden de hueco.
   6. *Atributos* al final, con la geometría fija: la temperatura y el Cd de un
      vóxel son Σ c_i w_i / Σ w_i con w_i = σ_i G_i(x), lineales en c,
-     ajustados por mínimos cuadrados ponderados por la densidad con pasos de
-     Jacobi amortiguados.
+     ajustados por mínimos cuadrados ponderados por la densidad, cada paso
+     precondicionado por la suma de la fila del hessiano (las partes en un
+     vóxel suman uno, así que acota el acoplamiento entre gaussianas que se
+     solapan; la diagonal sola se pasaba más o menos en el solape y llevaba
+     las temperaturas a cero).
+  7. *Una secuencia* (`Previous`, `Velocity`, `keepSlots`): un frame arranca
+     de las gaussianas del anterior en sus mismos huecos (v2sWarm), cada una
+     llevada por el flujo -- su centro con un paso de punto medio, su
+     covarianza con F Σ Fᵀ, F = I + dt ∇u por diferencias centradas -- y
+     refinada con Adam; la salida deja cada hueco en su sitio, así un hueco es
+     una gaussiana de un frame al siguiente.
 
   Lo que cruza al procesador son cuentas: la caja de las hojas (para
   dimensionar el scratch), cuántos bloques deja un τ y cuántos vóxeles deja
@@ -1523,8 +1537,8 @@ menos de 10⁻³). Una grid que vuelve es una grid como cualquier otra para
 `world::VolumeSet` y medium.slang: nada en el path tracer sabe que fueron
 gaussianas.
 
-Lo que aún no hace: secuencias (§3.5 de la propuesta: advección por `vel`,
-huecos conservados de un frame al siguiente); una topología propia para la
+Lo que aún no hace: nacimientos y muertes en los huecos de una secuencia más
+allá de lo que hacen densificar y podar, y el bucle del §3.5 de la propuesta; una topología propia para la
 vuelta (se reutiliza la de la entrada); partir una gaussiana que pasa del
 tope de tamaño (el tope es un recorte de la diagonal del factor); el
 binning para la vuelta y para los rayos, que aún visitan todas las

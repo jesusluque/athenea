@@ -8,5 +8,5 @@ aofx_add_bundle(athenea_aofx_vdb2splat
     KERNELS vdb2splat ENTRY v2sClear ENTRY v2sBounds ENTRY v2sLeafMap ENTRY v2sLeafNodes ENTRY v2sCoarseMoments
             ENTRY v2sCoarseError ENTRY v2sCoarseErrorGather ENTRY v2sCutFlags ENTRY v2sCompact ENTRY v2sInitEmit
             ENTRY v2sReset ENTRY v2sPrepare ENTRY v2sForward ENTRY v2sLoss ENTRY v2sBackward ENTRY v2sAdam
-            ENTRY v2sAttributes ENTRY v2sEm ENTRY v2sPrune ENTRY v2sUnder ENTRY v2sSpawn ENTRY v2sAliveFlags ENTRY v2sWrite ENTRY v2sBinClear ENTRY v2sBinSlots ENTRY v2sBinScan ENTRY v2sBinSort
+            ENTRY v2sAttributes ENTRY v2sEm ENTRY v2sPrune ENTRY v2sUnder ENTRY v2sSpawn ENTRY v2sAliveFlags ENTRY v2sWrite ENTRY v2sBinClear ENTRY v2sBinSlots ENTRY v2sBinScan ENTRY v2sBinSort ENTRY v2sSplitFlags ENTRY v2sSplit ENTRY v2sWarm
     SOURCE vdb2splat.slang)

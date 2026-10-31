@@ -116,7 +116,8 @@ struct VdbBox {
 [[nodiscard]] Result<NanoGrid> readVdbVec3Grid(const std::filesystem::path& path, const std::string& name);
 
 /// Writes NanoVDB float grids back as a .vdb, each under its own name as a
-/// fog volume: the re-layout `readVdbGrid` makes, the other way. What a
+/// fog volume (and vec3 grids, `components` 3, as vec3s): the re-layout
+/// `readVdbGrid` makes, the other way. What a
 /// kernel wrote into a grid's values (athenea vdb2splat --back) leaves the
 /// device this way.
 [[nodiscard]] Result<void> writeNanoGrids(const std::filesystem::path& path, std::span<const NanoGrid> grids);

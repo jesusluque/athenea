@@ -65,9 +65,14 @@ struct Vdb2SplatUniforms {
     uint32_t bornCount = 0;
     uint32_t freeBase = 0;
     uint32_t outCount = 0;
-    uint32_t pad = 0;
+    uint32_t splitCount = 0;
+
+    uint32_t warm = 0;
+    uint32_t hasVelocity = 0;
+    uint32_t keepSlots = 0;
+    float    dt = 1.0F;
 };
-static_assert(sizeof(Vdb2SplatUniforms) == 208, "must match V2sParams exactly");
+static_assert(sizeof(Vdb2SplatUniforms) == 224, "must match V2sParams exactly");
 
 constexpr uint32_t kLeafEntries = 513;
 constexpr uint32_t kNodesPerLeaf = 73;
@@ -82,7 +87,7 @@ const char* const kKernels[] = {"v2sClear",       "v2sBounds",     "v2sLeafMap",
                                 "v2sForward",     "v2sLoss",       "v2sBackward",         "v2sAdam",
                                 "v2sAttributes",  "v2sEm",         "v2sPrune",      "v2sUnder",            "v2sSpawn",
                                 "v2sAliveFlags",  "v2sWrite",      "v2sBinClear",   "v2sBinSlots",   "v2sBinScan",
-                                "v2sBinSort"};
+                                "v2sBinSort",     "v2sSplitFlags", "v2sSplit",      "v2sWarm"};
 
 float floatOf(uint32_t bits) {
     float f = 0.0F;
@@ -104,6 +109,19 @@ public:
         grid.name = "Grid";
         grid.label = "Grid leaves";
         into.inputs.push_back(grid);
+        // A sequence: the frame before's output (keepSlots), and the flow at
+        // the frame before's leaves, laid out as Grid is, (u, active) in
+        // voxels a frame.
+        aofx::ClipDesc previousClip;
+        previousClip.name = "Previous";
+        previousClip.label = "Frame before";
+        previousClip.optional = true;
+        into.inputs.push_back(previousClip);
+        aofx::ClipDesc velocityClip;
+        velocityClip.name = "Velocity";
+        velocityClip.label = "Flow";
+        velocityClip.optional = true;
+        into.inputs.push_back(velocityClip);
 
         const auto number = [&into](const char* name, const char* label, const char* hint, aofx::ParamType type,
                                     double value, double low, double high) {
@@ -145,6 +163,13 @@ public:
                1e-6, 0.0, 1.0);
         number("hasTemperature", "Temperature", "The Grid clip carries a temperature (host).", T::Boolean, 0, 0, 1);
         number("hasColour", "Cd", "The Grid clip carries a Cd (host).", T::Boolean, 0, 0, 1);
+        number("splitShare", "Split share", "The share of a densify round's new slots that go to splitting the "
+               "gaussians answerable for the most residual (two along the longest axis); the rest are born at the "
+               "worst voxels.", T::Double, 0.5, 0.0, 1.0);
+        number("keepSlots", "Keep slots", "1: every slot written in its place, the dead ones zero, so a sequence's "
+               "next frame starts from them (Previous).", T::Boolean, 0, 0, 1);
+        number("dt", "Frames", "With Previous and Velocity: the frames the flow carries the gaussians over.",
+               T::Double, 1.0, 0.0, 100.0);
         number("binned", "Binned", "1: the forward pass walks each leaf's list of the gaussians that meet it; 0: "
                "every gaussian for every leaf, culled by its box (what it was, for a timing).", T::Boolean, 1, 0, 1);
     }
@@ -306,6 +331,7 @@ private:
             const uint32_t densifyEvery = static_cast<uint32_t>(std::max(request.number("densifyEvery", 20.0), 1.0));
             const double initFraction = std::clamp(request.number("initFraction", 0.6), 0.01, 1.0);
             const float learningRate = static_cast<float>(std::clamp(request.number("learningRate", 0.1), 0.0, 1.0));
+            const double splitShare = std::clamp(request.number("splitShare", 0.5), 0.0, 1.0);
 
             for (const char* name : kKernels) {
                 const aofx::KernelId id = gpu->load(name);
@@ -315,8 +341,9 @@ private:
             counters = quads(4);
             if (!counters.isValid()) return fail("vdb2splat could not take its counters");
             // Bound in the kernels' order; what is not there yet is the counters.
-            buffers = {grid->buffer, target->buffer, counters, counters, counters, counters, counters,
-                       counters,     counters,       counters, counters, counters, counters, counters, counters};
+            buffers = {grid->buffer, target->buffer, counters, counters, counters, counters, counters, counters,
+                       counters,     counters,       counters, counters, counters, counters, counters, counters,
+                       counters};
 
             const uint32_t leafThreads = u.leafCount * 256;
             u.mode = 0;
@@ -363,8 +390,23 @@ private:
             }
             const aofx::Buffer bins = quads((uint64_t{u.leafCount} * 3 + 3) / 4);
             if (!bins.isValid()) return fail("vdb2splat: no room for the leaves' counts");
+            // A SEQUENCE'S FRAME: the frame before's output, slot for slot,
+            // and the flow that carries it here, where the host gives them.
+            const aofx::InputPlane* before = request.input("Previous");
+            const aofx::InputPlane* flow = request.input("Velocity");
+            const bool warm = before != nullptr && before->buffer.isValid() &&
+                              static_cast<uint64_t>(before->buffer.width) * before->buffer.height >=
+                                  uint64_t{u.capacity} * 4;
+            const bool flowing = warm && flow != nullptr && flow->buffer.isValid() &&
+                                 static_cast<uint64_t>(flow->buffer.width) * flow->buffer.height >=
+                                     uint64_t{u.leafCount} * kLeafEntries;
+            u.warm = warm ? 1u : 0u;
+            u.hasVelocity = flowing ? 1u : 0u;
+            u.dt = static_cast<float>(request.number("dt", 1.0));
+            u.keepSlots = request.number("keepSlots", 0.0) >= 0.5 ? 1u : 0u;
             buffers = {grid->buffer, target->buffer, counters, leafMap, nodes, coarse, partial,
-                       flags,        state,          adam,     grad,    model, list, bins, counters};
+                       flags,        state,          adam,     grad,    model, list, bins, counters,
+                       warm ? before->buffer : counters, flowing ? flow->buffer : counters};
 
             // 1, 2: the blocks, their moments and their errors.
             u.mode = 0;
@@ -372,6 +414,14 @@ private:
             u.mode = 1;
             if (!dispatch("v2sLeafMap", u.leafCount)) return false;
             u.mode = 0;
+            uint32_t count = 0;
+            uint32_t minimalCut = 0;
+            uint32_t initial = 0;
+            if (warm) {
+                // The frame before's slots, carried by the flow: no cut.
+                if (!dispatch("v2sReset", u.capacity) || !dispatch("v2sWarm", u.capacity)) return false;
+                initial = u.capacity;
+            } else {
             if (!dispatch("v2sLeafNodes", leafThreads)) return false;
             for (uint32_t level = 4; level <= u.maxLevel; ++level) {
                 u.level = level;
@@ -394,10 +444,9 @@ private:
                 std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(u.capacity * initFraction)));
             double lo = std::max(static_cast<double>(errMax), 1e-30) * 1e-14;
             double hi = std::max(static_cast<double>(errMax), 1e-30) * 1.0001;
-            uint32_t count = 0;
             u.tau = static_cast<float>(hi);
             if (!counted("v2sCutFlags", u.nodeCount, count)) return false;
-            const uint32_t minimalCut = count;
+            minimalCut = count;
             if (minimalCut > u.capacity) {
                 // Fewer than the coarsest blocks would leave whole blocks of
                 // the volume without a gaussian: refused, not cut short.
@@ -421,7 +470,8 @@ private:
             if (!compact(u.nodeCount, 0, cut)) return false;
             u.bornCount = std::min(cut, u.capacity);
             if (!dispatch("v2sReset", u.capacity) || !dispatch("v2sInitEmit", u.bornCount)) return false;
-            const uint32_t initial = u.bornCount;
+            initial = u.bornCount;
+            }
 
             // 4, 5: refinement, densify and prune.
             const uint32_t lastDensify = static_cast<uint32_t>(iterations * 7 / 10);
@@ -458,14 +508,48 @@ private:
                 const uint32_t want = roundsLeft > 0 ? (free + roundsLeft - 1) / roundsLeft : free;
                 roundsLeft = roundsLeft > 0 ? roundsLeft - 1 : 0;
                 if (want == 0) continue;
-                // The threshold the residual must pass for `want` voxels at most.
+                // SPLITS FIRST: a share of the round's slots goes to the
+                // gaussians answerable for the most residual, each split in
+                // two along its longest axis (its second half into a free
+                // slot); the rest are born at the worst voxels.
+                uint32_t split = 0;
+                const uint32_t splitWant = static_cast<uint32_t>(std::floor(want * splitShare));
+                if (splitWant > 0) {
+                    u.mode = 0;
+                    if (!dispatch("v2sBackward", uint64_t{u.capacity} * 64)) return false;
+                    u.mode = 1;
+                    if (!dispatch("v2sClear", 1)) return false;
+                    u.mode = 0;
+                    if (!dispatch("v2sSplitFlags", u.capacity) || !readCounters(c, 16)) return false;
+                    double sLo = 0.0, sHi = std::max(static_cast<double>(floatOf(c[11])), 1e-30);
+                    u.mode = 1;
+                    for (int i = 0; i < 24; ++i) {
+                        const double mid = 0.5 * (sLo + sHi);
+                        u.threshold = static_cast<float>(mid);
+                        if (!counted("v2sSplitFlags", u.capacity, count)) return false;
+                        if (count > splitWant) sLo = mid;
+                        else sHi = mid;
+                    }
+                    u.threshold = static_cast<float>(sHi);
+                    u.mode = 2;
+                    if (!dispatch("v2sSplitFlags", u.capacity)) return false;
+                    u.mode = 0;
+                    uint32_t worst = 0;
+                    if (!compact(u.capacity, 0, worst)) return false;
+                    split = std::min({worst, free, splitWant});
+                    u.splitCount = split;
+                    if (!dispatch("v2sSplit", split)) return false;
+                }
+                const uint32_t bornWant = want - split;
+                if (bornWant == 0) continue;
+                // The threshold the residual must pass for `bornWant` voxels at most.
                 const float rhoMax = floatOf(c[6]);
                 double tLo = 0.0, tHi = std::max(static_cast<double>(rhoMax), 1e-30);
                 for (int i = 0; i < 24; ++i) {
                     const double mid = 0.5 * (tLo + tHi);
                     u.threshold = static_cast<float>(mid);
                     if (!counted("v2sUnder", voxels, count)) return false;
-                    if (count > want) tLo = mid;
+                    if (count > bornWant) tLo = mid;
                     else tHi = mid;
                 }
                 u.threshold = static_cast<float>(tHi);
@@ -474,8 +558,11 @@ private:
                 u.mode = 0;
                 uint32_t chosen = 0;
                 if (!compact(static_cast<uint32_t>(voxels), 0, chosen)) return false;
-                u.bornCount = std::min({chosen, free, want});
-                if (!dispatch("v2sSpawn", u.bornCount)) return false;
+                u.bornCount = std::min({chosen, free - split, bornWant});
+                u.freeBase += split;   // the free slots the splits did not take
+                const bool spawned = dispatch("v2sSpawn", u.bornCount);
+                u.freeBase -= split;
+                if (!spawned) return false;
             }
 
             // 6: the attributes, the geometry fixed.
@@ -495,11 +582,18 @@ private:
             if (!dispatch("v2sAliveFlags", u.capacity)) return false;
             uint32_t written = 0;
             if (!compact(u.capacity, 0, written)) return false;
-            u.outCount = written;
-            u.mode = 0;
-            if (!dispatch("v2sWrite", written)) return false;
-            u.mode = 1;
-            if (!dispatch("v2sWrite", written)) return false;
+            const uint32_t alive = written;
+            if (u.keepSlots != 0) {
+                // Every slot in its place (v2sPrepare laid them down), the
+                // dead ones zero: what the next frame starts from.
+                written = u.capacity;
+            } else {
+                u.outCount = written;
+                u.mode = 0;
+                if (!dispatch("v2sWrite", written)) return false;
+                u.mode = 1;
+                if (!dispatch("v2sWrite", written)) return false;
+            }
             uint32_t done[16] = {};
             if (!readCounters(done, 16)) return false;   // and waits for the last write
             // What went out: written, the budget, leaves, the fit's own
@@ -509,7 +603,7 @@ private:
             request.attach("gaussians", {static_cast<float>(written), static_cast<float>(u.capacity),
                                          static_cast<float>(u.leafCount), stats[3], static_cast<float>(initial),
                                          static_cast<float>(iterations), static_cast<float>(u.maxLevel),
-                                         static_cast<float>(minimalCut)});
+                                         static_cast<float>(minimalCut), static_cast<float>(alive)});
             return true;
         }
     };

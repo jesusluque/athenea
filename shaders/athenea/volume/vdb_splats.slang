@@ -48,11 +48,17 @@ struct VsParams {
     uint  samples;          // vsRays: ratio-tracking estimates a ray
     uint  seed;
     float tolerance;        // vsRays: what discretisation may cost a transmittance
+
+    float4 motion;          // vsFixture kind 2: (angular speed about y, rad a frame; rise, voxels a frame; the
+                            // frame; the voxel size). vsPackLeaves kind 3: w the scale from vel to voxels a frame
 };
 
 StructuredBuffer<uint>     words;      // grids (NanoVDB), and for vsRays the VolumeSet's words
 RWStructuredBuffer<uint>   wordsOut;   // the same buffer, written
 StructuredBuffer<uint>     other;      // vsCompare: the reference grid, same layout
+StructuredBuffer<uint>     prevJudged; // vsFlicker: the judged grid the frame before, same layout
+StructuredBuffer<uint>     prevOther;  // vsFlicker: the reference the frame before
+StructuredBuffer<float4>   gaussiansB; // vsSlots: the frame's records, slot for slot with `gaussians` the frame before's
 StructuredBuffer<float4>   gaussians;  // records, 4 a gaussian
 RWStructuredBuffer<float4> leavesOut;  // vsPackLeaves: the picture
 RWStructuredBuffer<float>  sums;       // per leaf or per ray partial sums, then the totals
@@ -132,6 +138,17 @@ void vsPackLeaves(uint3 tid: SV_DispatchThreadID) {
     pnanovdb_address_t at;
     if (params.temperatureWord != kNone && addressIn(params.temperatureWord, PNANOVDB_GRID_TYPE_FLOAT, ijk, at)) {
         temperature = pnanovdb_read_float(words, at);
+    }
+    if (params.kind == 3) {
+        // THE VELOCITY, in voxels a frame (`motion.w` scales the grid's own
+        // units), at the density's voxels: what a warm start advects by.
+        float3 vel = float3(0.0);
+        if (params.colourWord != kNone && addressIn(params.colourWord, PNANOVDB_GRID_TYPE_VEC3F, ijk, at)) {
+            vel = float3(pnanovdb_read_float(words, at), pnanovdb_read_float(words, pnanovdb_address_offset(at, 4u)),
+                         pnanovdb_read_float(words, pnanovdb_address_offset(at, 8u))) * params.motion.w;
+        }
+        leavesOut[i * kLeafEntries + 1 + n] = float4(vel, active ? 1.0 : 0.0);
+        return;
     }
     if (params.colourWord != kNone && addressIn(params.colourWord, PNANOVDB_GRID_TYPE_VEC3F, ijk, at)) {
         colour = float3(pnanovdb_read_float(words, at), pnanovdb_read_float(words, pnanovdb_address_offset(at, 4u)),
@@ -263,9 +280,28 @@ void vsFixture(uint3 tid: SV_DispatchThreadID) {
     const pnanovdb_leaf_handle_t leaf = leafOf(params.densityWord, i, PNANOVDB_GRID_TYPE_FLOAT);
     if (!pnanovdb_leaf_get_value_mask(words, leaf, n)) return;
     const int3 ijk = originOf(leaf) + int3(int(n >> 6), int((n >> 3) & 7u), int(n & 7u));
-    const float3 x = float3(ijk) + 0.5;
+    float3 x = float3(ijk) + 0.5;
+    if (params.kind == 2) {
+        // A SEQUENCE'S FRAME: the blob carried by a known flow, a turn about
+        // the vertical through its centre at `motion.x` a frame and a rise of
+        // `motion.y` voxels a frame, so frame t is frame 0 at the point the
+        // flow brought here, and the velocity is the flow's own.
+        const float t = params.motion.z;
+        const float3 c = params.centre.xyz + float3(0.0, params.motion.y * t, 0.0);
+        const float3 d = x - c;
+        pnanovdb_address_t vAt;
+        if (params.colourWord != kNone && addressIn(params.colourWord, PNANOVDB_GRID_TYPE_VEC3F, ijk, vAt)) {
+            const float3 u = (params.motion.x * float3(d.z, 0.0, -d.x) + float3(0.0, params.motion.y, 0.0)) *
+                             params.motion.w;
+            wordsOut[vAt.byte_offset / 4u] = asuint(u.x);
+            wordsOut[vAt.byte_offset / 4u + 1u] = asuint(u.y);
+            wordsOut[vAt.byte_offset / 4u + 2u] = asuint(u.z);
+        }
+        const float th = -params.motion.x * t;
+        x = params.centre.xyz + float3(d.x * cos(th) + d.z * sin(th), d.y, -d.x * sin(th) + d.z * cos(th));
+    }
     const float r = length(x - params.centre.xyz) / params.centre.w;
-    if (params.kind == 1) {
+    if (params.kind == 1 || params.kind == 2) {
         const float edge = 1.0 - r + 0.35 * smoothNoise(x / (params.centre.w * 0.35), params.seed);
         const float density = saturate(edge * 3.0) * (0.6 + 0.4 * smoothNoise(x / (params.centre.w * 0.2), params.seed + 7u));
         const pnanovdb_address_t at = pnanovdb_leaf_get_table_address(PNANOVDB_GRID_TYPE_FLOAT, words, leaf, n);
@@ -340,6 +376,23 @@ void vsCompare(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
         const uint n = t + h * 256;
         if (!pnanovdb_leaf_get_value_mask(words, leaf, n)) continue;
         const pnanovdb_address_t at = pnanovdb_leaf_get_table_address(PNANOVDB_GRID_TYPE_FLOAT, words, leaf, n);
+        if (params.kind == 1) {
+            // A temperature, weighed by the reference's density at the voxel
+            // (the two buffers share their layout): what a density-weighted
+            // attribute is, and all it can be where there is no density.
+            pnanovdb_address_t tAt;
+            const int3 ijk = originOf(leaf) + int3(int(n >> 6), int((n >> 3) & 7u), int(n & 7u));
+            if (params.temperatureWord == kNone || !addressIn(params.temperatureWord, PNANOVDB_GRID_TYPE_FLOAT, ijk, tAt)) {
+                continue;
+            }
+            const float rho = max(pnanovdb_read_float(other, at), 0.0);
+            const float a = pnanovdb_read_float(words, tAt);
+            const float b = pnanovdb_read_float(other, tAt);
+            d2 += rho * (a - b) * (a - b);
+            b2 += rho * b * b;
+            if (rho > 0.0) dm = max(dm, abs(a - b));
+            continue;
+        }
         const float a = pnanovdb_read_float(words, at);
         const float b = pnanovdb_read_float(other, at);
         d2 += (a - b) * (a - b);
@@ -373,7 +426,7 @@ void vsReduce(uint3 gtid: SV_GroupThreadID) {
     for (uint i = t; i < params.count; i += 256) {
         s0 += sums[i * 3 + 0];
         s1 += sums[i * 3 + 1];
-        s2 = max(s2, sums[i * 3 + 2]);
+        s2 = params.kind == 3 ? s2 + sums[i * 3 + 2] : max(s2, sums[i * 3 + 2]);
     }
     gSum[t * 3 + 0] = s0;
     gSum[t * 3 + 1] = s1;
@@ -384,7 +437,7 @@ void vsReduce(uint3 gtid: SV_GroupThreadID) {
         for (uint k = 0; k < 256; ++k) {
             a += gSum[k * 3 + 0];
             b += gSum[k * 3 + 1];
-            c = max(c, gSum[k * 3 + 2]);
+            c = params.kind == 3 ? c + gSum[k * 3 + 2] : max(c, gSum[k * 3 + 2]);
         }
         const uint o = params.count * 3;
         sums[o + 0] = a;
@@ -392,6 +445,63 @@ void vsReduce(uint3 gtid: SV_GroupThreadID) {
         sums[o + 2] = c;
         // kind 2: the mean of the first (rays); otherwise the relative L2 error.
         sums[o + 3] = params.kind == 2 ? a / float(max(params.count, 1u)) : b > 0.0 ? sqrt(a / b) : 0.0;
+    }
+}
+
+// --- A sequence: slots and flicker ---------------------------------------------------
+
+/// One thread a slot: alive in both frames, alive the frame before, and how
+/// far its centre moved over its mean deviation where alive in both -- into
+/// `sums` (3 a slot; vsReduce kind 3 sums all three).
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vsSlots(uint3 tid: SV_DispatchThreadID) {
+    const uint g = tid.x;
+    if (g >= params.count) return;
+    const float4 a0 = gaussians[g * 4 + 0], a3 = gaussians[g * 4 + 3];
+    const float4 b0 = gaussiansB[g * 4 + 0], b3 = gaussiansB[g * 4 + 3];
+    const bool before = a3.w > 0.5, now = b3.w > 0.5;
+    const float scale = max((a3.x + a3.y + a3.z) / (3.0 * kReach), 1e-6);
+    sums[g * 3 + 0] = before && now ? 1.0 : 0.0;
+    sums[g * 3 + 1] = before ? 1.0 : 0.0;
+    sums[g * 3 + 2] = before && now ? length(b0.xyz - a0.xyz) / scale : 0.0;
+}
+
+/// One group a leaf: sum ((b1 - b0) - (o1 - o0))^2 and sum (o1 - o0)^2 over
+/// the active voxels -- what the frame-to-frame change of the judged grid
+/// (`words` now, `prevJudged` before) gets wrong of the reference's
+/// (`other`, `prevOther`): flicker, relative to the motion itself.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void vsFlicker(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
+    const uint i = gid.x;
+    const uint t = gtid.x;
+    if (i >= params.leafCount) return;
+    const pnanovdb_leaf_handle_t leaf = leafOf(params.densityWord, i, PNANOVDB_GRID_TYPE_FLOAT);
+    float d2 = 0.0, o2 = 0.0;
+    for (uint h = 0; h < 2; ++h) {
+        const uint n = t + h * 256;
+        if (!pnanovdb_leaf_get_value_mask(words, leaf, n)) continue;
+        const pnanovdb_address_t at = pnanovdb_leaf_get_table_address(PNANOVDB_GRID_TYPE_FLOAT, words, leaf, n);
+        const float b1 = pnanovdb_read_float(words, at), b0 = pnanovdb_read_float(prevJudged, at);
+        const float o1 = pnanovdb_read_float(other, at), o0 = pnanovdb_read_float(prevOther, at);
+        const float e = (b1 - b0) - (o1 - o0);
+        d2 += e * e;
+        o2 += (o1 - o0) * (o1 - o0);
+    }
+    gSum[t * 3 + 0] = d2;
+    gSum[t * 3 + 1] = o2;
+    gSum[t * 3 + 2] = 0.0;
+    GroupMemoryBarrierWithGroupSync();
+    if (t == 0) {
+        float s0 = 0.0, s1 = 0.0;
+        for (uint k = 0; k < 256; ++k) {
+            s0 += gSum[k * 3 + 0];
+            s1 += gSum[k * 3 + 1];
+        }
+        sums[i * 3 + 0] = s0;
+        sums[i * 3 + 1] = s1;
+        sums[i * 3 + 2] = 0.0;
     }
 }
 
