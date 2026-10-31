@@ -18901,3 +18901,22 @@ interactive use not known (`~/luc/athenea-gpu/vdb2splat_opt4*.sh`); the path tra
 
 Its profile at 100 steps is smoke2's: the gradient 50 %, the forward pass 26 %. Leaves streamed through a
 smaller pool (a cloud larger than the device) are not done.
+
+### The volume ladder as a stream, and its geometry in the video (1 Nov)
+
+`scripts/examples/athv_stream.py` plays the four rungs as one stream of four renditions (50k, 20k, 10k, 5k; ids
+their budgets): one loop of the 30 frames is 25.1 MB of records, the four files', each frame's pictures
+together, the manifest listing every rendition with its geometry layer (lossless, stable order, a key every 30
+frames, the same frames on every rung) -- what the sparrow's player switches between. With the geometry in the
+video instead of beside it (`--geometry-video`, the 20k rung, built with the faster fit, whose own error is
+0.02244):
+
+| 20k rung | MB a frame | Mbit/s at 30 | position error median / p99 | L2 decoded | against the f32 cloud | encoded ms a picture |
+|---|---|---|---|---|---|---|
+| geometry layer beside the video, quality 0.9 | 0.196 | 47.0 | 33 / 51 µm | 0.0244 | 0.0090 | 2.4 |
+| geometry in the video, quality 0.9 | 0.412 | 98.9 | 1638 / 3573 µm | 0.0266 | 0.0140 | 5.6 |
+| geometry in the video, quality 0.95 | 0.498 | 119.5 | 1062 / 2317 µm | 0.0244 | 0.0093 | 5.7 |
+
+A volume's gaussians move little from frame to frame and the layer's prediction from the frame before holds most
+of them (the predicted frames' layer is under half a key's): beside the video it is half the bytes for the same
+error. The sparrow's wings were the other way round.
