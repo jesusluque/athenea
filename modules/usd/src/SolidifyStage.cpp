@@ -8,6 +8,7 @@
 #include "athenea/usd/Export.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -38,6 +39,14 @@ Result<gpu::Buffer> words(gpu::Device& device, uint64_t count, const char* label
 Result<SolidifyStageStats> solidifyStage(gpu::ShaderLibrary& library, const std::filesystem::path& input,
                                          const std::filesystem::path& output, const SolidifyStageOptions& o) {
     gpu::Device& device = library.device();
+    {
+        // The input is read from to the end: never written over.
+        std::error_code ec;
+        if (std::filesystem::equivalent(input, output, ec) ||
+            std::filesystem::weakly_canonical(input, ec) == std::filesystem::weakly_canonical(output, ec)) {
+            return Error(ErrorCode::InvalidArgument, output.string() + " is the input; solidify writes beside it");
+        }
+    }
     using Clock = std::chrono::steady_clock;
     const Clock::time_point t0 = Clock::now();
     auto loader = scene::CloudLoader::create(library);
@@ -132,8 +141,13 @@ Result<SolidifyStageStats> solidifyStage(gpu::ShaderLibrary& library, const std:
     ExportOptions options;
     options.maxDegree = o.degree;
     options.addCamera = false;
+    // Unique to this call: two solidifies may run at once (the clock's
+    // nanoseconds tell processes apart, the counter calls within one).
+    static std::atomic<uint32_t> serial{0};
     const std::filesystem::path gaussians =
-        std::filesystem::temp_directory_path() / ("athenea_solidify_" + output.stem().string() + ".usdc");
+        std::filesystem::temp_directory_path() /
+        ("athenea_solidify_" + output.stem().string() + "_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + "_" +
+         std::to_string(serial.fetch_add(1)) + ".usdc");
     ATHENEA_TRY(writeParticleFieldStage(library, *kept, gaussians, options));
     auto written = writeDecimatedStage(input, output, where, gaussians, gathered);
     std::filesystem::remove(gaussians);
