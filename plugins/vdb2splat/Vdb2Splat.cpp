@@ -19,6 +19,7 @@
 #include <aofx/Entry.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -71,8 +72,18 @@ struct Vdb2SplatUniforms {
     uint32_t hasVelocity = 0;
     uint32_t keepSlots = 0;
     float    dt = 1.0F;
+
+    uint32_t pairCount = 0;
+    uint32_t withAttributes = 0;
+    float    binSlack = 0.0F;
+    float    thresholdHigh = 0.0F;
+
+    uint32_t gradMode = 0;
+    uint32_t pad2 = 0;
+    uint32_t checkerboard = 0;
+    uint32_t pad3 = 0;
 };
-static_assert(sizeof(Vdb2SplatUniforms) == 224, "must match V2sParams exactly");
+static_assert(sizeof(Vdb2SplatUniforms) == 256, "must match V2sParams exactly");
 
 constexpr uint32_t kLeafEntries = 513;
 constexpr uint32_t kNodesPerLeaf = 73;
@@ -80,6 +91,8 @@ constexpr uint32_t kCounterCount = 8;
 constexpr uint32_t kCounterErrMax = 9;
 constexpr uint32_t kCounterTotal = 10;
 constexpr uint32_t kCounterStats = 12;
+constexpr uint32_t kCounterRebin = 16;
+constexpr uint32_t kHistogramBins = 2048;
 
 const char* const kKernels[] = {"v2sClear",       "v2sBounds",     "v2sLeafMap",          "v2sLeafNodes",
                                 "v2sCoarseMoments", "v2sCoarseError", "v2sCoarseErrorGather", "v2sCutFlags",
@@ -87,7 +100,9 @@ const char* const kKernels[] = {"v2sClear",       "v2sBounds",     "v2sLeafMap",
                                 "v2sForward",     "v2sLoss",       "v2sBackward",         "v2sAdam",
                                 "v2sAttributes",  "v2sEm",         "v2sPrune",      "v2sUnder",            "v2sSpawn",
                                 "v2sAliveFlags",  "v2sWrite",      "v2sBinClear",   "v2sBinSlots",   "v2sBinScan",
-                                "v2sBinSort",     "v2sSplitFlags", "v2sSplit",      "v2sWarm"};
+                                "v2sBinSort",     "v2sSplitFlags", "v2sSplit",      "v2sWarm",
+                                "v2sSlotScan",    "v2sGatherPairs", "v2sBackwardPairs", "v2sBinCheck",
+                                "v2sUnderHistogram"};
 
 float floatOf(uint32_t bits) {
     float f = 0.0F;
@@ -170,6 +185,13 @@ public:
                "next frame starts from them (Previous).", T::Boolean, 0, 0, 1);
         number("dt", "Frames", "With Previous and Velocity: the frames the flow carries the gaussians over.",
                T::Double, 1.0, 0.0, 100.0);
+        number("profile", "Profile", "1: the processor waits for every kernel and attaches each one's time, "
+               "in ms, as `profile:<kernel>`: a breakdown, slower than the fit it times.", T::Boolean, 0, 0, 1);
+        number("binSlack", "Bin slack", "Voxels a gaussian's box is widened by when the leaves' lists are built, "
+               "so they are kept over the iterations until a box leaves the cells it was binned over; 0 rebuilds "
+               "them every iteration. The result does not depend on it.", T::Double, 0.0, 0.0, 64.0);
+        number("checkerboard", "Checkerboard", "1: each Adam step's gradient summed over the voxels of one parity, "
+               "alternating, counted twice: half the voxels a step.", T::Boolean, 0, 0, 1);
         number("binned", "Binned", "1: the forward pass walks each leaf's list of the gaussians that meet it; 0: "
                "every gaussian for every leaf, culled by its box (what it was, for a timing).", T::Boolean, 1, 0, 1);
     }
@@ -195,6 +217,10 @@ private:
         std::vector<aofx::Buffer>  buffers;
         aofx::Buffer               counters;
         std::vector<aofx::KernelId> ids;
+        bool                       profile = false;
+        std::vector<double>        kernelMs = std::vector<double>(std::size(kKernels), 0.0);
+        uint32_t                   readbacks = 0;
+        double                     loadMs = 0.0;
 
         bool fail(const char* why) {
             request.complaint = why;
@@ -214,10 +240,22 @@ private:
             const auto at = static_cast<size_t>(std::find_if(std::begin(kKernels), std::end(kKernels),
                                                              [&](const char* k) { return std::strcmp(k, name) == 0; }) -
                                                 std::begin(kKernels));
-            return gpu->run(ids[at], aofx::Grid{static_cast<uint32_t>(threads), 1, 1}, buffers, &u, sizeof(u));
+            if (!profile) {
+                return gpu->run(ids[at], aofx::Grid{static_cast<uint32_t>(threads), 1, 1}, buffers, &u, sizeof(u));
+            }
+            // Profiled: each kernel waited for, so its time is its own.
+            const auto started = std::chrono::steady_clock::now();
+            uint32_t sink = 0;
+            const bool ok = gpu->run(ids[at], aofx::Grid{static_cast<uint32_t>(threads), 1, 1}, buffers, &u,
+                                     sizeof(u)) &&
+                            gpu->read(counters, &sink, 4);
+            kernelMs[at] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
+                                .count();
+            return ok;
         }
 
         bool readCounters(uint32_t* into, size_t count) {
+            ++readbacks;
             return gpu->read(counters, into, count * 4);
         }
 
@@ -246,29 +284,56 @@ private:
         }
 
         aofx::Buffer pairs;
+        aofx::Buffer histogram;
+        aofx::Buffer slotPairs;
+        aofx::Buffer pairGrad;
         uint64_t     pairsRoom = 0;
+        uint32_t     pairTotal = 0;
+        bool         binsValid = false;
+        uint32_t     rebins = 0;
 
         /// The forward pass, binned: each leaf's list of the gaussians whose
         /// boxes meet it built first (counted, scanned, filled, sorted), so a
         /// leaf visits its own gaussians rather than every slot. The lists'
         /// total is read back to size them; the room only grows.
         bool forward(uint32_t leafThreads) {
-            if (u.binned != 0) {
+            bool rebin = !binsValid || u.binSlack <= 0.0F;
+            if (u.binned != 0 && !rebin) {
+                // The lists were built over widened boxes: kept until a box
+                // leaves the cells it was binned over.
+                const uint32_t mode = u.mode;
+                u.mode = 2;
+                if (!dispatch("v2sClear", 1) || !dispatch("v2sBinCheck", u.capacity)) return false;
+                u.mode = mode;
+                uint32_t c[kCounterRebin + 1] = {};
+                if (!readCounters(c, kCounterRebin + 1)) return false;
+                rebin = c[kCounterRebin] != 0;
+            }
+            if (u.binned != 0 && rebin) {
+                ++rebins;
+                binsValid = true;
                 const uint32_t mode = u.mode;
                 u.mode = 0;
                 if (!dispatch("v2sBinClear", u.leafCount) || !dispatch("v2sBinSlots", u.capacity) ||
-                    !dispatch("v2sBinScan", 256)) {
+                    !dispatch("v2sBinScan", 256) || !dispatch("v2sSlotScan", 256)) {
                     return false;
                 }
                 uint32_t c[16] = {};
                 if (!readCounters(c, 16)) return false;
                 const uint64_t total = c[kCounterTotal];
+                pairTotal = static_cast<uint32_t>(total);
                 if (total > pairsRoom) {
                     const uint64_t room = std::max<uint64_t>(total + total / 2, 1024);
                     pairs = quads((room + 3) / 4);
-                    if (!pairs.isValid()) return fail("vdb2splat: no room for the leaves' lists");
+                    slotPairs = quads((room * 2 + 3) / 4);
+                    pairGrad = quads(room * 3);
+                    if (!pairs.isValid() || !slotPairs.isValid() || !pairGrad.isValid()) {
+                        return fail("vdb2splat: no room for the leaves' lists");
+                    }
                     pairsRoom = room;
                     buffers[14] = pairs;
+                    buffers[18] = slotPairs;
+                    buffers[19] = pairGrad;
                 }
                 u.mode = 1;
                 if (!dispatch("v2sBinClear", u.leafCount) || !dispatch("v2sBinSlots", u.capacity) ||
@@ -278,6 +343,23 @@ private:
                 u.mode = mode;
             }
             return dispatch("v2sForward", leafThreads);
+        }
+
+        /// The gaussians' sums over the voxels of their boxes (`mode` as
+        /// v2sBackward's), after `forward`: binned, a thread a (gaussian,
+        /// leaf) pair and then each gaussian's pairs added in order; else a
+        /// group a gaussian over every leaf its box meets.
+        bool backward() {
+            if (u.binned == 0) return dispatch("v2sBackward", uint64_t{u.capacity} * 64);
+            const uint32_t mode = u.mode;
+            u.mode = 0;
+            u.gradMode = mode == 0 ? 1u : mode == 2 ? 2u : 3u;
+            u.pairCount = pairTotal;
+            if (!dispatch("v2sBackwardPairs", pairTotal)) return false;
+            u.gradMode = 0;
+            const bool ran = dispatch("v2sGatherPairs", u.capacity);
+            u.mode = mode;
+            return ran;
         }
 
         bool lossPass(uint32_t leafThreads, float stats[4]) {
@@ -323,6 +405,8 @@ private:
             u.hasTemperature = request.number("hasTemperature", 0.0) >= 0.5 ? 1u : 0u;
             u.hasColour = request.number("hasColour", 0.0) >= 0.5 ? 1u : 0u;
             u.binned = request.number("binned", 1.0) >= 0.5 ? 1u : 0u;
+            const bool checkerboard = request.number("checkerboard", 0.0) >= 0.5 && u.binned != 0;
+            u.binSlack = static_cast<float>(std::clamp(request.number("binSlack", 0.0), 0.0, 64.0));
             const uint32_t adamSteps = static_cast<uint32_t>(std::max(request.number("iterations", 100.0), 0.0));
             const uint32_t emSteps = static_cast<uint32_t>(std::max(request.number("emIterations", 40.0), 0.0));
             const uint32_t iterations = emSteps + adamSteps;
@@ -333,17 +417,20 @@ private:
             const float learningRate = static_cast<float>(std::clamp(request.number("learningRate", 0.1), 0.0, 1.0));
             const double splitShare = std::clamp(request.number("splitShare", 0.5), 0.0, 1.0);
 
+            profile = request.number("profile", 0.0) >= 0.5;
+            const auto loading = std::chrono::steady_clock::now();
             for (const char* name : kKernels) {
                 const aofx::KernelId id = gpu->load(name);
                 if (id == aofx::kInvalidKernel) return false;
                 ids.push_back(id);
             }
-            counters = quads(4);
+            loadMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - loading).count();
+            counters = quads(8);
             if (!counters.isValid()) return fail("vdb2splat could not take its counters");
             // Bound in the kernels' order; what is not there yet is the counters.
             buffers = {grid->buffer, target->buffer, counters, counters, counters, counters, counters, counters,
                        counters,     counters,       counters, counters, counters, counters, counters, counters,
-                       counters};
+                       counters,     counters,       counters, counters, counters, counters, counters};
 
             const uint32_t leafThreads = u.leafCount * 256;
             u.mode = 0;
@@ -389,7 +476,13 @@ private:
                 if (!b->isValid()) return fail("vdb2splat: no room on the device for its working buffers");
             }
             const aofx::Buffer bins = quads((uint64_t{u.leafCount} * 3 + 3) / 4);
-            if (!bins.isValid()) return fail("vdb2splat: no room for the leaves' counts");
+            const aofx::Buffer slotBins = quads((uint64_t{u.capacity} * 2 + 3) / 4);
+            const aofx::Buffer binBoxes = quads(uint64_t{u.capacity} * 2);
+            histogram = quads(kHistogramBins / 4);
+            const aofx::Buffer fitted = quads(voxels / 2);
+            if (!fitted.isValid()) return fail("vdb2splat: no room for the mixture at the voxels");
+            if (!histogram.isValid()) return fail("vdb2splat: no room for its histogram");
+            if (!bins.isValid() || !slotBins.isValid() || !binBoxes.isValid()) return fail("vdb2splat: no room for the leaves' counts");
             // A SEQUENCE'S FRAME: the frame before's output, slot for slot,
             // and the flow that carries it here, where the host gives them.
             const aofx::InputPlane* before = request.input("Previous");
@@ -406,7 +499,8 @@ private:
             u.keepSlots = request.number("keepSlots", 0.0) >= 0.5 ? 1u : 0u;
             buffers = {grid->buffer, target->buffer, counters, leafMap, nodes, coarse, partial,
                        flags,        state,          adam,     grad,    model, list, bins, counters,
-                       warm ? before->buffer : counters, flowing ? flow->buffer : counters};
+                       warm ? before->buffer : counters, flowing ? flow->buffer : counters,
+                       slotBins,     counters,       counters, binBoxes, histogram, fitted};
 
             // 1, 2: the blocks, their moments and their errors.
             u.mode = 0;
@@ -487,7 +581,7 @@ private:
                     // EM first: robust from a rough start, and a fixed point
                     // at a mixture that is the grid.
                     u.mode = 2;
-                    if (!dispatch("v2sBackward", uint64_t{u.capacity} * 64) || !dispatch("v2sEm", u.capacity)) {
+                    if (!backward() || !dispatch("v2sEm", u.capacity)) {
                         return false;
                     }
                     u.mode = 0;
@@ -496,9 +590,10 @@ private:
                     u.learningRate =
                         learningRate * static_cast<float>(std::pow(0.01, static_cast<double>(a) / adamSteps));
                     u.step = a + 1;
-                    if (!dispatch("v2sBackward", uint64_t{u.capacity} * 64) || !dispatch("v2sAdam", u.capacity)) {
-                        return false;
-                    }
+                    u.checkerboard = checkerboard ? 1u : 0u;
+                    const bool stepped = backward() && dispatch("v2sAdam", u.capacity);
+                    u.checkerboard = 0;
+                    if (!stepped) return false;
                 }
                 if ((it + 1) % densifyEvery != 0 || it >= lastDensify) continue;
                 if (!lossPass(leafThreads, stats)) return false;
@@ -516,7 +611,7 @@ private:
                 const uint32_t splitWant = static_cast<uint32_t>(std::floor(want * splitShare));
                 if (splitWant > 0) {
                     u.mode = 0;
-                    if (!dispatch("v2sBackward", uint64_t{u.capacity} * 64)) return false;
+                    if (!backward()) return false;
                     u.mode = 1;
                     if (!dispatch("v2sClear", 1)) return false;
                     u.mode = 0;
@@ -542,17 +637,40 @@ private:
                 }
                 const uint32_t bornWant = want - split;
                 if (bornWant == 0) continue;
-                // The threshold the residual must pass for `bornWant` voxels at most.
+                // The threshold the residual must pass for `bornWant` voxels
+                // at most: the lowest bin edge over which no more than that
+                // many lie, from a histogram of the whole range and then of
+                // the bin the count crosses in.
                 const float rhoMax = floatOf(c[6]);
-                double tLo = 0.0, tHi = std::max(static_cast<double>(rhoMax), 1e-30);
-                for (int i = 0; i < 24; ++i) {
-                    const double mid = 0.5 * (tLo + tHi);
-                    u.threshold = static_cast<float>(mid);
-                    if (!counted("v2sUnder", voxels, count)) return false;
-                    if (count > bornWant) tLo = mid;
-                    else tHi = mid;
+                double lo = 0.0, hi = std::max(static_cast<double>(rhoMax), 1e-30);
+                uint64_t above = 0;   // the residuals over `hi`
+                for (int pass = 0; pass < 2; ++pass) {
+                    u.threshold = static_cast<float>(lo);
+                    u.thresholdHigh = static_cast<float>(hi);
+                    u.mode = 0;
+                    if (!dispatch("v2sUnderHistogram", kHistogramBins)) return false;
+                    u.mode = 1;
+                    if (!dispatch("v2sUnderHistogram", voxels)) return false;
+                    u.mode = 0;
+                    std::vector<uint32_t> h(kHistogramBins);
+                    ++readbacks;
+                    if (!gpu->read(histogram, h.data(), h.size() * 4)) return false;
+                    // The lowest edge k with no more than bornWant over it.
+                    uint32_t k = kHistogramBins;
+                    uint64_t over = above;
+                    while (k > 0 && over + h[k - 1] <= bornWant) over += h[--k];
+                    const double width = (hi - lo) / kHistogramBins;
+                    if (k == 0) {
+                        hi = lo;
+                        break;
+                    }
+                    // Refine inside bin k - 1: (edge k - 1, edge k].
+                    above = over;
+                    const double top = lo + width * k;
+                    lo = lo + width * (k - 1);
+                    hi = top;
                 }
-                u.threshold = static_cast<float>(tHi);
+                u.threshold = static_cast<float>(hi);
                 u.mode = 1;
                 if (!dispatch("v2sUnder", voxels)) return false;
                 u.mode = 0;
@@ -567,11 +685,12 @@ private:
 
             // 6: the attributes, the geometry fixed.
             if (u.hasTemperature != 0 || u.hasColour != 0) {
+                u.withAttributes = 1;
                 for (uint32_t it = 0; it < attributeSteps; ++it) {
                     u.mode = 0;
                     if (!dispatch("v2sPrepare", u.capacity) || !forward(leafThreads)) return false;
                     u.mode = 1;
-                    if (!dispatch("v2sBackward", uint64_t{u.capacity} * 64)) return false;
+                    if (!backward()) return false;
                     u.mode = 0;
                     if (!dispatch("v2sAttributes", u.capacity)) return false;
                 }
@@ -604,6 +723,16 @@ private:
                                          static_cast<float>(u.leafCount), stats[3], static_cast<float>(initial),
                                          static_cast<float>(iterations), static_cast<float>(u.maxLevel),
                                          static_cast<float>(minimalCut), static_cast<float>(alive)});
+            // The readbacks (each a wait for the device), the kernels' loading,
+            // and where profiled each kernel's time.
+            request.attach("syncs", {static_cast<float>(readbacks), static_cast<float>(loadMs), static_cast<float>(rebins)});
+            if (profile) {
+                for (size_t k = 0; k < kernelMs.size(); ++k) {
+                    if (kernelMs[k] > 0.0) {
+                        request.attach(std::string("profile:") + kKernels[k], {static_cast<float>(kernelMs[k])});
+                    }
+                }
+            }
             return true;
         }
     };

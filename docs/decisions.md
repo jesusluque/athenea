@@ -18543,3 +18543,111 @@ segmenter already required).
   geometry stream and a colour stream) would let colour go back to 0.4.
 - Positions in each run's own fitted frame (still planes between keys) and the covariance's logarithm, measured
   in a prototype only: neither paid for its complexity at these settings.
+
+### The medium after the half-voxel shift (1 Nov)
+
+The ParticleField's positions are now half a voxel lower (the fit's records leave it at ijk where the trilinear
+medium puts a voxel's value, above). `athenea_usd_tests "[vdb2splat][raster]"` on the merged branch:
+emission-absorption mean 0.10282 raster against 0.10410 path traced, relMSE 4.3·10⁻⁴ over the frame (9.1·10⁻⁴
+before, held to 5·10⁻³); lit 0.21649 against 0.22308, relMSE 0.0128 (0.013). E1 again on fits made with this
+build (`~/luc/athenea-gpu/volraster_opt0.sh`, `volraster_e1lite.sh`: the same scenes, the path traces at 512
+paths instead of 1024, the grid given back not path traced; release, M5 Pro, the shared GPU lock, the Mac's
+interactive use not known):
+
+| | smoke2: smoke | shadow | emission-absorption | explosion: smoke | shadow | emission-absorption |
+|---|---|---|---|---|---|---|
+| (c) raster against (a), before | 0.025 | 0.0094 | 0.0047 | 0.031 | 0.0084 | 0.0022 |
+| (c) raster against (a), after | 0.025 | 0.0101 | 0.0055 | 0.032 | 0.0093 | 0.0028 |
+
+ms a frame (1024², medians): the raster 136.6 (135.7 before) and the medium with its ground 18.0 (18.1) for
+smoke2, 163.1 (160.4) and 17.4 (17.4) for the explosion; the path tracer's 64 paths 13 521 / 3 209 (14 829 /
+4 236) and 15 222 / 4 621 (19 753 / 7 115), the PNanoVDB fix of the merge. The scenes' numbers move within what
+a reference of half the paths adds (its own noise is in every relMSE above); the test, whose reference is the
+grid the same gaussians give back, is where the half voxel shows, and it halved.
+
+### The fit's time, kernel by kernel (1 Nov)
+
+`--profile` waits for every kernel and prints each one's time (a breakdown: the waits make the fit some 15 %
+slower than it is). At 50k and 300 Adam steps on smoke2 the kernels' 6.95 s were the gradient (`v2sBackward`, a
+group of 64 a gaussian) 43 %, the forward pass 34 %, the births' bisection (24 counted passes a densify round
+over every voxel) 5 %, building the leaves' lists every iteration 11 %. What was tried, each measured on its own
+(`~/luc/athenea-gpu/vdb2splat_opt1*.sh`; release, M5 Pro, the shared GPU lock, the Mac's interactive use not
+known; the fit the median of three runs):
+
+| change | smoke2 50k / 300 steps | relative L2 | kept |
+|---|---|---|---|
+| before (the merged branch) | 6.36 s | 0.03767 | |
+| the gradient a wave of 32 a (gaussian, leaf) pair, over the voxels of the leaf inside its box, then each gaussian's pairs added in its own order | 6.38 | 0.03773 | became the next |
+| and the lists kept over iterations, built over boxes widened by 2 voxels until one leaves its cells | 6.81 | 0.03773 | no: the lists are longer, the forward pass slower than the builds saved |
+| the gradient summed by the forward pass's own group, the mixture in its registers, each pair reduced over the group | 7.37 / 6.34 (second form) | 0.03766 | no: a reduction a gaussian a wave costs what the reads saved |
+| the forward pass's chunk walked to its entries, not its room (a leaf's list holds some forty gaussians and the loop ran 256) | 6.45 | 0.03773 | yes |
+| a wave of the forward pass a 4³ block, a gaussian whose box misses it passed over; the exponential behind a branch; the attributes' sums only in the attribute steps | (in the line above) | bit for bit | yes |
+| the births' threshold from two histograms of 2048 bins (the whole range, then the bin the count crosses in) instead of 24 counted passes | | | yes: `v2sUnder` 360 → 0 ms of the profile |
+| eight bytes a voxel (rho^, rho) for what reads the mixture back -- the gradient, the births -- instead of the voxel's 16 and the model's 32 | 5.31 | 0.03773 | yes |
+| the gradient a thread a pair, its voxels one after another | 5.21 | 0.03772 | yes (the explosion: 2.80 → 3.13 s, its large gaussians a thread's long loop) |
+| no box check when the lists are rebuilt anyway (slack 0): 351 readbacks fewer | 5.24 | 0.03772 | yes; the readbacks cost nothing measurable |
+| `--checkerboard`: each Adam step's gradient over the voxels of one parity, alternating, counted twice | 3.98 | 0.03949 | as an option: 4.7 % more error |
+
+The fits after, against before (median of three each):
+
+| | before s | after s | after, `--checkerboard` | relative L2 before → after |
+|---|---|---|---|---|
+| smoke2 10k, 100 steps | 2.66 | 1.39 | | 0.1227 → 0.1226 |
+| smoke2 50k, 100 steps | 2.44 | 1.84 | | 0.0620 → 0.0622 |
+| smoke2 10k, 300 steps | 6.57 | 4.18 | | 0.1002 → 0.1002 |
+| smoke2 50k, 300 steps | 6.36 | 5.21 | 3.98 (0.0395) | 0.0377 → 0.0377 |
+| smoke2 100k, 300 steps | 6.75 | 5.73 | | 0.0233 → 0.0228 |
+| explosion 50k, 100 steps | 3.85 | 3.13 | 2.66 (0.0369) | 0.0367 → 0.0367 |
+
+Masked path traces (E1b's, 4096 paths) of the grids given back, after: smoke2 50k / 300 steps ×1 6.4·10⁻⁴ (6.4·10⁻⁴
+before), ×16 5.9·10⁻³ (5.8·10⁻³), the explosion 5.3·10⁻⁴ (5.3·10⁻⁴); with `--checkerboard` 6.9·10⁻⁴, 6.2·10⁻³,
+5.3·10⁻⁴. The bytes do not change (3.20 MB at 50k). `--no-bins` still runs the old gradient and forward pass
+(smoke2 10k: 27.6 s, 0.1227). The sums are added in another order than before, so a fit is no longer the
+previous one to the bit but to its error; a fit is still the same from run to run.
+
+The target was half of 6.2 s at 50k and 300 steps with the error kept; the kept changes reach 5.21 s (−18 %), the
+checkerboard 3.98 s (−37 %) at 4.7 % more density error. What is left: the gradient is 47 % of the kernels'
+time and the forward pass 26 %, each a few dozen voxels of a leaf for every gaussian whose box meets it,
+rebuilt every iteration (the lists' builds 13 %). Neither is limited by reading memory any more nor by the
+readbacks; the evaluation itself is what is left.
+
+### The schedule, for error at a budget (1 Nov)
+
+The fit's knobs one at a time, then together, on smoke2 at 50k (`~/luc/athenea-gpu/vdb2splat_opt2sweep*.sh`, one
+run each, release, M5 Pro, the shared GPU lock, the Mac's interactive use not known), from the 300-step fit
+(5.21 s, density relative L2 0.0377):
+
+| change from the 300-step fit | fit s | relative L2 |
+|---|---|---|
+| `--init-fraction` 0.4 / 0.8 | 6.32 / 4.68 | 0.0392 / 0.0369 |
+| `--densify-every` 10 / 40 | 4.35 / 5.11 | 0.0558 / 0.0351 |
+| `--split-share` 0.25 / 0.75 | 4.71 / 5.55 | 0.0420 / 0.0343 |
+| `--em-iterations` 20 / 80 | 5.17 / 5.57 | 0.0397 / 0.0375 |
+| `--learning-rate` 0.05 / 0.2 | 5.17 / 6.18 | 0.0406 / 0.0393 |
+| 360 steps; 500 with `--checkerboard` | 6.37; 6.84 | 0.0352; 0.0342 |
+| a cut of 0.8, densify every 60, every new slot a split | 4.86 | 0.0339 |
+| the same, 520 checkerboard steps | 6.09 | 0.0317 |
+| a cut of 0.7, densify every 80, every new slot a split, 520 checkerboard steps, blocks to 32 | 6.33 | 0.0304 |
+
+Fewer densify rounds that each split more, from a larger first cut: the births at the worst voxels and the early
+rounds' slots spent on what the next rounds undo were where the 300-step fit lost. The last line against the
+300-step fit (median of three; masked path traces E1b's, 4096 paths):
+
+| | fit s | relative L2 | PT ×1 | PT ×16 | usdc |
+|---|---|---|---|---|---|
+| smoke2 50k, 300 steps | 5.21 | 0.0377 | 6.4·10⁻⁴ | 5.9·10⁻³ | 3.20 MB |
+| smoke2 50k, the schedule | 6.34 | 0.0304 | 4.1·10⁻⁴ | 4.4·10⁻³ | 3.20 MB |
+| smoke2 40k, the schedule | 6.22 | 0.0366 | | | 2.56 MB |
+| smoke2 35k, the schedule | 6.13 | 0.0407 | | 7.1·10⁻³ | 2.24 MB |
+| smoke2 10k, 300 steps / the schedule | 4.16 / 4.81 | 0.1002 / 0.0940 | | | 0.64 MB |
+| explosion 50k, 300 steps / the schedule | 7.63 / 8.73 | 0.0270 / 0.0241 | 3.5·10⁻⁴ / 2.8·10⁻⁴ | | 3.30 MB |
+| smoke2 50k, 100 steps: default / a cut of 0.7, densify every 80, all splits, blocks to 32 | 1.84 / 1.61 | 0.0622 / 0.0552 | | | 3.20 MB |
+
+At the time the 300-step fit took before this work (6.36 s) the density error goes 0.0377 → 0.0304 (−19 %), the
+target 0.030 within 1 %; the error of 50k gaussians before is reached by 40k (−20 % gaussians and bytes). The
+defaults are not changed: `densifyEvery` counts iterations, so the same 80 leaves a warm sequence frame (30 steps)
+no round at all, and the small fixtures of `athenea_aofx_tests` are not refitted with it; the schedule is
+`--iterations 520 --checkerboard --init-fraction 0.7 --densify-every 80 --split-share 1 --max-block 32`. The
+100-step line says the defaults themselves would gain (better and faster on smoke2), which wants the densify
+rounds given as a count rather than a period first. Why EM after Adam diverges on a warm frame is not looked at
+here.

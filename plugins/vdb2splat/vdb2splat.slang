@@ -93,6 +93,16 @@ struct V2sParams {
     uint  hasVelocity;     // 1: `velocity` holds the frame before's flow, voxels a frame: the slots are advected
     uint  keepSlots;       // 1: the output is every slot in its place, the dead ones zero (a sequence's)
     float dt;              // frames the advection covers
+
+    uint  pairCount;       // the (gaussian, leaf) pairs the bins hold this iteration
+    uint  withAttributes;  // 1: the forward pass sums the attributes too (the attribute steps')
+    float binSlack;        // voxels a box is widened by when binned, so the bins outlast small moves
+    float thresholdHigh;   // v2sUnderHistogram: the top of the range its bins split
+
+    uint  gradMode;        // v2sBackwardPairs: 1 the geometry's sums, 2 EM's, 3 the attributes'
+    uint  pad3;
+    uint  checkerboard;    // 1: v2sBackwardPairs sums the voxels of one parity (alternating with `step`), twice
+    uint  pad4;
 };
 
 StructuredBuffer<float4>   leaves;     // 0: the grid, 513 entries a leaf
@@ -112,6 +122,12 @@ RWStructuredBuffer<uint>   bins;       // 13: per leaf: its count, where its lis
 RWStructuredBuffer<uint>   pairs;      // 14: the leaves' lists of slots, one after another
 StructuredBuffer<float4>   previous;   // 15: the frame before's output, slot for slot (warm)
 StructuredBuffer<float4>   velocity;   // 16: the flow at the leaves' voxels, as `leaves` is laid out
+RWStructuredBuffer<uint>   slotBins;   // 17: per slot: how many leaves its box meets, where its pairs start
+RWStructuredBuffer<uint>   slotPairs;  // 18: the pairs gaussian by gaussian: (slot, leaf), in its box's cell order
+RWStructuredBuffer<float4> pairGrad;   // 19: a pair's share of its gaussian's sums, 3 entries
+RWStructuredBuffer<int4>   binBoxes;   // 20: per slot: the leaf cells it was binned over (low, high)
+RWStructuredBuffer<uint>   histogram;  // 21: kHistogramBins counts (v2sUnderHistogram)
+RWStructuredBuffer<float2> fitted;     // 22: per voxel (rho^, rho): what the geometry's gradient and the births read
 ConstantBuffer<V2sParams>  params;
 
 static const uint kNodesPerLeaf = 73;
@@ -123,6 +139,7 @@ static const uint kCounterErrMax = 9;    // float bits: the largest block error
 static const uint kCounterTotal = 10;    // a compaction's total
 static const uint kCounterSplitMax = 11; // float bits: the largest gaussian error (v2sSplitFlags)
 static const uint kCounterStats = 12;    // 4 floats: sum r^2, sum rho^2, sum rho, relative L2
+static const uint kCounterRebin = 16;    // non-zero: a box has left the cells it was binned over
 static const uint kBias = 1u << 30;
 static const float kTwoPi32 = 15.7496099;   // (2 pi)^(3/2)
 static const float kVarianceFloor = 0.01;
@@ -318,6 +335,10 @@ void v2sClear(uint3 tid: SV_DispatchThreadID) {
     if (params.mode == 1) {
         counters[kCounterCount] = 0u;
         counters[kCounterSplitMax] = 0u;
+        return;
+    }
+    if (params.mode == 2) {
+        counters[kCounterRebin] = 0u;
         return;
     }
     for (uint k = 0; k < 3; ++k) {
@@ -803,12 +824,104 @@ void v2sPrepare(uint3 tid: SV_DispatchThreadID) {
     records[slot * 4 + 3] = float4(min(extent, float3(kReach * params.maxStd * 2.0)), 1.0);
 }
 
-groupshared float gChunk[256 * 16];
-groupshared uint  gHit[256];
+static const uint kChunk = 128;      // gaussians a group holds at once in the forward pass
+groupshared float gChunk[kChunk * 16];
+groupshared uint  gHit[kChunk];
+
+/// A record from gChunk.
+Gauss chunkGauss(uint j, out float3 half) {
+    Gauss g;
+    g.mu = float3(gChunk[j * 16 + 0], gChunk[j * 16 + 1], gChunk[j * 16 + 2]);
+    g.sigma = gChunk[j * 16 + 3];
+    g.a00 = gChunk[j * 16 + 4]; g.a10 = gChunk[j * 16 + 5]; g.a11 = gChunk[j * 16 + 6];
+    g.a20 = gChunk[j * 16 + 7]; g.a21 = gChunk[j * 16 + 8]; g.a22 = gChunk[j * 16 + 9];
+    half = float3(gChunk[j * 16 + 12], gChunk[j * 16 + 13], gChunk[j * 16 + 14]);
+    return g;
+}
+
+/// Whether a gaussian's box meets the 4^3 block from `blo` (voxel indices).
+bool meetsBlock(float3 mu, float3 half, float3 blo) {
+    return all(mu + half > blo) && all(mu - half < blo + 4.0);
+}
+
+/// Thread t's slot of the list's chunk from `base` into gChunk (and gHit):
+/// the gaussian, if its box meets the leaf [lo, hi).
+void loadChunk(uint t, uint base, uint listed, uint first, uint size, float3 lo, float3 hi) {
+    if (t >= size) return;
+    const uint slot = base + t < listed ? (params.binned != 0 ? pairs[first + base + t] : base + t) : params.capacity;
+    bool hit = false;
+    if (slot < params.capacity) {
+        const float4 r0 = records[slot * 4 + 0];
+        const float4 r3 = records[slot * 4 + 3];
+        hit = r3.w > 0.5 && all(r0.xyz + r3.xyz > lo) && all(r0.xyz - r3.xyz < hi);
+        if (hit) {
+            for (uint k = 0; k < 4; ++k) {
+                const float4 r = records[slot * 4 + k];
+                gChunk[t * 16 + k * 4 + 0] = r.x;
+                gChunk[t * 16 + k * 4 + 1] = r.y;
+                gChunk[t * 16 + k * 4 + 2] = r.z;
+                gChunk[t * 16 + k * 4 + 3] = r.w;
+            }
+        }
+    }
+    gHit[t] = hit ? 1u : 0u;
+}
+
+/// One voxel's part of a gaussian's sums, from the mixture there (`mv`:
+/// rho^ and the attributes' weighted sums, `mv4` the last): `gradMode` 1 the
+/// geometry's (of the density loss sum (rho^ - rho)^2, and in 10 what the
+/// gaussian answers for of the residual), 2 an EM step's moments, 3 the
+/// attributes' with the Hessian's row sum. What v2sBackward gathers.
+/// `mv` and `vox` are read only for the attributes.
+void voxelSums(Gauss g, float3 x, float4 mv, float mv4, float4 vox, float rho, inout float acc[12]) {
+    const float3 d = x - g.mu;
+    const float u0 = g.a00 * d.x + g.a10 * d.y + g.a20 * d.z;
+    const float u1 = g.a11 * d.y + g.a21 * d.z;
+    const float u2 = g.a22 * d.z;
+    const float q = u0 * u0 + u1 * u1 + u2 * u2;
+    if (q >= kReachQ) return;
+    const float w = g.sigma * exp(-0.5 * q);
+    if (params.gradMode == 1) {
+        const float r2 = 2.0 * (mv.x - rho);
+        acc[3] += r2 * w;
+        acc[0] += r2 * w * (g.a00 * u0);
+        acc[1] += r2 * w * (g.a10 * u0 + g.a11 * u1);
+        acc[2] += r2 * w * (g.a20 * u0 + g.a21 * u1 + g.a22 * u2);
+        acc[4] += r2 * (-w * d.x * u0) * g.a00;
+        acc[5] += r2 * (-w * d.y * u0);
+        acc[6] += r2 * (-w * d.y * u1) * g.a11;
+        acc[7] += r2 * (-w * d.z * u0);
+        acc[8] += r2 * (-w * d.z * u1);
+        acc[9] += r2 * (-w * d.z * u2) * g.a22;
+        if (mv.x > 1e-20) acc[10] += (w / mv.x) * 0.25 * r2 * r2;
+    } else if (params.gradMode == 2) {
+        if (mv.x > 1e-20) {
+            const float c = rho * w / mv.x;
+            acc[0] += c;
+            acc[1] += c * d.x; acc[2] += c * d.y; acc[3] += c * d.z;
+            acc[4] += c * d.x * d.x; acc[5] += c * d.x * d.y; acc[6] += c * d.x * d.z;
+            acc[7] += c * d.y * d.y; acc[8] += c * d.y * d.z; acc[9] += c * d.z * d.z;
+        }
+    } else if (rho > 0.0 && mv.x > 1e-20) {
+        const float share = w / mv.x;
+        const float3 targetColour = unpackColour(vox.z);
+        const float tHat = mv.y / mv.x;
+        const float3 cHat = float3(mv.z, mv.w, mv4) / mv.x;
+        acc[0] += 2.0 * rho * (tHat - vox.y) * share;
+        acc[1] += 2.0 * rho * (cHat.x - targetColour.x) * share;
+        acc[2] += 2.0 * rho * (cHat.y - targetColour.y) * share;
+        acc[3] += 2.0 * rho * (cHat.z - targetColour.z) * share;
+        acc[4] += 2.0 * rho * share;
+    }
+}
 
 /// One group a leaf: the mixture at each of its voxels, from the gaussians
 /// whose boxes meet it, and the attributes' weighted sums. `mode` 1 also
 /// sums the loss into `partial` (from entry 4 of the leaf's 8).
+///
+/// Thread t holds the voxels 2t and 2t + 1 in Morton order, so a wave of 32
+/// holds one 4^3 block of the leaf and passes over a gaussian whose box
+/// misses it. A voxel adds its gaussians in list order whatever the chunks.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void v2sForward(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
@@ -817,52 +930,42 @@ void v2sForward(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
     if (leaf >= params.leafCount) return;
     const float3 lo = float3(leafOrigin(leaf));
     const float3 hi = lo + 8.0;
+    const uint wave = t / 32;
+    const float3 blockLo = lo + float3(morton3(wave * 64));
     float3 x[2];
     float acc[2][5];
     for (uint h = 0; h < 2; ++h) {
-        x[h] = lo + float3(morton3(t + h * 256)) + 0.5;
+        x[h] = lo + float3(morton3(2 * t + h)) + 0.5;
         for (uint k = 0; k < 5; ++k) acc[h][k] = 0.0;
     }
     // Binned, the leaf's own list (every gaussian whose box meets it, in
     // slot order); else every slot, culled by its box.
     const uint listed = params.binned != 0 ? bins[leaf] : params.capacity;
     const uint first = params.binned != 0 ? bins[params.leafCount + leaf] : 0u;
-    for (uint base = 0; base < listed; base += 256) {
-        const uint slot = base + t < listed ? (params.binned != 0 ? pairs[first + base + t] : base + t)
-                                            : params.capacity;
-        bool hit = false;
-        if (slot < params.capacity) {
-            const float4 r0 = records[slot * 4 + 0];
-            const float4 r3 = records[slot * 4 + 3];
-            hit = r3.w > 0.5 && all(r0.xyz + r3.xyz > lo) && all(r0.xyz - r3.xyz < hi);
-            if (hit) {
-                for (uint k = 0; k < 4; ++k) {
-                    const float4 r = records[slot * 4 + k];
-                    gChunk[t * 16 + k * 4 + 0] = r.x;
-                    gChunk[t * 16 + k * 4 + 1] = r.y;
-                    gChunk[t * 16 + k * 4 + 2] = r.z;
-                    gChunk[t * 16 + k * 4 + 3] = r.w;
-                }
-            }
-        }
-        gHit[t] = hit ? 1u : 0u;
+    for (uint base = 0; base < listed; base += kChunk) {
+        loadChunk(t, base, listed, first, kChunk, lo, hi);
         GroupMemoryBarrierWithGroupSync();
-        for (uint j = 0; j < 256; ++j) {
+        const uint held = min(kChunk, listed - base);   // the chunk's entries, not its room
+        for (uint j = 0; j < held; ++j) {
             if (gHit[j] == 0) continue;
-            Gauss g;
-            g.mu = float3(gChunk[j * 16 + 0], gChunk[j * 16 + 1], gChunk[j * 16 + 2]);
-            g.sigma = gChunk[j * 16 + 3];
-            g.a00 = gChunk[j * 16 + 4]; g.a10 = gChunk[j * 16 + 5]; g.a11 = gChunk[j * 16 + 6];
-            g.a20 = gChunk[j * 16 + 7]; g.a21 = gChunk[j * 16 + 8]; g.a22 = gChunk[j * 16 + 9];
+            float3 half;
+            const Gauss g = chunkGauss(j, half);
+            if (!meetsBlock(g.mu, half, blockLo)) continue;
             const float temperature = gChunk[j * 16 + 10];
             const float3 colour = unpackColour(gChunk[j * 16 + 11]);
             for (uint h = 0; h < 2; ++h) {
-                const float w = evalGauss(g, x[h]);
-                acc[h][0] += w;
-                acc[h][1] += w * temperature;
-                acc[h][2] += w * colour.x;
-                acc[h][3] += w * colour.y;
-                acc[h][4] += w * colour.z;
+                // A branch, not a select: outside the stop no exponential.
+                const float q = quadForm(g, x[h]);
+                if (q < kReachQ) {
+                    const float w = g.sigma * exp(-0.5 * q);
+                    acc[h][0] += w;
+                    if (params.withAttributes != 0) {
+                        acc[h][1] += w * temperature;
+                        acc[h][2] += w * colour.x;
+                        acc[h][3] += w * colour.y;
+                        acc[h][4] += w * colour.z;
+                    }
+                }
             }
         }
         GroupMemoryBarrierWithGroupSync();
@@ -870,24 +973,34 @@ void v2sForward(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
     float loss[2];
     float energy[2];
     float mass[2];
+    float4 vox[2];
+    float rho[2];
     for (uint h = 0; h < 2; ++h) {
-        const uint n = voxelIndex(morton3(t + h * 256));
+        const uint n = voxelIndex(morton3(2 * t + h));
         const uint v = leaf * 512 + n;
-        model[v * 2 + 0] = float4(acc[h][0], acc[h][1], acc[h][2], acc[h][3]);
-        model[v * 2 + 1] = float4(acc[h][4], 0.0, 0.0, 0.0);
-        const float4 vox = voxelOf(leaf, n);
-        const float rho = vox.w > 0.5 ? max(vox.x, 0.0) : 0.0;
-        const float d = acc[h][0] - rho;
+        vox[h] = voxelOf(leaf, n);
+        rho[h] = vox[h].w > 0.5 ? max(vox[h].x, 0.0) : 0.0;
+        // Eight bytes a voxel for what reads the mixture back over and over
+        // (a voxel is in several gaussians' boxes); the attributes' sums only
+        // when they are fitted.
+        fitted[v] = float2(acc[h][0], rho[h]);
+        if (params.withAttributes != 0) {
+            model[v * 2 + 0] = float4(acc[h][0], acc[h][1], acc[h][2], acc[h][3]);
+            model[v * 2 + 1] = float4(acc[h][4], 0.0, 0.0, 0.0);
+        }
+        const float d = acc[h][0] - rho[h];
         // The loss over the active voxels: what the round trip is judged on.
-        loss[h] = vox.w > 0.5 ? d * d : 0.0;
-        energy[h] = rho * rho;
-        mass[h] = rho;
+        loss[h] = vox[h].w > 0.5 ? d * d : 0.0;
+        energy[h] = rho[h] * rho[h];
+        mass[h] = rho[h];
     }
     if (params.mode == 1) {
         float sums[3];
         for (uint k = 0; k < 3; ++k) {
-            gReduce[t] = k == 0 ? loss[0] : k == 1 ? energy[0] : mass[0];
-            gReduce[t + 256] = k == 0 ? loss[1] : k == 1 ? energy[1] : mass[1];
+            // By Morton index, as the voxels were reduced before the threads
+            // held two neighbours.
+            gReduce[2 * t] = k == 0 ? loss[0] : k == 1 ? energy[0] : mass[0];
+            gReduce[2 * t + 1] = k == 0 ? loss[1] : k == 1 ? energy[1] : mass[1];
             for (uint stride = 1; stride < 512; stride *= 2) {
                 GroupMemoryBarrierWithGroupSync();
                 for (uint h = 0; h < 2; ++h) {
@@ -932,6 +1045,68 @@ void v2sLoss(uint3 gtid: SV_GroupThreadID) {
     }
 }
 
+/// One voxel's part of a gaussian's sums (v2sBackward's, by `mode`): voxel
+/// `k` (NanoVDB's order) of `leaf`, at index `ijk`.
+void gatherVoxel(Gauss g, uint leaf, uint k, int3 ijk, inout float acc[14]) {
+    const float3 x = float3(ijk) + 0.5;
+    const float3 d = x - g.mu;
+    const float u0 = g.a00 * d.x + g.a10 * d.y + g.a20 * d.z;
+    const float u1 = g.a11 * d.y + g.a21 * d.z;
+    const float u2 = g.a22 * d.z;
+    const float q = u0 * u0 + u1 * u1 + u2 * u2;
+    if (q >= kReachQ) return;
+    const float w = g.sigma * exp(-0.5 * q);
+    const uint v = uint(leaf) * 512 + k;
+    const float2 f = fitted[v];
+    const float4 mv = params.mode == 1 ? model[v * 2 + 0] : float4(f.x, 0.0, 0.0, 0.0);
+    const float4 vox = params.mode == 1 ? voxelOf(uint(leaf), k) : float4(0.0);
+    const float rho = f.y;
+    if (params.mode == 0) {
+        const float r2 = 2.0 * (mv.x - rho);
+        // d rho^/d log sigma = w; d/d mu = w P d = w A u;
+        // d/d A_ij = -w d_i u_j; a diagonal by its log, times A_jj.
+        acc[3] += r2 * w;
+        acc[0] += r2 * w * (g.a00 * u0);
+        acc[1] += r2 * w * (g.a10 * u0 + g.a11 * u1);
+        acc[2] += r2 * w * (g.a20 * u0 + g.a21 * u1 + g.a22 * u2);
+        acc[4] += r2 * (-w * d.x * u0) * g.a00;
+        acc[5] += r2 * (-w * d.y * u0);
+        acc[6] += r2 * (-w * d.y * u1) * g.a11;
+        acc[7] += r2 * (-w * d.z * u0);
+        acc[8] += r2 * (-w * d.z * u1);
+        acc[9] += r2 * (-w * d.z * u2) * g.a22;
+        // What the gaussian is answerable for of the residual:
+        // its share of the voxel times the square, for the
+        // densify round's split (v2sSplitFlags).
+        if (mv.x > 1e-20) acc[10] += (w / mv.x) * 0.25 * r2 * r2;
+    } else if (params.mode == 2) {
+        // EM: the voxel's density, shared by responsibility.
+        if (mv.x > 1e-20) {
+            const float c = rho * w / mv.x;
+            acc[0] += c;
+            acc[1] += c * d.x; acc[2] += c * d.y; acc[3] += c * d.z;
+            acc[4] += c * d.x * d.x; acc[5] += c * d.x * d.y; acc[6] += c * d.x * d.z;
+            acc[7] += c * d.y * d.y; acc[8] += c * d.y * d.z; acc[9] += c * d.z * d.z;
+        }
+    } else if (rho > 0.0 && mv.x > 1e-20) {
+        const float share = w / mv.x;
+        const float4 mv1 = model[v * 2 + 1];
+        const float3 targetColour = unpackColour(vox.z);
+        const float tHat = mv.y / mv.x;
+        const float3 cHat = float3(mv.z, mv.w, mv1.x) / mv.x;
+        acc[0] += 2.0 * rho * (tHat - vox.y) * share;
+        acc[1] += 2.0 * rho * (cHat.x - targetColour.x) * share;
+        acc[2] += 2.0 * rho * (cHat.y - targetColour.y) * share;
+        acc[3] += 2.0 * rho * (cHat.z - targetColour.z) * share;
+        // The Hessian's row sum, not its diagonal: the shares at
+        // a voxel add to one, so this bounds the coupling
+        // between overlapping gaussians (Gershgorin) and the
+        // step cannot overshoot. The diagonal alone did, by
+        // about the overlap, and drove temperatures to 0.
+        acc[4] += 2.0 * rho * share;
+    }
+}
+
 groupshared float gGrad[64 * 14];
 
 /// One group a slot: its gradient over the voxels in its box. `mode` 0 the
@@ -968,62 +1143,7 @@ void v2sBackward(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
                         const uint3 c = uint3(k >> 6, (k >> 3) & 7u, k & 7u);   // NanoVDB's own order
                         const int3 ijk = o + int3(c);
                         if (any(ijk < vlo) || any(ijk > vhi)) continue;
-                        const float3 x = float3(ijk) + 0.5;
-                        const float3 d = x - g.mu;
-                        const float u0 = g.a00 * d.x + g.a10 * d.y + g.a20 * d.z;
-                        const float u1 = g.a11 * d.y + g.a21 * d.z;
-                        const float u2 = g.a22 * d.z;
-                        const float q = u0 * u0 + u1 * u1 + u2 * u2;
-                        if (q >= kReachQ) continue;
-                        const float w = g.sigma * exp(-0.5 * q);
-                        const uint v = uint(leaf) * 512 + k;
-                        const float4 mv = model[v * 2 + 0];
-                        const float4 vox = voxelOf(uint(leaf), k);
-                        const float rho = vox.w > 0.5 ? max(vox.x, 0.0) : 0.0;
-                        if (params.mode == 0) {
-                            const float r2 = 2.0 * (mv.x - rho);
-                            // d rho^/d log sigma = w; d/d mu = w P d = w A u;
-                            // d/d A_ij = -w d_i u_j; a diagonal by its log, times A_jj.
-                            acc[3] += r2 * w;
-                            acc[0] += r2 * w * (g.a00 * u0);
-                            acc[1] += r2 * w * (g.a10 * u0 + g.a11 * u1);
-                            acc[2] += r2 * w * (g.a20 * u0 + g.a21 * u1 + g.a22 * u2);
-                            acc[4] += r2 * (-w * d.x * u0) * g.a00;
-                            acc[5] += r2 * (-w * d.y * u0);
-                            acc[6] += r2 * (-w * d.y * u1) * g.a11;
-                            acc[7] += r2 * (-w * d.z * u0);
-                            acc[8] += r2 * (-w * d.z * u1);
-                            acc[9] += r2 * (-w * d.z * u2) * g.a22;
-                            // What the gaussian is answerable for of the residual:
-                            // its share of the voxel times the square, for the
-                            // densify round's split (v2sSplitFlags).
-                            if (mv.x > 1e-20) acc[10] += (w / mv.x) * 0.25 * r2 * r2;
-                        } else if (params.mode == 2) {
-                            // EM: the voxel's density, shared by responsibility.
-                            if (mv.x > 1e-20) {
-                                const float c = rho * w / mv.x;
-                                acc[0] += c;
-                                acc[1] += c * d.x; acc[2] += c * d.y; acc[3] += c * d.z;
-                                acc[4] += c * d.x * d.x; acc[5] += c * d.x * d.y; acc[6] += c * d.x * d.z;
-                                acc[7] += c * d.y * d.y; acc[8] += c * d.y * d.z; acc[9] += c * d.z * d.z;
-                            }
-                        } else if (rho > 0.0 && mv.x > 1e-20) {
-                            const float share = w / mv.x;
-                            const float4 mv1 = model[v * 2 + 1];
-                            const float3 targetColour = unpackColour(vox.z);
-                            const float tHat = mv.y / mv.x;
-                            const float3 cHat = float3(mv.z, mv.w, mv1.x) / mv.x;
-                            acc[0] += 2.0 * rho * (tHat - vox.y) * share;
-                            acc[1] += 2.0 * rho * (cHat.x - targetColour.x) * share;
-                            acc[2] += 2.0 * rho * (cHat.y - targetColour.y) * share;
-                            acc[3] += 2.0 * rho * (cHat.z - targetColour.z) * share;
-                            // The Hessian's row sum, not its diagonal: the shares at
-                            // a voxel add to one, so this bounds the coupling
-                            // between overlapping gaussians (Gershgorin) and the
-                            // step cannot overshoot. The diagonal alone did, by
-                            // about the overlap, and drove temperatures to 0.
-                            acc[4] += 2.0 * rho * share;
-                        }
+                        gatherVoxel(g, uint(leaf), k, ijk, acc);
                     }
                 }
             }
@@ -1044,6 +1164,79 @@ void v2sBackward(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
         }
         grad[slot * 4 + t] = e;
     }
+}
+
+/// One thread a (gaussian, leaf) pair, gaussian-major: the sums over the
+/// voxels of the leaf inside the gaussian's box -- only those, one after
+/// another -- into the pair's own entries (`gradMode` 1 the geometry's, 2 EM's, 3 the attributes'). A
+/// large gaussian's work is then as many threads as the leaves it meets, and
+/// no pair waits on a reduction: a box meets a leaf over a few dozen voxels.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void v2sBackwardPairs(uint3 tid: SV_DispatchThreadID) {
+    const uint p = tid.x;
+    if (p >= params.pairCount) return;
+    const uint slot = slotPairs[p * 2 + 0];
+    const uint leaf = slotPairs[p * 2 + 1];
+    float3 half;
+    bool alive;
+    const Gauss g = gaussOfRecord(slot, half, alive);
+    float acc[12];
+    for (uint k = 0; k < 12; ++k) acc[k] = 0.0;
+    const int3 o = leafOrigin(leaf);
+    const int3 lo = max(int3(floor(g.mu - half)) - o, int3(0));
+    const int3 hi = min(int3(floor(g.mu + half)) - o, int3(7));
+    if (alive && all(hi >= lo)) {
+        const bool attributes = params.gradMode == 3;
+        // A checkerboard: the voxels whose index sum has this step's parity,
+        // each counted twice -- the sums' expectation over two steps, half
+        // the voxels a step.
+        const bool half2 = params.checkerboard != 0;
+        const int parity = int(params.step & 1u);
+        for (int cx = lo.x; cx <= hi.x; ++cx) {
+            for (int cy = lo.y; cy <= hi.y; ++cy) {
+                int cz = lo.z;
+                if (half2 && ((o.x + cx + o.y + cy + o.z + cz + parity) & 1) != 0) ++cz;
+                for (; cz <= hi.z; cz += half2 ? 2 : 1) {
+                    const uint k = uint(cx) * 64u + uint(cy) * 8u + uint(cz);
+                    const uint v = leaf * 512 + k;
+                    // The geometry's and EM's sums read eight bytes a voxel;
+                    // the attributes' the voxel and the mixture's weighted sums.
+                    const float2 f = fitted[v];
+                    const float4 vox = attributes ? voxelOf(leaf, k) : float4(0.0);
+                    const float4 mv = attributes ? model[v * 2 + 0] : float4(f.x, 0.0, 0.0, 0.0);
+                    const float mv4 = attributes ? model[v * 2 + 1].x : 0.0;
+                    voxelSums(g, float3(o + int3(cx, cy, cz)) + 0.5, mv, mv4, vox, f.y, acc);
+                }
+            }
+        }
+    }
+    const float scale = params.checkerboard != 0 ? 2.0 : 1.0;
+    pairGrad[p * 3 + 0] = scale * float4(acc[0], acc[1], acc[2], acc[3]);
+    pairGrad[p * 3 + 1] = scale * float4(acc[4], acc[5], acc[6], acc[7]);
+    pairGrad[p * 3 + 2] = scale * float4(acc[8], acc[9], acc[10], acc[11]);
+}
+
+/// One thread a slot: its pairs' sums added in their order (its box's
+/// cells'), into its gradient as v2sBackward lays it out.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void v2sGatherPairs(uint3 tid: SV_DispatchThreadID) {
+    const uint slot = tid.x;
+    if (slot >= params.capacity) return;
+    const uint n = slotBins[slot];
+    const uint first = slotBins[params.capacity + slot];
+    float4 e0 = float4(0.0), e1 = float4(0.0), e2 = float4(0.0);
+    for (uint i = 0; i < n; ++i) {
+        const uint p = first + i;
+        e0 += pairGrad[p * 3 + 0];
+        e1 += pairGrad[p * 3 + 1];
+        e2 += pairGrad[p * 3 + 2];
+    }
+    grad[slot * 4 + 0] = e0;
+    grad[slot * 4 + 1] = e1;
+    grad[slot * 4 + 2] = e2;
+    grad[slot * 4 + 3] = float4(0.0);
 }
 
 /// One thread a slot: an Adam step on the geometry, held to the sizes a
@@ -1149,15 +1342,31 @@ void v2sAttributes(uint3 tid: SV_DispatchThreadID) {
 
 /// The leaf cells a slot's box covers, clamped to the grid's box; false
 /// for a dead slot.
-bool boxCells(uint slot, out int3 clo, out int3 chi) {
+bool boxCells(uint slot, float slack, out int3 clo, out int3 chi) {
     clo = int3(0); chi = int3(-1);
     if (slot >= params.capacity) return false;
     const float4 r0 = records[slot * 4 + 0];
     const float4 r3 = records[slot * 4 + 3];
     if (r3.w < 0.5) return false;
-    clo = max(floorDiv8(int3(floor(r0.xyz - r3.xyz))) - params.cellLo.xyz, int3(0));
-    chi = min(floorDiv8(int3(floor(r0.xyz + r3.xyz))) - params.cellLo.xyz, params.cellExtent.xyz - 1);
+    clo = max(floorDiv8(int3(floor(r0.xyz - r3.xyz - slack))) - params.cellLo.xyz, int3(0));
+    chi = min(floorDiv8(int3(floor(r0.xyz + r3.xyz + slack))) - params.cellLo.xyz, params.cellExtent.xyz - 1);
     return true;
+}
+
+/// One thread a slot: whether its box has left the cells it was binned over
+/// (or it lives and was not binned), into kCounterRebin. Lists that hold a
+/// gaussian whose box no longer meets a leaf cost a test, not a result: the
+/// forward pass checks each box, and a pair whose leaf the box misses sums
+/// nothing.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void v2sBinCheck(uint3 tid: SV_DispatchThreadID) {
+    const uint slot = tid.x;
+    int3 clo, chi;
+    if (!boxCells(slot, 0.0, clo, chi)) return;
+    const int3 lo = binBoxes[slot * 2 + 0].xyz;
+    const int3 hi = binBoxes[slot * 2 + 1].xyz;
+    if (any(clo < lo) || any(chi > hi)) InterlockedOr(counters[kCounterRebin], 1u);
 }
 
 /// One thread a leaf: its cursor cleared, and (`mode` 0) its count.
@@ -1176,22 +1385,73 @@ void v2sBinClear(uint3 tid: SV_DispatchThreadID) {
 [numthreads(64, 1, 1)]
 void v2sBinSlots(uint3 tid: SV_DispatchThreadID) {
     const uint slot = tid.x;
+    if (slot >= params.capacity) return;
     int3 clo, chi;
-    if (!boxCells(slot, clo, chi)) return;
-    for (int cx = clo.x; cx <= chi.x; ++cx) {
-        for (int cy = clo.y; cy <= chi.y; ++cy) {
-            for (int cz = clo.z; cz <= chi.z; ++cz) {
-                const int leaf = leafAtCell(int3(cx, cy, cz));
-                if (leaf < 0) continue;
-                if (params.mode == 0) {
-                    InterlockedAdd(bins[uint(leaf)], 1u);
-                } else {
-                    uint at;
-                    InterlockedAdd(bins[2 * params.leafCount + uint(leaf)], 1u, at);
-                    pairs[bins[params.leafCount + uint(leaf)] + at] = slot;
+    bool alive;
+    if (params.mode == 0) {
+        // The cells the widened box covers, kept for v2sBinCheck and the fill.
+        alive = boxCells(slot, params.binSlack, clo, chi);
+        binBoxes[slot * 2 + 0] = int4(clo, 0);
+        binBoxes[slot * 2 + 1] = int4(chi, 0);
+    } else {
+        clo = binBoxes[slot * 2 + 0].xyz;
+        chi = binBoxes[slot * 2 + 1].xyz;
+        alive = true;
+    }
+    uint met = 0;
+    const uint start = params.mode == 1 ? slotBins[params.capacity + slot] : 0u;
+    if (alive) {
+        for (int cx = clo.x; cx <= chi.x; ++cx) {
+            for (int cy = clo.y; cy <= chi.y; ++cy) {
+                for (int cz = clo.z; cz <= chi.z; ++cz) {
+                    const int leaf = leafAtCell(int3(cx, cy, cz));
+                    if (leaf < 0) continue;
+                    if (params.mode == 0) {
+                        InterlockedAdd(bins[uint(leaf)], 1u);
+                    } else {
+                        uint at;
+                        InterlockedAdd(bins[2 * params.leafCount + uint(leaf)], 1u, at);
+                        pairs[bins[params.leafCount + uint(leaf)] + at] = slot;
+                        // The same pair gaussian-major, in the box's own
+                        // order (no race): what the gradient walks.
+                        slotPairs[(start + met) * 2 + 0] = slot;
+                        slotPairs[(start + met) * 2 + 1] = uint(leaf);
+                    }
+                    ++met;
                 }
             }
         }
+    }
+    if (params.mode == 0) slotBins[slot] = met;
+}
+
+/// One group: where each slot's pairs start (an exclusive scan of the
+/// counts, in slot order). Its total is the leaves' (v2sBinScan).
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void v2sSlotScan(uint3 gtid: SV_GroupThreadID) {
+    const uint t = gtid.x;
+    const uint total = params.capacity;
+    const uint slice = (total + 255) / 256;
+    const uint from = min(t * slice, total);
+    const uint to = min(from + slice, total);
+    uint sum = 0;
+    for (uint i = from; i < to; ++i) sum += slotBins[i];
+    gScan[t] = sum;
+    GroupMemoryBarrierWithGroupSync();
+    if (t == 0) {
+        uint running = 0;
+        for (uint k = 0; k < 256; ++k) {
+            const uint here = gScan[k];
+            gScan[k] = running;
+            running += here;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    uint at = gScan[t];
+    for (uint i = from; i < to; ++i) {
+        slotBins[total + i] = at;
+        at += slotBins[i];
     }
 }
 
@@ -1439,12 +1699,37 @@ void v2sUnder(uint3 tid: SV_DispatchThreadID) {
     if (v >= params.leafCount * 512) return;
     const float4 vox = voxelOf(v / 512, v % 512);
     const float rho = vox.w > 0.5 ? vox.x : 0.0;
-    const bool under = rho - model[v * 2].x > params.threshold;
+    const bool under = rho - fitted[v].x > params.threshold;
     if (params.mode == 0) {
         if (under) InterlockedAdd(counters[kCounterCount], 1u);
     } else {
         flags[v] = under ? 1u : 0u;
     }
+}
+
+static const uint kHistogramBins = 2048;
+
+/// The residuals the mixture leaves under, rho - rho^, counted into
+/// kHistogramBins equal bins over (threshold, thresholdHigh]: `mode` 0 one
+/// thread a bin, cleared; 1 one thread a voxel. Two passes (the whole range,
+/// then the bin the count crosses in) put the births' threshold where a
+/// bisection's 24 counts did.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void v2sUnderHistogram(uint3 tid: SV_DispatchThreadID) {
+    if (params.mode == 0) {
+        if (tid.x < kHistogramBins) histogram[tid.x] = 0u;
+        return;
+    }
+    const uint v = tid.x;
+    if (v >= params.leafCount * 512) return;
+    const float4 vox = voxelOf(v / 512, v % 512);
+    const float rho = vox.w > 0.5 ? vox.x : 0.0;
+    const float r = rho - fitted[v].x;
+    const float lo = params.threshold, hi = params.thresholdHigh;
+    if (!(r > lo) || r > hi) return;
+    const uint bin = min(uint((r - lo) / (hi - lo) * float(kHistogramBins)), kHistogramBins - 1);
+    InterlockedAdd(histogram[bin], 1u);
 }
 
 /// One thread a new gaussian: at the k-th chosen voxel, into the k-th free slot.
@@ -1463,7 +1748,7 @@ void v2sSpawn(uint3 tid: SV_DispatchThreadID) {
     const float s = max(params.minStd, 1.0);
     g.a00 = 1.0 / s; g.a11 = 1.0 / s; g.a22 = 1.0 / s;
     g.a10 = 0.0; g.a20 = 0.0; g.a21 = 0.0;
-    g.sigma = max(vox.x - model[v * 2].x, 1e-6);
+    g.sigma = max(vox.x - fitted[v].x, 1e-6);
     storeState(slot, g, vox.y, params.hasColour != 0 ? unpackColour(vox.z) : float3(1.0));
 }
 

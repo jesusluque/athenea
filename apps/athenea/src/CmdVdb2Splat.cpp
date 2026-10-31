@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -52,6 +53,9 @@ struct Options {
     uint32_t                 iterations = 100;
     uint32_t                 emIterations = 40;
     bool                     noBins = false;
+    bool                     profile = false;
+    double                   binSlack = 0.0;
+    bool                     checkerboard = false;
     double                   splitShare = 0.5;
     uint32_t                 attributeIterations = 20;
     uint32_t                 maxBlock = 64;
@@ -282,6 +286,9 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
     number(job, "iterations", o.iterations);
     number(job, "emIterations", o.emIterations);
     number(job, "binned", o.noBins ? 0.0 : 1.0);
+    number(job, "profile", o.profile ? 1.0 : 0.0);
+    number(job, "binSlack", o.binSlack);
+    number(job, "checkerboard", o.checkerboard ? 1.0 : 0.0);
     number(job, "splitShare", o.splitShare);
     number(job, "attributeIterations", o.attributeIterations);
     number(job, "maxBlock", o.maxBlock);
@@ -306,6 +313,26 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
              static_cast<uint32_t>((*told)[7]), 1u << static_cast<uint32_t>((*told)[6]),
              static_cast<double>((*told)[3]));
     cli::out("vdb2splat: the fit took %.2f s (the effect, end to end)\n", seconds);
+    if (const std::vector<float>* syncs = (*rendered)->attached("syncs"); syncs != nullptr && syncs->size() >= 2) {
+        cli::out("vdb2splat: %u readbacks, the kernels loaded in %.1f ms, the leaves' lists built %u times\n",
+                 static_cast<uint32_t>((*syncs)[0]), static_cast<double>((*syncs)[1]),
+                 syncs->size() >= 3 ? static_cast<uint32_t>((*syncs)[2]) : 0u);
+    }
+    if (o.profile) {
+        // Each kernel's time, waited for one by one: the largest first.
+        std::vector<std::pair<double, std::string>> spent;
+        double total = 0.0;
+        for (const auto& [name, values] : (*rendered)->attachments()) {
+            if (name.rfind("profile:", 0) != 0 || values.empty()) continue;
+            spent.emplace_back(values[0], name.substr(8));
+            total += values[0];
+        }
+        std::sort(spent.begin(), spent.end(), std::greater<>());
+        for (const auto& [ms, name] : spent) {
+            cli::out("vdb2splat: profile %-22s %9.1f ms %5.1f %%\n", name.c_str(), ms, 100.0 * ms / std::max(total, 1e-9));
+        }
+        cli::out("vdb2splat: profile %-22s %9.1f ms\n", "(kernels, waited)", total);
+    }
     if (count == 0) return Error(ErrorCode::InvalidArgument, "vdb2splat: no gaussian came out");
     auto gaussians = viewOf(context, *rendered, "vdb2splat.records");
     if (!gaussians) return std::move(gaussians).error();
@@ -563,6 +590,10 @@ void addVdb2Splat(CLI::App& app) {
                                                       "gaussians (the rest are born at the worst voxels)")
         ->check(CLI::Range(0.0, 1.0));
     cmd->add_flag("--no-bins", o->noBins, "the forward pass over every gaussian for every leaf (for a timing)");
+    cmd->add_option("--bin-slack", o->binSlack, "voxels a box is widened by in the leaves' lists, which are then "
+                    "rebuilt only when a box leaves them (0: every iteration)");
+    cmd->add_flag("--checkerboard", o->checkerboard, "each Adam step's gradient over half the voxels, alternating");
+    cmd->add_flag("--profile", o->profile, "wait for every kernel and print each one's time (slower; a breakdown)");
     cmd->add_option("--iterations", o->iterations, "Adam steps on the geometry, after the EM steps");
     cmd->add_option("--attribute-iterations", o->attributeIterations, "Jacobi steps on temperature and Cd");
     cmd->add_option("--max-block", o->maxBlock, "the largest block a gaussian starts from, voxels a side")

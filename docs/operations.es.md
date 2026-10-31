@@ -916,7 +916,10 @@ tracer dibuja como dibuja cualquier volumen.
 | `--densify-every` | entero | `20` | iteraciones entre rondas de densificar y podar; ninguna después del 70 % de ellas |
 | `--learning-rate` | número | `0.1` | el paso de Adam, en unidades de log para el pico y la diagonal del factor y en desviaciones para el centro; decae cien veces a lo largo de los pasos de Adam |
 | `--split-share` | de 0 a 1 | `0.5` | la parte de los huecos nuevos de una ronda de densificación que parte las gaussianas responsables de más residuo, cada una en dos a lo largo de su eje más largo; el resto nace en los peores vóxeles |
-| `--no-bins` | flag | apagado | la pasada hacia delante sobre todas las gaussianas para cada hoja, descartadas por su caja, en vez de la lista de cada hoja: el ajuste como era antes del binning, para medir tiempos |
+| `--no-bins` | flag | apagado | la pasada hacia delante sobre todas las gaussianas para cada hoja, descartadas por su caja, en vez de la lista de cada hoja, y el gradiente un grupo por gaussiana: el ajuste como era antes del binning, para medir tiempos |
+| `--bin-slack` | número ≥ 0, vóxeles | `0` | cuánto se ensancha la caja de una gaussiana en las listas de las hojas, que se conservan entonces de una iteración a otra hasta que una caja sale de las celdas de hoja sobre las que se repartió; `0` las rehace en cada iteración. El resultado no depende de ello; en smoke2 un margen hizo el ajuste más lento |
+| `--checkerboard` | flag | apagado | el gradiente de cada paso de Adam sumado sobre los vóxeles de una paridad, alternando de un paso a otro, contados dos veces: la mitad de los vóxeles por paso (smoke2 con 50k y 300 pasos: 3,98 s frente a 5,21, el error de densidad 0,0395 frente a 0,0377) |
+| `--profile` | flag | apagado | el procesador espera a cada kernel e imprime el tiempo de cada uno, el mayor primero: un desglose, más lento que el ajuste que mide |
 | `--density-scale` | número | `1` | de densidad a extinción por unidad del mundo: para los rayos de `--measure` y la opacidad que se escribe para un visor estándar |
 | `--measure` | flag | apagado | imprime el error L2 relativo de la vuelta sobre los vóxeles activos y su mayor diferencia, y la transmitancia en forma cerrada frente al ratio tracking a través de la entrada a lo largo de `--rays` segmentos aleatorios |
 | `--rays` | entero | `4096` | `--measure` |
@@ -2953,7 +2956,9 @@ hoja: el origen de la hoja en espacio de índices y luego sus 512 vóxeles en
 el orden de NanoVDB (x el más lento, z el más rápido), cada uno (densidad,
 temperatura, Cd como rgba8 en los bits de un float, activo 0 o 1). Sus filas
 no pueden llevar relleno, ni las de la salida. La salida guarda cuatro
-entradas por gaussiana en el espacio de índices de la grid -- (centro, σ),
+entradas por gaussiana en el espacio de índices de la grid desplazado medio
+vóxel (el valor de un vóxel en ijk + 0,5; los de OpenVDB y del path tracer
+están en ijk) -- (centro, σ),
 (A00, A10, A11, A20), (A21, A22, temperatura, Cd rgba8), (las semiextensiones
 de su caja a 3,5 desviaciones, 1) --, donde A es el factor de Cholesky
 inferior de la precisión, G(x) = exp(−|Aᵀ(x − μ)|² / 2); su tamaño es el hueco
@@ -2968,6 +2973,9 @@ del presupuesto, un cuarto de sus entradas.
 | `pruneMass` | número | `1e-6` | se va una gaussiana cuya masa es menor que esta parte del total |
 | `hasTemperature`, `hasColour` | booleano | `0` | si `Grid` las lleva (las pone el host) |
 | `binned` | booleano | `1` | lo contrario de `--no-bins` |
+| `binSlack` | número ≥ 0, vóxeles | `0` | `--bin-slack` |
+| `checkerboard` | booleano | `0` | `--checkerboard` |
+| `profile` | booleano | `0` | `--profile`: se espera a cada kernel y su tiempo se adjunta como `profile:<kernel>` (ms) |
 | `splitShare` | de 0 a 1 | `0.5` | `--split-share` |
 | `keepSlots` | booleano | `0` | cada hueco escrito en su sitio, los muertos a cero, para que el siguiente frame de una secuencia arranque de ellos; `gaussians` dice entonces la capacidad como escritas y las vivas en noveno lugar |
 | `dt` | número | `1` | con los clips `Previous` y `Velocity` (opcionales): frames sobre los que el flujo lleva las gaussianas. `Previous` es la salida del frame anterior (`keepSlots`); `Velocity`, el flujo en los vóxeles de las hojas dispuesto como `Grid`, (u, activo) en vóxeles por frame |
@@ -2976,6 +2984,8 @@ Adjunta `gaussians`: las escritas, el presupuesto, las hojas, el error L2
 relativo del ajuste sobre los vóxeles activos, las gaussianas que tenía el
 primer corte, las iteraciones, el nivel del bloque más grueso (2^nivel
 vóxeles de lado) y las menos gaussianas que permiten los bloques más gruesos.
+Y `syncs`: las lecturas que esperó el procesador, la carga de los kernels en
+ms y cuántas veces se construyeron las listas de las hojas.
 
 ## 8. Referencia
 
