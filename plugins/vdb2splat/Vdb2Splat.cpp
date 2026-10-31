@@ -328,7 +328,9 @@ private:
                     slotPairs = quads((room * 2 + 3) / 4);
                     pairGrad = quads(room * 3);
                     if (!pairs.isValid() || !slotPairs.isValid() || !pairGrad.isValid()) {
-                        return fail("vdb2splat: no room for the leaves' lists");
+                        request.complaint = "vdb2splat: no room for the leaves' lists (" + std::to_string(total) +
+                                            " (gaussian, leaf) pairs; a smaller maxBlock makes fewer)";
+                        return false;
                     }
                     pairsRoom = room;
                     buffers[14] = pairs;
@@ -469,7 +471,10 @@ private:
             const aofx::Buffer state = quads(uint64_t{u.capacity} * 4);
             const aofx::Buffer adam = quads(uint64_t{u.capacity} * 8);
             const aofx::Buffer grad = quads(uint64_t{u.capacity} * 4);
-            const aofx::Buffer model = quads(voxels * 2);
+            // The attributes' weighted sums a voxel (32 bytes), only where
+            // there are attributes to fit: the mixture itself is `fitted`'s.
+            const bool attributes = u.hasTemperature != 0 || u.hasColour != 0;
+            const aofx::Buffer model = quads(attributes ? voxels * 2 : 1);
             const aofx::Buffer list = quads((uint64_t{region} + u.capacity + 3) / 4);
             for (const aofx::Buffer* b : {&leafMap, &nodes, &coarse, &partial, &flags, &state, &adam, &grad, &model,
                                           &list}) {
