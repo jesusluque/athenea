@@ -2063,7 +2063,9 @@ rehacen cuando cambian las mallas, sus materiales o cuáles de ellas emiten --
 al cargar una escena, al editar un material -- y mientras un frame se
 reproduce solo se mueven y se reponderan. Apagado, el path tracer toma sus
 triángulos emisores de una tabla plana por potencia, como antes, y el raster
-muestra solo su brillo.
+muestra solo su brillo. De una forma u otra, en un frame trazado con volúmenes
+una colisión en un medio los muestrea como lo hace una superficie, y su luz le
+llega a través de los medios que haya entre ambos.
 
 El raster ilumina las mallas por ellas en forma cerrada
 (`athenea:meshLightSamples` 0, el valor por defecto): cada tile de 16 x 16 del

@@ -1044,9 +1044,12 @@ void endGroups(uint at, uint pixels, Groups g, float alpha, float totalSamples) 
 /// a frame that has volumes; stubs that scatter nothing otherwise, so a
 /// frame without compiles exactly the kernel it always did.
 const char* kVolumes = R"(
-static const bool kEmissive = false;
-static const uint emissiveOn = 0;
-float emissiveWord(uint i) { return 0.0; }
+// Emitting triangles as a light (EmissiveTable.h), in a frame with media as
+// in one without: a collision in a medium samples them as a surface does.
+static const bool kEmissive = true;
+StructuredBuffer<float>        emissiveTable;
+uniform uint                   emissiveOn;
+float emissiveWord(uint i) { return emissiveTable[i]; }
 static const bool kVolumes = true;
 StructuredBuffer<uint> volumeWords;   // world::VolumeSet's words: header, records, grids, leaf maxima
 /// The first real collision along the ray among the frame's volumes before
@@ -1084,7 +1087,7 @@ float mediumTransmittanceAny(float3 origin, float3 direction, float tMin, float 
 
 const char* kNoVolumes = R"(
 static const bool kVolumes = false;
-// Emitting triangles as a light (EmissiveTable.h): a frame without media only.
+// Emitting triangles as a light (EmissiveTable.h).
 static const bool kEmissive = true;
 StructuredBuffer<float>        emissiveTable;
 uniform uint                   emissiveOn;
@@ -1961,14 +1964,17 @@ float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crosse
 }
 
 /// The same at a point inside a medium: the phase function for the lobes,
-/// no surface to offset from, the lights chosen by power.
-float3 gatherLightMedium(float3 p, float3 wo, float g, uint2 pixel, uint sample, uint bounce, uint mask,
+/// no surface to offset from, the lights chosen by power -- in what is left
+/// of the choice after the emitting triangles' `share` (the caller takes
+/// those, as at a surface).
+float3 gatherLightMedium(float3 p, float3 wo, float g, float share, uint2 pixel, uint sample, uint bounce, uint mask,
                          out uint group) {
     group = 0;
     if (lightCount == 0) {
         return float3(0.0);
     }
-    const LightChoice choice = chooseLight(lights, lightCount, random(pixel, sample, bounce, 11u));
+    const float pick = (random(pixel, sample, bounce, 11u) - share) / max(1.0 - share, 1.0e-9);
+    const LightChoice choice = chooseLight(lights, lightCount, saturate(pick));
     if (!choice.valid) {
         return float3(0.0);
     }
@@ -2018,7 +2024,7 @@ float3 gatherLightMedium(float3 p, float3 wo, float g, uint2 pixel, uint sample,
         uint rng = mediumSeed(pixel, sample, bounce, 25u);
         transmittance = mediumTransmittanceAny(p, ls.wi, 1.0e-4 * max(1.0, length(p)), ls.distance, rng);
     }
-    return f * ls.radiance * transmittance * tint / (ls.pdf * choice.probability);
+    return f * ls.radiance * transmittance * tint / (ls.pdf * choice.probability * (1.0 - share));
 }
 
 void tracePathsAt(uint2 group, uint index) {
@@ -2211,6 +2217,8 @@ R"(    bool firstShaded = false;
         uint   lightStepBounce = 0;   // and the bounce of the vertex that chose it
         Found  lightPoint;
         float3 lightScale = float3(0.0);
+        bool   mediumResume = false;   // the light point was a medium collision's, and the path goes on from it
+        bool   mediumEnds = false;     // or ends there
         float  previousPdf = 0.0;     // the material's density for the direction that reached `found`
         bool   previousWeighs = false;   // and whether emission met there is weighed against it
         // Where that direction was drawn: the last vertex that sampled its
@@ -2248,24 +2256,78 @@ R"(    bool firstShaded = false;
                     // L_e (1 - exp(-tau)), as a glowing gas does.
                     carried += throughput * glow * (float3(1.0) - albedo);
                     throughput *= albedo;
-                    const float3 direct = gatherLightMedium(p, -d, g, tid, sample, bounce, mask, group);
-                    carried += throughput * direct;
-                    if (kLightGroups && path.groupsIndirect == 0u) {
-                        if (path.groupsIndirect == 0u) addGroup(groups, group, throughput * direct * opacity);
+                    const bool mediumGoesOn = bounce - crossed < path.bounces && kTraces;
+                    // THE EMITTING TRIANGLES FROM A MEDIUM, as from a surface:
+                    // their share of the choice draws a point on one, the
+                    // phase stands for the lobes, and the shadow ray is
+                    // dimmed by the media it crosses as a light's is. The
+                    // point is shaded on the next step (lightStep), and the
+                    // path then goes on from here (mediumResume). Weighed
+                    // against the phase's own draw, whose ray meets the same
+                    // emitter: the phase's density is the other strategy's.
+                    // A point in a medium has no normal: the tree's choice
+                    // is then by distance and orientation alone.
+                    const float share = emissiveShare();
+                    const float pickEmitter = random(tid, sample, bounce, 11u);
+                    bool towardEmitter = false;
+                    if (share > 0.0 && pickEmitter < share) {
+                        const LightPoint lp = sampleEmissive(p, float3(0.0), pickEmitter / share,
+                                                             float3(random2(tid, sample, bounce, 3u),
+                                                                    random(tid, sample, bounce, 23u)));
+                        const float phase = lp.valid ? hgPhase(dot(-d, lp.wi), g) : 0.0;
+                        const float shortOf = 10.0 * rayMargin(length(p));
+                        if (phase > 0.0 && lp.distance > 2.0 * shortOf) {
+                            float3 through = pathShadow(p, lp.wi, lp.wi, lp.distance - shortOf, kLightUnlinked, mask);
+                            if (kSplatShadows && any(through > float3(0.0))) {
+                                through *= splatVisibility(p, lp.wi, lp.wi, lp.distance);
+                            }
+                            if (any(through > float3(0.0))) {
+                                uint lightRng = mediumSeed(tid, sample, bounce, 27u);
+                                const float transmittance =
+                                    mediumTransmittanceAny(p, lp.wi, 1.0e-4 * max(1.0, length(p)), lp.distance - shortOf, lightRng);
+                                float weight = 1.0;
+                                if (mediumGoesOn && path.mis != 0) {
+                                    weight = lp.weighPdf * lp.weighPdf / (lp.weighPdf * lp.weighPdf + phase * phase);
+                                }
+                                lightScale = throughput * phase * through * transmittance * weight / lp.pdf;
+                                lightPoint = lp.found;
+                                lightStepBounce = bounce;
+                                towardEmitter = any(lightScale > float3(0.0));
+                                lightStep = towardEmitter;
+                            }
+                        }
+                    } else {
+                        const float3 direct = gatherLightMedium(p, -d, g, share, tid, sample, bounce, mask, group);
+                        carried += throughput * direct;
+                        if (kLightGroups && path.groupsIndirect == 0u) {
+                            if (path.groupsIndirect == 0u) addGroup(groups, group, throughput * direct * opacity);
+                        }
                     }
-                    if (bounce - crossed >= path.bounces || !kTraces) {
+                    if (!mediumGoesOn) {
+                        if (towardEmitter) {
+                            mediumResume = true;
+                            mediumEnds = true;
+                            continue;
+                        }
                         break;
                     }
-                    d = hgSample(-d, g, float2(mediumRandom(rng), mediumRandom(rng)));
+                    const float3 wo = -d;
+                    d = hgSample(wo, g, float2(mediumRandom(rng), mediumRandom(rng)));
                     o = p;
                     const PathHit hit = traceNearestFrom(o, d, 1.0e-4 * max(1.0, length(o)), mask, true);
                     found = foundHit(hit, o, d);
                     tHit = hit.seen.x == 0 ? 1.0e30 : hit.t;
-                    previousWeighs = false;
+                    // What the phase's ray meets of the emitters is weighed
+                    // against the draw above, where that drew any.
+                    previousWeighs = share > 0.0;
+                    previousPdf = hgPhase(dot(wo, d), g);
+                    previousFrom = p;
+                    previousNormal = float3(0.0);
                     if (bounce == 0) {
                         directPart = carried;
                     }
                     ++bounce;
+                    mediumResume = towardEmitter;
                     continue;
                 }
                 if (!found.valid) {
@@ -2342,6 +2404,18 @@ R"(                    }
                              lightScale * shaded.stack.emission * opacity);
                 }
                 lightStep = false;
+                // A collision in a medium chose that point: the path goes on
+                // from where the collision sent it, or ends there.
+                if (mediumResume) {
+                    mediumResume = false;
+                    if (mediumEnds) {
+                        break;
+                    }
+                    if (bounce == 1) {
+                        directPart = carried;
+                    }
+                    continue;
+                }
             } else {
                 // TRANSPARENT OPACITY (UsdPreviewSurface 2.6, opacityMode 0).
                 //
@@ -2523,7 +2597,16 @@ R"(                    }
                             if (!(throughSplats > 0.0)) {
                                 continue;
                             }
-                            lightScale = throughput * f * glassThrough * weight * throughSplats / lp.pdf;
+                            // And through the media between, as a light's
+                            // shadow ray is (1 without).
+                            float throughMedia = 1.0;
+                            if (kVolumes) {
+                                uint lightRng = mediumSeed(tid, sample, bounce, 27u);
+                                throughMedia = mediumTransmittanceAny(cur.inputs.positionWorld, lp.wi,
+                                                                      1.0e-3 * max(1.0, length(cur.inputs.positionWorld)),
+                                                                      lp.distance - shortOf, lightRng);
+                            }
+                            lightScale = throughput * f * glassThrough * weight * throughSplats * throughMedia / lp.pdf;
                             lightPoint = lp.found;
                             lightStep = true;
                             lightStepBounce = bounce;

@@ -2227,8 +2227,9 @@ the same size and radiance in its place (one bounce, 64x48): deep frames of
 8192 paths agree to relMSE 4.1e-7, and at 32 paths the error is 8.7e-5 sampled
 as a light against 11.75 by the material's rays alone.
 
-**Not done.** Emitting triangles are not sampled from inside media, nor
-under motion at their shutter slice (the table is the frame's). A table of
+**Not done.** Emitting triangles are not sampled under motion at their
+shutter slice (the table is the frame's). From inside media they are now
+(M9, *Emitting triangles from a medium*). A table of
 millions of triangles accumulates in float: a triangle whose power is below
 the running total's precision is sampled with a rounded probability.
 
@@ -3222,6 +3223,32 @@ visibility finds nothing, and every sample walks its camera ray. Checked as
 the furnace through Hydra with no mesh at all -- a `DomeLight` of radiance 1
 and an albedo-one `Volume`: 4278 pixels read 1.00044, 0.44 standard errors
 from the dome.
+
+### Emitting triangles from a medium
+
+A frame with any volume compiled its path tracing kernel with the emitting
+triangles off (`kEmissive` false in the volumes' variant), so a scene lit by
+a glowing mesh lost its light the moment a volume entered it: the panel was
+met only by the rays the phase and the materials sent. Both variants now
+compile the emitters, and a collision in a medium draws them as a surface
+does: their share of the choice (`emissiveShare`, their power against the
+lights') picks a point on a triangle -- through the mesh lights' tree or the
+flat table -- the phase stands for the lobes, and the shadow ray is
+ratio-tracked through the media as a light's is. The point is shaded on the
+next step, as a surface's is, and the path then goes on from the collision
+(`mediumResume`). The phase's own ray is weighed against that draw by the
+power heuristic (`previousWeighs` with the phase's density), since it meets
+the same emitters. A surface's draw of an emitter is dimmed by the media in
+between too. A point in a medium has no normal: `lightImportance` takes a
+zero normal as facing every way, so the tree chooses there by distance and
+orientation alone.
+
+**Checked** (`[usd][meshlights][volume]`): a scattering box (albedo 0.8,
+sigma 0.5) under a 1 x 1 emitting panel, over the floor, against a
+RectLight of the panel's size and radiance in its place: deep frames of 8192
+paths agree to relMSE 5.2e-6 through the flat table and 5.0e-6 through the
+tree, and at 32 paths the panel's frames read 9.3e-4 and 8.9e-4 against the
+rect light's 8.6e-4 -- as noisy as the light is.
 
 ### Not done
 

@@ -2001,7 +2001,9 @@ by the material's rays. The clusters are made again when the meshes, their
 materials or which of them emit change -- a stage loading, a material
 edited -- and only moved and reweighed while a frame plays. Off, the path
 tracer draws its emitting triangles from a flat table by power, as before,
-and the raster shows their glow alone.
+and the raster shows their glow alone. Either way, in a path traced frame
+with volumes a collision in a medium samples them as a surface does, and
+their light reaches it through the media in between.
 
 The raster lights meshes by them in closed form (`athenea:meshLightSamples`
 0, the default): each 16 x 16 tile of the frame takes a cut of up to 16

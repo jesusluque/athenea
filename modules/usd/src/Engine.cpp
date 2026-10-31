@@ -3365,8 +3365,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         // The emitting triangles, for the path tracer's next event estimation:
         // probed and weighed on the device again whenever what they depend on
         // changed -- the scene, its positions, the materials, anything the
-        // revision counts. Not through media, whose kernel does not sample them.
-        if (pathTracing && frame.volumeCount == 0) {
+        // revision counts. In a frame with media too: a collision samples them.
+        if (pathTracing) {
             const EmissiveKey key{scene_->generation(), scene_->positionsRevision(), revision_.load(),
                                   materialRecords_.rhi(), scene_->instanceCount()};
             if (!emissiveTable_.has_value()) {
