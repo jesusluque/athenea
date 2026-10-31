@@ -4,6 +4,7 @@ athenea_add_module(lod
         src/Lod.cpp
         src/Athc.cpp
         src/SolidField.cpp
+        src/Solidify.cpp
     PUBLIC_LIBS
         athenea::core
         athenea::gpu

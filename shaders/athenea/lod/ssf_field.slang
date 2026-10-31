@@ -105,7 +105,7 @@ public void addBlob(FieldBlob f, float3 x, inout float4 field) {
 }
 
 /// The first sorted code at or past `key`.
-uint lowerBound(uint key, uint count) {
+public uint gridLowerBound(uint key, uint count) {
     uint lo = 0, hi = count;
     while (lo < hi) {
         const uint mid = (lo + hi) / 2;
@@ -137,8 +137,8 @@ public float4 fieldAt(float3 x, float tau) {
                     continue;
                 }
                 const uint code = cellCode(uint3(cell)) << shift;
-                const uint end = level == 0 ? count : lowerBound(code + (1u << shift), count);
-                for (uint j = lowerBound(code, count); j < end; ++j) {
+                const uint end = level == 0 ? count : gridLowerBound(code + (1u << shift), count);
+                for (uint j = gridLowerBound(code, count); j < end; ++j) {
                     addBlob(fieldBlob(gridOrder[j]), x, field);
                 }
             }
@@ -169,8 +169,8 @@ public float supportMargin(float3 x) {
                     continue;
                 }
                 const uint code = cellCode(uint3(cell)) << shift;
-                const uint end = level == 0 ? count : lowerBound(code + (1u << shift), count);
-                for (uint j = lowerBound(code, count); j < end; ++j) {
+                const uint end = level == 0 ? count : gridLowerBound(code + (1u << shift), count);
+                for (uint j = gridLowerBound(code, count); j < end; ++j) {
                     const FieldBlob f = fieldBlob(gridOrder[j]);
                     const float3 d = x - f.centre;
                     const float3 p = float3(dot(d, f.t1), dot(d, f.t2), dot(d, f.n)) * f.inverseAxes;

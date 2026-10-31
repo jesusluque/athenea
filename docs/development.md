@@ -50,7 +50,7 @@ document, the header is right.
 | 13 | light | `light/LightTable.h` — a light on the device; the mesh lights' region at the front of its light words, laid out in `shaders/athenea/light/mesh_lights.slang`; `light/LtcTable.h` — the LTC table, fitted on the device (`ltc_fit.slang`), and `ltc.slang`, a polygon's form factor and LTC integral |
 | 14 | world | `world/GpuScene.h` — the scene as every technique reads it |
 | 15 | technique | `technique/PathTracer.h`, `technique/SplatVisibility.h`, `technique/Environment.h`, `technique/DisplayTransform.h`, `technique/MaterialPrograms.h`, `technique/MeshLights.h` (emitting meshes as lights: a rebuild that clusters them, a refit a frame, and their rectangles and per-cell cuts as textures the relit splats read, `render::SplatLights::meshRects`) |
-| 16 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it); `lod/Lod.h`'s `SolidLayer` and `common/packing.slang`'s `packSolidBlob`/`packAnchor` for the SSF solid layer; `lod/SolidField.h` and `lod/ssf_field.slang` for its field and the Morton-cell neighbour grid |
+| 16 | lod | `lod/Athc.h` — **the only specification of the `.athc` format**, as a page map; `shaders/athenea/lod/lod_decimate.slang` for what a decimation keeps, `lod_attributes.slang` for what it carries (`usd::decimateStage` is the whole of it); `lod/Lod.h`'s `SolidLayer` and `common/packing.slang`'s `packSolidBlob`/`packAnchor` for the SSF solid layer; `lod/SolidField.h` and `lod/ssf_field.slang` for its field and the Morton-cell neighbour grid; `lod/Solidify.h` and `lod/ssf_solidify.slang` for solidifying a cloud, `lod/ssf_splat.slang` for drawing the layer as gaussians (Mode A) |
 | 17 | usd | `usd/MeshStage.h` (reading a stage without Hydra), `src/Engine.h` (the frame), `usd/Migrate.h` (what lucabRTrender's names became, and `athenea migrate`), `usd/ShadowCatcher.h` (where a shadow catcher stands: the ground found, the patch on it -- a light catcher's too), `usd/LightGroups.h` (a car's lamps: the stage's groups and states, their weights a frame, and `athenea lights merge`) |
 | 18 | mcp | `mcp/Server.h` — the JSON-RPC transport and what a tool is |
 | 19 | aofx | `aofx/Features.h`, `aofx/Version.h` — the ABI, copied verbatim from its own repository |
@@ -508,7 +508,7 @@ Nineteen binaries, one per area, all under `tests/`.
 | `athenea_geom_tests` | meshes, skinning, curves, subdivision |
 | `athenea_material_tests` | the texture store, the lobes, the MaterialX compiler |
 | `athenea_technique_tests` | visibility, display, materials, lights, splat shadows and visibility |
-| `athenea_lod_tests` | building levels, cut selection, `.athc` and its solid layer (`test_athc_solid.cpp`, checked by `test/ssf_check.slang`), the solid field (`test_ssf_field.cpp`, `test/ssf_field_check.slang`) |
+| `athenea_lod_tests` | building levels, cut selection, `.athc` and its solid layer (`test_athc_solid.cpp`, checked by `test/ssf_check.slang`), the solid field (`test_ssf_field.cpp`, `test/ssf_field_check.slang`), solidifying (`test_solidify.cpp`, `test/ssf_solidify_check.slang`) |
 | `athenea_volume_tests` | volumes |
 | `athenea_usd_tests` | the delegate end to end |
 | `athenea_storm_oracle_tests` | Storm as the geometry oracle; its own process and device, and `HDX_MSAA_SAMPLE_COUNT=1` |

@@ -16504,3 +16504,52 @@ probes tested), the grid's 1e-6 on both; every other count is the same as on Met
 
 **Not done:** smooth-min between anchors in the field itself (the function and its check are here; anchors
 that meet at an edge come with phase 2).
+
+### Phase 2a: a cloud solidified, and drawn again (Mode A)
+
+The user's decisions (31 Oct): `solidify` runs **in the engine** (`lod::Solidifier`, subcommands in
+`apps/athenea` as `decimate`), not as an AOFX bundle -- a bundle sees images only, and would have had to
+carry the field, the Morton grid and the sort again without the checks of phase 1; each blob's **normal is
+stored** for now (a `packNormal` word; phase 4 measures whether it can be derived and dropped); Mode A
+carries a TX cloud's appearance by **the gaussian each blob came from** (`solidSource`) until the anchors'
+codebook exists.
+
+**The pipeline** (`lod/ssf_solidify.slang`), every count read back and nothing else:
+
+1. Each gaussian a candidate blob: its two larger scales the tangent radii (times `radiusScale`, 2), its
+   thin axis the normal (signed by the shading normal where there is one), θ the larger axis's turn in the
+   normal's frame, its DC the colour. A candidate if opaque (≥ 0.5), flat (thin ≤ 0.25 of middle) and not
+   glass (`lodKeptApart`). One anchor, its thickness half the candidates' mean middle radius.
+2. Coherence: a blob whose neighbours' normals do not agree -- weighted mean |n_i · n_j| under 0.9, or
+   fewer than two neighbours -- goes back to the residuals. In doubt, residual.
+3. Weights, ridge, normals -- see below.
+4. Of two blobs nearer than a quarter of their radius whose normals agree, one: the other stays absorbed.
+
+**The plan's "projection to the isosurface" was ill-posed, and is replaced.** A sheet of blobs centred on
+a surface has the field's maximum on the sheet, so F = 0 is two sheets at ±δ, δ = c √(1 − (τ/C)^(1/3))
+where the field on the sheet is C; at the centres the gradient vanishes and "move to the zero set" has no
+direction. And C follows the sampling's density, so δ would too: an uneven sampling would draw a bumpy
+surface. So: **each blob's weight is scaled until the field at its centre is C = 1** (a partition of unity
+over the sheet; three rounds), which puts the zero set at the same δ everywhere; **each centre moves along
+its normal to the field's ridge** (Newton on the derivative along the normal, steps at most c/2) -- what a
+noisy capture's surface scatters about; and **each normal becomes the field's gradient on the outer zero
+set**, signed as it was.
+
+**Mode A** (`lod/ssf_splat.slang`, `Solidifier::toSplats`): each blob a flat gaussian -- its tangent radii
+over `radiusScale`, a thin axis of a tenth of the smaller, its frame, its colour, its source's opacity,
+harmonics and shading normal -- then the residuals as they were, one cloud.
+
+**Checked** (`tests/lod/test_solidify.cpp`, `test/ssf_solidify_check.slang`) on 12000 flat gaussians on a
+unit sphere, 1500 round ones in a shell round it and 300 flat ones alone and turned anyhow, on Metal:
+
+| | |
+|---|---|
+| candidates / absorbed / blobs / residuals | 12300 / 12000 (87.0 % of all, 100 % of the sphere) / 12000 / 1800 |
+| blobs from the sphere; residuals not from it | 12000 of 12000; 1800 of 1800 (every round and every loose one) |
+| blobs off the sphere by more than 2e-3 (worst) | 0 (1.7e-4) |
+| normals off the radius by more than 2.6° / 10° | 22 (0.18 %) / 0: the gradient ripples a little between blobs |
+| Mode A against the cloud, two views, 320 × 240 | p99 2 and 1 of 255, max 84 and 83: the silhouette, where the thin axis differs (a tenth against the input's twentieth) |
+| time, **debug build, indicative only** (the Mac in use by other sessions, load 2.8–5.6) | solidify 37 ms for 13800; a frame at 320 × 240, median of 5: original 6.9 and 6.8 ms, Mode A 5.9 and 6.2 ms |
+| size a primitive, raw | a blob 32 B + 4 B of stored normal = 36 B (+ 4 B of source index while Mode A carries TX by it), against a gaussian's 32 B + harmonics (4 B at degree 0, as here; 96 B at 3) + its extras; on a TX cloud the transfer dominates both, which this layer does not touch yet |
+
+The release timings and sizes that count are phase 2b's, on the pawn.
