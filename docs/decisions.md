@@ -17305,6 +17305,7 @@ known; the fit the median of three runs):
 | the gradient a thread a pair, its voxels one after another | 5.21 | 0.03772 | yes (the explosion: 2.80 → 3.13 s, its large gaussians a thread's long loop) |
 | no box check when the lists are rebuilt anyway (slack 0): 351 readbacks fewer | 5.24 | 0.03772 | yes; the readbacks cost nothing measurable |
 | `--checkerboard`: each Adam step's gradient over the voxels of one parity, alternating, counted twice | 3.98 | 0.03949 | as an option: 4.7 % more error |
+| the gradient's pairs split over 2 / 4 / 8 threads, each a run of the leaf's x rows (no thread on a whole leaf) | 5.31 / 5.49 / 5.98 | 0.0377 | no: the gradient's kernel 2.85 → 2.39 s at 8, its gather 0.25 → 1.49 s |
 
 The fits after, against before (median of three each):
 
