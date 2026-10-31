@@ -872,6 +872,11 @@ void Engine::removeVolume(const pxr::SdfPath& id) {
 }
 
 void Engine::setVolumeField(const pxr::SdfPath& id, VolumeFieldAsset asset) {
+    // A hint that names no role is said, and the header's vector type kept.
+    if (auto role = io::vectorRoleFromHint(asset.roleHint); !role) {
+        log::warn("hdAthenea: field {}: {}", id.GetString(), role.error().toString());
+        asset.roleHint.clear();
+    }
     revision_.fetch_add(1);
     const std::lock_guard<std::mutex> held(guard_);
     volumeFields_[id] = std::move(asset);
@@ -3331,10 +3336,20 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
                         if (field == volumeFields_.end() || field->second.path.empty()) {
                             continue;   // its field has not arrived
                         }
-                        const auto key = std::make_pair(field->second.path, field->second.gridName);
+                        // A grid is known by its file and its selection: the
+                        // name, the index among that name's grids and the
+                        // type the field declares (io::VdbSelection).
+                        const VolumeFieldAsset& asset = field->second;
+                        const auto key = std::make_pair(asset.path, asset.gridName + '\x1f' +
+                                                                        std::to_string(asset.fieldIndex) + '\x1f' +
+                                                                        asset.dataType);
                         auto cached = nanoGrids_.find(key);
                         if (cached == nanoGrids_.end()) {
-                            auto read = io::readVdbGrid(field->second.path, field->second.gridName);
+                            io::VdbSelection selection;
+                            selection.name = asset.gridName;
+                            selection.index = asset.fieldIndex;
+                            selection.dataType = asset.dataType;
+                            auto read = io::readVdbGrid(asset.path, selection);
                             ++gridReads_;
                             if (!read) {
                                 log::warn("hdAthenea: volume {}: {}", id.GetString(), read.error().toString());

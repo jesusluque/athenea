@@ -85,7 +85,7 @@ TEST_CASE("an animated volume's grid cache stays within its budget, and a frame 
     if (!io::haveOpenVdb()) {
         SKIP("built without OpenVDB");
     }
-    // 64^3 voxels of 0.05: 512 leaves, a little over a megabyte a grid.
+    // 64^3 voxels of 0.05: 512 leaves (and 217 more the medium reaches).
     constexpr int kFrames = 8;
     std::vector<fs::path> files;
     for (int f = 1; f <= kFrames; ++f) {
@@ -116,8 +116,11 @@ TEST_CASE("an animated volume's grid cache stays within its budget, and a frame 
     (*renderer)->setPathSamples(64);
     (*renderer)->setPathBounces(0);
     (*renderer)->setPathTotal(64);
-    // Two grids' worth and a little: the third evicts the first.
-    (*renderer)->setVolumeCacheMB(3.0);
+    // Two grids' worth and a little: the third evicts the first. A grid is
+    // 3.81 MB: the box's 512 leaves, the 217 before it its lookups reach
+    // (VolumeSet's medium), and -- the box standing at the index origin --
+    // a node of each level for each of the seven octants below it.
+    (*renderer)->setVolumeCacheMB(8.0);
     const uint32_t w = 64, h = 48;
     const render::Camera camera = frontCamera();
     std::optional<gpu::Buffer> first;
@@ -139,7 +142,7 @@ TEST_CASE("an animated volume's grid cache stays within its budget, and a frame 
     CHECK(counts.reads == kFrames);
     CHECK(counts.grids == 2);
     CHECK(counts.evictions == kFrames - 2);
-    CHECK(largest <= uint64_t{3} * 1048576);
+    CHECK(largest <= uint64_t{8} * 1048576);
     // Frame 1's grid left long ago: read again, and the same frame.
     auto again = (*renderer)->render(camera, 1.0, w, h, "rt");
     if (!again) FAIL(again.error().toString());
@@ -317,4 +320,87 @@ TEST_CASE("a light whose link leaves a volume out lights none of its medium, and
     CHECK(dark->max == 0);
     CHECK(same->p99 <= 1);
     CHECK(same->over2 < 20);
+}
+
+// FIELD SELECTION THROUGH HYDRA: an OpenVDBAsset reads UsdVol's fieldIndex
+// and fieldDataType. A file holds two grids named density, faint then
+// dense; the field asking for index 1 draws what a file holding only the
+// dense grid draws, and one declaring a type the grid does not hold is
+// refused (said once) and draws as no volume.
+TEST_CASE("an OpenVDBAsset's fieldIndex and fieldDataType choose the grid it reads",
+          "[usd][gpu][volume][fields]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const auto grid = [](double value) {
+        io::VdbGridSpec g;
+        g.name = "density";
+        g.voxelSize = 0.1;
+        g.boxes = {io::VdbBox{{0, 0, 0}, {32, 32, 32}, value, {0, 0, 0}}};
+        return g;
+    };
+    const fs::path two = scratch("two_densities.vdb");
+    const io::VdbGridSpec both[] = {grid(0.05), grid(1.5)};
+    REQUIRE(io::writeVdbGrids(two, both));
+    const fs::path one = scratch("dense_only.vdb");
+    const io::VdbGridSpec dense[] = {grid(1.5)};
+    REQUIRE(io::writeVdbGrids(one, dense));
+    const auto stage = [&](const std::string& name, const fs::path& vdb, const std::string& extra) {
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        out << kPlaneAndSun
+            << "def Volume \"Smoke\"\n{\n"
+               "    double3 xformOp:translate = (-1.6, -1.6, -3.8)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+               "    rel field:density = </Smoke/density>\n"
+               "    float primvars:athenea:densityScale = 1\n"
+               "    color3f primvars:athenea:albedo = (0, 0, 0)\n"
+               "    def OpenVDBAsset \"density\"\n    {\n"
+               "        asset filePath = @" << vdb.string() << "@\n"
+               "        token fieldName = \"density\"\n" << extra << "    }\n}\n";
+        return path;
+    };
+    const fs::path none = scratch("selection_none.usda");
+    {
+        std::ofstream out(none);
+        out << kPlaneAndSun;
+    }
+    const uint32_t w = 81, h = 61;
+    const auto frame = [&](const fs::path& path) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setPathSamples(64);
+        (*renderer)->setPathBounces(0);
+        (*renderer)->setPathTotal(64);
+        auto image = (*renderer)->render(frontCamera(), 1.0, w, h, "rt");
+        if (!image) FAIL(image.error().toString());
+        return upload(*gpu, *image);
+    };
+    gpu::Buffer byIndex = frame(stage("selection_index.usda", two, "        int fieldIndex = 1\n"));
+    gpu::Buffer byFile = frame(stage("selection_file.usda", one, ""));
+    gpu::Buffer first = frame(stage("selection_first.usda", two, ""));
+    gpu::Buffer wrongType =
+        frame(stage("selection_type.usda", two, "        token fieldDataType = \"float3\"\n"));
+    gpu::Buffer withNone = frame(none);
+    auto same = render::compareImages(*gpu->library, byIndex, byFile, w, h);
+    auto faint = render::compareImages(*gpu->library, first, byFile, w, h);
+    auto refused = render::compareImages(*gpu->library, wrongType, withNone, w, h);
+    REQUIRE(same);
+    REQUIRE(faint);
+    REQUIRE(refused);
+    std::printf("  fieldIndex 1 against the dense grid's own file: p99 %u, %llu over 2; the first grid against it: "
+                "%llu over 2; a float3 declared: against no volume p99 %u, %llu over 2\n",
+                same->p99, static_cast<unsigned long long>(same->over2), static_cast<unsigned long long>(faint->over2),
+                refused->p99, static_cast<unsigned long long>(refused->over2));
+    CHECK(same->p99 <= 1);
+    CHECK(same->over2 < 20);
+    CHECK(faint->over2 > 500);
+    CHECK(refused->p99 <= 1);
+    CHECK(refused->over2 < 20);
 }

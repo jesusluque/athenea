@@ -1909,6 +1909,15 @@ stores as half floats), double, int32, vec3f, vec3d and mask. Read as a
 density, a vector grid is its length, an int grid its value and a mask 1
 where active. Bool, int64 and integer vector grids are refused with an error
 naming the type, and a level set must be of floats.
+An `OpenVDBAsset`'s `fieldName` names the grids it reads from, in the
+file's order; `fieldIndex` counts among the grids of that name, from 0;
+`fieldDataType` (half, float, double, int, half3, float3, double3, mask)
+must agree with the grid the index picks, or, without an index, picks the
+first of the name that holds it; `vectorDataRoleHint` (None, Point, Normal,
+Vector, Color) says what a vector field's values are, over the file's own
+vector type. A field that names no grid of the file, or one of another
+type, is refused with the reason, said once, and its Volume is not drawn
+if it is the density.
 
 **Light groups**, which no schema declares yet. A cloud's lamps are a primvar
 a group on its field, and its groups and states are attributes on Scope prims

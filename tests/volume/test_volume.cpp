@@ -490,3 +490,117 @@ TEST_CASE("every grid type reads on the device as it was filled, and a medium on
         CHECK(std::abs(zS) < 3.5);
     }
 }
+
+// FIELD SELECTION (UsdVol's fieldName, fieldIndex, fieldDataType): a file
+// holding three grids named density -- float, vec3f, double -- and one
+// named temperature. The name picks the grids of that name in the file's
+// order, the index counts among them, the declared type must agree with the
+// grid the index picks and, without an index, picks the first that does.
+// Each grid chosen is checked on the device by its values, which tell the
+// grids apart. A vector grid's role comes from the header's vector type.
+TEST_CASE("a field's name, index and data type pick the grid UsdVol says, checked on the device by its values",
+          "[volume][gpu][types][fields]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const fs::path dir = fs::temp_directory_path() / "athenea-tests" / "volume";
+    fs::create_directories(dir);
+    const fs::path path = dir / "selection.vdb";
+    const auto spec = [](const char* name, io::VdbType type, double value, std::array<double, 3> vector,
+                         io::VectorRole role = io::VectorRole::None) {
+        io::VdbGridSpec g;
+        g.name = name;
+        g.type = type;
+        g.voxelSize = 0.1;
+        g.boxes = {io::VdbBox{{0, 0, 0}, {16, 16, 16}, value, vector}};
+        g.vectorRole = role;
+        return g;
+    };
+    const io::VdbGridSpec grids[] = {
+        spec("density", io::VdbType::Float, 0.25, {0, 0, 0}),
+        spec("density", io::VdbType::Vec3f, 0, {0.375, 0.5, 0}, io::VectorRole::Vector),
+        spec("density", io::VdbType::Double, 0.75, {0, 0, 0}),
+        spec("temperature", io::VdbType::Float, 3.0, {0, 0, 0}),
+    };
+    if (auto written = io::writeVdbGrids(path, grids); !written) FAIL(written.error().toString());
+    auto names = io::vdbGridNames(path);
+    if (!names) FAIL(names.error().toString());
+    std::printf("  the file's grids: %zu\n", names->size());
+    CHECK(names->size() == 4);
+
+    auto typedKernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/volume_check", "volumeTypedCheck");
+    if (!typedKernel) FAIL(typedKernel.error().toString());
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 4, "selection.counts");
+    struct Pick {
+        const char* what;
+        io::VdbSelection selection;
+        uint32_t nanoType;
+        float inside[4];
+    };
+    const Pick picks[] = {
+        {"density alone: the first", {"density", -1, ""}, 1, {0.25F, 0, 0, 1}},
+        {"density, index 1", {"density", 1, ""}, 6, {0.375F, 0.5F, 0, 3}},
+        {"density, index 2, double", {"density", 2, "double"}, 2, {0.75F, 0, 0, 1}},
+        {"density, float3 without an index", {"density", -1, "float3"}, 6, {0.375F, 0.5F, 0, 3}},
+        {"temperature", {"temperature", -1, ""}, 1, {3.0F, 0, 0, 1}},
+        {"no name, double", {"", -1, "double"}, 2, {0.75F, 0, 0, 1}},
+        {"no name, index 3", {"", 3, ""}, 1, {3.0F, 0, 0, 1}},
+    };
+    for (const Pick& pick : picks) {
+        auto grid = io::readVdbGrid(path, pick.selection);
+        if (!grid) FAIL(std::string(pick.what) + ": " + grid.error().toString());
+        auto set = world::VolumeSet::create(*gpu->library);
+        if (!set) FAIL(set.error().toString());
+        world::VolumeInput input;
+        input.grid = &*grid;
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            REQUIRE(set->set(batch, std::span<const world::VolumeInput>(&input, 1)));
+            REQUIRE(batch.submit(true));
+        }
+        const uint32_t zeros[4] = {};
+        REQUIRE(counts.write(*gpu->device, 0, sizeof(zeros), zeros));
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            typedKernel->dispatch(batch, {20 * 20 * 20, 1, 1}, [&](rhi::ShaderCursor c) {
+                c["words"].setBinding(set->words().rhi());
+                c["counts"].setBinding(counts.rhi());
+                c["typed"]["gridWord"].setData(set->placement(grid->scalar != nullptr ? 1 : 0).gridWord);
+                c["typed"]["type"].setData(pick.nanoType);
+                c["typed"]["lo"].setData(int32_t{-2});
+                c["typed"]["hi"].setData(int32_t{18});
+                c["typed"]["inside"].setData(pick.inside, sizeof(pick.inside));
+                const int32_t lo[3] = {0, 0, 0};
+                const int32_t hi[3] = {16, 16, 16};
+                c["typed"]["boxMin"].setData(lo, sizeof(lo));
+                c["typed"]["boxMax"].setData(hi, sizeof(hi));
+            });
+            REQUIRE(batch.submit(true));
+        }
+        uint32_t c[4] = {};
+        REQUIRE(counts.read(*gpu->device, 0, sizeof(c), c));
+        std::printf("  %s: grid '%s' (%s), %u of %u voxels off its values, type %s\n", pick.what,
+                    grid->name.c_str(), io::vdbTypeName(grid->type), c[0], c[2], c[1] == 0 ? "right" : "WRONG");
+        CHECK(c[0] == 0);
+        CHECK(c[1] == 0);
+        CHECK(c[2] == 8000);
+        if (pick.nanoType == 6) {
+            CHECK(grid->vectorRole == io::VectorRole::Vector);
+        }
+    }
+    // What is refused, with the reason.
+    const auto refused = [&](const io::VdbSelection& selection, ErrorCode code) {
+        auto grid = io::readVdbGrid(path, selection);
+        REQUIRE_FALSE(grid);
+        std::printf("  refused: %s\n", grid.error().toString().c_str());
+        CHECK(grid.error().code() == code);
+    };
+    refused({"density", 1, "float"}, ErrorCode::InvalidArgument);   // index 1 is the vector
+    refused({"density", 3, ""}, ErrorCode::NotFound);               // three of that name
+    refused({"temperature", -1, "double3"}, ErrorCode::InvalidArgument);
+    refused({"density", -1, "string"}, ErrorCode::Unsupported);
+    refused({"smoke", -1, ""}, ErrorCode::NotFound);
+    CHECK(io::vectorRoleFromHint("Color").value() == io::VectorRole::Color);
+    CHECK_FALSE(io::vectorRoleFromHint("Colour"));
+}

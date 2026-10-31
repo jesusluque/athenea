@@ -145,6 +145,9 @@ struct InstancerLink {
 struct VolumeFieldAsset {
     std::string path;       ///< the .vdb, resolved
     std::string gridName;   ///< the grid in it; empty: the first
+    int         fieldIndex = -1;   ///< among the grids of that name (UsdVol fieldIndex); -1 unauthored
+    std::string dataType;          ///< UsdVol fieldDataType; empty unauthored
+    std::string roleHint;          ///< UsdVol vectorDataRoleHint; empty unauthored
 };
 
 /// A volume as Sync reads it: which field is its medium, where it stands,

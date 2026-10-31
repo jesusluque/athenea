@@ -1970,6 +1970,15 @@ densidad, una rejilla vectorial es su longitud, una de enteros su valor y una
 máscara 1 donde está activa. Las rejillas bool, int64 y de vectores enteros
 se rechazan con un error que nombra el tipo, y un level set ha de ser de
 floats.
+El `fieldName` de un `OpenVDBAsset` nombra las rejillas de las que lee, en
+el orden del fichero; `fieldIndex` cuenta entre las rejillas de ese nombre,
+desde 0; `fieldDataType` (half, float, double, int, half3, float3, double3,
+mask) ha de coincidir con la rejilla que elige el índice o, sin índice,
+elige la primera de ese nombre que lo tenga; `vectorDataRoleHint` (None,
+Point, Normal, Vector, Color) dice qué son los valores de un field
+vectorial, por encima del tipo vectorial del propio fichero. Un field que no
+nombra ninguna rejilla del fichero, o una de otro tipo, se rechaza con el
+motivo, dicho una vez, y su Volume no se dibuja si es la densidad.
 
 **Grupos de luces**, que todavía no declara ningún schema. Las lámparas de una
 nube son un primvar por grupo en su field, y sus grupos y estados son

@@ -120,6 +120,19 @@ void HdAtheneaVolumeField::Sync(HdSceneDelegate* delegate, HdRenderParam* render
         } else if (name.IsHolding<std::string>()) {
             asset.gridName = name.UncheckedGet<std::string>();
         }
+        // Which of the file's grids, by UsdVol's own attributes: the index
+        // among those of the name, the type it must hold, and what a
+        // vector's values are.
+        const VtValue index = delegate->Get(id, TfToken("fieldIndex"));
+        if (index.IsHolding<int>()) {
+            asset.fieldIndex = index.UncheckedGet<int>();
+        }
+        const auto tokenOf = [&](const char* key) {
+            const VtValue v = delegate->Get(id, TfToken(key));
+            return v.IsHolding<TfToken>() ? v.UncheckedGet<TfToken>().GetString() : std::string();
+        };
+        asset.dataType = tokenOf("fieldDataType");
+        asset.roleHint = tokenOf("vectorDataRoleHint");
         engine->setVolumeField(id, std::move(asset));
     }
     *dirtyBits = Clean;

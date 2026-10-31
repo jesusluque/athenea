@@ -3391,6 +3391,33 @@ each, ratio and delta tracking along an axis are Beer-Lambert's with that
 scalar (the vectors' length, the int's 2, the mask's 1) within 1.7 standard
 errors.
 
+### Which grid a field reads
+
+An `OpenVDBAsset` was read by its `fieldName` alone, the first grid of the
+name. UsdVol says more, and it is read now (`io::VdbSelection`, from the
+headers only -- `readAllGridMetadata`, no grid read until one is chosen):
+the grids of the name in the file's order, each with its occurrence among
+those of its name (OpenVDB reads the second as `density[1]`); `fieldIndex`
+counts among them; `fieldDataType` must agree with the grid the index
+picks, and without an index it picks the first of the name that holds that
+type (half and float are a float grid, half3 and float3 a Vec3f one).
+Anything else is refused with the reason: an index past the grids of the
+name, a declared type the grid does not hold, a token not read.
+`vectorDataRoleHint` (None, Point, Normal, Vector, Color) is read over the
+header's own vector type (OpenVDB's covariant, contravariant relative and
+absolute become Normal, Vector, Point); a hint that names no role is said
+and the header's kept. The grid cache's key holds the whole selection.
+
+**Checked** (`[volume][types][fields]`): a file of four grids -- density as
+float 0.25, Vec3f (0.375, 0.5, 0) and double 0.75, then temperature 3 --
+read under seven selections, each grid checked on the device by its values
+(0 of 8000 voxels off, the header's type the expected one); five refusals
+with their reasons; the Vec3f's role Vector from its header. Through Hydra
+(`[usd][volume][fields]`), `fieldIndex = 1` of a file whose two density
+grids are faint then dense draws the frame of a file holding the dense one
+alone (p99 0, 0 pixels over 2), the first draws 4941 pixels apart, and a
+`fieldDataType = "float3"` the grid does not hold draws as no volume.
+
 ## End to end: Kitchen_set lit, and two defects only a real stage showed
 
 The plan closes with real stages through `athenea stage`. Kitchen_set with the
