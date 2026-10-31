@@ -90,19 +90,28 @@ void volumeScalarFill(uint3 tid: SV_DispatchThreadID) {
     }
 }
 
+/// A leaf's majorant: the largest density any lookup in its cell reads.
+/// Voxel values stand at integer coordinates and a lookup in [o, o + 8)
+/// reads voxels up to o + 8, so the maximum is over [o, o + 8] on each axis
+/// -- the leaf's 512 voxels, active or not, and its neighbours' first layer,
+/// a level set's tiles made fog as the medium reads them.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void volumeLeafMax(uint3 tid: SV_DispatchThreadID) {
     const uint i = tid.x;
     if (i >= params.leafCount) return;
     const NvGrid grid = nvGrid(words, params.gridWord);
-    const NvLeaf leaf = nvLeaf(words, grid, i);
+    const int3 origin = nvLeafOrigin(words, nvLeaf(words, grid, i));
+    const float width = max(params.background, 1e-30);
     float largest = 0.0;
-    for (uint n = 0; n < 512; ++n) {
-        // A level set's inactive voxels are density too, once made fog.
-        if (params.levelSet != 0u || nvLeafActive(words, leaf, n)) {
-            largest = max(largest, nvScalar(nvLeafValue(words, leaf, n)));
+    for (uint n = 0; n < 729; ++n) {
+        const int3 local = int3(int(n % 9u), int((n / 9u) % 9u), int(n / 81u));
+        const int3 ijk = origin + local;
+        float v = nvScalar(nvValueAt(words, grid, ijk));
+        if (params.levelSet != 0u && nvDimAt(words, grid, ijk) != 1u) {
+            v = saturate(-v / width);   // a tile or the background: still a distance
         }
+        largest = max(largest, v);
     }
     wordsOut[params.leafBase + i] = asuint(largest);
     InterlockedMax(majorant[params.slot], asuint(max(largest, 0.0)));

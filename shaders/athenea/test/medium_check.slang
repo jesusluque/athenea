@@ -84,7 +84,7 @@ void mediumMajorant(uint3 tid: SV_DispatchThreadID) {
 }
 
 /// The leaf walk's counts along the ray, and the distinct leaves a walk
-/// voxel by voxel finds -- the same ray, a step of a tenth of a voxel.
+/// voxel by voxel finds -- the same ray, a step of a hundredth of a voxel.
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void mediumSteps(uint3 tid: SV_DispatchThreadID) {
@@ -96,7 +96,7 @@ void mediumSteps(uint3 tid: SV_DispatchThreadID) {
     // Voxel by voxel: the leaf origin under each step, counted when it changes.
     const float3 o = mul(r.worldToIndex, float4(medium.origin, 1.0));
     const float3 d = mul(r.worldToIndex, float4(medium.direction, 0.0));
-    const float stepT = 0.1 / max(max(abs(d.x), abs(d.y)), abs(d.z));
+    const float stepT = 0.01 / max(max(abs(d.x), abs(d.y)), abs(d.z));
     int3 last = int3(0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF);
     uint distinct = 0;
     for (float t = medium.tMin; t < medium.tMax; t += stepT) {

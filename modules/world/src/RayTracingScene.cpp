@@ -184,11 +184,24 @@ Result<void> RayTracingScene::build(const GpuScene& scene, bool refit) {
         });
         ATHENEA_TRY(batch.submit(true));
     }
+    // A scene with no instance -- a frame of volumes alone -- still needs a
+    // structure for the kernels to bind. OptiX refuses a non-null instance
+    // array with a count of zero, and slang-rhi reads a null buffer's
+    // address, so there the structure holds one zeroed instance: a null
+    // handle under a visibility mask of 0, which no ray meets. Metal builds
+    // the empty structure from the buffer.
+    const bool placeholder = count == 0 && type == rhi::AccelerationStructureInstanceDescType::Optix;
+    if (placeholder) {
+        gpu::CommandBatch batch(device);
+        batch.encoder()->clearBuffer(instanceDescs_.rhi(), 0, stride);
+        batch.markDirty();
+        ATHENEA_TRY(batch.submit(true));
+    }
     rhi::AccelerationStructureBuildInput input = {};
     input.type = rhi::AccelerationStructureBuildInputType::Instances;
     input.instances.instanceBuffer = rhi::BufferOffsetPair(instanceDescs_.rhi(), 0);
     input.instances.instanceStride = static_cast<uint32_t>(stride);
-    input.instances.instanceCount = count;
+    input.instances.instanceCount = placeholder ? 1u : count;
     rhi::AccelerationStructureBuildDesc build;
     build.inputs = &input;
     build.inputCount = 1;

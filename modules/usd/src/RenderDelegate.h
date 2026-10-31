@@ -132,6 +132,7 @@ public:
     [[nodiscard]] uint32_t GetMeshLightSamples() const;
     /// athenea:volumeCacheMB, in bytes.
     [[nodiscard]] uint64_t GetVolumeCacheBytes() const;
+    [[nodiscard]] athenea::world::VolumeFilter GetVolumeFilter() const;
     /// The `athenea:lightLevel:<group>` settings, by group.
     [[nodiscard]] std::map<std::string, float> GetLightLevels() const;
     /// "athenea:domeVisible": a dome is drawn behind what the frame holds

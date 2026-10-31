@@ -15,6 +15,10 @@
 #include <pxr/imaging/hdsi/velocityMotionResolvingSceneIndex.h>
 
 #include "RenderDelegate.h"
+
+#include <mutex>
+#include <set>
+#include <string>
 #include "Resample.h"
 #include "SkelSplat.h"
 
@@ -411,6 +415,10 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     volumeCache.name = "Volume grids kept read, in MB (rt; the frame's are always kept)";
     volumeCache.key = TfToken("athenea:volumeCacheMB");
     volumeCache.defaultValue = VtValue(2048);
+    HdRenderSettingDescriptor volumeFilter;
+    volumeFilter.name = "Volume lookup between voxels: trilinear, nearest or stochastic (rt)";
+    volumeFilter.key = TfToken("athenea:volumeFilter");
+    volumeFilter.defaultValue = VtValue(TfToken("trilinear"));
     HdRenderSettingDescriptor cloudDensity;
     cloudDensity.name = "Cloud shadow density (1 is what the cloud's opacity says)";
     cloudDensity.key = TfToken("athenea:cloudShadowDensity");
@@ -418,7 +426,25 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
             total,     denoise,     adaptive,    error,       mis,        glassShadows, motion,     transferIndirect, displayBlend, reflectCloud, splatShadows,
             cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, domePrefiltered, domeVisible, splatView,
-            screenSpaceReflections, meshAntialias, meshLights, meshLightSamples, volumeCache};
+            screenSpaceReflections, meshAntialias, meshLights, meshLightSamples, volumeCache, volumeFilter};
+}
+
+athenea::world::VolumeFilter HdAtheneaRenderDelegate::GetVolumeFilter() const {
+    const VtValue value = GetRenderSetting(TfToken("athenea:volumeFilter"));
+    std::string name;
+    if (value.IsHolding<TfToken>()) name = value.UncheckedGet<TfToken>().GetString();
+    else if (value.IsHolding<std::string>()) name = value.UncheckedGet<std::string>();
+    if (name.empty()) return athenea::world::VolumeFilter::Trilinear;
+    if (const auto filter = athenea::world::volumeFilterFromName(name)) return *filter;
+    // Said once a name, and the default kept.
+    static std::mutex saidGuard;
+    static std::set<std::string> said;
+    const std::lock_guard<std::mutex> held(saidGuard);
+    if (said.insert(name).second) {
+        athenea::log::warn("hdAthenea: athenea:volumeFilter '{}' is not trilinear, nearest or stochastic; "
+                           "trilinear is used", name);
+    }
+    return athenea::world::VolumeFilter::Trilinear;
 }
 
 uint64_t HdAtheneaRenderDelegate::GetVolumeCacheBytes() const {
