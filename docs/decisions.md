@@ -17399,3 +17399,23 @@ usdc's bytes; NanoVDB's Fp4 is 4.5 times the bytes of the 20-byte cloud and furt
 (0.052 against 0.038 on smoke2), but closer in the path trace (its error is noise at the voxels, the cloud's is
 missing detail); at Fp8 the grid is seven times the cloud and close to exact. Not done: the compact file read
 back on load (the decode exists only as the kernel's own round trip), entropy coding of the words.
+
+### bunny_cloud on the device (1 Nov)
+
+openvdb.org's bunny_cloud (density only, 85 525 leaves -- 43.8 M voxels of leaves, 19.2 M active --, voxel 0.08;
+84 MB of `.vdb`, 188 MB of NanoVDB with its other grids, 140 MB its density alone) refused with "no room for the
+leaves' lists": the pool every effect allocates from is held to 2 GB on unified memory, and the fit's working
+buffers are some 60 bytes a voxel of the leaves before the lists (the leaves' picture is the host's). Two
+changes: the attributes' model buffer (32 bytes a voxel) is allocated only where there is a temperature or a Cd
+to fit -- the mixture itself is `fitted`'s 8 bytes --, and `--device-mb` sets the pool's ceiling (8192 here). No
+tiling was needed: 2.2 M (gaussian, leaf) pairs at 50k. Release, M5 Pro, the shared GPU lock, the Mac's
+interactive use not known (`~/luc/athenea-gpu/vdb2splat_opt4*.sh`); the path trace E1b's at density scale 0.25,
+512², 4096 paths, masked:
+
+| | fit s | density relative L2 | rays beyond 5 SE (of 1024) | PT relMSE (PSNR) | PT ms (64 paths) back / original | usdc |
+|---|---|---|---|---|---|---|
+| 50k, 100 steps | 8.08 | 0.1019 | 8 | 3.7·10⁻⁴ (45.7 dB) | 208.9 / 215.9 | 3.20 MB |
+| 50k, 300 steps | 21.14 | 0.0902 | 7 | 3.1·10⁻⁴ (46.5 dB) | 214.6 / 215.9 | 3.20 MB |
+
+Its profile at 100 steps is smoke2's: the gradient 50 %, the forward pass 26 %. Leaves streamed through a
+smaller pool (a cloud larger than the device) are not done.

@@ -328,7 +328,9 @@ private:
                     slotPairs = quads((room * 2 + 3) / 4);
                     pairGrad = quads(room * 3);
                     if (!pairs.isValid() || !slotPairs.isValid() || !pairGrad.isValid()) {
-                        return fail("vdb2splat: no room for the leaves' lists");
+                        request.complaint = "vdb2splat: no room for the leaves' lists (" + std::to_string(total) +
+                                            " (gaussian, leaf) pairs; a smaller maxBlock makes fewer)";
+                        return false;
                     }
                     pairsRoom = room;
                     buffers[14] = pairs;

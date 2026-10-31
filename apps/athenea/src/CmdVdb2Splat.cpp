@@ -55,6 +55,7 @@ struct Options {
     uint32_t                 emIterations = 40;
     bool                     noBins = false;
     bool                     profile = false;
+    uint32_t                 deviceMb = 2048;   // the device pool's ceiling (unified memory)
     std::string              quantise;   // "half" or "byte": the compact record, then measured from it
     std::string              compactOut; // the compact records as a file
     std::string              against;    // a .vdb of the same topology: its density measured against input's
@@ -666,6 +667,8 @@ void addVdb2Splat(CLI::App& app) {
     cmd->add_option("--compact", o->compactOut, "with --quantise: the compact records as a file");
     cmd->add_option("--against", o->against, "measure input's density against this .vdb's (the same topology) and "
                     "stop");
+    cmd->add_option("--device-mb", o->deviceMb, "the device pool's ceiling in MB on unified memory: the fit's working "
+                    "buffers (about 60 bytes a voxel of the leaves, and the leaves' lists) come out of it");
     cmd->add_flag("--profile", o->profile, "wait for every kernel and print each one's time (slower; a breakdown)");
     cmd->add_option("--iterations", o->iterations, "Adam steps on the geometry, after the EM steps");
     cmd->add_option("--attribute-iterations", o->attributeIterations, "Jacobi steps on temperature and Cd");
@@ -702,7 +705,9 @@ void addVdb2Splat(CLI::App& app) {
             cli::fail(error);
         };
         if (!io::haveOpenVdb()) fail(Error(ErrorCode::Unsupported, "this build reads no .vdb (no OpenVDB)"));
-        gpu_host::Context* context = gpu_host::installProcessContext();
+        gpu_host::ContextDesc desc;
+        desc.budgetBytes = size_t{o->deviceMb} << 20;
+        gpu_host::Context* context = gpu_host::installProcessContext(desc);
         if (context == nullptr || context->compute() == nullptr) {
             fail(Error(ErrorCode::Unsupported, "no GPU compute device for AOFX kernels (gpe has no backend here)"));
         }
