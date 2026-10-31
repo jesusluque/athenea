@@ -34,6 +34,10 @@ struct Options {
     std::string              show = "codes";
     double                   gain = 1.0;
     double                   minAlpha = 0.0;
+    std::string              mask;
+    std::string              maskMode = "alpha";
+    double                   maskRatio = 0.9;
+    std::string              exclude;
     std::vector<std::string> paths;
 };
 
@@ -97,6 +101,12 @@ void addCompare(CLI::App& app) {
     cmd->add_option("--min-alpha", o->minAlpha,
                     "the differences only where the reference's alpha reaches this (what a volume covers)")
         ->check(CLI::Range(0.0, 1.0));
+    cmd->add_option("--mask", o->mask, "an EXR deciding which pixels the differences are taken over (--mask-mode)");
+    cmd->add_option("--mask-mode", o->maskMode, "alpha: where the mask's alpha reaches --min-alpha; darker: where "
+                                                "the reference is under --mask-ratio of the mask's luminance")
+        ->check(CLI::IsMember({"alpha", "darker"}));
+    cmd->add_option("--mask-ratio", o->maskRatio, "--mask-mode darker's share");
+    cmd->add_option("--exclude", o->exclude, "an EXR whose pixels of alpha >= --min-alpha are left out");
     cmd->add_option("--path", o->paths, "extra bundle directories (after $AOFX_PLUGIN_PATH)");
     cmd->callback([o] {
         const auto fail = [](const Error& error) {
@@ -153,6 +163,23 @@ void addCompare(CLI::App& app) {
         }
         job.params.push_back(aofx::ParamValue{"mode", {static_cast<double>(showIndex(o->show))}, {}});
         job.params.push_back(aofx::ParamValue{"gain", {o->gain}, {}});
+        for (const auto& [clip, path] : {std::pair<const char*, std::string>{"Mask", o->mask},
+                                         std::pair<const char*, std::string>{"Exclude", o->exclude}}) {
+            if (path.empty()) continue;
+            auto read = io::readExr(path);
+            if (!read) fail(read.error());
+            if (read->width != image->width || read->height != image->height) {
+                fail(Error::make(ErrorCode::InvalidArgument, "{}: {}x{} against {}x{}", path, read->width,
+                                 read->height, image->width, image->height));
+            }
+            auto loaded = load(*read);
+            if (!loaded) fail(loaded.error());
+            job.inputs.push_back({clip, *loaded});
+        }
+        if (!o->mask.empty()) {
+            job.params.push_back(aofx::ParamValue{"maskMode", {o->maskMode == "darker" ? 2.0 : 1.0}, {}});
+            job.params.push_back(aofx::ParamValue{"maskRatio", {o->maskRatio}, {}});
+        }
         if (o->minAlpha > 0.0) {
             job.params.push_back(aofx::ParamValue{"minAlpha", {o->minAlpha}, {}});
         }

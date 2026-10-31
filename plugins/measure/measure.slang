@@ -49,6 +49,10 @@ struct MeasureParams {
     int   dstOffsetX;     // the output's origin in Source's pixels
     int   dstOffsetY;
     float minAlpha;       // the differences only where Reference's alpha reaches this (0: everywhere)
+    uint  maskMode;       // 0 no Mask clip; 1 where Mask's alpha reaches minAlpha; 2 where Reference is darker than maskRatio of Mask
+    float maskRatio;
+    uint  maskStride;     // the Mask clip's, and the Exclude clip's after it (0: none)
+    uint  excludeStride;
 };
 
 StructuredBuffer<float4>    src;
@@ -58,7 +62,26 @@ RWStructuredBuffer<uint>    histogram;   // per row: 512 bins
 RWStructuredBuffer<uint>    totals;      // 512 bins, then 4 float4s: srcSum, srcMax, refSum, refMax, then the error
 RWStructuredBuffer<uint>    results;     // what the effect reads back; see measureFinish
 RWStructuredBuffer<float4>  dst;
+StructuredBuffer<float4>    mask;        // optional: what decides the pixels compared (maskMode)
+StructuredBuffer<float4>    exclude;     // optional: pixels whose alpha reaches minAlpha are left out
 ConstantBuffer<MeasureParams> params;
+
+float luminance(float4 p) { return 0.2126 * p.x + 0.7152 * p.y + 0.0722 * p.z; }
+
+/// Whether pixel (x, y) is among those the differences are taken over.
+bool compared(uint x, uint y, float4 pb) {
+    if (params.maskMode == 0u) {
+        if (pb.w < params.minAlpha) return false;
+    } else {
+        const float4 m = mask[y * params.maskStride + x];
+        if (params.maskMode == 1u && m.w < params.minAlpha) return false;
+        if (params.maskMode == 2u && !(luminance(pb) < params.maskRatio * luminance(m))) return false;
+    }
+    if (params.excludeStride != 0u && exclude[y * params.excludeStride + x].w >= max(params.minAlpha, 1e-6)) {
+        return false;
+    }
+    return true;
+}
 
 static const uint kBins = 256u;
 
@@ -146,7 +169,7 @@ void measureRows(uint3 tid: SV_DispatchThreadID) {
     for (uint x = 0; x < params.width; ++x) {
         const float4 pa = src[y * params.srcStride + x];
         const float4 pb = ref[y * params.refStride + x];
-        if (pb.w < params.minAlpha) continue;   // outside what the reference covers
+        if (!compared(x, y, pb)) continue;   // outside the pixels asked for
         histogram[row + codeDifference(pa, pb)] += 1;
 
         float worst = 0.0;
@@ -172,7 +195,7 @@ void measureRows(uint3 tid: SV_DispatchThreadID) {
     for (uint x = 0; x < params.width; ++x) {
         const float4 pa = src[y * params.srcStride + x];
         const float4 pb = ref[y * params.refStride + x];
-        if (pb.w < params.minAlpha) continue;
+        if (!compared(x, y, pb)) continue;
         float3 d = float3(encode(pa.x) - encode(pb.x), encode(pa.y) - encode(pb.y), encode(pa.z) - encode(pb.z));
         seen += dot(d, d) / 3.0;
         float ma = 0.0, mb = 0.0, aa = 0.0, bb = 0.0, ab = 0.0, n = 0.0;

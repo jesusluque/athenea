@@ -70,8 +70,12 @@ struct MeasureUniforms {
     int32_t  dstOffsetY = 0;
     /// Was padding: zero, which is what a host that does not send `minAlpha` gets.
     float    minAlpha = 0.0F;
+    uint32_t maskMode = 0;
+    float    maskRatio = 0.9F;
+    uint32_t maskStride = 0;
+    uint32_t excludeStride = 0;
 };
-static_assert(sizeof(MeasureUniforms) == 80, "must match MeasureParams exactly");
+static_assert(sizeof(MeasureUniforms) == 96, "must match MeasureParams exactly");
 
 /// Words of `results`, as measureFinish writes them.
 constexpr size_t kResultWords = 35;
@@ -115,6 +119,22 @@ public:
         reference.label = "Reference";
         reference.optional = true;
         into.inputs.push_back(reference);
+
+        // Which pixels the differences are taken over, where Reference's own
+        // alpha cannot say: `maskMode` 1 those whose Mask alpha reaches
+        // minAlpha, 2 those where Reference is darker than maskRatio of
+        // Mask (a shadow on a ground, Mask the ground unshadowed); and
+        // never those whose Exclude alpha reaches minAlpha.
+        aofx::ClipDesc maskClip;
+        maskClip.name = "Mask";
+        maskClip.label = "Mask";
+        maskClip.optional = true;
+        into.inputs.push_back(maskClip);
+        aofx::ClipDesc excludeClip;
+        excludeClip.name = "Exclude";
+        excludeClip.label = "Exclude";
+        excludeClip.optional = true;
+        into.inputs.push_back(excludeClip);
 
         into.outputs.push_back(aofx::PlaneDesc{"Color", "Colour", {"R", "G", "B", "A"}});
 
@@ -188,6 +208,25 @@ public:
             "pixels whose Reference alpha reaches this: what a volume covers, 1 - its transmittance, "
             "without the background. 0 is every pixel.";
         into.params.push_back(minAlpha);
+
+        aofx::ParamDesc maskMode;
+        maskMode.name = "maskMode";
+        maskMode.label = "Mask by";
+        maskMode.type = aofx::ParamType::Integer;
+        maskMode.defaults = {1.0};
+        maskMode.hardMin = {1.0};
+        maskMode.hardMax = {2.0};
+        maskMode.hint = "With a Mask clip: 1 the pixels whose Mask alpha reaches minAlpha, 2 those where "
+                        "Reference's luminance is under maskRatio of Mask's.";
+        into.params.push_back(maskMode);
+        aofx::ParamDesc maskRatio;
+        maskRatio.name = "maskRatio";
+        maskRatio.label = "Darker than";
+        maskRatio.type = aofx::ParamType::Double;
+        maskRatio.defaults = {0.9};
+        maskRatio.hardMin = {0.0};
+        maskRatio.hint = "maskMode 2: the share of Mask's luminance Reference must be under.";
+        into.params.push_back(maskRatio);
     }
 
     [[nodiscard]] std::vector<aofx::KernelDesc> kernels() const override {
@@ -242,6 +281,26 @@ public:
         uniforms.mode = static_cast<uint32_t>(std::clamp(std::lround(request.number("mode", 3.0)), 0L, 3L));
         uniforms.gain = static_cast<float>(std::max(request.number("gain", 1.0), 0.0));
         uniforms.minAlpha = static_cast<float>(std::clamp(request.number("minAlpha", 0.0), 0.0, 1.0));
+        const aofx::InputPlane* maskPlane = request.input("Mask");
+        const aofx::InputPlane* excludePlane = request.input("Exclude");
+        const auto sameSize = [&](const aofx::InputPlane* plane) {
+            return plane->buffer.width == source->buffer.width && plane->buffer.height == source->buffer.height;
+        };
+        const bool hasMask = maskPlane != nullptr && maskPlane->buffer.isValid();
+        const bool hasExclude = excludePlane != nullptr && excludePlane->buffer.isValid();
+        if ((hasMask && !sameSize(maskPlane)) || (hasExclude && !sameSize(excludePlane))) {
+            request.complaint = "measure: a Mask or Exclude clip of another size than Source";
+            return false;
+        }
+        if (hasMask) {
+            uniforms.maskMode =
+                static_cast<uint32_t>(std::clamp(std::lround(request.number("maskMode", 1.0)), 1L, 2L));
+            uniforms.maskRatio = static_cast<float>(std::max(request.number("maskRatio", 0.9), 0.0));
+            uniforms.maskStride = static_cast<uint32_t>(maskPlane->buffer.stride);
+        }
+        if (hasExclude) {
+            uniforms.excludeStride = static_cast<uint32_t>(excludePlane->buffer.stride);
+        }
         uniforms.dstWidth = static_cast<uint32_t>(target->buffer.width);
         uniforms.dstHeight = static_cast<uint32_t>(target->buffer.height);
         uniforms.dstStride = static_cast<uint32_t>(target->buffer.stride);
@@ -278,7 +337,9 @@ public:
                                                 histogram,
                                                 totals,
                                                 results,
-                                                target->buffer};
+                                                target->buffer,
+                                                hasMask ? maskPlane->buffer : source->buffer,
+                                                hasExclude ? excludePlane->buffer : source->buffer};
         if (!request.gpu->run(rowsKernel, aofx::Grid{uniforms.height, 1, 1}, buffers, &uniforms,
                               sizeof(uniforms)) ||
             !request.gpu->run(reduce, aofx::Grid{513, 1, 1}, buffers, &uniforms, sizeof(uniforms)) ||

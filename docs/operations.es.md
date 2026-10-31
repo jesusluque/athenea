@@ -895,6 +895,10 @@ ruta de búsqueda: uno compilado en este árbol siempre lo está.
 | `--show` | `source`, `difference`, `relative`, `codes` | `codes` | lo que dibuja `--heatmap`: el `mode` del efecto Measure (§7.1) |
 | `--gain` | número ≥ 0 | `1` | por cuánto se multiplica `--heatmap`; los números no dependen de él |
 | `--min-alpha` | de 0 a 1 | `0`, todos los píxeles | las diferencias (relMSE, las distribuciones, PSNR, SSIM) solo donde el alfa de la referencia llega a esto; el alfa de un volumen trazado es 1 − su transmitancia, así que 0,01 es donde deja pasar menos del 99 %. Las medias no se enmascaran |
+| `--mask` | ruta | ninguna | un EXR del mismo tamaño que decide los píxeles comparados en lugar del alfa de la referencia (`--mask-mode`) |
+| `--mask-mode` | `alpha` \| `darker` | `alpha` | `alpha`: donde el alfa de la máscara llega a `--min-alpha`; `darker`: donde la luminancia de la referencia está por debajo de `--mask-ratio` de la de la máscara -- una sombra sobre un suelo, la máscara el suelo trazado sin lo que la proyecta |
+| `--mask-ratio` | número ≥ 0 | `0.9` | la proporción de `darker` |
+| `--exclude` | ruta | ninguna | un EXR del mismo tamaño cuyos píxeles de alfa ≥ `--min-alpha` se dejan fuera (lo que proyecta la sombra, trazado solo) |
 | `--path` | directorio ‹repetible› | ninguno | directorios de bundles buscados después de `$AOFX_PLUGIN_PATH` |
 
 Una media conserva el signo, y una diferencia no: un horno blanco que no debe
@@ -2554,6 +2558,8 @@ implementación de `athenea compare`, y el mismo bundle carga en openFXplayer.
 | `threshold` | entero 0–255 | `2` | valores de código de 8 bits que un píxel puede diferir sin contar como por encima |
 | `window` | cuatro números, píxeles | `0 0 0 0` | X0 Y0 X1 Y1 en píxeles de Source, filas desde abajo; un X1 o Y1 de 0 es el borde. Solo las medias y los máximos |
 | `minAlpha` | número 0–1 | `0` | las diferencias solo sobre los píxeles cuyo alfa de Reference llega a esto; 0 es todos. Va en la palabra de relleno del bloque de uniforms, así que un host que no lo envía compara como antes |
+| `maskMode` | entero 1–2 | `1` | con un clip `Mask` conectado (opcional, como `Exclude`): 1 los píxeles cuyo alfa de Mask llega a `minAlpha`, 2 aquellos donde la luminancia de Reference está por debajo de `maskRatio` de la de Mask. Los píxeles cuyo alfa de `Exclude` llega a `minAlpha` no se comparan nunca |
+| `maskRatio` | número ≥ 0 | `0.9` | la proporción de `maskMode` 2 |
 
 Lo que adjunta, todo floats. Una cuenta son dos floats, `alto × 2^24 + bajo`,
 cada uno exacto (alto es 0 por debajo de 16 777 216):

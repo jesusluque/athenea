@@ -873,6 +873,10 @@ is.
 | `--show` | `source`, `difference`, `relative`, `codes` | `codes` | what `--heatmap` draws: the Measure effect's `mode` (§7.1) |
 | `--gain` | number ≥ 0 | `1` | what `--heatmap` is multiplied by; the numbers do not depend on it |
 | `--min-alpha` | 0 to 1 | `0`, every pixel | the differences (relMSE, the distributions, PSNR, SSIM) only where the reference's alpha reaches this; a path traced volume's alpha is 1 − its transmittance, so 0.01 is where it lets through less than 99 %. The means are not masked |
+| `--mask` | path | none | an EXR of the same size deciding the pixels compared instead of the reference's alpha (`--mask-mode`) |
+| `--mask-mode` | `alpha` \| `darker` | `alpha` | `alpha`: where the mask's alpha reaches `--min-alpha`; `darker`: where the reference's luminance is under `--mask-ratio` of the mask's -- a shadow on a ground, the mask the ground rendered without what casts it |
+| `--mask-ratio` | number ≥ 0 | `0.9` | `darker`'s share |
+| `--exclude` | path | none | an EXR of the same size whose pixels of alpha ≥ `--min-alpha` are left out (the caster itself, rendered alone) |
 | `--path` | directory ‹repeatable› | none | bundle directories searched after `$AOFX_PLUGIN_PATH` |
 
 A mean keeps its sign, which a difference does not: a white furnace that must
@@ -2479,6 +2483,8 @@ implementation, and the same bundle loads in openFXplayer.
 | `threshold` | integer 0–255 | `2` | 8-bit code values a pixel may differ by and not be counted as over |
 | `window` | four numbers, pixels | `0 0 0 0` | X0 Y0 X1 Y1 in Source's pixels, rows from the bottom; an X1 or Y1 of 0 is the edge. The means and the largest values only |
 | `minAlpha` | number 0–1 | `0` | the differences only over the pixels whose Reference alpha reaches this; 0 is every pixel. Added in the uniform block's padding word, so a host that does not send it compares as before |
+| `maskMode` | integer 1–2 | `1` | with a `Mask` clip wired (optional, as `Exclude`): 1 the pixels whose Mask alpha reaches `minAlpha`, 2 those where Reference's luminance is under `maskRatio` of Mask's. Pixels whose `Exclude` alpha reaches `minAlpha` are never compared |
+| `maskRatio` | number ≥ 0 | `0.9` | `maskMode` 2's share |
 
 What it attaches, floats all. A count is two floats, `high × 2^24 + low`, each
 exact (high is 0 below 16 777 216):

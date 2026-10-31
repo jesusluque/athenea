@@ -16608,3 +16608,28 @@ with the same seeds (every comparison above) do not have it.
 
 PT cost (64 paths, median of five frames): smoke2's grid given back 112–133 ms against the original's
 123–135 ms, the blob's 133–149 against 137–142: the same topology, the same cost.
+
+### Shadows of the grids given back (31 Oct)
+
+`~/luc/athenea-gpu/vdb2splat_shadow.sh`: the volume at density ×4 floating over a grey ground (a quad,
+displayColor 0.5), a normalized sun of irradiance 3 at 40° elevation casting the shadow beside it, a dome
+of 0.1; path traced at 1024², 1024 paths, the same seeds, for the original grid and the grids given back by
+50k and 10k gaussians (E1b's). This is the path tracer drawing the gaussians turned back into a grid on the
+input's topology; the gaussians drawn as a medium in the raster (proposal 105) do not exist yet. The shadow
+is judged where the original is darker than 0.9 of the ground rendered without the volume, the volume's own
+pixels (rendered alone, alpha ≥ 0.01) left out; the smoke where that alpha is ≥ 0.01. Measure takes a `Mask`
+and an `Exclude` clip for that (`athenea compare --mask --mask-mode darker --exclude`).
+
+| | shadow relMSE (PSNR) | smoke relMSE (PSNR) | ms/frame (64 paths, median of 5) |
+|---|---|---|---|
+| smoke2, original | -- | -- | 2070 |
+| smoke2, 50k (3.2 MB) | 0.0011 (40.3 dB) | 0.0061 (30.8 dB) | 2054 |
+| smoke2, 10k (0.64 MB) | 0.0046 (34.5 dB) | 0.011 (28.2 dB) | 2048 |
+| blob, original | -- | -- | 2131 |
+| blob, 50k (3.3 MB) | 4.7·10⁻⁵ (53.6 dB) | 4.2·10⁻⁴ (43.2 dB) | 2106 |
+| blob, 10k (0.64 MB) | 1.3·10⁻⁴ (49.4 dB) | 0.0023 (34.8 dB) | 2094 |
+
+The shadow is easier than the smoke seen directly: a shadow is the transmittance integrated along the sun's
+rays, which averages the density error the way the closed-form optical depth does, while the smoke seen
+head on shows its edges and wisps. The relMSE on the smoke here is lower than E1b's, which saw it against
+black: Measure's relative error divides by b² + 0.01, and in front of a grey ground b is larger.
