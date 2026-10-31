@@ -127,11 +127,42 @@ AOFX bundles.
 | [Dear ImGui](https://github.com/ocornut/imgui) | v1.92.9 | MIT (below) |
 | [aopenfx](https://github.com/jesusluque/aopenfx) (submodule) | `sparrow` branch | BSD 3-Clause (below) |
 | [spz](https://github.com/nianticlabs/spz) | vendored | MIT (section 2) |
+| [nv-codec-headers](https://github.com/FFmpeg/nv-codec-headers) (`nvEncodeAPI.h`, `dynlink_cuda.h`; Linux and Windows) | `n12.2.72.0` (`c692783`), vendored in `third_party/nv-codec-headers` | MIT (below) |
 | [OpenFX, Natron's](https://github.com/NatronGitHub/openfx) headers, support library and the Foundry extension headers in `include/nuke` (submodule) | `0759758d` | BSD 3-Clause (below); in `Athenea.ofx` only |
 
 `gpe` and `genlock` (submodules) are by athenea's author and carry no
 third-party licence of their own; gpe's copy of metal-cpp is the Apple
 component listed above.
+
+nv-codec-headers (`include/ffnvcodec/nvEncodeAPI.h`; `dynlink_cuda.h` carries the
+same terms under "Copyright (c) 2016"). Headers only: the NVIDIA driver's own
+libraries they describe are opened at run time where a driver is installed and
+are not distributed:
+
+```text
+Copyright (c) 2010-2024 NVIDIA Corporation
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation
+files (the "Software"), to deal in the Software without
+restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the software, and to permit persons to whom the
+software is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+```
 
 slang-rhi (`LICENSE`; its full Apache-2.0 text is the one in `LICENSE`):
 

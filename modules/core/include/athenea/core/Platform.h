@@ -110,6 +110,31 @@ void sleepPrecisely(std::chrono::nanoseconds duration);
 /// Vulkan buffer's memory). -1 where there is none (Windows).
 [[nodiscard]] int duplicateDescriptor(int descriptor);
 
+/// A SHARED LIBRARY OPENED AT RUN TIME, for a driver's own library the engine
+/// does not link: NVIDIA's encoder (`nvEncodeAPI64.dll`,
+/// `libnvidia-encode.so.1`) and CUDA driver (`nvcuda.dll`, `libcuda.so.1`),
+/// which exist only where that driver is installed. `LoadLibraryA` /
+/// `dlopen`; closed when this goes. Any thread.
+class SharedLibrary {
+public:
+    /// `name` as the loader searches for it (a bare name: the system's paths).
+    [[nodiscard]] static Result<SharedLibrary> open(const std::string& name);
+
+    SharedLibrary() = default;
+    SharedLibrary(SharedLibrary&& other) noexcept;
+    SharedLibrary& operator=(SharedLibrary&& other) noexcept;
+    SharedLibrary(const SharedLibrary&) = delete;
+    SharedLibrary& operator=(const SharedLibrary&) = delete;
+    ~SharedLibrary();
+
+    /// The exported `name`, or null.
+    [[nodiscard]] void* symbol(const char* name) const noexcept;
+    [[nodiscard]] bool valid() const noexcept { return handle_ != nullptr; }
+
+private:
+    void* handle_ = nullptr;
+};
+
 /// Every shared library the process has loaded, by path.
 [[nodiscard]] std::vector<std::string> loadedLibraries();
 

@@ -14,11 +14,14 @@
 //
 // WHERE EACH PLATFORM STANDS. macOS and iOS: VideoToolbox, the frame an
 // IOSurface the Metal device reads through CVMetalTextureCache
-// (src/VideoToolbox.mm, the only file here that calls a framework). Others
-// get Unsupported from the factories: NVDEC (CUDA: the frame in device
-// memory, wrapped the way gpu_host wraps buffers) and WebCodecs (a
-// VideoFrame copied plane by plane -- GPUExternalTexture converts to RGB,
-// which would alter the values) are where they go.
+// (src/VideoToolbox.mm, the only file here that calls a framework). Linux
+// and Windows: NVENC encodes (src/Nvenc.cpp), on the CUDA device's own
+// context and from its memory (`encodeDevice`), the driver's library loaded
+// at run time; with no NVIDIA driver the factory says Unsupported. Their
+// decoder and textures are Unsupported still (src/CodecNone.cpp): NVDEC
+// (CUDA: the frame in device memory, wrapped the way gpu_host wraps buffers)
+// and WebCodecs (a VideoFrame copied plane by plane -- GPUExternalTexture
+// converts to RGB, which would alter the values) are where they go.
 #pragma once
 
 #include <cstddef>
@@ -49,6 +52,26 @@ struct EncoderSettings {
     /// Frames from one key frame to the next (1: every frame a key frame).
     uint32_t keyInterval = 30;
     bool     realTime = false;
+    /// The engine's device. On CUDA, NVENC opens its session on the device's
+    /// own context, so `encodeDevice` takes the device's buffers; without
+    /// one (or another backend) it opens on the first CUDA device's primary
+    /// context and takes host samples only. VideoToolbox ignores it.
+    gpu::Device* device = nullptr;
+};
+
+/// A picture in the engine's device memory: the planes where PlanesCodec laid
+/// them (`EncodedPlanes::lumaDevice`), rows `pitch` bytes apart (0: width x
+/// the sample's bytes). The work that wrote them must have finished (the
+/// planes' encode waits for it).
+struct DevicePicture {
+    rhi::IBuffer* luma = nullptr;
+    uint64_t      lumaOffset = 0;
+    uint32_t      lumaPitch = 0;
+    /// NV12's second plane ((Cb, Cr) byte pairs, height / 2 rows), or null
+    /// for mid grey.
+    rhi::IBuffer* chroma = nullptr;
+    uint64_t      chromaOffset = 0;
+    uint32_t      chromaPitch = 0;
 };
 
 /// One frame out of the encoder, as `.athv` keeps it (Athv.h).
@@ -70,6 +93,14 @@ public:
     [[nodiscard]] virtual Result<std::vector<EncodedUnit>> encode(std::span<const std::byte> luma,
                                                                   std::span<const std::byte> chroma,
                                                                   uint64_t index) = 0;
+    /// Frame `index` from device memory, the samples never on the CPU: where
+    /// `takesDevice()`. The same units as `encode`.
+    [[nodiscard]] virtual Result<std::vector<EncodedUnit>> encodeDevice(const DevicePicture& /*picture*/,
+                                                                        uint64_t /*index*/) {
+        return Error(ErrorCode::Unsupported, "video: this encoder takes host samples only");
+    }
+    /// Whether `encodeDevice` takes the engine device's buffers.
+    [[nodiscard]] virtual bool takesDevice() const noexcept { return false; }
     /// What is left, once every frame has been given.
     [[nodiscard]] virtual Result<std::vector<EncodedUnit>> finish() = 0;
     /// Whether the encoder runs on the hardware block.

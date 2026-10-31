@@ -779,6 +779,52 @@ Result<void> replaceFile(const std::filesystem::path& from, const std::filesyste
 #endif
 }
 
+Result<SharedLibrary> SharedLibrary::open(const std::string& name) {
+    SharedLibrary library;
+#if defined(_WIN32)
+    library.handle_ = reinterpret_cast<void*>(::LoadLibraryA(name.c_str()));
+    if (library.handle_ == nullptr) {
+        return Error::make(ErrorCode::NotFound, "cannot load {} (error {})", name,
+                           static_cast<unsigned long>(::GetLastError()));
+    }
+#else
+    library.handle_ = ::dlopen(name.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (library.handle_ == nullptr) {
+        const char* why = ::dlerror();
+        return Error::make(ErrorCode::NotFound, "cannot load {}: {}", name, why != nullptr ? why : "not found");
+    }
+#endif
+    return library;
+}
+
+SharedLibrary::SharedLibrary(SharedLibrary&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {}
+
+SharedLibrary& SharedLibrary::operator=(SharedLibrary&& other) noexcept {
+    if (this != &other) {
+        SharedLibrary dropped(std::move(*this));
+        handle_ = std::exchange(other.handle_, nullptr);
+    }
+    return *this;
+}
+
+SharedLibrary::~SharedLibrary() {
+    if (handle_ == nullptr) return;
+#if defined(_WIN32)
+    ::FreeLibrary(reinterpret_cast<HMODULE>(handle_));
+#else
+    ::dlclose(handle_);
+#endif
+}
+
+void* SharedLibrary::symbol(const char* name) const noexcept {
+    if (handle_ == nullptr) return nullptr;
+#if defined(_WIN32)
+    return reinterpret_cast<void*>(::GetProcAddress(reinterpret_cast<HMODULE>(handle_), name));
+#else
+    return ::dlsym(handle_, name);
+#endif
+}
+
 void removeFile(const std::filesystem::path& path) noexcept {
 #if defined(_WIN32)
     ::DeleteFileW(path.c_str());

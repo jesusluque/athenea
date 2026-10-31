@@ -533,12 +533,12 @@ exacta, la baja por el códec. La croma se queda en gris medio, así que el
 
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
-| `input` | directorio, o ficheros de splats, obligatorio | — | un directorio de páginas (`stream.txt`, todos sus frames), o ficheros leídos como un frame |
+| `input` | directorio, o ficheros de splats, obligatorio | — | un directorio de páginas (`stream.txt`, todos sus frames; una página `f<frame>_c<página>.spz`, o `.ply` donde no hay `.spz`), o ficheros leídos como un frame |
 | `-o`, `--output` | ruta, obligatoria | — | el `.athv`; se escribe con un nombre parcial y se renombra al completarse |
 | `--bits` | `8` o `10` | `8` | HEVC Main o Main 10; una posición tiene 16 o 20 bits |
 | `--range` | `PRIMERO:ÚLTIMO` | todos los frames | los frames de la secuencia por índice desde 0, ambos incluidos |
-| `--quality` | 0 a 1 | `0.5` | la calidad constante del codificador |
-| `--megabits` | Mbit/s | por calidad | una tasa media en su lugar |
+| `--quality` | 0 a 1 | `0.5` | la calidad constante del codificador: la escala propia de VideoToolbox; en NVENC un mismo QP para toda imagen, round(51 x (1 - calidad)) (0.5 es QP 26) |
+| `--megabits` | Mbit/s | por calidad | una tasa media en su lugar (NVENC: tasa variable, con un pico del doble de la media) |
 | `--keyint` | imágenes | el ritmo (un segundo) | entre fotogramas clave: donde puede empezar un reproductor |
 | `--intra` | flag | no | cada imagen un fotograma clave |
 | `--hi` | `side` o `video` | `side` | las partes altas de la posición junto al vídeo (exactas) o como planos propios (por el códec, y no exactas: `docs/decisions.md`, "Video planes") |
@@ -571,7 +571,8 @@ exacta, la baja por el códec. La croma se queda en gris medio, así que el
 | `--rendition` | 0..65535 | `0` | el id que lleva cada registro, uno por rendición de una escalera (`athv_stream.py`) |
 | `--rate` | frames por segundo | el de la secuencia, o 30 | se guarda en el fichero; `athenea stream` lo reproduce a ese ritmo |
 | `--hevc` | ruta | ninguna | el vídeo solo como Annex B, para `ffprobe`; sus imágenes son planos, no una imagen |
-| `--check` | flag | no | cada imagen se decodifica otra vez con el decodificador hardware, vuelve a gaussianas en el dispositivo y se mide contra su fuente |
+| `--check` | flag | no | cada imagen se decodifica otra vez con el decodificador hardware, vuelve a gaussianas en el dispositivo y se mide contra su fuente. Necesita un decodificador hardware: donde no lo hay (Linux, Windows) se rechaza diciéndolo; allí se comprueba con `--units` |
+| `--units` | `.athv` | ninguno | las unidades del vídeo tomadas de este fichero -- el codificador de otra máquina, los mismos frames y las mismas opciones -- en lugar del codificador de esta máquina; con `--check`, el flujo de ese codificador por el decodificador de esta máquina contra la misma fuente. Un fichero cuyas imágenes se disponen de otro modo (bits, colores, tiles) se rechaza |
 | `--each-a-frame` | flag | no | los ficheros de splats dados son una secuencia, cada fichero un frame en el orden dado; sin él son las páginas de un frame |
 
 **Tamaños.** Una imagen tiene como mucho 8192 x 8192 de área y 16384 de lado
@@ -596,8 +597,16 @@ una posición, de la de 16 o 20 bits), si todas las partes altas de la
 posición volvieron exactas, y la decodificación hardware y el kernel de
 planos -> gaussianas en ms (medianas, el kernel enviado y esperado).
 
-Por ahora solo macOS (VideoToolbox); en otras plataformas el codificador se
-rechaza (`Unsupported`).
+**Dónde codifica.** macOS: VideoToolbox. Linux y Windows: NVENC, mediante la
+biblioteca propia del driver de NVIDIA (`libnvidia-encode.so.1`,
+`nvEncodeAPI64.dll`) abierta en tiempo de ejecución -- API de NVENC 12.2, un
+driver 550.54.14 (Linux) o 551.76 (Windows) o posterior; sin él el
+codificador se rechaza (`Unsupported`, con el motivo). En un dispositivo CUDA
+(el backend por defecto allí) la sesión se abre sobre el propio contexto del
+motor y toma los planos donde los dejaron los kernels, así que no se leen de
+vuelta: la línea de cabecera dice `encoder hardware, from device memory`.
+Ambos escriben HEVC Main (Main 10 con `--bits 10`), 4:2:0, rango completo en
+la VUI, solo imágenes I y P.
 
 ### 2.7.3 `athenea video-decode` — los frames de un vídeo, decodificados y cronometrados
 

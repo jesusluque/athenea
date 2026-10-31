@@ -50,6 +50,38 @@ namespace {
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
 
+/// ANOTHER MACHINE'S STREAM as this run's encoder (`video-encode --units`):
+/// picture k's unit as an .athv encoded from the same frames with the same
+/// options holds it, so --check takes that encoder's bits through this
+/// machine's decoder -- an NVENC stream checked where VideoToolbox decodes.
+class StoredUnits final : public video::VideoEncoder {
+public:
+    explicit StoredUnits(std::unique_ptr<video::AthvReader> reader) : reader_(std::move(reader)) {}
+    Result<std::vector<video::EncodedUnit>> encode(std::span<const std::byte> /*luma*/,
+                                                   std::span<const std::byte> /*chroma*/, uint64_t index) override {
+        if (index >= reader_->frames()) {
+            return Error::make(ErrorCode::InvalidArgument, "video-encode: --units holds {} pictures, not {}",
+                               reader_->frames(), index + 1);
+        }
+        auto f = reader_->read(static_cast<uint32_t>(index));
+        if (!f) return std::move(f).error();
+        video::EncodedUnit u;
+        u.unit = std::move(f->unit);
+        u.parameterSets = std::move(f->parameterSets);
+        u.keyframe = f->keyframe;
+        u.index = index;
+        std::vector<video::EncodedUnit> out;
+        out.push_back(std::move(u));
+        return out;
+    }
+    Result<std::vector<video::EncodedUnit>> finish() override { return std::vector<video::EncodedUnit>{}; }
+    bool hardware() const noexcept override { return true; }
+    const video::AthvHeader& header() const noexcept { return reader_->header(); }
+
+private:
+    std::unique_ptr<video::AthvReader> reader_;
+};
+
 struct InputFrame {
     double                 time = 0.0;
     std::vector<fs::path>  files;
@@ -82,9 +114,13 @@ Result<std::vector<InputFrame>> inputFrames(const std::vector<std::string>& inpu
                 InputFrame f;
                 words >> index >> f.time >> pages;
                 for (size_t c = 0; c < pages; ++c) {
+                    // A page is .spz, or .ply where there is no .spz (a
+                    // build without zstd reads no SPZ).
                     char name[64];
-                    std::snprintf(name, sizeof name, "f%05llu_c%04zu.spz", index, c);
-                    f.files.push_back(dir / name);
+                    std::snprintf(name, sizeof name, "f%05llu_c%04zu", index, c);
+                    const fs::path spz = dir / (std::string(name) + ".spz");
+                    const fs::path ply = dir / (std::string(name) + ".ply");
+                    f.files.push_back(!fs::exists(spz) && fs::exists(ply) ? ply : spz);
                 }
                 frames.push_back(std::move(f));
             }
@@ -719,7 +755,7 @@ namespace {
 void addVideo(CLI::App& app) {
     struct Options {
         std::vector<std::string> inputs;
-        std::string output, hevc, range, hi = "side", order = "frame", ranges = "group", maxPicture;
+        std::string output, hevc, range, hi = "side", order = "frame", ranges = "group", maxPicture, units;
         uint32_t bits = 8, keyInterval = 0, columns = 0, shDegree = 3, rendition = 0, gaussians = 0, rangeGroup = 0;
         uint32_t positionBlock = 0;
         int      positionHighBits = -1;
@@ -856,6 +892,9 @@ void addVideo(CLI::App& app) {
                     "goes as slices");
     enc->add_option("--rate", o->rate, "frames a second (default: the sequence's, or 30)");
     enc->add_option("--hevc", o->hevc, "also the video alone as an Annex B .hevc, for a player or a probe");
+    enc->add_option("--units", o->units,
+                    "the video's units from this .athv (another machine's encoder, the same frames and options) "
+                    "instead of this machine's encoder: with --check, that stream through this machine's decoder");
     enc->add_flag("--check", o->check, "decode each frame again and measure it against its source");
 
     enc->callback([o] {
@@ -1041,9 +1080,24 @@ void addVideo(CLI::App& app) {
             es.quality = o->quality;
             es.megabits = o->megabits;
             es.keyInterval = keyInterval;
-            auto e = video::createHardwareEncoder(es);
-            if (!e) cli::fail(e.error());
-            encoder = std::move(*e);
+            es.device = &**device;   // NVENC: the engine's CUDA context, its planes taken where they lie
+            if (!o->units.empty()) {
+                auto r = video::AthvReader::open(o->units);
+                if (!r) cli::fail(r.error());
+                const video::AthvHeader& h = (*r)->header();
+                if (h.bits != layout.bits || h.restPerColour != layout.restPerColour ||
+                    h.chunkSplats != layout.chunkSplats || h.columns != layout.columns || h.maxSplats != sliceCap ||
+                    h.chroma != layout.chroma || h.hiInVideo != layout.hiInVideo) {
+                    cli::err("video-encode: %s was not encoded from these frames with these options (its pictures "
+                             "are laid otherwise)\n", o->units.c_str());
+                    throw CLI::RuntimeError(kExitFailure);
+                }
+                encoder = std::make_unique<StoredUnits>(std::move(*r));
+            } else {
+                auto e = video::createHardwareEncoder(es);
+                if (!e) cli::fail(e.error());
+                encoder = std::move(*e);
+            }
             video::AthvHeader header;
             header.bits = layout.bits;
             header.restPerColour = layout.restPerColour;
@@ -1085,7 +1139,13 @@ void addVideo(CLI::App& app) {
             writer = std::move(*w);
             if (o->check) {
                 auto d = video::createHardwareDecoder(header.codec, layout.bits);
-                if (!d) cli::fail(d.error());
+                if (!d) {
+                    cli::err("video-encode: --check decodes every picture again and this platform has no hardware "
+                             "decoder yet (%s); write the stream and check it where one is: video-encode --units "
+                             "FILE.athv --check, with the same frames and options\n",
+                             d.error().message().c_str());
+                    throw CLI::RuntimeError(kExitFailure);
+                }
                 decoder = std::move(*d);
                 auto t = video::createLumaTextures(**device);
                 if (!t) cli::fail(t.error());
@@ -1097,7 +1157,9 @@ void addVideo(CLI::App& app) {
                      layout.tileHeight, layout.width, layout.height, (cloud->count + sliceCap - 1) / sliceCap,
                      sliceCap < cloud->count ? "s" : "", layout.bits,
                      layout.geometryVideo() ? "none (geometry in the video)" : layout.hiInVideo ? "in the video" : "beside it",
-                     encoder->hardware() ? "hardware" : "software");
+                     !o->units.empty() ? "the stored units of --units"
+                     : encoder->hardware() ? (encoder->takesDevice() ? "hardware, from device memory" : "hardware")
+                                           : "software");
             return std::move(*cloud);
         };
         const uint32_t groupFrames = o->rangeGroup != 0 ? o->rangeGroup : keyInterval;
@@ -1248,12 +1310,19 @@ void addVideo(CLI::App& app) {
                         throw CLI::RuntimeError(kExitFailure);
                     }
                     Clock::time_point t = Clock::now();
-                    auto planes =
-                        codec->encode(cloud, *sliced, order, at, ranges, o->holdBoxes ? &heldBoxes : nullptr);
+                    // An encoder that reads device memory takes the planes
+                    // where the codec laid them: they are not read back.
+                    const bool onDevice = encoder->takesDevice();
+                    auto planes = codec->encode(cloud, *sliced, order, at, ranges,
+                                                o->holdBoxes ? &heldBoxes : nullptr, !onDevice);
                     if (!planes) cli::fail(planes.error());
                     layMs.push_back(std::chrono::duration<double, std::milli>(Clock::now() - t).count());
                     t = Clock::now();
-                    auto units = encoder->encode(planes->luma, planes->chroma, picture);
+                    video::DevicePicture onPlanes;
+                    onPlanes.luma = planes->lumaDevice;
+                    onPlanes.chroma = planes->chromaDevice;
+                    auto units = onDevice ? encoder->encodeDevice(onPlanes, picture)
+                                          : encoder->encode(planes->luma, planes->chroma, picture);
                     if (!units) cli::fail(units.error());
                     encodeMs.push_back(std::chrono::duration<double, std::milli>(Clock::now() - t).count());
                     if (units->size() != 1) {
@@ -1343,7 +1412,7 @@ void addVideo(CLI::App& app) {
                     }
                     for (size_t a = 0; a < errors->size(); ++a) {
                         worst[a].maxSteps = std::max(worst[a].maxSteps, (*errors)[a].maxSteps);
-                        worst[a].far += (*errors)[a].far;
+                        worst[a].farSplats += (*errors)[a].farSplats;
                         meanSum[a] += (*errors)[a].meanSteps;
                     }
                     ++checked;
@@ -1385,12 +1454,12 @@ void addVideo(CLI::App& app) {
                      median(checkMs));
             // Grouped: the worst attribute of each group, in its own steps.
             std::map<std::string, std::pair<double, double>> groups;   // max, mean
-            uint64_t far = 0;
+            uint64_t farSplats = 0;
             for (size_t a = 0; a < worst.size(); ++a) {
                 auto& g = groups[groupOf(static_cast<uint32_t>(a))];
                 g.first = std::max(g.first, worst[a].maxSteps);
                 g.second = std::max(g.second, meanSum[a] / static_cast<double>(checked));
-                if (a < 3) far += worst[a].far;
+                if (a < 3) farSplats += worst[a].farSplats;
             }
             for (const char* name : {"position", "opacity", "log scale", "rotation", "base colour", "rest"}) {
                 const auto it = groups.find(name);
@@ -1415,7 +1484,7 @@ void addVideo(CLI::App& app) {
                          q(3, 1e-7, 0.5) * 1e6, q(3, 1e-7, 0.99) * 1e6, q(3, 1e-7, 0.999) * 1e6);
             }
             cli::out("video-encode: position high parts %s: %llu splat axes whose high part is not the source's\n",
-                     far == 0 ? "exact" : "NOT exact", static_cast<unsigned long long>(far));
+                     farSplats == 0 ? "exact" : "NOT exact", static_cast<unsigned long long>(farSplats));
         }
     });
 

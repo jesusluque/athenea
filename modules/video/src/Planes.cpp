@@ -279,7 +279,7 @@ Result<void> PlanesCodec::order(const scene::GpuSplats& cloud, uint32_t count, c
 
 Result<EncodedPlanes> PlanesCodec::encode(const scene::GpuSplats& cloud, const PlaneLayout& layout,
                                           const gpu::Buffer& order, uint32_t first, const gpu::Buffer& ranges,
-                                          const gpu::Buffer* heldBoxes) {
+                                          const gpu::Buffer* heldBoxes, bool readPlanes) {
     gpu::Device& device = *device_;
     const uint32_t perWord = layout.bits > 8 ? 2u : 4u;
     const uint64_t lumaWords = uint64_t{layout.width} * layout.height / perWord;
@@ -352,11 +352,15 @@ Result<EncodedPlanes> PlanesCodec::encode(const scene::GpuSplats& cloud, const P
         ATHENEA_TRY(batch.submit(true));
     }
     EncodedPlanes out;
-    out.luma.resize(layout.lumaBytes());
-    ATHENEA_TRY(mosaic_.read(device, 0, out.luma.size(), out.luma.data()));
-    if (chromaWords != 0) {
-        out.chroma.resize(layout.chromaBytes());
-        ATHENEA_TRY(chromaMosaic_.read(device, 0, out.chroma.size(), out.chroma.data()));
+    out.lumaDevice = mosaic_.rhi();
+    out.chromaDevice = chromaWords != 0 ? chromaMosaic_.rhi() : nullptr;
+    if (readPlanes) {
+        out.luma.resize(layout.lumaBytes());
+        ATHENEA_TRY(mosaic_.read(device, 0, out.luma.size(), out.luma.data()));
+        if (chromaWords != 0) {
+            out.chroma.resize(layout.chromaBytes());
+            ATHENEA_TRY(chromaMosaic_.read(device, 0, out.chroma.size(), out.chroma.data()));
+        }
     }
     out.ranges.resize(size_t{layout.attributes()} * 2);
     ATHENEA_TRY(ranges.read(device, 0, out.ranges.size() * sizeof(float), out.ranges.data()));
@@ -610,7 +614,7 @@ Result<std::vector<AttributeError>> PlanesCodec::compare(const PlaneLayout& layo
         out[k].maxSteps = words[k * 4] / 16.0;
         const double sum = static_cast<double>(words[k * 4 + 1]) + 4294967296.0 * words[k * 4 + 2];
         out[k].meanSteps = sum / 16.0 / layout.splats;
-        out[k].far = words[k * 4 + 3];
+        out[k].farSplats = words[k * 4 + 3];
     }
     return out;
 }
