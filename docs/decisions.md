@@ -16914,3 +16914,29 @@ The shadow is easier than the smoke seen directly: a shadow is the transmittance
 rays, which averages the density error the way the closed-form optical depth does, while the smoke seen
 head on shows its edges and wisps. The relMSE on the smoke here is lower than E1b's, which saw it against
 black: Measure's relative error divides by b² + 0.01, and in front of a grey ground b is larger.
+
+### E1b and the shadows again, after the volume frame's depth fix (31 Oct)
+
+The path tracer's non-convergence noted above was a bug, found on the volumes branch and merged here
+(7656835, with 26af7e4's keyed medium streams): in a frame of volumes alone each pass overwrote a pixel's
+depth, so a pixel whose last pass missed the medium read as uncovered. E1b's masked numbers and the smoke's
+in the shadow set were measured with it, and are replaced by these (same renders otherwise: 4096 paths,
+512², the same seeds; the floor is the original at 4096 against itself at 16384):
+
+| N | smoke2 ×1 | ×4 | ×16 | blob ×1 | ×4 | ×16 |
+|---|---|---|---|---|---|---|
+| 2k | 0.0145 (29.4 dB) | 0.030 (25.8) | 0.052 (23.0) | 7.7·10⁻⁴ (42.6) | 0.0039 (36.8) | 0.023 (30.7) |
+| 10k | 0.0077 (32.1) | 0.019 (28.3) | 0.034 (25.3) | 2.4·10⁻⁴ (47.6) | 9.3·10⁻⁴ (42.2) | 0.0060 (35.7) |
+| 50k | 0.0024 (36.9) | 0.0076 (32.3) | 0.017 (28.7) | 6.4·10⁻⁵ (53.5) | 7.9·10⁻⁵ (52.4) | 2.0·10⁻⁴ (48.3) |
+| floor | 1.6·10⁻⁴ | 1.2·10⁻⁴ | 8.8·10⁻⁵ | 1.4·10⁻⁴ | 1.0·10⁻⁴ | 7.5·10⁻⁵ |
+
+The error now grows with the density, as it should: a denser medium shows the edges the mixture smooths.
+The proposal's 1 % bar is met by smoke2 at ×1 from 10k and at ×4 by 50k, not at ×16; by the blob everywhere
+but ×16 at 2k. A blob value under its floor is two renders of one seed set against two of different ones.
+PT ms/frame (64 paths, median of 5): smoke2's grids given back 153–175 against the original's 166–168, the
+blob's 181–190 against 179–188.
+
+Shadows (1024², 1024 paths): smoke2's shadow 0.0012 (40.1 dB) from 50k and 0.0049 (34.3 dB) from 10k, the
+smoke itself 9.4·10⁻⁴ (40.9 dB) and 0.0028 (36.1 dB); the blob's shadow 4.1·10⁻⁵ and 1.1·10⁻⁴, the smoke
+1.0·10⁻⁴ and 3.2·10⁻⁴. The shadows barely moved (the ground gave every pixel a depth); the smoke's numbers
+fell by six to seven times. ms/frame 2385 / 2358 / 2380 (smoke2) and 2432 / 2429 / 2419 (the blob).
