@@ -3726,6 +3726,52 @@ milliseconds as before over a smaller base, so the +25% target is now
 further off in proportion, and the trilinear lookup is what is left to
 make cheaper.
 
+### The emitters compiled out: right on CUDA, wrong on Metal
+
+The first failure is not explained by the table. Rebuilt on a debug
+branch -- `kEmissive` false where the frame has no emitting triangle and no
+mesh light, the header patched -- and run against the kernel with the
+emitters in, on the same binary:
+
+| | Metal (M5 Pro) | CUDA (RTX 3070, OptiX) |
+|---|---|---|
+| the absorbing box over a plane through `athenea stage`, 96 x 72 and 161 x 121, 512 and 1024 paths | identical to the emitters-in frame (relMSE 0), twice | identical to the emitters-in frame, and to Metal's (relMSE 0) |
+| the volume furnace through `athenea stage` | identical to the emitters-in frame | identical to the emitters-in frame |
+| the technique Beer-Lambert check, emitters in | passes: mean z^2 0.978 / 0.955 | passes: 0.978 / 0.955 |
+| the same, emitters out | fails, every run differently: 367 to 633 pixels beyond five deviations, mean z^2 2e5 to 6e5, every untouched pixel changed | passes, 0.978 / 0.955, twice |
+| the same under Metal's shader validation | fails, with fewer outliers (0 to 7) and no validation message | -- |
+| smoke2's leaf maxima recounted | 0 of 13444 off | 0 of 13444 off |
+
+CUDA ran the check through traced visibility (it has no rasteriser), which
+is the only change; the frames without volumes are bit-identical across the
+two variants on Metal, and the frame with the volume differs run to run by
+up to 4% a pixel. Splitting the raster and the trace into two submissions
+changes nothing, and the validation layer reports no out-of-bounds access.
+So it is the Metal compile of that kernel that is wrong -- nondeterministic,
+silent, and not reached by `athenea stage`'s frames -- not the kernel's
+code, which the two devices agree on wherever Metal is deterministic. **The
+emitters stay compiled in**: a workaround that is safe needs the cause,
+and with the type table folded there is no regression left for it to
+recover.
+
+### CUDA: the first run of the volumes
+
+On the RTX 3070 (Windows, CUDA 12.6, OptiX), on this branch:
+
+- `athenea_volume_tests "[volume]"` passes: 428 assertions in 8 cases --
+  the loader, every grid type, the leaf maxima, the fields.
+- `athenea_technique_tests` and `athenea_usd_tests` skip their volume cases
+  there (they need rasterisation).
+- `athenea stage` renders the absorbing box and the furnace identically to
+  Metal at equal seeds (relMSE 0 on the box).
+- Two defects only CUDA showed, both fixed. MSVC refused the path tracer's
+  longest string literals (C2026; split) and the OpenVDB reader's object
+  (C1128; `/bigobj`). A frame of volumes alone had no instance for the
+  structure: OptiX refuses a non-null instance array of count 0, and
+  slang-rhi reads a null buffer's address (an access violation). The
+  structure is now built from one zeroed instance -- a null handle under a
+  mask of 0 -- where OptiX has nothing else.
+
 ### Not done
 
 - The raster technique draws no volume, and the engine says so once.
@@ -3739,7 +3785,8 @@ make cheaper.
   surface's does.
 - In a medium lights are chosen by power, not through the light BVH.
 - No MIS in media; no spectral tracking for a coloured extinction.
-- Verified on Metal; the L4 run of these tests is M11's.
+- Verified on Metal, and on CUDA (RTX 3070) where the suites run there
+  (above); the technique and Hydra checks of media have not run on CUDA.
 
 ## End to end: Kitchen_set lit, and two defects only a real stage showed
 
