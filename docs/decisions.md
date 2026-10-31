@@ -3465,6 +3465,33 @@ double 84728, int32 80560, Vec3f 162552, Vec3d 248664, mask 76464, and the
 float topology another 80560 for each non-float one. A float the file
 stores as half is a quarter smaller on disk and the same on the device.
 
+### The medium's random streams
+
+The medium drew its numbers from one word stepped by an LCG, seeded from
+`random()`'s float -- 24 bits -- for each path, bounce and purpose. Every
+stream was then a stretch of the LCG's single cycle of 2^32, started at one
+of 2^24 points, and a pixel's streams ran into one another: two streams
+that pass through one state draw the same numbers from there on. The more
+draws a path takes (null collisions in a sparse medium) and the more paths
+a pixel has, the more of them share randomness. A stream is now a key and a
+counter (`mediumStreamOf`, `mediumRandom` on a `uint2`): the key a chain of
+the full hash over the pixel, the frame's seed, the path's absolute index,
+the bounce and the purpose, each draw the hash of key and counter. Two
+streams meet only where their 32-bit keys collide.
+
+It surfaced as a bias, not as noise: with the medium's leaves before the
+leaves (below), the emitting panel in a medium read 6% darker than the rect
+light of its size, the same 6% under other seeds, while the rect light
+moved 1% -- the emitter's path opens more streams a vertex than a light's.
+With keyed streams the two agree as they did before the extra leaves
+(relMSE 4.0e-6 and 3.9e-6 at 8192 paths, flat table and tree).
+
+**Checked** (`[volume][random]`): one pixel's streams as the path tracer
+opens them -- 4096 paths, 8 bounces, the 4 purposes -- over their first 64
+draws, 8.4 million states sorted on the device and counted where neighbours
+are equal: 64 repeated states keyed (one pair of colliding keys; two pairs
+expected at 32-bit birthday odds), 42289 with the legacy LCG.
+
 ## End to end: Kitchen_set lit, and two defects only a real stage showed
 
 The plan closes with real stages through `athenea stage`. Kitchen_set with the

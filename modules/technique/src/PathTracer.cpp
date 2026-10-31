@@ -1054,7 +1054,7 @@ static const bool kVolumes = true;
 StructuredBuffer<uint> volumeWords;   // world::VolumeSet's words: header, records, grids, leaf maxima
 /// The first real collision along the ray among the frame's volumes before
 /// tMax, if any: each volume's own free flight, the nearest of them.
-bool mediumScatterAny(float3 origin, float3 direction, float tMin, float tMax, inout uint rng, out float t,
+bool mediumScatterAny(float3 origin, float3 direction, float tMin, float tMax, inout uint2 rng, out float t,
                       out float3 albedo, out float g, out float3 emission, out uint2 categories) {
     t = tMax;
     albedo = float3(1.0);
@@ -1077,7 +1077,7 @@ bool mediumScatterAny(float3 origin, float3 direction, float tMin, float tMax, i
     }
     return any;
 }
-float mediumTransmittanceAny(float3 origin, float3 direction, float tMin, float tMax, inout uint rng) {
+float mediumTransmittanceAny(float3 origin, float3 direction, float tMin, float tMax, inout uint2 rng) {
     float transmittance = 1.0;
     const uint count = volumeCount(volumeWords);
     for (uint v = 0; v < count; ++v) {
@@ -1094,7 +1094,7 @@ static const bool kEmissive = true;
 StructuredBuffer<float>        emissiveTable;
 uniform uint                   emissiveOn;
 float emissiveWord(uint i) { return emissiveTable[i]; }
-bool mediumScatterAny(float3 origin, float3 direction, float tMin, float tMax, inout uint rng, out float t,
+bool mediumScatterAny(float3 origin, float3 direction, float tMin, float tMax, inout uint2 rng, out float t,
                       out float3 albedo, out float g, out float3 emission, out uint2 categories) {
     t = tMax;
     albedo = float3(1.0);
@@ -1103,8 +1103,9 @@ bool mediumScatterAny(float3 origin, float3 direction, float tMin, float tMax, i
     categories = uint2(0u);
     return false;
 }
-float mediumTransmittanceAny(float3 origin, float3 direction, float tMin, float tMax, inout uint rng) { return 1.0; }
-float mediumRandom(inout uint state) { return 0.0; }
+float mediumTransmittanceAny(float3 origin, float3 direction, float tMin, float tMax, inout uint2 rng) { return 1.0; }
+float mediumRandom(inout uint2 state) { return 0.0; }
+uint2 mediumStreamOf(uint pixelIndex, uint seed, uint pathIndex, uint bounce, uint purpose) { return uint2(0u); }
 float hgPhase(float cosTheta, float g) { return 0.0; }
 float3 hgSample(float3 wo, float g, float2 u) { return -wo; }
 )";
@@ -1510,9 +1511,10 @@ Found foundLensSample(uint2 pixel, uint sample, uint mask) {
 /// One light, sampled and weighed: next event estimation, with the density of
 /// the material's own sampling folded in by the power heuristic so the two
 /// strategies do not double count.
-/// A medium's random state for one purpose of one bounce of one sample.
-uint mediumSeed(uint2 pixel, uint sample, uint bounce, uint dim) {
-    return asuint(random(pixel, sample, bounce, dim)) ^ 0x5bd1e995u;
+/// A medium's random stream for one purpose of one bounce of one sample: a
+/// key from all of them and a counter (medium.slang's mediumStreamOf).
+uint2 mediumSeed(uint2 pixel, uint sample, uint bounce, uint dim) {
+    return mediumStreamOf(pixel.y * camera.width + pixel.x, path.seed, path.accumulated + sample, bounce, dim);
 }
 
 /// The camera's ray through a pixel, in world space, lens and distortion
@@ -1944,7 +1946,7 @@ float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crosse
     // any other, and `shadow:enable` off means none dims it.
     float transmittance = 1.0;
     if (kVolumes && (light.flags & kLightShadow) != 0) {
-        uint rng = mediumSeed(pixel, sample, bounce, 21u);
+        uint2 rng = mediumSeed(pixel, sample, bounce, 21u);
         transmittance = mediumTransmittanceAny(sh.inputs.positionWorld, ls.wi, 1.0e-3 * max(1.0, length(sh.inputs.positionWorld)),
                                                ls.distance, rng);
     }
@@ -2028,7 +2030,7 @@ float3 gatherLightMedium(float3 p, float3 wo, float g, float share, uint2 catego
     }
     float transmittance = 1.0;
     if ((light.flags & kLightShadow) != 0) {
-        uint rng = mediumSeed(pixel, sample, bounce, 25u);
+        uint2 rng = mediumSeed(pixel, sample, bounce, 25u);
         transmittance = mediumTransmittanceAny(p, ls.wi, 1.0e-4 * max(1.0, length(p)), ls.distance, rng);
     }
     return f * ls.radiance * transmittance * tint / (ls.pdf * choice.probability * (1.0 - share));
@@ -2177,7 +2179,7 @@ R"(    bool firstShaded = false;
         } else {
             continue;   // a lens ray that found nothing: transparent, and counted
         }
-        uint rng = mediumSeed(tid, sample, 0u, 23u);
+        uint2 rng = mediumSeed(tid, sample, 0u, 23u);
         float3 carried = float3(0.0);
         // WHAT IS DIRECT. Everything the path gathered before it left its
         // first vertex -- emission there, next event estimation from it, the
@@ -2290,7 +2292,7 @@ R"(    bool firstShaded = false;
                                 through *= splatVisibility(p, lp.wi, lp.wi, lp.distance);
                             }
                             if (any(through > float3(0.0))) {
-                                uint lightRng = mediumSeed(tid, sample, bounce, 27u);
+                                uint2 lightRng = mediumSeed(tid, sample, bounce, 27u);
                                 const float transmittance =
                                     mediumTransmittanceAny(p, lp.wi, 1.0e-4 * max(1.0, length(p)), lp.distance - shortOf, lightRng);
                                 float weight = 1.0;
@@ -2609,7 +2611,7 @@ R"(                    }
                             // shadow ray is (1 without).
                             float throughMedia = 1.0;
                             if (kVolumes) {
-                                uint lightRng = mediumSeed(tid, sample, bounce, 27u);
+                                uint2 lightRng = mediumSeed(tid, sample, bounce, 27u);
                                 throughMedia = mediumTransmittanceAny(cur.inputs.positionWorld, lp.wi,
                                                                       1.0e-3 * max(1.0, length(cur.inputs.positionWorld)),
                                                                       lp.distance - shortOf, lightRng);

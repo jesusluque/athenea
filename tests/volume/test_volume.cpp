@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <string>
 
+#include "athenea/gpu/algo/RadixSort.h"
 #include "athenea/io/Vdb.h"
 #include "athenea/world/VolumeSet.h"
 
@@ -746,4 +747,64 @@ TEST_CASE("a volume's fields are each reachable on the device by name, at their 
     tooMany.fields.push_back(input.fields[0]);
     gpu::CommandBatch batch(*gpu->device);
     CHECK_FALSE(set->set(batch, std::span<const world::VolumeInput>(&tooMany, 1)));
+}
+
+// THE MEDIUM'S RANDOM STREAMS DO NOT MEET. One pixel's streams as the path
+// tracer opens them -- 4096 paths, 8 bounces, the 4 purposes a medium draws
+// for -- each over its first 64 draws: 8.4 million states, sorted on the
+// device and counted where two neighbours are equal. Two streams through
+// one state draw the same numbers from there on, so a pixel's paths share
+// randomness and its error stops falling with their number. The legacy
+// construction (one LCG word seeded from a 24-bit float: every stream a
+// stretch of one cycle of 2^32, started at one of 2^24 points) meets itself
+// by the thousands; the keyed streams only where two 32-bit keys collide.
+TEST_CASE("a pixel's medium random streams do not run into one another", "[volume][gpu][random]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto states = gpu::ComputeKernel::create(*gpu->library, "athenea/test/streams_check", "streamStates");
+    auto equals = gpu::ComputeKernel::create(*gpu->library, "athenea/test/streams_check", "streamEquals");
+    auto sort = gpu::RadixSort::create(*gpu->library);
+    if (!states) FAIL(states.error().toString());
+    if (!equals) FAIL(equals.error().toString());
+    if (!sort) FAIL(sort.error().toString());
+    constexpr uint32_t kPaths = 4096, kBounces = 8, kSteps = 64;
+    constexpr uint32_t kStreams = kPaths * kBounces * 4;
+    constexpr uint32_t kStates = kStreams * kSteps;
+    gpu::SortBuffers buffers;
+    buffers.keysLo = test::uintBuffer(*gpu->device, kStates, "streams.keysLo");
+    buffers.keysHi = test::uintBuffer(*gpu->device, kStates, "streams.keysHi");
+    buffers.values = test::uintBuffer(*gpu->device, kStates, "streams.values");
+    buffers.scratchKeysLo = test::uintBuffer(*gpu->device, kStates, "streams.scratchKeysLo");
+    buffers.scratchKeysHi = test::uintBuffer(*gpu->device, kStates, "streams.scratchKeysHi");
+    buffers.scratchValues = test::uintBuffer(*gpu->device, kStates, "streams.scratchValues");
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 4, "streams.counts");
+    uint32_t equal[2] = {};
+    for (uint32_t legacy = 0; legacy < 2; ++legacy) {
+        const uint32_t zeros[4] = {};
+        REQUIRE(counts.write(*gpu->device, 0, sizeof(zeros), zeros));
+        const auto bind = [&](rhi::ShaderCursor c) {
+            c["streams"]["paths"].setData(kPaths);
+            c["streams"]["bounces"].setData(kBounces);
+            c["streams"]["steps"].setData(kSteps);
+            c["streams"]["legacy"].setData(legacy);
+            c["streams"]["pixel"].setData(uint32_t{1234});
+            c["streams"]["seed"].setData(uint32_t{0});
+            c["keysLo"].setBinding(buffers.keysLo.rhi());
+            c["keysHi"].setBinding(buffers.keysHi.rhi());
+            c["counts"].setBinding(counts.rhi());
+        };
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            states->dispatch(batch, {kStreams, 1, 1}, bind);
+            REQUIRE(sort->sort(batch, buffers, kStates, legacy != 0 ? 32 : 64));
+            equals->dispatch(batch, {kStates, 1, 1}, bind);
+            REQUIRE(batch.submit(true));
+        }
+        REQUIRE(counts.read(*gpu->device, 0, 4, &equal[legacy]));
+    }
+    // Keyed: a state repeats only where two of the 131072 keys collide,
+    // n^2 / 2^33 = 2 pairs expected, 64 states each.
+    std::printf("  %u streams of %u draws: %u repeated states keyed, %u with the legacy LCG\n", kStreams, kSteps,
+                equal[0], equal[1]);
+    CHECK(equal[0] <= 8u * kSteps);
+    CHECK(equal[1] > 1000u);
 }

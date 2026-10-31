@@ -66,17 +66,39 @@ public VolumeRecord volumeRecord(StructuredBuffer<uint> words, uint index) {
     return r;
 }
 
-// --- Random numbers: a counter hashed, advanced a draw at a time ------------
+// --- Random numbers: a stream's key and a counter, hashed together -----------
+//
+// A stream is (key, counter): its key a hash of everything that names it --
+// the pixel, the frame's seed, the path's absolute index, the bounce, the
+// purpose -- and each draw the hash of key and counter, the counter then
+// advanced. Two streams draw the same numbers only if their keys meet, at
+// 32-bit birthday odds. The state used to be one word stepped by an LCG and
+// seeded from a 24-bit float: every stream was a stretch of the LCG's one
+// cycle of 2^32, started at one of 2^24 points, so a pixel's streams ran
+// into one another -- the more draws a path took and the more paths a pixel
+// had, the more of them repeated another's numbers -- and a pixel's error
+// stopped falling with its path count.
 
-uint mediumHash(uint x) {
+public uint mediumHash(uint x) {
     x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
     return x;
 }
 
-/// A uniform in [0, 1) from the state, which advances.
-public float mediumRandom(inout uint state) {
-    state = state * 747796405u + 2891336453u;
-    return float(mediumHash(state) >> 8) / 16777216.0;
+/// The stream a purpose of a path draws from: its key, its counter at 0.
+public uint2 mediumStreamOf(uint pixelIndex, uint seed, uint pathIndex, uint bounce, uint purpose) {
+    uint key = mediumHash(pixelIndex ^ 0x9e3779b9u);
+    key = mediumHash(key + seed);
+    key = mediumHash(key + pathIndex);
+    key = mediumHash(key + bounce);
+    key = mediumHash(key + purpose);
+    return uint2(key, 0u);
+}
+
+/// A uniform in [0, 1) from the stream, which advances.
+public float mediumRandom(inout uint2 state) {
+    const uint word = mediumHash(state.x ^ mediumHash(state.y * 0x9e3779b9u + 0x7f4a7c15u));
+    state.y += 1u;
+    return float(word >> 8) / 16777216.0;
 }
 
 // --- The phase function -------------------------------------------------------
@@ -197,7 +219,7 @@ static const int kMaxCollisions = 4096;
 /// medium scatters the path before `tMax`, and where. Leaf by leaf, each at
 /// its own majorant; a null collision costs one density lookup.
 public bool mediumScatter(StructuredBuffer<uint> words, VolumeRecord r, float3 origin, float3 direction, float tMin,
-                          float tMax, inout uint rng, out float tScatter) {
+                          float tMax, inout uint2 rng, out float tScatter) {
     tScatter = tMax;
     const IndexRay ray = toIndex(r, origin, direction);
     float t0 = tMin;
@@ -235,7 +257,7 @@ public bool mediumScatter(StructuredBuffer<uint> words, VolumeRecord r, float3 o
 /// Ratio tracking: the transmittance from `tMin` to `tMax`, an unbiased
 /// estimate with the same walk.
 public float mediumTransmittance(StructuredBuffer<uint> words, VolumeRecord r, float3 origin, float3 direction,
-                                 float tMin, float tMax, inout uint rng) {
+                                 float tMin, float tMax, inout uint2 rng) {
     const IndexRay ray = toIndex(r, origin, direction);
     float t0 = tMin;
     float t1 = tMax;
