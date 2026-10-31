@@ -124,6 +124,7 @@ struct SolidHeader {
 };
 static_assert(sizeof(SolidHeader) == 40);
 constexpr uint64_t kSolidHeaderAt = kExtraHeaderAt + sizeof(ExtraHeader);
+static_assert(kSolidHeaderAt + sizeof(SolidHeader) <= kPage, "the solid header lies in page 0, before the level table");
 constexpr uint32_t kSolidVersion = 1;
 constexpr uint32_t kBlobBytes = 32;
 constexpr uint32_t kAnchorBytes = 16;
@@ -254,6 +255,10 @@ Result<Layout> parse(const platform::MappedFile& file, const std::filesystem::pa
             !within(sh.anchorsAt, uint64_t{sh.anchors} * kAnchorBytes)) {
             return bad(path, "solid layer past the end");
         }
+        if (sh.blobsAt % kPage != 0 || sh.anchorsAt % kPage != 0 ||
+            sh.anchorsAt < aligned(sh.blobsAt + uint64_t{sh.blobs} * kBlobBytes)) {
+            return bad(path, "solid layer's blobs and anchors overlap or are not page-aligned");
+        }
     }
     layout.levels.resize(h.levels);
     layout.chunks.resize(h.chunks);
@@ -275,6 +280,20 @@ Result<Layout> parse(const platform::MappedFile& file, const std::filesystem::pa
         const uint32_t expected = std::min(h.chunkSplats, h.count - c * h.chunkSplats);
         if (e.count != expected || !within(e.offset, e.count * per)) {
             return bad(path, "chunk " + std::to_string(c));
+        }
+    }
+    // The solid section follows every block: none of it may lie under a
+    // table, a level or a chunk.
+    if ((h.flags & kHasSolid) != 0) {
+        uint64_t end = aligned(h.starts + uint64_t{h.finestGroups} * 4);
+        for (const LevelEntry& e : layout.levels) {
+            end = std::max(end, aligned(e.offset + e.groups * per));
+        }
+        for (const ChunkEntry& e : layout.chunks) {
+            end = std::max(end, aligned(e.offset + e.count * per));
+        }
+        if (layout.solid.blobsAt < end) {
+            return bad(path, "solid layer overlaps the blocks");
         }
     }
     return layout;

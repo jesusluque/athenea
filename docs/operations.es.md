@@ -1376,7 +1376,7 @@ de los dos radios tangentes, color base f16, theta entre pi como unorm16, el
 la entrada de la apariencia en el codebook o `0xFFFFFFFF`, flags). La capa es
 de la nube entera, sin niveles ni chunks propios; un stream la lee al abrir.
 Una cabecera sólida de otra versión, o cuyos blobs o anclas pasarían del
-final, se rechaza, nombrando el fichero y diciendo cuál. El bit 3 se guarda para la propuesta
+final o caerían bajo un bloque, se rechaza, nombrando el fichero y diciendo cuál. El bit 3 se guarda para la propuesta
 009. Un bit de los `flags` que esta compilación no conoce (el bit 3, o pasado
 el bit 7) se rechaza, nombrando el fichero: un bit posterior puede añadir un bloque, y un lector que lo saltara
 leería cada bloque detrás de él desde el sitio equivocado.

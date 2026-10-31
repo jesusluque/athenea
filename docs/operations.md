@@ -1338,7 +1338,7 @@ the anchor's index), then the anchors (float32 thickness and smooth-min k,
 the appearance's codebook entry or `0xFFFFFFFF`, flags). The layer is the
 cloud's as a whole, with no levels or chunks of its own; a stream reads it
 when it opens. A solid header of another version, or whose blobs or anchors
-would run past the end, is refused, file named, saying which. Bit 3 is kept for
+would run past the end or lie under a block, is refused, file named, saying which. Bit 3 is kept for
 proposal 009. A `flags` bit this build does not know (bit 3, or past bit 7)
 is refused, file named: a later bit may add a block, and a reader that
 skipped it would read every block after it from the wrong place.

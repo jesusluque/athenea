@@ -180,6 +180,12 @@ TEST_CASE("a solid layer goes through a .athc word for word, whole and streamed"
     CHECK(std::filesystem::file_size(solidPath) % 4096 == 0);
     CHECK(wordAt(solidPath, 4) == 2);   // version 2: flags are set
     CHECK((wordAt(solidPath, kFlagsAt) & kSolidBit) != 0);
+    // Bit 7 without the extras (bits 4 to 6): the extra header's place, bytes
+    // 104 to 135, is left zero, and the solid header sits after it all the same.
+    CHECK((wordAt(solidPath, kFlagsAt) & 0x70u) == 0);
+    for (uint64_t at = 104; at < kSolidAt; at += 4) {
+        CHECK(wordAt(solidPath, at) == 0);
+    }
 
     SECTION("read whole") {
         auto read = lod::readAthc(*gpu->device, solidPath);
@@ -215,6 +221,15 @@ TEST_CASE("a solid layer goes through a .athc word for word, whole and streamed"
         auto past = lod::readAthc(*gpu->device, solidPath);
         REQUIRE_FALSE(past);
         CHECK(past.error().toString().find("solid layer past the end") != std::string::npos);
+        // Blobs moved onto the chunks: refused, not read from under a block.
+        patchWord(solidPath, kSolidAt + 4, kBlobs);
+        patchWord(solidPath, kSolidAt + 24, 4096 * 2);   // blobsAt, low word: inside the tables and blocks
+        patchWord(solidPath, kSolidAt + 28, 0);
+        auto under = lod::readAthc(*gpu->device, solidPath);
+        REQUIRE_FALSE(under);
+        INFO(under.error().toString());
+        CHECK((under.error().toString().find("overlaps the blocks") != std::string::npos ||
+               under.error().toString().find("overlap or are not page-aligned") != std::string::npos));
     }
     std::filesystem::remove_all(dir);
 }

@@ -16453,7 +16453,8 @@ a hash of each index -- every field varied -- packs and unpacks to itself (words
 within the packing's step of what was generated; written into a `.athc` and read back, whole and through a
 `StreamingPool`, it is the same word for word (`countDifferent`: 0 over positions, shapes and anchors), and
 the residual gaussians are unchanged; a file without a layer has no bit 7 and reads with none; a solid header
-of version 2, or with blobs past the end, is refused saying so; a flag bit past 7 is refused naming it.
+of version 2, with blobs past the end or under the blocks, is refused saying so (the header lies in page 0,
+asserted at compile time); bit 7 without the extras leaves the extra header's place zero; a flag bit past 7 is refused naming it.
 
 **Not done:** `solidify` and `ssf2splat` (phase 2, as AOFX bundles with subcommands, the `mesh2splat`
 pattern); the field and its checks (phase 1, neighbours from the Morton cells); the codec and levels
