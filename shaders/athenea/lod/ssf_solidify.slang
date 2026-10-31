@@ -129,7 +129,7 @@ void ssfConvert(uint3 tid: SV_DispatchThreadID) {
     outNormals[i] = packNormal(n);
     const bool glass = params.pbrs != 0 && lodKeptApart(srcPbr[i]);
     const bool candidate = srcPositions[i].w >= params.opacityMin &&
-                           scale[thin] <= params.flatMax * scale[mid] && !glass;
+                           scale[thin] < params.flatMax * scale[mid] && !glass;   // under: 0 takes none, not even surfels
     outFlags[i] = candidate ? 1u : 0u;
     if (candidate) {
         const float l = clamp(log2(b.radii.y), -31.0, 31.0);

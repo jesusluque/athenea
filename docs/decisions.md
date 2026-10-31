@@ -16566,44 +16566,42 @@ is not settled by this.
 
 ### Phase 2b: the pawn
 
-`athenea solidify` on the example pawn (release build, Metal, 768 × 768 from `/World/Cam`; the Mac in use by
-other sessions, load 2.5–5). Its clouds are merge trees cut at 0.25 px: a stage draws their leaves, 866806 of
-the body and 234728 of the glass head, so the reference is those leaves written plain by the same writer
-(`solidify --flat-max 0`, absorbing nothing), and Mode A is compared against it.
+`athenea solidify` on the example pawn (release build, Metal, M5 Pro, 768 × 768 from `/World/Cam`; the Mac
+in use by other sessions, load 3–7). Its clouds are cuts of merge trees at 0.25 px, every node drawn (see the
+next section: first measured as their `lodSize`-1 nodes alone, wrongly). The reference is the same nodes
+written plain by the same writer (`solidify --flat-max 0`, absorbing nothing): it draws the original stage
+to the bit (122 dB, no pixel apart), so Mode A against it is Mode A against the original.
 
 | | body | head (glass) | both |
 |---|---|---|---|
-| gaussians (leaves) | 866806 | 234728 | 1101534 |
-| candidates / absorbed | 866806 / 788426 (91.0 %) | 0 / 0 | 788426 (71.6 %) |
-| blobs (after merging) / residuals | 787573 / 78380 | 0 / 234728 | |
-| read / solidify (device) / write (USD) | 2.1 s / 0.40 s / 47 s | 1.2 s / 0.22 s / 15 s | |
+| gaussians | 1323433 | 292056 | 1615489 |
+| candidates / absorbed | 1323432 / 1316513 (99.5 %) | 0 / 0 | 1316513 (81.5 %) |
+| blobs (after merging) / residuals | 1315385 / 6920 | 0 / 292056 | |
+| read / solidify (device, waited for) / write (USD) | 2.1 s / 0.65–3.1 s / 55–57 s | 1.3 s / 0.19 s / 16 s | |
+
+The solidify step's time varied fourfold between two runs with other sessions' jobs on the machine; the
+write -- a USD crate of 680 MB, gathered arrays read back -- is the time that counts, and is the CPU's.
 
 | Frame, median of 29 | ms |
 |---|---|
-| the tree as the stage draws it | 46.0 |
-| its leaves, plain | 33.5 |
-| Mode A | 34.2 |
+| the original stage | 45.8 |
+| its nodes written plain | 45.0 |
+| Mode A | 43.9 |
 
-Mode A against the leaves: display PSNR **50.7 dB**, SSIM 0.9985, relMSE 9.6e-5, 8-bit p99 2 (5048 pixels over
-2, all along the body's edges).
+Mode A against the original: display PSNR **49.1 dB**, SSIM 0.998, relMSE 1.4e-4, 8-bit p99 3, max 70 (6226
+pixels over 2, along the body's edges and the base's rim).
 
-Sizes: the tree's files 698.4 + 154.0 MB (nodes and leaves); the leaves written plain 440.6 + 119.2 MB, 533 B
-a gaussian of the body, TX included; Mode A 440.3 + 119.2 MB.
+Sizes: the original files 698.4 + 154.0 MB; the nodes written plain 682.3 + 150.6 MB (515 B a gaussian of the
+body, TX included); Mode A 681.8 + 150.6 MB.
 
 **Against the phase's closing criterion** (≥ 70 % absorbed, ≥ 35 dB against the original, ≤ 50 % of the
-equivalent SPZ): absorbed and quality are met -- 71.6 % of all (91 % of the opaque body, none of the glass,
-as it must be), 50.7 dB against the same gaussians drawn plain. **Size is not, and could not be in this
-phase.** A raw blob is 36 B against a packed gaussian's 32 B of geometry, and on this TX cloud the geometry
-is 32 of 533 B a gaussian: the transfer, its open directions, the material and the harmonics are the rest, and
-Mode A carries them unchanged from each blob's source. What SSF saves is the codec of phase 4 (positions
-along the surface, radii and θ in 4–5 bits) and the appearance moved to the anchors' codebook; this phase
-shows that the layer holds the picture, not that it is smaller. The plan says to write this down before
-Mode B; it is.
-
-**Not settled:** the leaves drawn plain are not the tree as the stage draws it -- 38.1 dB between them, and
-33.5 against 46.0 ms -- with block-shaped differences on the glass head's reflections. Keeping each leaf's
-coverage and occlusion index changed nothing. Mode A is measured against the plain leaves, which isolates
-what solidifying does; what the tree's path draws that a plain cloud does not is still to be found.
+equivalent SPZ): absorbed and quality are met -- 81.5 % of all (99.5 % of the opaque body, none of the
+glass, as it must be), 49.1 dB. **Size is not, and could not be in this phase.** A raw blob is 36 B against a
+packed gaussian's 32 B of geometry, and on this TX cloud the geometry is 32 of 515 B a gaussian: the
+transfer, its open directions, the material and the harmonics are the rest, and Mode A carries them
+unchanged from each blob's source. What SSF saves is the codec of phase 4 (positions along the surface,
+radii and θ in 4–5 bits) and the appearance moved to the anchors' codebook; this phase shows that the layer
+holds the picture, not that it is smaller. The plan says to write this down before Mode B; it is.
 
 ### A cut of a merge tree is not a tree (found on the pawn, 31 Oct)
 
@@ -16626,5 +16624,4 @@ read the flag and drew every node, so only the paths through `uploadParticleFiel
   point past it, and a small cut whose links all fall inside it and are wrong, are read whole (8); a copy of
   a tree's stage that is not a tree does not carry the flag.
 
-On the pawn the leaves drawn plain are now the tree as the stage draws it: 53.5 dB between them (38.1 before),
-45.6 against 43.3 ms.
+On the pawn the nodes written plain now draw the original stage to the bit (122 dB; 38.1 dB before).

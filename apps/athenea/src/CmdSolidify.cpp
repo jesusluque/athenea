@@ -35,7 +35,7 @@ void addSolidify(CLI::App& app) {
     cmd->add_option("--opacity-min", o->s.opacityMin, "a gaussian less opaque than this stays residual")
         ->check(CLI::Range(0.0F, 1.0F));
     cmd->add_option("--flat-max", o->s.flatMax,
-                    "a gaussian whose thin scale is more than this of its middle one stays residual")
+                    "a gaussian whose thin scale is not under this of its middle one stays residual (0: none absorbed)")
         ->check(CLI::Range(0.0F, 1.0F));
     cmd->add_option("--coherence-min", o->s.coherenceMin,
                     "the weighted mean |n.n'| over its neighbours below which a blob goes back to the residuals")

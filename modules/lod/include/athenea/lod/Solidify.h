@@ -25,7 +25,7 @@ namespace athenea::lod {
 
 struct SolidifySettings {
     float    opacityMin = 0.5F;       ///< a candidate is at least this opaque
-    float    flatMax = 0.25F;         ///< and its thin scale at most this of its middle one
+    float    flatMax = 0.25F;         ///< and its thin scale under this of its middle one (0: none)
     float    coherenceMin = 0.9F;     ///< weighted mean |n_i . n_j| over its neighbours a blob keeps
     float    radiusScale = 2.0F;      ///< a blob's support over its gaussian's scale
     float    thicknessRatio = 0.5F;   ///< the anchor's c over the candidates' mean middle radius

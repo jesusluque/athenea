@@ -351,7 +351,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--prim` | path | the first | the ParticleField to read, where a stage has more than one |
 | `--degree` | 0..3 | `3` | harmonics kept |
 | `--opacity-min` | 0..1 | `0.5` | a gaussian less opaque than this stays residual |
-| `--flat-max` | 0..1 | `0.25` | a gaussian whose thin scale is more than this of its middle one stays residual |
+| `--flat-max` | 0..1 | `0.25` | a gaussian whose thin scale is not under this of its middle one stays residual; `0` absorbs nothing, not even surfels (whose thin scale is zero) |
 | `--coherence-min` | 0..1 | `0.9` | a blob whose neighbours' normals agree with its own less than this (the weighted mean of \|n·n'\|), or that has fewer than two neighbours, goes back to the residuals |
 | `--radius-scale` | 0.5..8 | `2` | a blob's support over its gaussian's scale |
 | `--thickness` | 0.01..4 | `0.5` | the anchor's thickness (the blob's normal half-axis) over the candidates' mean middle radius |

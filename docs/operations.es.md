@@ -359,7 +359,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--prim` | ruta | el primero | el ParticleField que leer, donde una escena tiene más de uno |
 | `--degree` | 0..3 | `3` | armónicos que se conservan |
 | `--opacity-min` | 0..1 | `0.5` | una gaussiana menos opaca que esto queda residual |
-| `--flat-max` | 0..1 | `0.25` | una gaussiana cuya escala fina pase de esto de la media queda residual |
+| `--flat-max` | 0..1 | `0.25` | una gaussiana cuya escala fina no quede por debajo de esto de la media queda residual; `0` no absorbe nada, ni siquiera los surfels (de escala fina cero) |
 | `--coherence-min` | 0..1 | `0.9` | un blob cuyos vecinos concuerdan con su normal menos que esto (la media ponderada de \|n·n'\|), o con menos de dos vecinos, vuelve a los residuales |
 | `--radius-scale` | 0.5..8 | `2` | el soporte de un blob sobre la escala de su gaussiana |
 | `--thickness` | 0.01..4 | `0.5` | el grosor del ancla (el semieje normal del blob) sobre el radio medio de los candidatos |
