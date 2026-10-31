@@ -16,8 +16,8 @@ struct PrepareParams {
     uint slot;          // which grid: its six bounds entries, its majorant word
     uint firstRecord;   // the records that read it (instances, finish)
     uint recordCount;
-    uint pad0;
-    uint pad1;
+    uint levelSet;      // 1: the grid is a level set, its values signed distances
+    float background;   // a level set's background: its band's half width
     float4 prototype0;  // the volume's world to index without its instance, 3x4 rows
     float4 prototype1;
     float4 prototype2;
@@ -49,6 +49,25 @@ void volumeBounds(uint3 tid: SV_DispatchThreadID) {
     InterlockedMax(bounds[base + 5], origin.z + 8);
 }
 
+/// A LEVEL SET AS A FOG: every voxel of a leaf, active or not, from signed
+/// distance to density, clamp(-sdf / halfWidth, 0, 1) -- 0 outside, 1 a
+/// band's half width in -- written over itself. An inactive voxel of a
+/// level set holds plus or minus the background, so the leaves inside read
+/// 1 and those outside 0. The interior beyond the band is tiles, which have
+/// no leaf: the medium reads a level set's tile the same way (medium.slang).
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void volumeLevelSetToFog(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.leafCount) return;
+    const NvLeaf leaf = nvLeaf(words, nvGrid(params.gridWord), i);
+    const float width = max(params.background, 1e-30);
+    for (uint n = 0; n < 512; ++n) {
+        const uint word = nvLeafValueWord(words, leaf, n);
+        wordsOut[word] = asuint(saturate(-asfloat(words[word]) / width));
+    }
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void volumeLeafMax(uint3 tid: SV_DispatchThreadID) {
@@ -58,7 +77,8 @@ void volumeLeafMax(uint3 tid: SV_DispatchThreadID) {
     const NvLeaf leaf = nvLeaf(words, grid, i);
     float largest = 0.0;
     for (uint n = 0; n < 512; ++n) {
-        if (nvLeafActive(words, leaf, n)) {
+        // A level set's inactive voxels are density too, once made fog.
+        if (params.levelSet != 0u || nvLeafActive(words, leaf, n)) {
             largest = max(largest, nvLeafValue(words, leaf, n));
         }
     }

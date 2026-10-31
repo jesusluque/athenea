@@ -3310,6 +3310,35 @@ sun: unlinked, 4941 pixels lit (over 2 against black); with the sun's link
 excluding the volume, every pixel black (max 0); including it, the unlinked
 frame (p99 0).
 
+### Level sets read as fog
+
+A level set's values are signed distances, negative inside, and the reader
+took them for densities: a surface converted to a volume rendered as a
+negative density in its band and nothing inside. The class and the
+background are the header's, so `readVdbGrid` now says a grid is a level set
+and gives its background -- for a level set the band's half width, in the
+distance's units -- and no value is read on the host. `VolumeSet` makes it a
+fog on the device as it lays it out: `volumeLevelSetToFog` rewrites every
+voxel of every leaf, active or not, as `clamp(-sdf / halfWidth, 0, 1)` (an
+inactive voxel holds plus or minus the background, so it comes out 0 or 1),
+before the leaf maxima are taken -- over the inactive voxels too, which are
+density now. The interior beyond the band is not leaves but the level set's
+inactive tiles, which the conversion cannot reach and voxelising would
+multiply; the record carries a flag and the width (words 31 and 32), and the
+medium reads a level set's tile the same way, as its majorant too, so the
+interior is filled at the tile's own cost of one step a leaf cell.
+
+**Checked** (`[volume][levelset]`, `io::writeVdbLevelSetBox`, OpenVDB's own
+box level set as the fixture): a 32^3 box at voxel 0.1 with a band of three
+voxels, sigma 0.5 a unit of density. Under nearest-voxel lookup the band's
+inner ramp reads 0, 1/3, 2/3 on each side, so the optical depth along an
+axis is sigma (L - halfWidth) = 0.5 x 2.9: transmittance 0.2393, 0.2384 and
+0.2393 by ratio tracking along x, -y and z against exp(-1.45) = 0.2346,
+within 1.5 standard errors, and delta tracking's scatter fraction within 1.5
+as well; no density over its majorant at 16384 random points in and about
+the box. The grid has 208 leaves of the 216 leaf cells over its bounds: the
+8 inside are the tiles the medium filled.
+
 ### Not done
 
 - The raster technique draws no volume, and the engine says so once.

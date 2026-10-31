@@ -1899,7 +1899,12 @@ frame's grids alone. A Volume under a `PointInstancer` or a native instance
 is drawn at every instance, each reading the same grid, laid out once.
 Light linking holds in a medium as on a surface: a light whose
 `collection:lightLink` leaves a Volume out lights none of its medium; its
-shadow is not linked (a volume dims every light that casts shadows).
+shadow is not linked (a volume dims every light that casts shadows). A
+level set (an OpenVDB grid of class `level set`, such as a surface converted
+to a volume) is read as a fog: density 0 outside, 1 from half the band's
+width inside on, a linear ramp between -- `clamp(-distance / halfWidth, 0,
+1)`, the half width being the grid's background value -- with its interior
+filled.
 
 **Light groups**, which no schema declares yet. A cloud's lamps are a primvar
 a group on its field, and its groups and states are attributes on Scope prims

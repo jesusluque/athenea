@@ -15,6 +15,7 @@
 #include <nanovdb/util/OpenToNanoVDB.h>
 #include <openvdb/io/File.h>
 #include <openvdb/openvdb.h>
+#include <openvdb/tools/MeshToVolume.h>
 #endif
 
 namespace athenea::io {
@@ -104,6 +105,10 @@ Result<NanoGrid> readVdbGrid(const std::filesystem::path& path, const std::strin
     // The header's leaf count: bookkeeping the kernels index by.
     out.leafCount = handle.gridMetaData() != nullptr ? handle.gridMetaData()->nodeCount(0) : 0;
     out.voxelSize = grid->transform().voxelSize()[0];
+    // The class and the background are the header's: a level set is told
+    // by them, not by its values.
+    out.levelSet = grid->getGridClass() == openvdb::GRID_LEVEL_SET;
+    out.background = grid->background();
     const openvdb::math::Mat4d m = grid->transform().baseMap()->getAffineMap()->getMat4();
     for (int r = 0; r < 4; ++r) {
         for (int c = 0; c < 4; ++c) {
@@ -136,6 +141,27 @@ Result<void> writeVdbBoxes(const std::filesystem::path& path, const std::string&
     }
 }
 
+Result<void> writeVdbLevelSetBox(const std::filesystem::path& path, const std::string& name, double voxelSize,
+                                 const VdbBox& box, float halfWidth) {
+    initialiseOnce();
+    try {
+        const openvdb::math::Transform::Ptr xform = openvdb::math::Transform::createLinearTransform(voxelSize);
+        const openvdb::math::BBox<openvdb::Vec3s> bbox(
+            openvdb::Vec3s(float(box.min[0] * voxelSize), float(box.min[1] * voxelSize), float(box.min[2] * voxelSize)),
+            openvdb::Vec3s(float(box.max[0] * voxelSize), float(box.max[1] * voxelSize), float(box.max[2] * voxelSize)));
+        openvdb::FloatGrid::Ptr grid = openvdb::tools::createLevelSetBox<openvdb::FloatGrid>(bbox, *xform, halfWidth);
+        grid->setName(name);
+        grid->setGridClass(openvdb::GRID_LEVEL_SET);
+        openvdb::io::File file(path.string());
+        openvdb::GridPtrVec grids{grid};
+        file.write(grids);
+        file.close();
+        return ok();
+    } catch (const std::exception& e) {
+        return Error::make(ErrorCode::IoFailure, "cannot write '{}': {}", path.string(), e.what());
+    }
+}
+
 #else
 
 Result<std::vector<std::string>> vdbGridNames(const std::filesystem::path& path) {
@@ -147,6 +173,10 @@ Result<NanoGrid> readVdbGrid(const std::filesystem::path& path, const std::strin
 }
 
 Result<void> writeVdbBoxes(const std::filesystem::path& path, const std::string&, double, std::span<const VdbBox>) {
+    return Error::make(ErrorCode::Unsupported, "'{}': built without OpenVDB", path.string());
+}
+
+Result<void> writeVdbLevelSetBox(const std::filesystem::path& path, const std::string&, double, const VdbBox&, float) {
     return Error::make(ErrorCode::Unsupported, "'{}': built without OpenVDB", path.string());
 }
 

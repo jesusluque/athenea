@@ -29,6 +29,13 @@ struct NanoGrid {
     /// Index to world, a row-vector 4x4 (v * M, translation in the last
     /// row), as OpenVDB's linear map holds it.
     std::array<double, 16> indexToWorld{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    /// A level set (OpenVDB's GRID_LEVEL_SET class, a header field): its
+    /// values are signed distances, negative inside, and a kernel turns them
+    /// into a fog's density (world::VolumeSet). `background` is the grid's
+    /// background value, which for a level set is its band's half width in
+    /// the distance's units; read from the header, as the class is.
+    bool  levelSet = false;
+    float background = 0.0F;
 };
 
 /// A box of voxels [min, max) at one value: what a fixture is made of.
@@ -51,5 +58,12 @@ struct VdbBox {
 /// count of voxels it holds is known by construction, not measured).
 [[nodiscard]] Result<void> writeVdbBoxes(const std::filesystem::path& path, const std::string& name,
                                          double voxelSize, std::span<const VdbBox> boxes);
+
+/// Writes a level set of the box [min, max) in index space (world = index x
+/// `voxelSize`), with a band of `halfWidth` voxels each side: OpenVDB's own
+/// box level set, its interior the inactive tiles a level set keeps. A
+/// test's input.
+[[nodiscard]] Result<void> writeVdbLevelSetBox(const std::filesystem::path& path, const std::string& name,
+                                               double voxelSize, const VdbBox& box, float halfWidth);
 
 }   // namespace athenea::io

@@ -1959,7 +1959,12 @@ dispositivo guarda solo las rejillas del frame. Un Volume bajo un
 leen la misma rejilla, dispuesta una sola vez. El light linking vale en un
 medio como en una superficie: una luz cuya `collection:lightLink` deja fuera
 un Volume no ilumina nada de su medio; su sombra no se enlaza (un volumen
-atenúa toda luz que proyecta sombras).
+atenúa toda luz que proyecta sombras). Un level set (una rejilla de OpenVDB
+de clase `level set`, como una superficie convertida en volumen) se lee como
+una niebla: densidad 0 fuera, 1 desde la mitad del ancho de la banda hacia
+dentro, y una rampa lineal entre ambas -- `clamp(-distancia / semiancho, 0,
+1)`, siendo el semiancho el valor de fondo de la rejilla -- con su interior
+lleno.
 
 **Grupos de luces**, que todavía no declara ningún schema. Las lámparas de una
 nube son un primvar por grupo en su field, y sus grupos y estados son

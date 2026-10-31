@@ -75,6 +75,12 @@ public float nvLeafValue(StructuredBuffer<uint> buf, NvLeaf leaf, uint n) {
     return pnanovdb_read_float(buf, pnanovdb_leaf_get_table_address(PNANOVDB_GRID_TYPE_FLOAT, buf, handleOf(leaf), n));
 }
 
+/// The word voxel `n`'s value sits at in a float leaf, for a kernel that
+/// rewrites it.
+public uint nvLeafValueWord(StructuredBuffer<uint> buf, NvLeaf leaf, uint n) {
+    return pnanovdb_leaf_get_table_address(PNANOVDB_GRID_TYPE_FLOAT, buf, handleOf(leaf), n).byte_offset / 4u;
+}
+
 /// The value at index coordinate `ijk`, through an accessor made for the call.
 public float nvValueAt(StructuredBuffer<uint> buf, NvGrid g, int3 ijk) {
     pnanovdb_readaccessor_t acc;

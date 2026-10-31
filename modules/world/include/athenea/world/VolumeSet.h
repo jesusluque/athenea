@@ -3,8 +3,9 @@
 // The frame's volumes on the device, in one buffer of words: a header, a
 // record a volume instance (grid offsets, world-to-index, extinction scale,
 // albedo, phase, and -- written by kernels -- its index bounds and
-// majorant), the NanoVDB grids, each once however many records read it, and
-// each leaf's largest value. The path tracer reads it
+// majorant), the NanoVDB grids, each once however many records read it (a
+// level set made a fog by a kernel as it is laid out), and each leaf's
+// largest value. The path tracer reads it
 // all from that one buffer (shaders/athenea/volume/medium.slang), since a
 // Metal kernel binds at most 31 and the traced one stands at the limit.
 // Nothing here reads a value on the host: the host places words, counts
@@ -84,7 +85,7 @@ public:
 
 private:
     gpu::Device*                     device_ = nullptr;
-    gpu::ComputeKernel               boundsKernel_, leafMaxKernel_, instancesKernel_, finishKernel_;
+    gpu::ComputeKernel               boundsKernel_, leafMaxKernel_, instancesKernel_, finishKernel_, levelSetKernel_;
     gpu::Buffer                      words_, bounds_, majorant_;
     std::vector<VolumeGridPlacement> placements_;
     uint32_t                         records_ = 0;

@@ -22,6 +22,9 @@ Result<VolumeSet> VolumeSet::create(gpu::ShaderLibrary& library) {
     if (!instances) return std::move(instances).error();
     auto finish = gpu::ComputeKernel::create(library, "athenea/volume/volume_prepare", "volumeFinish");
     if (!finish) return std::move(finish).error();
+    auto fog = gpu::ComputeKernel::create(library, "athenea/volume/volume_prepare", "volumeLevelSetToFog");
+    if (!fog) return std::move(fog).error();
+    set.levelSetKernel_ = std::move(*fog);
     set.boundsKernel_ = std::move(*bounds);
     set.leafMaxKernel_ = std::move(*leafMax);
     set.instancesKernel_ = std::move(*instances);
@@ -118,6 +121,8 @@ Result<void> VolumeSet::set(gpu::CommandBatch& batch, std::span<const VolumeInpu
             words[b + 28] = bitsOf(in.emission[0]);
             words[b + 29] = bitsOf(in.emission[1]);
             words[b + 30] = bitsOf(in.emission[2]);
+            words[b + 31] = in.grid->levelSet ? 1u : 0u;   // flags: a level set, read as a fog
+            words[b + 32] = bitsOf(in.grid->background);
             words[b + 33] = static_cast<uint32_t>(in.categories & 0xFFFFFFFFu);
             words[b + 34] = static_cast<uint32_t>(in.categories >> 32);
         }
@@ -149,10 +154,17 @@ Result<void> VolumeSet::set(gpu::CommandBatch& batch, std::span<const VolumeInpu
         cursor["params"]["leafCount"].setData(p.leafCount);
         cursor["params"]["leafBase"].setData(p.leafBase);
         cursor["params"]["slot"].setData(g);
+        cursor["params"]["levelSet"].setData(uint32_t{grids[g]->levelSet ? 1u : 0u});
+        cursor["params"]["background"].setData(grids[g]->background);
     };
     for (uint32_t g = 0; g < placements_.size(); ++g) {
         if (placements_[g].leafCount > 0) {
             const auto bind = [&](rhi::ShaderCursor cursor) { bindGrid(cursor, g); };
+            // A level set is made a fog first, on the device: its leaves'
+            // maxima are then the fog's.
+            if (grids[g]->levelSet) {
+                levelSetKernel_.dispatch(batch, {placements_[g].leafCount, 1, 1}, bind);
+            }
             boundsKernel_.dispatch(batch, {placements_[g].leafCount, 1, 1}, bind);
             leafMaxKernel_.dispatch(batch, {placements_[g].leafCount, 1, 1}, bind);
         }

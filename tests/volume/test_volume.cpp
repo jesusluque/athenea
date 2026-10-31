@@ -12,6 +12,8 @@
 // the host.
 #include "../gpu/GpuTest.h"
 
+#include <catch2/catch_approx.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -230,5 +232,109 @@ TEST_CASE("a medium on the grid is Beer-Lambert's within its own standard error,
         if (ray.leaves != 0) {
             CHECK(c[3] == ray.leaves);
         }
+    }
+}
+
+// LEVEL SETS: OpenVDB's level set of a 32^3 box, a band of three voxels a
+// side, read and made a fog on the device. The class and background are the
+// header's; the medium then reads 0 outside, a ramp over the band's inner
+// half and 1 beyond it -- its interior the level set's inactive tiles, with
+// no leaf -- so along an axis through the middle the optical depth is
+// sigma (L - halfWidth): exp(-0.5 x 2.9) for L 3.2, half width 0.3. And no
+// density, in the band or a tile, over the majorant over it.
+TEST_CASE("a level set volume is read as a fog: Beer-Lambert through its interior tiles and its band, never over its "
+          "majorant",
+          "[volume][gpu][medium][levelset]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const fs::path dir = fs::temp_directory_path() / "athenea-tests" / "volume";
+    fs::create_directories(dir);
+    const fs::path path = dir / "levelset_box.vdb";
+    const io::VdbBox box{{0, 0, 0}, {32, 32, 32}, 1.0F};
+    if (auto written = io::writeVdbLevelSetBox(path, "surface", 0.1, box, 3.0F); !written) {
+        FAIL(written.error().toString());
+    }
+    auto grid = io::readVdbGrid(path, "surface");
+    if (!grid) FAIL(grid.error().toString());
+    std::printf("  level set: %u leaves, background %.3f\n", grid->leafCount, double(grid->background));
+    CHECK(grid->levelSet);
+    CHECK(grid->background == Catch::Approx(0.3).margin(1e-5));
+    auto set = world::VolumeSet::create(*gpu->library);
+    if (!set) FAIL(set.error().toString());
+    world::VolumeInput input;
+    input.grid = &*grid;
+    input.densityScale = 0.5F;
+    {
+        gpu::CommandBatch batch(*gpu->device);
+        REQUIRE(set->set(batch, std::span<const world::VolumeInput>(&input, 1)));
+        REQUIRE(batch.submit(true));
+    }
+    auto rays = gpu::ComputeKernel::create(*gpu->library, "athenea/test/medium_check", "mediumRays");
+    auto reduce = gpu::ComputeKernel::create(*gpu->library, "athenea/test/medium_check", "mediumReduce");
+    auto majorant = gpu::ComputeKernel::create(*gpu->library, "athenea/test/medium_check", "mediumMajorant");
+    if (!rays) FAIL(rays.error().toString());
+    if (!reduce) FAIL(reduce.error().toString());
+    if (!majorant) FAIL(majorant.error().toString());
+    constexpr uint32_t kRays = 16384;
+    gpu::Buffer counts = test::uintBuffer(*gpu->device, 6, "levelset.counts");
+    gpu::Buffer sums = test::uintBuffer(*gpu->device, 4, "levelset.sums");
+    gpu::Buffer perRay = test::uintBuffer(*gpu->device, uint64_t{kRays} * 2, "levelset.perRay");
+    struct Ray {
+        float origin[3];
+        float direction[3];
+        const char* name;
+    };
+    const float expected = std::exp(-0.5F * 2.9F);
+    const Ray cases[] = {
+        {{-1.0F, 1.65F, 1.65F}, {1.0F, 0.0F, 0.0F}, "x"},
+        {{1.65F, 4.2F, 1.65F}, {0.0F, -1.0F, 0.0F}, "-y"},
+        {{1.65F, 1.65F, -1.0F}, {0.0F, 0.0F, 1.0F}, "z"},
+    };
+    for (const Ray& ray : cases) {
+        const auto bind = [&](rhi::ShaderCursor c) {
+            c["medium"]["rays"].setData(kRays);
+            c["medium"]["volume"].setData(uint32_t{0});
+            c["medium"]["expectedT"].setData(expected);
+            c["medium"]["origin"].setData(ray.origin, sizeof(ray.origin));
+            c["medium"]["tMin"].setData(0.0F);
+            c["medium"]["direction"].setData(ray.direction, sizeof(ray.direction));
+            c["medium"]["tMax"].setData(10.0F);
+            const float boxMin[3] = {-0.4F, -0.4F, -0.4F};
+            const float boxMax[3] = {3.6F, 3.6F, 3.6F};
+            c["medium"]["boxMin"].setData(boxMin, sizeof(boxMin));
+            c["medium"]["boxMax"].setData(boxMax, sizeof(boxMax));
+            c["words"].setBinding(set->words().rhi());
+            c["counts"].setBinding(counts.rhi());
+            c["sums"].setBinding(sums.rhi());
+            c["perRay"].setBinding(perRay.rhi());
+        };
+        const uint32_t zeros[6] = {};
+        REQUIRE(counts.write(*gpu->device, 0, sizeof(zeros), zeros));
+        {
+            gpu::CommandBatch batch(*gpu->device);
+            rays->dispatch(batch, {kRays, 1, 1}, bind);
+            reduce->dispatch(batch, {1, 1, 1}, bind);
+            majorant->dispatch(batch, {kRays, 1, 1}, bind);
+            REQUIRE(batch.submit(true));
+        }
+        uint32_t c[6] = {};
+        float s[4] = {};
+        REQUIRE(counts.read(*gpu->device, 0, sizeof(c), c));
+        REQUIRE(sums.read(*gpu->device, 0, sizeof(s), s));
+        const double n = kRays;
+        const double meanT = s[0] / n;
+        const double varT = std::max(s[1] / n - meanT * meanT, 0.0);
+        const double zT = (meanT - expected) / std::max(std::sqrt(varT / n), 1e-9);
+        const double meanS = s[2] / n;
+        const double varS = std::max(s[3] / n - meanS * meanS, 0.0);
+        const double zS = (meanS - (1.0 - expected)) / std::max(std::sqrt(varS / n), 1e-9);
+        std::printf("  %s through the level set: T %.4f by ratio tracking (expected %.4f, z %.2f); scattered %.4f "
+                    "(z %.2f); %u of %u probes over their majorant\n",
+                    ray.name, meanT, static_cast<double>(expected), zT, meanS, zS, c[1], c[5]);
+        CHECK(std::abs(zT) < 3.5);
+        CHECK(std::abs(zS) < 3.5);
+        CHECK(c[1] == 0);
     }
 }
