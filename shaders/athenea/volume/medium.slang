@@ -237,16 +237,43 @@ float densityAt(StructuredBuffer<uint> words, VolumeRecord r, inout pnanovdb_rea
         c.z = int(tap.z);
         return voxelDensity(words, r, acc, c);
     }
+    // The eight in one leaf -- seven points in eight of a leaf's cells have
+    // them so -- read straight from its value table: the first through the
+    // accessor, the rest at fixed strides from it (z one word, y eight, x 64),
+    // where eight walks of the tree used to be. A leaf's values are the
+    // grid's own, a level set's made fog, so no tile needs reading.
+    pnanovdb_coord_t c0;
+    c0.x = int(base.x);
+    c0.y = int(base.y);
+    c0.z = int(base.z);
+    const pnanovdb_address_t at = pnanovdb_readaccessor_get_value_address(PNANOVDB_GRID_TYPE_FLOAT, words, acc, c0);
+    const uint inLeaf = at.byte_offset - acc.leaf.address.byte_offset;
+    if (acc.leaf.address.byte_offset != 0u && inLeaf < PNANOVDB_GRID_TYPE_GET(PNANOVDB_GRID_TYPE_FLOAT, leaf_size) &&
+        (c0.x & 7) != 7 && (c0.y & 7) != 7 && (c0.z & 7) != 7) {
+        const uint w = at.byte_offset / 4u;
+        const float x00 = lerp(asfloat(words[w]), asfloat(words[w + 1u]), f.z);
+        const float x01 = lerp(asfloat(words[w + 8u]), asfloat(words[w + 9u]), f.z);
+        const float x10 = lerp(asfloat(words[w + 64u]), asfloat(words[w + 65u]), f.z);
+        const float x11 = lerp(asfloat(words[w + 72u]), asfloat(words[w + 73u]), f.z);
+        return lerp(lerp(x00, x01, f.y), lerp(x10, x11, f.y), f.x);
+    }
+    // Straddling leaves: the corners in the first corner's leaf from its
+    // table, the others through the accessor.
+    const bool baseInLeaf = acc.leaf.address.byte_offset != 0u &&
+                            inLeaf < PNANOVDB_GRID_TYPE_GET(PNANOVDB_GRID_TYPE_FLOAT, leaf_size);
+    const uint w0 = at.byte_offset / 4u;
     float value = 0.0;
     [loop]
     for (uint k = 0; k < 8u; ++k) {
         const uint3 bit = uint3(k & 1u, (k >> 1) & 1u, (k >> 2) & 1u);
         pnanovdb_coord_t c;
-        c.x = int(base.x) + int(bit.x);
-        c.y = int(base.y) + int(bit.y);
-        c.z = int(base.z) + int(bit.z);
+        c.x = c0.x + int(bit.x);
+        c.y = c0.y + int(bit.y);
+        c.z = c0.z + int(bit.z);
+        const bool same = baseInLeaf && ((c.x ^ c0.x) & ~7) == 0 && ((c.y ^ c0.y) & ~7) == 0 && ((c.z ^ c0.z) & ~7) == 0;
+        const float v = same ? asfloat(words[w0 + bit.x * 64u + bit.y * 8u + bit.z]) : voxelDensity(words, r, acc, c);
         const float3 w = select(bit != uint3(0, 0, 0), f, 1.0 - f);
-        value += w.x * w.y * w.z * voxelDensity(words, r, acc, c);
+        value += w.x * w.y * w.z * v;
     }
     return value;
 }

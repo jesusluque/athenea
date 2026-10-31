@@ -3624,6 +3624,60 @@ Measured again after the keyed streams and the depth kept over passes: 617,
 867 and 621 ms (smoke2) and 898, 1037 and 889 ms (explosion) -- the same
 within 2%.
 
+### Performance pass: the trilinear lookup, and what the regressions are
+
+Measured the same way throughout -- `athenea stage --frames 5`, median of
+the last four, 1024 x 1024, 64 paths a frame in passes of 16, 8 bounces,
+RelWithDebInfo builds of 5d5aede, stage A and stage B in worktrees beside
+this one, all in one GPU slot so the Mac's other load is the same for each:
+
+| ms a frame | 5d5aede | stage A | B nearest | B trilinear | B stochastic | now nearest | now trilinear | now stochastic |
+|---|---|---|---|---|---|---|---|---|
+| smoke2 | 440 | 557 | 617 | 862 | 619 | 594 | 762 | 621 |
+| explosion | 655 | 813 | 899 | 1028 | 899 | 889 | 959 | 892 |
+
+Device bytes unchanged (28.4 and 27.1 MB). Images against stage B's at
+equal seeds: 256 paths of each filter read the same relMSE against B's
+4096-path frame to six figures (5.40e-4, 5.33e-4, 5.45e-4) -- the same
+frame up to float rounding.
+
+**What went in: the trilinear lookup reads a leaf's table.** The eight
+corners of a point whose first corner is not on its leaf's last layer lie
+in that leaf -- 7 points in 8 of a dense leaf -- and are read from its value
+table at fixed strides from the first (z one word, y eight, x 64), where
+eight walks of the tree were. A point straddling leaves reads the corners
+in the first one's leaf the same way and the rest through the accessor.
+Trilinear over nearest went from +40% to +28% on smoke2 and from +14% to
++8% on the explosion. The +25% target is met on the explosion and not on
+smoke2.
+
+**What was measured and not kept** (ablations of the medium's shader under
+one binary, smoke2):
+
+- *Emitters compiled out of a frame with none* (`kEmissive` false where the
+  frame has no emitting triangle and no mesh light). Stage A compiled the
+  emitters into the volumes kernel, and this is stage A's regression: with
+  them out (with this lookup and the level set change below in the same
+  build, which together are worth about 4%), smoke2 at nearest ran 519 ms
+  against B's 614 and the explosion 753 against 893. But the
+  kernel compiled without them drew wrong frames on Metal: the technique
+  Beer-Lambert check and the furnace failed (coverage a tenth of what it
+  is), and which medium shader it was paired with decided whether it
+  failed -- the same shader passed with the emitters in. No uninitialised
+  value or binding was found in the time this pass had; reverted. **Stage
+  A's +26% over 5d5aede stays open** and the cause is that kernel's size.
+- *A two-level majorant inside a leaf* (the full one only on the cell's
+  last layers, the leaf's own maximum elsewhere): fewer null collisions in
+  the leaves before the leaves, but the three pieces a cell cost more than
+  they saved -- 631 and 964 ms against 597 and 851.
+- *Level sets' tiles made fog on the device* (`volumeLevelSetTiles`), so
+  that the lookup has no level set branch: 611 / 768 against 594 / 762,
+  within the run's spread; not worth the kernel.
+- Computing that inner maximum inside `volumeLeafMax`'s loop made smoke2's
+  frame lose whole leaves on Metal, whether or not the extra word was
+  written; as a separate kernel it did not. Unexplained, like the above --
+  two signs that this device's compiler is fragile on these kernels.
+
 ### Not done
 
 - The raster technique draws no volume, and the engine says so once.
