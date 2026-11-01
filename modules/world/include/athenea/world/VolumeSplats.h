@@ -188,10 +188,29 @@ public:
     [[nodiscard]] Result<void> dequantise(const gpu::Buffer& compact, uint32_t count, uint32_t mode,
                                           const std::array<float, 12>& ranges, const gpu::Buffer& records) const;
 
+    /// A BRICK's sums over the density grid's active voxels: (the density
+    /// inside the index box [lo, hi), the density over the whole grid, its
+    /// square inside the box) -- a brick's mass in its core, with its margin,
+    /// and its core's energy.
+    [[nodiscard]] Result<std::array<double, 3>> boxSums(const gpu::Buffer& words, uint32_t densityWord,
+                                                        uint32_t leafCount, std::array<int32_t, 3> lo,
+                                                        std::array<int32_t, 3> hi) const;
+
+    /// The live records of `count` kept into `out` (as many records as
+    /// `count` at least) in no set order -- `mode` 0 those whose centre lies
+    /// in the index box [lo, hi), 1 those whose box meets it -- and how many.
+    [[nodiscard]] Result<uint32_t> select(const gpu::Buffer& gaussians, uint32_t count, std::array<int32_t, 3> lo,
+                                          std::array<int32_t, 3> hi, uint32_t mode, const gpu::Buffer& out) const;
+
+    /// Records from one grid's frame into another's: `rows` the affine map
+    /// from the first's index space to the second's, three rows of (K, t).
+    void transform(gpu::CommandBatch& batch, const gpu::Buffer& gaussians, uint32_t count,
+                   const std::array<float, 12>& rows, const gpu::Buffer& out) const;
+
 private:
     gpu::Device*       device_ = nullptr;
     gpu::ComputeKernel pack_, back_, fixture_, mixture_, compare_, reduce_, rays_, export_, slots_, flicker_,
-        exportPly_, import_, quantRange_, quantise_, dequantise_;
+        exportPly_, import_, quantRange_, quantise_, dequantise_, boxSums_, select_, transform_;
 };
 
 }   // namespace athenea::world

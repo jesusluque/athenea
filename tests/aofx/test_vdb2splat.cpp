@@ -274,3 +274,95 @@ TEST_CASE("a mixture's closed-form transmittance is ratio tracking's through its
         CHECK(rays->meanDifference < 0.01);
     }));
 }
+
+TEST_CASE("a grid read a brick at a time: its cells, a brick's voxels, the records a box keeps, a frame and back",
+          "[aofx][vdb2splat][bricks]") {
+    if (!io::haveOpenVdb()) SKIP("built without OpenVDB");
+    gpu_host::Context* gpu = gpu_host::installProcessContext();
+    if (gpu == nullptr || gpu->compute() == nullptr) SKIP("no gpe device");
+    gpu::ShaderLibrary library(gpu->deviceShared());
+    // A box of 64^3 voxels at one: its cells are its 512 leaves (or tiles).
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "athenea-tests" / "vdb2splat";
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path path = dir / "ones64.vdb";
+    const io::VdbBox box{{0, 0, 0}, {64, 64, 64}, 1.0};
+    REQUIRE(io::writeVdbBoxes(path, "density", 0.1, std::span<const io::VdbBox>(&box, 1)));
+    auto cells = io::readVdbCells(path, "density");
+    REQUIRE(cells);
+    uint64_t active = 0;
+    for (uint32_t a : cells->active) active += a;
+    CHECK(cells->origins.size() == 512);
+    CHECK(active == 64u * 64u * 64u);
+    REQUIRE(gpu->run([&] {
+        auto splats = world::VolumeSplats::create(library);
+        REQUIRE(splats);
+        gpu::Device& device = library.device();
+        // A brick [8, 40)^3 read alone: 32^3 voxels at one, a core [16, 32)^3 of 16^3.
+        io::VdbSelection brick;
+        brick.name = "density";
+        brick.clip = true;
+        brick.clipMin = {8, 8, 8};
+        brick.clipMax = {39, 39, 39};
+        auto grid = io::readVdbGrid(path, brick);
+        REQUIRE(grid);
+        auto words = gpu::Buffer::fromSpan<uint32_t>(device, grid->words, "test.brick");
+        REQUIRE(words);
+        auto sums = splats->boxSums(*words, 0, grid->leafCount, {16, 16, 16}, {32, 32, 32});
+        REQUIRE(sums);
+        std::printf("  a brick of the box: core mass %.0f, read %.0f, core energy %.0f\n", (*sums)[0], (*sums)[1],
+                    (*sums)[2]);
+        CHECK((*sums)[0] == 4096.0);
+        CHECK((*sums)[1] == 32768.0);
+        CHECK((*sums)[2] == 4096.0);
+
+        // Sixteen known gaussians: two halves of the box keep them all, once.
+        const Fixture f = mixtureFixture(device, *splats, 48, 16, 2.0F, 4.0F, 5u);
+        gpu::BufferDesc desc;
+        desc.bytes = 16 * 64;
+        desc.elementBytes = 16;
+        desc.label = "test.kept";
+        auto kept = gpu::Buffer::create(device, desc);
+        REQUIRE(kept);
+        auto low = splats->select(f.mixture, 16, {0, 0, 0}, {24, 48, 48}, 0, *kept);
+        auto high = splats->select(f.mixture, 16, {24, 0, 0}, {48, 48, 48}, 0, *kept);
+        REQUIRE(low);
+        REQUIRE(high);
+        CHECK(*low + *high == 16);
+        auto reach = splats->select(f.mixture, 16, {0, 0, 0}, {48, 48, 48}, 1, *kept);
+        REQUIRE(reach);
+        CHECK(*reach == 16);
+
+        // Into a frame of half the voxel shifted by a world unit, and back:
+        // the grid given back is the one the mixture made.
+        std::array<float, 12> there{}, back{};
+        // index -> index rows: i' = (0.1 i + 0 - t') / 0.05, and the way back.
+        const double t[3] = {1.0, -0.5, 0.25};
+        for (int r = 0; r < 3; ++r) {
+            there[static_cast<size_t>(r * 4 + r)] = 2.0F;
+            there[static_cast<size_t>(r * 4 + 3)] = static_cast<float>(-t[r] / 0.05);
+            back[static_cast<size_t>(r * 4 + r)] = 0.5F;
+            back[static_cast<size_t>(r * 4 + 3)] = static_cast<float>(t[r] / 0.1);
+        }
+        auto moved = gpu::Buffer::create(device, desc);
+        auto again = gpu::Buffer::create(device, desc);
+        REQUIRE(moved);
+        REQUIRE(again);
+        {
+            gpu::CommandBatch batch(device);
+            splats->transform(batch, f.mixture, 16, there, *moved);
+            REQUIRE(batch.submit(true));
+        }
+        {
+            gpu::CommandBatch batch(device);
+            splats->transform(batch, *moved, 16, back, *again);
+            REQUIRE(batch.submit(true));
+        }
+        auto returned = gpu::Buffer::fromSpan<uint32_t>(device, f.packed.words, "test.returned");
+        REQUIRE(returned);
+        REQUIRE(splats->splatToGrid(*again, 16, *returned, f.packed.density, f.packed.leafCount));
+        auto error = splats->compare(*returned, f.words, f.packed.density, f.packed.leafCount);
+        REQUIRE(error);
+        std::printf("  sixteen gaussians to a frame of half the voxel and back: relative L2 %.2e\n", error->relativeL2);
+        CHECK(error->relativeL2 < 1e-4);
+    }));
+}

@@ -946,8 +946,34 @@ renders as it renders any volume.
 | `--velocity` | grid name | `vel` | the flow's grid (vec3), read from each frame; the frame before's flow is laid on the current frame's active voxels. A staggered grid (class `staggered`, a MAC grid such as Mantaflow's `velocity`) is averaged from its voxels' two faces to their centres |
 | `--velocity-units` | `world`, `mantaflow` | `world` | `world`: world units a frame (divided by the voxel). `mantaflow`: grid cells a Mantaflow time unit, of which a frame is 0.1 x 25 / `--fps` (0.10417 at 24) |
 | `--fps` | number | `24` | with `--velocity-units mantaflow`: the sequence's frames a second |
+| `--tile-dir` | directory | none | fits the grid a brick at a time (below) and keeps the plan and every brick's result here; the same command run again goes on from the first brick it had not finished. A directory holds one plan: another input, grid, margin, `--tile-cells`, `-n` or `--tile-weight` is refused |
+| `--tile-cells` | integer | `0` | the most leaf-sized cells (8³ voxels: a leaf, or an active tile's share) a brick reads, its margin included; `0` takes `--device-mb` × 1024 / 48, some 48 KB of the pool a cell (the fit's 60 bytes a voxel, the leaves' picture and grid, the leaves the medium's reach adds) |
+| `--tile-margin` | 0 to 256, voxels | `32` | how far about a brick's core it is read and fitted; only the gaussians whose centre lies in the core are kept |
+| `--tile-weight` | `mass`, `energy` | `mass` | what a brick's share of `-n` is: its core's density summed, or its square summed |
+| `--tile-refine` | integer | `30` | Adam steps of a second pass over every brick, warm from the gaussians of the whole mixture that reach it (no densify round, no prune), the ones whose centre lies in its core kept: a brick's margin then holds its neighbours' own gaussians; `0` skips it (on the half cloud the plain stitch left a seam and a density error of 0.199 against 0.152 unbricked; 30 steps, 0.152) |
+| `--tile-seconds` | number, s | `0` | no brick is begun after this many seconds (0: no limit); the run says "run the same command again to go on" and exits 0 |
+| `--back-grid` | `.vdb` | the input | with `--tile-dir`: the grid whose density topology `--back` is written on, read whole -- the same volume at another resolution (its own transform: the gaussians are mapped through the world) -- and the mixture measured against its density there |
 
 A sequence prints, a frame: the gaussians alive, the density's relative L2 error given back, the fit's time, and from the second frame on the flicker -- sqrt(Σ((b₁ − b₀) − (o₁ − o₀))² / Σ(o₁ − o₀)²) over the active voxels, what the frame-to-frame change of the grid given back gets wrong of the original's -- and how many of the frame before's gaussians are alive in the same slot, and how far they moved over their mean deviation. `--measure` prints the temperature's error too, weighed by the density (the fit's own measure: where there is no density a gaussian's temperature says nothing) and unweighted. `--make-fixture blob-sequence` writes `--frames` of the noise blob carried by a known flow -- a turn about the vertical through it of 2π/120 a frame and a rise of 0.3 voxels a frame -- each with its `density` and `vel` (world units a frame).
+
+**Bricks** (`--tile-dir`): a grid larger than the device, or than the host
+memory a whole read takes, is cut into bricks and fitted one at a time. The
+plan is made from the tree's structure alone (no value decompressed): its
+leaf-sized cells cut by a k-d split at the median cell along the longest side
+until a brick, with its margin, holds at most `--tile-cells`. A brick is read
+alone -- OpenVDB's delayed loading decompresses only the leaves inside it --
+and goes through the device a pass at a time: its sums (its core's mass, what it
+reads, its core's energy); its fit, of `-n` × its weight's share × what it
+reads over its core's mass, of which the gaussians whose centre lies in the
+core are kept; the seams' pass (`--tile-refine`); and with `--measure` its core given back from every gaussian
+whose box meets it, the sums of the squares adding up to the whole grid's
+relative L2 (printed brick by brick, then in all). The fit's options apply to
+every brick; `--temperature`, `--colour`, `--quantise`, `--rays` and the
+sequences are not read with bricks (the density alone is fitted). Files in
+the directory: `plan.txt`, `sums_NNNN.txt`, `fit_NNNN.rec`, `refine_NNNN.rec`
+(a 20-byte header -- `BRCK`, the count kept, the budget or the refine steps,
+the count written, the fit's seconds as a float -- then 16 floats a gaussian,
+the effect's records in the input's index frame) and `measure*_NNNN.txt`.
 
 What the stage holds, on its `UsdVolParticleField3DGaussianSplat`, besides
 the schema's positions, orientations, scales and `radiance:base`:
@@ -971,6 +997,7 @@ more than `--init-fraction` of it.
 ```sh
 athenea vdb2splat smoke.vdb -n 50000 -o smoke_gs.usdc --back smoke_back.vdb --measure
 athenea vdb2splat blob.vdb --make-fixture blob --fixture-size 128
+athenea vdb2splat cloud.vdb -n 200000 --tile-dir cloud_bricks --device-mb 14336 --tile-refine 30 --tile-seconds 250 --measure -o cloud_gs.usdc --back cloud_half_back.vdb --back-grid cloud_half.vdb
 ```
 
 ### 2.9 `athenea visibility` — what a skinned cloud casts, baked by part

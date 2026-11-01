@@ -208,8 +208,30 @@ Result<NanoGrid> readVdbGrid(const std::filesystem::path& path, const VdbSelecti
         } else {
             chosen = &candidates.front();
         }
-        base = file.readGrid(chosen->readName);
-        file.close();
+        if (selection.clip) {
+            // A BRICK: OpenVDB reads the tree's structure and seeks over the
+            // values of every leaf outside the box; the leaves inside are
+            // decompressed when touched (delayed loading, the file mapped).
+            // The world box is the index box widened by a voxel, so that no
+            // rounding of the transform cuts a voxel of it; the exact index
+            // box is then clipped -- structure, no value made.
+            file.close();
+            openvdb::io::File mapped(path.string());
+            mapped.open(true);
+            const openvdb::GridBase::ConstPtr meta = mapped.readGridMetadata(chosen->readName);
+            const openvdb::CoordBBox box(
+                openvdb::Coord(selection.clipMin[0], selection.clipMin[1], selection.clipMin[2]),
+                openvdb::Coord(selection.clipMax[0], selection.clipMax[1], selection.clipMax[2]));
+            openvdb::CoordBBox wide = box;
+            wide.expand(1);
+            const openvdb::BBoxd world = meta->transform().indexToWorld(wide);
+            base = mapped.readGrid(chosen->readName, world);
+            base->clip(box);
+            mapped.close();
+        } else {
+            base = file.readGrid(chosen->readName);
+            file.close();
+        }
     } catch (const std::exception& e) {
         return Error::make(ErrorCode::IoFailure, "cannot read '{}': {}", path.string(), e.what());
     }
@@ -364,6 +386,53 @@ Result<NanoGrid> readVdbGrid(const std::filesystem::path& path, const VdbSelecti
         for (int c = 0; c < 4; ++c) {
             out.indexToWorld[static_cast<size_t>(r * 4 + c)] = m(r, c);
         }
+    }
+    return out;
+}
+
+Result<VdbCells> readVdbCells(const std::filesystem::path& path, const std::string& name) {
+    initialiseOnce();
+    VdbCells out;
+    try {
+        openvdb::io::File file(path.string());
+        file.open(true);   // delayed loading: the structure, no leaf's values
+        if (!file.hasGrid(name)) {
+            return Error::make(ErrorCode::NotFound, "'{}' has no grid '{}'", path.string(), name);
+        }
+        auto grid = openvdb::gridPtrCast<openvdb::FloatGrid>(file.readGrid(name));
+        file.close();
+        if (!grid) return Error::make(ErrorCode::Unsupported, "grid '{}' of '{}' is not a float grid", name, path.string());
+        if (!grid->transform().isLinear()) {
+            return Error::make(ErrorCode::Unsupported, "grid '{}': only linear transforms are read", name);
+        }
+        const openvdb::FloatTree& tree = grid->tree();
+        for (auto leaf = tree.cbeginLeaf(); leaf; ++leaf) {
+            const openvdb::Coord o = leaf->origin();
+            out.origins.push_back({o.x(), o.y(), o.z()});
+            out.active.push_back(static_cast<uint32_t>(leaf->getValueMask().countOn()));
+            ++out.leaves;
+        }
+        for (auto it = tree.cbeginValueOn(); it; ++it) {
+            if (!it.isTileValue()) continue;
+            ++out.tiles;
+            openvdb::CoordBBox box;
+            it.getBoundingBox(box);
+            for (int x = box.min().x(); x <= box.max().x(); x += 8) {
+                for (int y = box.min().y(); y <= box.max().y(); y += 8) {
+                    for (int z = box.min().z(); z <= box.max().z(); z += 8) {
+                        out.origins.push_back({x, y, z});
+                        out.active.push_back(512u);
+                    }
+                }
+            }
+        }
+        out.voxelSize = grid->transform().voxelSize()[0];
+        const openvdb::math::Mat4d m = grid->transform().baseMap()->getAffineMap()->getMat4();
+        for (int r = 0; r < 4; ++r) {
+            for (int c = 0; c < 4; ++c) out.indexToWorld[static_cast<size_t>(r * 4 + c)] = m(r, c);
+        }
+    } catch (const std::exception& e) {
+        return Error::make(ErrorCode::IoFailure, "cannot read '{}': {}", path.string(), e.what());
     }
     return out;
 }
@@ -567,6 +636,10 @@ Result<NanoGrid> readVdbGrid(const std::filesystem::path& path, const std::strin
 }
 
 Result<NanoGrid> readVdbVec3Grid(const std::filesystem::path& path, const std::string&) {
+    return Error::make(ErrorCode::Unsupported, "'{}': built without OpenVDB", path.string());
+}
+
+Result<VdbCells> readVdbCells(const std::filesystem::path& path, const std::string&) {
     return Error::make(ErrorCode::Unsupported, "'{}': built without OpenVDB", path.string());
 }
 

@@ -19077,8 +19077,8 @@ The usdc is 3.2–3.3 MB at 50k, 12.8 MB at 200k. Where it broke:
   now none ("'flames' is empty here: no temperature fitted").
 - **The whole cloud** (1.49 G voxels, 2.9 GB of `.vdb`) is not run: the fit's working buffers are some 60 bytes a
   voxel of its leaves (half: 15.9 GB for 236 M voxels of leaves), some 110 GB here, against the 16 GB the shared
-  machine may give it; reading it takes some 12 GB of host memory first. Tiling the fit by leaves (streamed
-  through a smaller pool) is what it would take; not done. The half is the largest that fits, at 15.9 GB.
+  machine may give it; reading it takes some 12 GB of host memory first. The half is the largest that fits whole,
+  at 15.9 GB; bricks (below, "Bricks: a volume larger than the device") fit the whole.
 
 **The explosions' settings** (one frame; s / density L2 / temperature density-weighted L2 / masked PT; the
 knobs are round 2's 240-step schedule, `--iterations 240 --checkerboard --init-fraction 0.7 --split-share 1
@@ -19292,6 +19292,59 @@ The floor between the two (`--min-std 0.75`, the same layer; `volstream_g8.sh`):
 At 0.75 the 20k rung is better than round 1's on every measure at 40 % of its bytes, and the 50k rung's path
 trace is a third further than round 1's instead of 2.8 times: 0.75 is the floor to stream with when the path
 trace is the judge, 1.0 when the density at the voxels is.
+
+### Bricks: a volume larger than the device (1 Nov)
+
+The whole Disney cloud (1.49 G active voxels, 1.89 M leaves and 789 k active tiles, 2.93 GB of `.vdb`) was refused
+by memory: the fit's working buffers are some 60 bytes a voxel of its leaves (~110 GB), and reading it whole takes
+~12 GB of host memory. `vdb2splat --tile-dir` fits it a brick at a time.
+
+**The design.** The fit's error is local -- a voxel's value is the gaussians within 3.5 deviations of it -- so a
+grid splits into spatial bricks whose fits are independent once each sees what lies about it. Considered and set
+aside: splitting by Morton runs of leaves (the effect wants a box; runs make ragged boxes whose surface is all
+margin) and streaming leaves through one fit (every Adam step visits every voxel: a fit of 1.49 G voxels through a
+16 GB pool would page the whole grid in and out ~140 times).
+- *The plan* is made from the tree's structure alone (`io::readVdbCells`, OpenVDB's delayed loading: 4.3 s and
+  376 MB for the whole cloud): leaf-sized cells -- each leaf, each active tile cut into its 8³ cells -- cut by a
+  k-d split at the median cell along the longest side, on cell planes, until a brick read with a margin of
+  `--tile-margin` voxels (32) holds at most `--tile-cells` cells (from `--device-mb`: ~48 KB of pool a cell).
+- *A brick is read alone*: `readGrid(name, box)` on a delayed-loading file seeks over every leaf outside the box
+  and decompresses the ones inside (an eighth of the whole cloud: 0.8 s, 378 MB); the clip is then exact in index
+  space. Host memory is the structure plus one brick.
+- *Three passes*, every brick's result a file in the directory (a run stopped -- `--tile-seconds`, a timeout, a
+  kill -- goes on from the brick it had not finished; this is what keeps each GPU job under ten minutes):
+  1. sums (`vsBoxSums`): the core's mass, the mass read, the core's energy;
+  2. the fit, of N × (the core's mass over the whole's) × (mass read over the core's) -- the fit also spends on the
+     margin -- keeping the gaussians whose centre lies in the core (`vsSelect`);
+  3. the seams' pass (`--tile-refine`, 30 Adam steps): each brick again, warm (the effect's `Previous`, slot for
+     slot, no densify round, no prune) from every gaussian of pass 2 whose box meets what it reads, the core's kept.
+  `--measure` gives each core back from the gaussians whose box reaches it and adds the squared sums: the whole
+  grid's relative L2, the same number a whole-grid way back gives (checked on a 128³ blob: 0.06312 both ways).
+  `--back --back-grid` gives the mixture back on another grid read whole -- another resolution of the volume,
+  through `vsTransform` (the precision mapped K⁻ᵀ P K⁻¹ and factored again).
+
+**Why the seams' pass.** The plain stitch left a seam. On the half cloud at 50k (4 bricks, margin 32) each brick's
+own fit was 0.12–0.16 relative L2 over what it read, and the stitched mixture 0.199 against 0.152 unbricked, with a
+bright band along the boundary in a close-up path trace: a core gaussian near the boundary was fitted beside its
+brick's margin gaussians, which are thrown away, and the neighbour's core gaussians that replace them were fitted
+beside other ones -- the tails overlap twice. A margin of 64 voxels (1.78 cells read a cell) only got to 0.183 at 88
+s of fits. Fitting each brick again with its neighbours' own gaussians in its margin removes it: 30 steps 0.1518,
+60 steps 0.1496. The sweep is Jacobi (every brick starts from pass 2), so the bricks' order decides nothing.
+
+**Measured, the half cloud** (188 M voxels, 461 463 leaves; 50k; release build, M5 Pro, the shared GPU lock;
+untiled = round 2's run, the same camera, light and 1024 paths; peak = `/usr/bin/time` peak footprint, which on
+unified memory counts the device's buffers):
+
+| | gaussians | fits, s | density L2 | masked PT relMSE (PSNR) | close-up masked PT | peak MB |
+|---|---|---|---|---|---|---|
+| unbricked (`--device-mb 16384`) | 50000 | 51.2 | 0.1522 | 5.49·10⁻⁴ (44.59) | 2.32·10⁻⁴ | 16658 |
+| 4 bricks, plain stitch | 50884 | 61.8 | 0.1991 | | 1.27·10⁻³ | 8916 |
+| 4 bricks + seams' pass 30 (`--device-mb 8192`) | 50889 | 61.8 + 15.7 | 0.1518 | 5.66·10⁻⁴ (44.48) | 2.90·10⁻⁴ | 5244 (8799 with the half read whole for `--back`) |
+
+Bricked, each brick's reading adds ~2.2 s twice (sums, fit) and the seams' pass once; the measure is 16.8 s. The
+budget comes out 1.8 % over N (the margin's share of the gaussians is not exactly its share of the mass).
+Images: `vdb2splat/opt/img/tile_half50_full.png`, `tile_half50_close_seam.png` (close-up across the boundary:
+original, unbricked, plain stitch with its band, seams' pass), `tile_half50_close_seam_zoom.png`.
 
 ## NVDEC: the video planes' decoder on CUDA (1 Nov)
 
