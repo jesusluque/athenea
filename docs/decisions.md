@@ -17633,6 +17633,58 @@ density error is equal in 2.71 s (−48 %) and the ×16 trace 13 % further. Fewe
 buys back the error. The defaults are not changed (100 steps; the knobs at 100 steps were worse on two of six
 volumes, round 1).
 
+### Public volumes at the limits (1 Nov, round 2)
+
+Disney's cloud (`wdas_cloud`, CC BY-SA 3.0, five resolutions) and JangaFX EmberGen's free sets (CC0: gasoline and
+ground explosions, a cloud pack, a campfire, a fire; half-float grids, no `vel`), one frame each: read, converted
+to NanoVDB (`nanovdb_convert`), path traced, fitted at 50k with the 100-step defaults and given back. Release, M5
+Pro, the shared GPU lock, the Mac's interactive use not known (`~/luc/athenea-gpu/ext*.sh`); path traces 512²,
+1024 paths, 4 bounces, a normalized sun, the camera from the NanoVDB header's world box (`athenea stage
+--frame-all` frames nothing on a stage of volumes alone: `Engine::bounds` counts clouds, points and meshes, not
+media -- not fixed here), density scale 4 over the box's largest side; masked relMSE of the grid given back
+against the original's trace; peak = the process's peak memory footprint (unified memory: host and device).
+
+| volume | active voxels / leaves | `.vdb` / NanoVDB density MB | fit s | L2 | fit peak MB | PT masked (PSNR) | PT ms (64 paths) original / back |
+|---|---|---|---|---|---|---|---|
+| wdas_cloud sixteenth | 0.42 M / 1995 | 1.6 / 5.1 | 0.50 | 0.0451 | 469 | 3.2·10⁻⁴ (47.0) | 183 / 187 |
+| wdas_cloud eighth | 3.1 M / 10905 | 10.0 / 17.3 | 1.97 | 0.1351 | 808 | 4.7·10⁻⁴ (45.3) | 240 / 242 |
+| wdas_cloud quarter | 24 M / 68113 | 68.4 / 92.5 | 8.98 | 0.1520 | 3317 | 5.6·10⁻⁴ (44.6) | 338 / 358 |
+| wdas_cloud quarter, 200k | | | 12.75 | 0.1172 | 3517 | | |
+| wdas_cloud half (`--device-mb 16384`) | 188 M / 461463 | 492 / 590 | 51.2 | 0.1522 | 15887 | 5.5·10⁻⁴ (44.6) | 548 / 557 |
+| gasoline explosion, frame 60, its temperature | 8600 leaves | 13.5 / 14.7 | 1.87 | 0.1068 | 983 | 2.8·10⁻⁴ (47.7) | 246 / 247 |
+| cloud pack, cloud 5 | 22587 leaves | 21.4 / 40.2 | 3.28 | 0.2977 | 1209 | 5.7·10⁻⁴ (43.4) | 101 / 112 |
+| small campfire, frame 100, flames as temperature | 1795 leaves | 1.8 / 2.7 | 0.39 | 0.0188 | 472 | 1.8·10⁻⁵ (53.9) | 40 / 42 |
+| simple fire, frame 60, temperature as density | 1913 leaves | 1.4 / 3.2 | 0.55 | 0.0213 | 504 | 1.8·10⁻⁴ (49.7) | 211 / 213 |
+
+The usdc is 3.2–3.3 MB at 50k, 12.8 MB at 200k. Where it broke:
+
+- **The half cloud's way back** (188 M voxels): the fit ran (50.5 s, 15.5 GB at its peak) and the grid given back
+  (955 MB) was refused -- "does not fit in the memory the system has free: 2403 MiB" -- because the effect's
+  working buffers, released into gpe's pool, were still held by it. The command now trims the pool after the
+  effect renders (`PooledDevice::trim`); the same run then writes and measures the grid (row above).
+- **The ground explosion with `--temperature flames`** on frames 100 and 150: "the coarsest blocks need 366633
+  gaussians, more than the budget". The flames grid is empty there (the fire has burnt out; frame 50 fits), and an
+  empty temperature grid made every block's emission error NaN, so no block merged. An empty temperature grid is
+  now none ("'flames' is empty here: no temperature fitted").
+- **The whole cloud** (1.49 G voxels, 2.9 GB of `.vdb`) is not run: the fit's working buffers are some 60 bytes a
+  voxel of its leaves (half: 15.9 GB for 236 M voxels of leaves), some 110 GB here, against the 16 GB the shared
+  machine may give it; reading it takes some 12 GB of host memory first. Tiling the fit by leaves (streamed
+  through a smaller pool) is what it would take; not done. The half is the largest that fits, at 15.9 GB.
+
+**The explosions' settings** (one frame; s / density L2 / temperature density-weighted L2 / masked PT; the
+knobs are round 2's 240-step schedule, `--iterations 240 --checkerboard --init-fraction 0.7 --split-share 1
+--max-block 32 --densify-rounds 4`):
+
+| | 50k defaults | 50k `--min-std 1.0` | 50k knobs | 100k defaults | 200k defaults | 200k knobs |
+|---|---|---|---|---|---|---|
+| gasoline, frame 60, temperature | 1.87 / 0.107 / 0.303 / 2.8·10⁻⁴ | 1.93 / 0.118 / 0.300 / 3.1·10⁻⁴ | 2.76 / 0.105 / 0.300 / 2.7·10⁻⁴ | 2.43 / 0.086 / 0.272 / 2.0·10⁻⁴ | 3.01 / 0.047 / 0.234 / 8.6·10⁻⁵ | 4.17 / 0.032 / 0.232 / 9.8·10⁻⁵ |
+| ground, frame 50, flames | 1.06 / 0.132 / 0.354 / 3.0·10⁻⁴ | | 1.58 / 0.114 / 0.354 / 2.3·10⁻⁴ | | 1.54 / 0.043 / 0.296 / 8.1·10⁻⁵ | 2.19 / 0.019 / 0.291 / 4.8·10⁻⁵ |
+| ground, frame 100 (flames empty) | 1.63 / 0.104 / – / 2.1·10⁻⁴ | | | | | |
+
+The temperature does not follow the fit's settings: at 200k, 60 attribute steps 0.2322, an emission weight of 4
+0.2319, both 0.2308, against 0.2336 -- one temperature a gaussian is its floor, and only more gaussians lower it.
+The compact record at 200k is 4.00 MB (20 B a gaussian) against 13.2 MB of usdc and 13.5 MB of `.vdb`.
+
 ### Bytes a gaussian: the compact record (1 Nov)
 
 Proposal 104's lane, gaussians and quantisation only. `--quantise half|byte` quantises the fit's records
