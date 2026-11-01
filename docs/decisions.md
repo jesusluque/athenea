@@ -19142,3 +19142,32 @@ the player.
   linear HDR colour in the video (above).
 - **A sequence's temperature.** `vdb2splat --sequence` now reads `--temperature`'s grid on fitted frames (cold
   and warm), as a single frame does; an empty grid (a fire not lit yet, or out) counts as none.
+
+### The explosions as streams, measured (1 Nov)
+
+EmberGen's sample VDBs (JangaFX, CC0), no velocity grid. Release, M5 Pro, VideoToolbox, the shared GPU lock;
+density scale 0.03, a key light (2, normalised, 1°) and a dim blue dome (0.05), the black body at
+600 + 2400 t kelvin times 40 (t EmberGen's temperature, 0 to about 2).
+
+- **Warm fits fail without a flow.** Gasoline explosion, 50k, warm from frame 2: density L2 0.056 (cold) ->
+  0.20 -> 0.30 -> 0.44 by frame 6, and the warm fit's time grew from 0.5 to 35 s a frame by frame 22: the
+  fireball outruns slots that can only be refined where they stand. Every frame is fitted on its own
+  (`--independent`): 50k L2 0.096 at 1.81 s a frame, 20k 0.132 / 1.60 s, 10k 0.159 / 1.20 s (frames 4-99);
+  mid-air explosion 0.099 / 2.30 s, 0.135 / 1.83 s, 0.161 / 1.45 s (frames 3-98); aerial explosion (24 M voxels a
+  frame) 50k 0.161 / 12.1 s.
+- **Order.** Independent fits share no slots and no count (49 998 to 50 000), so the geometry layer cannot
+  predict (`--order stable` refuses them): every frame is a geometry key. Positions in the video over 256-splat
+  boxes cost the error: at q0.7 the decoded density L2 is 0.313 against 0.129 with the geometry layer, for 0.382
+  against 0.490 MB a frame. The rest's plane holding ln sigma wants q0.7 or more (q0.5: 0.266 with exact geometry).
+- **The ladders** (geometry layer every frame 11/6/6, q0.7, sh-degree 1): 50k 0.490 MB a frame (118 Mbit/s at 30),
+  20k 0.201 (48), 10k 0.104 (25), decoded L2 0.129 / 0.154 / 0.178 on the gasoline; the mid-air explosion within
+  3 % of it. Encode 21.5 / 10.8 / 6.8 s for 96 frames.
+- **The light against a path trace.** Gasoline frame 60, 50k, 512²: vol-raster with the fire off against the path
+  trace of the original VDB (1024 paths, 4 bounces; the path tracer reads the density only, so no fire there),
+  masked: relMSE 0.0171, PSNR 29.6 dB, SSIM 0.977, the raster 23 % brighter on the mean (Wrenninge's octaves
+  against 4 real bounces). vol-raster frame with the fire 9.3 ms.
+- **The bake** costs one `athenea stage` process a frame, 3.5 s, almost all of it start-up and the stage's
+  load: 96 frames in 5.6 min a rung.
+- **Not done:** a slot order across independent fits (a GPU matching of each frame's gaussians to the frame
+  before), which would let the geometry layer predict and cut its 0.37 MB a frame at 50k; a bake inside
+  `vdb2splat` (no process a frame); fire in the path tracer, to judge the emission too.
