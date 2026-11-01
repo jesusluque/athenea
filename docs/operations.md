@@ -68,6 +68,8 @@ relative to themselves. Under WSL2 a bake is refused: WSL2 does not load OptiX.
 | `ATHENEA_BACKEND` | which device to open, as a comma-separated order: `metal,cuda,vulkan,d3d12`. Unknown words warn and are skipped. |
 | `ATHENEA_GPU_VALIDATION` | any value: the graphics API's validation and debug layers (D3D12's needs Windows' Graphics Tools), for a failure the driver otherwise gives no reason for, such as a pipeline it cannot make. Slow. |
 | `ATHENEA_GPU_BUDGET` | the device memory this run may hold, in MiB. Without it the budget is Metal's recommended working set (`recommendedMaxWorkingSetSize`); on CUDA and Vulkan there is none unless this sets one. The device prints the one in use (`GPU memory budget: N MiB`). An allocation past it fails as `OutOfMemory` before it is made, streaming budgets and splat shadows are sized against what it leaves (§3.3, §9), and it is how a run is held below what other jobs on the same GPU leave. On Apple silicon an allocation must also fit the physical memory the system has free less 1.5 GiB kept for the rest of the machine -- free counting what it hands back on demand (inactive, purgeable and speculative pages, and the file cache) -- whatever the budget says: past it the machine swaps the GPU's memory and stops drawing its windows. |
+| `ATHENEA_VOLUME_PLY` | a path: every frame a medium of gaussians draws (§3.3's media, `primvars:athenea:splat:volume`) also writes that medium as a 3DGS PLY with the light the frame baked for it: each gaussian's radiance (emission, the lights' single scattering through the cloud shadow map, the dome) through Reinhard (x / (1 + x) a channel) and the sRGB curve as its base colour, ln sigma and the temperature in `f_rest_0` and `f_rest_1`, positions in the cloud's own space (the prim's transform not applied), one record a record of the stage, a dead or dropped one a speck at the origin with ln sigma -10 -- the layout of `vdb2splat --cloud`, so `video-encode --volume` takes it. A second medium is written as `<stem>_1.ply`, and so on. Overwritten each frame: meant for one frame a run (`athenea stage`). |
+| `ATHENEA_VOLUME_PLY_EXPOSURE` | stops on the radiance before the curve, for `ATHENEA_VOLUME_PLY`; default 0. |
 | `ATHENEA_SHADER_CACHE` | where compiled shaders are cached between runs. The default is a directory under the platform's cache directory. Deleting it costs one slow first frame. |
 
 A binary built without `ATHENEA_BUILD_VIEW` has no `athenea view` subcommand; that is
@@ -541,6 +543,7 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 | `--geometry-rotation-bits` | 5 to 10 | `10` | with `--geometry`: each component of the store's smallest-three rotation, rounded (the word keeps 10 bits, the low ones zero) |
 | `--geometry-predict` | 1, 2 or 3 | `1` | with `--geometry-key`: the residual from the frame before, from its motion carried on (2 b - c), or 3, motion: each run of 256 gaussians' rigid motion fitted from what the decoder holds (sent, 32 bytes a run), the rotation sent as a turn in the gaussian's own frame in steps widened by its shape (none where its extent cannot show it), and keys that send what the decoder would hold, so a key does not jump. 3 runs the loop twice before writing so its last frame leads into its first |
 | `--geometry-hold` | P,S,R, each 0 to 64 | off | with `--geometry-key` and `--geometry-predict` 1 or 3: between keys, a position axis within P of its steps of the value the decoder holds (with 3: of its prediction), a log scale within S, or a rotation whose three components are each within R (its index unchanged) keeps the held value and is sent as no change. The file is unchanged in format: a decoder needs no option. A held value is never more than P, S or R steps from the source |
+| `--volume` | number > 0, density to extinction a unit of length | none | the splats are a medium's (`vdb2splat --cloud`, `ATHENEA_VOLUME_PLY`): header flag bit 8 and this density scale at offset 88, so a player draws each splat with the alpha 1 − exp(−τ) of its optical depth, σ = exp(`f_rest_0`) times it. Wants `--sh-degree 1` or more, which carries `f_rest_0` |
 | `--geometry-video` | flag | off | position, log scale and rotation as luma planes of the video, nothing beside it but the record's ranges: a coarse plane each (8 bits over the sequence's range), and for a folded group two fine planes (FORMAT.md §8e). The rotation goes as x, y, z of its canonical form (w >= 1/2 rebuilt). 8 bits only; not with `--geometry`, `--position-block` or `--hi video`; meant with `--order stable`, `--range-group` of the whole sequence and a `--keyint` (predicted pictures keep the geometry's codec error still from frame to frame) |
 | `--geometry-fold` | P,S,R, each 0 to 255 | `16,16,16` | with `--geometry-video`: the fold K of position, log scale and rotation. A folded attribute is sent at 255 x 255 / K levels (K 16: 4064, 60 um a level over the sparrow's 0.245 m) as two triangle waves a quarter period apart, which the coarse plane places while its codec error is under K / 4 of its codes; 0 sends the coarse plane alone. Each folded group adds six planes |
 | `--ranges` | `group` or `frame` | `group` | each attribute's range over a group of pictures (from one key frame to the next), or each frame's own |
@@ -888,7 +891,7 @@ renders as it renders any volume.
 | `-o`, `--output` | path | none | `.usda`, `.usdc`, `.usd`; nothing is written without it |
 | `--back` | path | none | a `.vdb` of `density` (and `temperature`, where the input has one) on the input's topology |
 | `--density` | grid name | `density` | a float grid; the fit refuses a file without it |
-| `--temperature` | grid name | `temperature` | a float grid, read where the file has it; its voxels are read at the density's |
+| `--temperature` | grid name | `temperature` | a float grid, read where the file has it; its voxels are read at the density's. A sequence's fitted frames read it too, cold and warm, each frame's own (`flames` for a file whose fire is a flames grid) |
 | `--colour` | grid name | `Cd` | a vec3 grid, read where the file has it, clamped to [0, 1] and kept as 8 bits a channel |
 | `-n`, `--target` | integer | `20000` | the most gaussians written |
 | `--em-iterations` | integer | `40` | EM steps on the geometry, first: each gaussian moved to the moments of the density it is responsible for |
@@ -2965,7 +2968,8 @@ and its `stream.txt` (§3.7), which `athenea stream` reads.
 the most splats a picture holds, whether the position high parts are planes,
 the source's antialiasing, whether colour is in chroma, the rendition id, the
 rate and the rate as a fraction, the source frames, the quality, the position
-block and high bits) and a record a picture, each whole
+block and high bits; flag bit 8 a medium, its density scale an f32 at offset
+88, `--volume`) and a record a picture, each whole
 in itself. A record starts with a fixed prefix -- magic `ATVF`, record type
 (u16, 0), rendition (u16), presentation frame (u32), PTP time (u64 ns at
 offset 12), the record's bytes, version and flags (bit 0 a key picture) -- so

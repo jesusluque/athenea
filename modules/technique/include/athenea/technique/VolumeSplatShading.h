@@ -58,6 +58,15 @@ public:
     /// halves), into `out`, which is grown to fit.
     [[nodiscard]] Result<void> shade(gpu::CommandBatch& batch, const VolumeShadeJob& job, gpu::Buffer& out);
 
+    /// Run and waited for: `cloud` with the radiance `shade` baked for it,
+    /// as a 3DGS PLY's records (62 floats each, one a record of the file,
+    /// `cloud.declared`) into `out`, which is grown to fit: the radiance
+    /// times `exposure` through Reinhard and the sRGB curve as the base
+    /// colour, ln sigma and the temperature in the first rest coefficients of
+    /// red (volume_splat_ply.slang). What ATHENEA_VOLUME_PLY writes.
+    [[nodiscard]] Result<void> writePly(const scene::GpuSplats& cloud, const gpu::Buffer& radiance,
+                                        float densityScale, float exposure, gpu::Buffer& out);
+
     static constexpr uint32_t kBlackbodyEntries = 1024;
     static constexpr float    kBlackbodyMaxKelvin = 16000.0F;
 
@@ -65,6 +74,7 @@ private:
     gpu::Device*       device_ = nullptr;
     gpu::ComputeKernel shade_;
     gpu::ComputeKernel blackbodyKernel_;
+    gpu::ComputeKernel ply_;
     gpu::Buffer        blackbody_;
     gpu::Buffer        noMap_;     ///< a word of nothing, bound where no map is
     gpu::Buffer        noLights_;  ///< a record of nothing, bound where no light is

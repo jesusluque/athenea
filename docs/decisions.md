@@ -19115,3 +19115,30 @@ density error: the 50k rung's is 2.8 times round 1's, the 20k's 14 % above -- ga
 what the 0.5 floor kept, and frame 15's view is lit through the blob's surface, where that detail is. The voxel
 centres' L2 and the path trace disagree here; which to trust for a stream is for a sequence that is not a
 fixture to say.
+
+## A medium on the web player (vol-web, 1 Nov)
+
+The browser draws ordinary 3DGS splats; a medium of gaussians (proposal 105) is drawn by its optical depth
+instead. The route kept is the simplest correct one: the light is baked by the engine, the alpha is computed by
+the player.
+
+- **The light, baked per frame by the engine.** `ATHENEA_VOLUME_PLY` writes, from any frame that draws a medium,
+  the medium's gaussians with the radiance `VolumeSplatShading` baked for them (emission from the temperature by
+  the black body, each light's single scattering through the cloud shadow map, the dome, Wrenninge's octaves) as
+  a 3DGS PLY (`technique/volume_splat_ply.slang`). Nothing new is computed: the colour is exactly what vol-raster
+  draws, so a browser frame and an engine frame differ only by how they composite. With an isotropic phase
+  (`anisotropy` 0, the default) the radiance does not depend on the eye, so one bake serves every view. The
+  colour is display-referred (Reinhard a channel, then sRGB): the video quantises colour over its range in 8
+  bits, and a linear HDR range (fire at 30, smoke at 0.05) would leave the smoke a few levels. Each splat is
+  written to the record it came from (the loader's `origin`), so a sequence's slots keep their places.
+- **The alpha, by the player.** `video-encode --volume S` marks the file (header flag bit 8, S at offset 88);
+  ln sigma travels in red's first rest coefficient as `vdb2splat --cloud` already put it. The player draws a
+  splat with tau = S sigma sqrt(2 pi) / sqrt(dᵀ Σ⁻¹ d) (the exact line integral of the 3D gaussian along the
+  eye's ray under the affine projection) times the projected Gaussian, alpha 1 − exp(−τ g). vol-raster's erf
+  over the 3.5-sigma chord differs from it by under 0.6 % of the mass, more only with the camera inside a
+  gaussian.
+- **Rejected:** baking the alpha into a 3DGS opacity (an opacity is per splat, the optical depth depends on the
+  view direction for an anisotropic gaussian, and a flat-topped 1 − exp(−τ g) is not o·g for τ past ~0.3);
+  linear HDR colour in the video (above).
+- **A sequence's temperature.** `vdb2splat --sequence` now reads `--temperature`'s grid on fitted frames (cold
+  and warm), as a single frame does; an empty grid (a fire not lit yet, or out) counts as none.

@@ -606,7 +606,20 @@ Result<void> runSequence(gpu_host::Context& context, gpu::ShaderLibrary& library
             if (!read) return std::move(read).error();
             vel = std::move(*read);
         }
-        world::PackedGrids packed = world::PackedGrids::of(*density, nullptr, vel ? &*vel : nullptr);
+        // The temperature where the frame has the grid `--temperature` names
+        // (a fit's frame only: a decoded one is judged on its density): the
+        // fit's attribute steps carry it, warm frames too.
+        std::optional<io::NanoGrid> temperature;
+        if (!video && !o.temperature.empty() &&
+            std::find(names->begin(), names->end(), o.temperature) != names->end()) {
+            auto read = io::readVdbGrid(path, o.temperature);
+            if (!read) return std::move(read).error();
+            // An empty grid (a fire not yet lit, or out) is no temperature:
+            // the frame's gaussians keep none.
+            if (read->leafCount > 0) temperature = std::move(*read);
+        }
+        world::PackedGrids packed = world::PackedGrids::of(*density, temperature ? &*temperature : nullptr,
+                                                           vel ? &*vel : nullptr);
         auto words = wordsOn(device, packed.words, "vdb2splat.frame");
         if (!words) return std::move(words).error();
         auto leaves = image::Image::create(pictureFor(uint64_t{packed.leafCount} * world::VolumeSplats::kLeafEntries));
@@ -669,6 +682,9 @@ Result<void> runSequence(gpu_host::Context& context, gpu::ShaderLibrary& library
             number(job, "splitShare", o.splitShare);
             number(job, "keepSlots", 1.0);
             number(job, "dt", o.dt);
+            number(job, "hasTemperature", temperature ? 1.0 : 0.0);
+            number(job, "attributeIterations", o.attributeIterations);
+            number(job, "emissionWeight", o.emissionWeight);
             const auto started = std::chrono::steady_clock::now();
             auto renderedOr = aofx_host::renderEffect(context, effect, job);
             if (!renderedOr) return std::move(renderedOr).error();
@@ -729,7 +745,8 @@ Result<void> runSequence(gpu_host::Context& context, gpu::ShaderLibrary& library
             ATHENEA_TRY(io::writeNanoGrids(framePath(o.back, frame), grids));
         }
         if (!o.output.empty()) {
-            ATHENEA_TRY(writeStage(library, *splats, gaussians, slotsOut, *density, false, o, framePath(o.output, frame)));
+            ATHENEA_TRY(writeStage(library, *splats, gaussians, slotsOut, *density, temperature.has_value(), o,
+                                   framePath(o.output, frame)));
         }
         if (!o.cloud.empty()) {
             // Every slot as a 3DGS splat (a dead one a speck), for the video.

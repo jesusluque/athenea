@@ -187,7 +187,7 @@ Result<void> AthvWriter::writeHeader() {
     o.u32((header_.hiInVideo ? 1u : 0u) | (header_.antialiased ? 2u : 0u) | (header_.chroma ? 4u : 0u) |
           (header_.stableOrder ? 8u : 0u) |
           (header_.geometry ? 16u : 0u) | (header_.geometryStagger ? 32u : 0u) |
-          (header_.geometryVideo ? 128u : 0u));
+          (header_.geometryVideo ? 128u : 0u) | (header_.volume ? 256u : 0u));
     o.u32(header_.rendition);
     o.f64(header_.rate);
     o.u32(header_.rateNumerator);
@@ -201,6 +201,7 @@ Result<void> AthvWriter::writeHeader() {
     o.u32(header_.geometryPositionBits | (header_.geometryScaleBits << 8u) | (header_.geometryOrder << 16u) |
           (header_.geometryRotationBits << 24u));
     o.u32(header_.geometryVideo ? header_.geometryFold : 0u);
+    o.f32(header_.volume ? header_.volumeDensityScale : 0.0F);
     o.bytes.resize(kHeaderBytes, 0);
     const auto end = file_.tellp();
     file_.seekp(0);
@@ -284,6 +285,8 @@ Result<std::unique_ptr<AthvReader>> AthvReader::open(const std::filesystem::path
         }
         hd.geometryVideo = (flags & 128u) != 0;
         hd.geometryFold = in.u32() & 0xFFFFFFu;
+        hd.volume = (flags & 256u) != 0;
+        hd.volumeDensityScale = in.f32();
     } else {
         hd.positionHighBits = hd.bits;
     }

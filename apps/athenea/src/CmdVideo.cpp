@@ -775,6 +775,7 @@ void addVideo(CLI::App& app) {
         std::vector<uint32_t> geometryFold{16, 16, 16};
         uint32_t geometryRotationBits = 10;
         std::string chromaWeight = "mean";
+        double volume = 0.0;
     };
     auto o = std::make_shared<Options>();
     auto* enc = app.add_subcommand("video-encode",
@@ -825,6 +826,10 @@ void addVideo(CLI::App& app) {
                     "fitted from what the decoder holds, the rotation sent as a turn in steps by the gaussian's "
                     "shape, and keys that send what the decoder would hold")
         ->check(CLI::Range(1u, 3u));
+    enc->add_option("--volume", o->volume,
+                    "the splats are a medium's (vdb2splat --cloud, ATHENEA_VOLUME_PLY): marks the file so and "
+                    "records this density scale, the extinction a unit of length of a sigma of one")
+        ->check(CLI::PositiveNumber);
     enc->add_flag("--geometry-video", o->geometryVideo,
                   "position, scale and rotation as luma planes of the video (a coarse plane each, and two folded "
                   "fine ones where --geometry-fold says), nothing beside it but the ranges");
@@ -1134,6 +1139,8 @@ void addVideo(CLI::App& app) {
             header.stableOrder = stable;
             header.geometryVideo = layout.geometryVideo();
             header.geometryFold = layout.geometryFold & 0xFFFFFFu;
+            header.volume = o->volume > 0.0;
+            header.volumeDensityScale = static_cast<float>(o->volume);
             auto w = video::AthvWriter::create(o->output, header);
             if (!w) cli::fail(w.error());
             writer = std::move(*w);

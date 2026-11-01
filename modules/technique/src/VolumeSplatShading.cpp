@@ -33,6 +33,9 @@ Result<VolumeSplatShading> VolumeSplatShading::create(gpu::ShaderLibrary& librar
     auto table = gpu::ComputeKernel::create(library, "athenea/technique/volume_blackbody", "volumeBlackbody");
     if (!table) return std::move(table).error();
     s.blackbodyKernel_ = std::move(*table);
+    auto ply = gpu::ComputeKernel::create(library, "athenea/technique/volume_splat_ply", "volumeSplatPly");
+    if (!ply) return std::move(ply).error();
+    s.ply_ = std::move(*ply);
     auto blackbody = words(*s.device_, kBlackbodyEntries, 16, "volume.blackbody");
     if (!blackbody) return std::move(blackbody).error();
     s.blackbody_ = std::move(*blackbody);
@@ -96,6 +99,38 @@ Result<void> VolumeSplatShading::shade(gpu::CommandBatch& batch, const VolumeSha
         p["lutSize"].setData(kBlackbodyEntries);
         p["lutMaxKelvin"].setData(kBlackbodyMaxKelvin);
     });
+    return ok();
+}
+
+Result<void> VolumeSplatShading::writePly(const scene::GpuSplats& cloud, const gpu::Buffer& radiance, float densityScale, float exposure,
+                                          gpu::Buffer& out) {
+    const uint32_t records = std::max(cloud.declared, cloud.count);
+    if (!out.valid() || out.bytes() < uint64_t{records} * 62 * 4) {
+        auto made = words(*device_, uint64_t{records} * 62, 4, "volume.ply");
+        if (!made) return std::move(made).error();
+        out = std::move(*made);
+    }
+    const bool origin = cloud.origin.valid() && cloud.count != records;
+    for (uint32_t mode = 0; mode < 2; ++mode) {
+        // Two submissions: the specks first, then the splats over them.
+        const uint32_t n = mode == 0 ? records : cloud.count;
+        gpu::CommandBatch batch(*device_);
+        ply_.dispatch(batch, {n, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["positions"].setBinding(cloud.positions.rhi());
+            cursor["shape"].setBinding(cloud.shape.rhi());
+            cursor["volume"].setBinding(cloud.volume.rhi());
+            cursor["radiance"].setBinding(radiance.rhi());
+            cursor["origin"].setBinding(origin ? cloud.origin.rhi() : noMap_.rhi());
+            cursor["plyOut"].setBinding(out.rhi());
+            rhi::ShaderCursor p = cursor["plyParams"];
+            p["count"].setData(n);
+            p["mode"].setData(mode);
+            p["hasOrigin"].setData(uint32_t{origin ? 1u : 0u});
+            p["densityScale"].setData(densityScale);
+            p["exposure"].setData(exposure);
+        });
+        ATHENEA_TRY(batch.submit(true));
+    }
     return ok();
 }
 

@@ -73,6 +73,14 @@ struct AthvHeader {
     uint32_t geometryFold = 0;   ///< the three folds, without PlaneLayout's bit 31
     /// What PlaneLayout::make takes as its `geometryFold`.
     [[nodiscard]] uint32_t layoutFold() const noexcept { return geometryVideo ? (geometryFold | (1u << 31)) : 0u; }
+    /// A MEDIUM (flags bit 8; `video-encode --volume`): the splats are
+    /// gaussians of extinction, ln sigma (density units) in the first rest
+    /// coefficient of red, the temperature in the second, the base colour
+    /// the light they send towards the eye; a player draws each with the
+    /// alpha 1 - exp(-tau) of its optical depth along the ray, sigma times
+    /// `volumeDensityScale` (offset 88) the extinction a unit of length.
+    bool     volume = false;
+    float    volumeDensityScale = 0.0F;
     double   rate = 30.0;
     /// The rate as a fraction (30/1, 30000/1001): what a segmenter takes.
     uint32_t rateNumerator = 30;

@@ -29,6 +29,7 @@
 #include "athenea/core/Hash.h"
 #include "athenea/core/Log.h"
 #include "athenea/core/Platform.h"
+#include "athenea/io/SplatWriters.h"
 #include "athenea/gpu/CommandBatch.h"
 
 namespace athenea::usd {
@@ -4184,6 +4185,35 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         }
         if (shading.has_value()) {
             ATHENEA_TRY(shading->submit());
+        }
+        // ATHENEA_VOLUME_PLY: each medium with its light baked, as a 3DGS PLY
+        // (VolumeSplatShading::writePly), for a player that draws plain
+        // splats; ATHENEA_VOLUME_PLY_EXPOSURE stops on the radiance first.
+        if (const std::string plyPath = platform::env("ATHENEA_VOLUME_PLY"); !plyPath.empty() && !kept.empty()) {
+            const std::string stops = platform::env("ATHENEA_VOLUME_PLY_EXPOSURE");
+            const float exposure = std::exp2(stops.empty() ? 0.0F : std::strtof(stops.c_str(), nullptr));
+            uint32_t written = 0;
+            for (const render::SplatInstance& instance : splats) {
+                if (instance.splats == nullptr || !instance.splats->hasVolume() || instance.volume.radiance == nullptr) {
+                    continue;
+                }
+                gpu::Buffer rows;
+                ATHENEA_TRY(volumeShading_->writePly(*instance.splats, *instance.volume.radiance,
+                                                     instance.volume.densityScale, exposure, rows));
+                const uint32_t records = std::max(instance.splats->declared, instance.splats->count);
+                std::vector<std::vector<float>> floats(1, std::vector<float>(size_t{records} * 62));
+                ATHENEA_TRY(rows.read(*device_, 0, floats[0].size() * 4, floats[0].data()));
+                std::filesystem::path path(plyPath);
+                if (written > 0) {
+                    path.replace_filename(path.stem().string() + "_" + std::to_string(written) +
+                                          path.extension().string());
+                }
+                const std::vector<std::string> comments{
+                    "athenea: a medium with its light baked, f_rest_0 ln sigma, f_rest_1 temperature"};
+                ATHENEA_TRY(io::writePly3dgs(path, floats, comments));
+                log::info("wrote {}: {} gaussians of a medium, the light baked", path.string(), records);
+                ++written;
+            }
         }
         volumeRadiance_ = std::move(kept);
         // The pointers above are into `kept`'s values, which moved with the
