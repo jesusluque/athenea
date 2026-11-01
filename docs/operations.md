@@ -936,11 +936,16 @@ renders as it renders any volume.
 | `--warm-em` | integer | `0` | EM steps of a warm frame (EM after Adam's steps moves gaussians far: off by default) |
 | `--warm-iterations` | integer | `30` | Adam steps of a warm frame |
 | `--warm-learning-rate` | number | `0.03` | Adam's step on a warm frame |
+| `--prune-mass` | 0 to 1 | `1e-6` | at a densify round, a gaussian under this share of the total mass goes and its slot is given again |
+| `--warm-prune-mass` | 0 to 1 | `1e-6` | `--prune-mass` on a sequence's warm frames, whose rounds have only the slots it frees to give to new density |
 | `--warm-densify-every` | integer | `20` | steps between a warm frame's densify-and-prune rounds (none after 70 % of them; 30 steps: one round): a full fit's schedule does not reach a warm frame |
 | `--no-advect` | flag | off | a warm frame starts where the frame before left its gaussians |
 | `--dt` | number | `1` | frames the flow carries the gaussians over, frame to frame |
 | `--cloud` | path with a run of `#` | none | a sequence: each frame's gaussians, every slot (a dead one a speck of ln σ −30 at the origin, so the slots keep their places), as a 3DGS PLY: position, deviations and rotation in the world, the albedo as the base colour, ln σ in `f_rest_0` and the temperature in `f_rest_1` (the first two rest coefficients of red), opacity as `-o` writes it for a viewer. What `video-encode --each-a-frame` takes |
 | `--from-athv` | `.athv` | none | a sequence: each frame's gaussians decoded from this video of `--cloud`'s splats (in order, through the hardware decoder) instead of fitted, then given back and judged as a fit is: the density error against `input`'s frame, the flicker, `--back`. `input` may be the grids a fit gave back, to judge the video against the f32 cloud |
+| `--velocity` | grid name | `vel` | the flow's grid (vec3), read from each frame; the frame before's flow is laid on the current frame's active voxels. A staggered grid (class `staggered`, a MAC grid such as Mantaflow's `velocity`) is averaged from its voxels' two faces to their centres |
+| `--velocity-units` | `world`, `mantaflow` | `world` | `world`: world units a frame (divided by the voxel). `mantaflow`: grid cells a Mantaflow time unit, of which a frame is 0.1 x 25 / `--fps` (0.10417 at 24) |
+| `--fps` | number | `24` | with `--velocity-units mantaflow`: the sequence's frames a second |
 
 A sequence prints, a frame: the gaussians alive, the density's relative L2 error given back, the fit's time, and from the second frame on the flicker -- sqrt(Σ((b₁ − b₀) − (o₁ − o₀))² / Σ(o₁ − o₀)²) over the active voxels, what the frame-to-frame change of the grid given back gets wrong of the original's -- and how many of the frame before's gaussians are alive in the same slot, and how far they moved over their mean deviation. `--measure` prints the temperature's error too, weighed by the density (the fit's own measure: where there is no density a gaussian's temperature says nothing) and unweighted. `--make-fixture blob-sequence` writes `--frames` of the noise blob carried by a known flow -- a turn about the vertical through it of 2π/120 a frame and a rise of 0.3 voxels a frame -- each with its `density` and `vel` (world units a frame).
 

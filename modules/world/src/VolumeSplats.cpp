@@ -128,8 +128,20 @@ void VolumeSplats::fixture(gpu::CommandBatch& batch, const gpu::Buffer& words, c
     });
 }
 
+void VolumeSplats::resample(gpu::CommandBatch& batch, const gpu::Buffer& words, const PackedGrids& grids) const {
+    fixture_.dispatch(batch, {grids.leafCount * 512, 1, 1}, [&](rhi::ShaderCursor c) {
+        c["words"].setBinding(words.rhi());
+        c["wordsOut"].setBinding(words.rhi());
+        c["params"]["densityWord"].setData(grids.density);
+        c["params"]["leafCount"].setData(grids.leafCount);
+        c["params"]["temperatureWord"].setData(grids.temperature);
+        c["params"]["colourWord"].setData(PackedGrids::kNoGrid);
+        c["params"]["kind"].setData(4u);
+    });
+}
+
 void VolumeSplats::packVelocity(gpu::CommandBatch& batch, const gpu::Buffer& words, const PackedGrids& grids,
-                                float scale, const gpu::Buffer& out) const {
+                                float scale, const gpu::Buffer& out, bool staggered) const {
     pack_.dispatch(batch, {grids.leafCount * 512, 1, 1}, [&](rhi::ShaderCursor c) {
         c["words"].setBinding(words.rhi());
         c["leavesOut"].setBinding(out.rhi());
@@ -138,7 +150,7 @@ void VolumeSplats::packVelocity(gpu::CommandBatch& batch, const gpu::Buffer& wor
         c["params"]["temperatureWord"].setData(PackedGrids::kNoGrid);
         c["params"]["colourWord"].setData(grids.colour);
         c["params"]["kind"].setData(3u);
-        const float motion[4] = {0.0F, 0.0F, 0.0F, scale};
+        const float motion[4] = {staggered ? 1.0F : 0.0F, 0.0F, 0.0F, scale};
         c["params"]["motion"].setData(motion, sizeof(motion));
     });
 }
