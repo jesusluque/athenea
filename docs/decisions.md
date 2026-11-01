@@ -19326,3 +19326,15 @@ NVENC section's figures). Means in steps of each attribute's quantisation, posit
 - The textures are made for each frame; reusing the last frame's when the caller has let them go is not done.
 - A device of another backend (Vulkan) gets a decoder but no textures (`Unsupported`): that would take the
   frame's memory exported to the other API, as gpu_host does for buffers.
+
+The Mantaflow explosion (vdb2splat's section "Sequences with a simulation's velocity", frames 5-34, 20k) as a
+stream with the same layer (`~/luc/athenea-gpu/sim10.sh`):
+
+| | fit mean L2 / flicker / s a frame | MB a frame | Mbit/s at 24 / 30 | decoded L2 / flicker |
+|---|---|---|---|---|
+| independent fits | 0.0235 / 0.061 / 0.23 | 0.204 | 39.2 / 49.0 | 0.0461 / 0.131 |
+| warm, carried, a full fit's steps, `--warm-prune-mass 1e-5` | 0.0321 / 0.090 / 0.38 | 0.187 | 36.0 / 45.0 | 0.0461 / 0.133 |
+
+Stable slots save 8 % of the bytes at the same decoded error: on this explosion the layer's residuals are the
+fit's own moves, as on the blob before the floor; and the codec doubles the fit's error (11/6/6 bits and
+quality 0.9 were chosen on the blob, whose gaussians are larger).
