@@ -19743,3 +19743,30 @@ and `--fibres` reads. Baked either way, the first fibres still came out grey: th
 model, and the polish reflected the dome as one mirror -- the whole beard caught one highlight. A strand's normals
 turn round it, so each segment's normal is now turned about the tangent by a hash of it, within the half that
 faces out of the model.
+
+**Measured** (Einar, 2.4 M gaussians, TX 32 paths, the v2 command; 1024 px against the mesh path traced; the mask is
+where the mesh rasterised with and without beard, moustache and brows differs: 48 749 pixels in CamFront; ms is the
+median of 19 frames, Release, M5 Pro):
+
+| | CamFront full | mask relMSE / PSNR / SSIM | CamThreeQuarter full | mask | CamSide full | mask | CamBrim full | mask | ms (Front) |
+|---|---|---|---|---|---|---|---|---|---|
+| v2 (cut in order) | 0.0113, 30.53 dB | 0.142 / 20.6 / 0.640 | 0.0154, 30.02 | 0.264 / 18.9 / 0.628 | 0.0068, 32.45 | 0.071 / 22.6 / 0.685 | 0.0279, 28.14 | 0.434 / 17.7 / 0.584 | 40.6 |
+| step 0 (thinned) | 0.0067, 31.64 dB | 0.046 / 23.2 / 0.653 | 0.0066, 31.71 | 0.059 / 22.5 / 0.641 | 0.0063, 32.48 | 0.066 / 22.5 / 0.664 | 0.0121, 29.68 | 0.121 / 21.1 / 0.610 | 40.0 |
+| A: fibres, 1 a segment (253 k) | 0.0122, 29.46 dB | 0.157 / 18.7 / 0.412 | 0.0114, 29.66 | 0.166 / 18.4 / 0.390 | 0.0082, 31.02 | 0.137 / 18.7 / 0.416 | 0.0154, 28.48 | 0.180 / 18.6 / 0.333 | 44.5 |
+| B: 2 a segment (506 k) | 0.0136, 29.17 dB | 0.183 / 18.3 / 0.352 | 0.0126, 29.38 | 0.187 / 18.1 / 0.333 | 0.0089, 30.75 | 0.154 / 18.4 / 0.355 | 0.0173, 28.19 | 0.209 / 18.3 / 0.279 | 46.2 |
+| C: as B, opacity 0.8 | 0.0136, 29.18 dB | 0.182 / 18.3 / 0.353 | 0.0126, 29.38 | 0.187 / 18.1 / 0.334 | 0.0089, 30.76 | 0.154 / 18.4 / 0.357 | 0.0172, 28.20 | 0.207 / 18.3 / 0.285 | 46.5 |
+
+Step 0 is the result: the mask's relMSE falls by two thirds to four fifths in the front views and the whole frame
+gains 1.1-1.7 dB, at the same count and the same speed. The fibres draw the beard's shape and coverage close to the
+ground truth -- full, symmetric, the strands at the contour -- but the strands come out grey where the path traced
+ones are near black: in a window on the chin the fibres average 0.09 / 0.08 / 0.07 linear against the ground
+truth's 0.05 / 0.035 / 0.03 (step 0: 0.07 / 0.036 / 0.026). Their albedo is right (`--splat-view 1`), and baking them
+as plain surfaces (`--fibre-plain-bake`, variant D) changes nothing (CamFront mask 0.1575 against 0.1574), so the
+excess is in how the frame shades them, not in the transfer; the neutral colour points at the polish, which a
+sub-pixel strand with one normal reflects more than a cylinder does. Two a segment is worse than one (more of the
+same grey), and the opacity at the same integral (C) is B to the third decimal: what decides is the integral, as
+the proposal said. The bar (mask 30 % under step 0, full frame not under v2, CamFront within 44.8 ms) is not met by
+any fibre variant; A is 44.5 ms. Conversion 200-215 s each, clouds 1.29-1.30 GB.
+
+Not done: the fibres' shading (the polish of a strand, the R/TT/TRT lobes the bake leaves out), their skin weights
+(a strand is carried by nothing yet), the LOD of chains, and the engine's own curve tubes reading the hair map.

@@ -677,6 +677,7 @@ recipe is §3.1 below.
 | `--fibre-per-segment` | integer 1 to 8 | `2` | gaussians a segment, evenly spaced along it |
 | `--fibre-axial` | number 0.05 to 4 | `0.5` for one a segment, `0.75` for more | a fibre gaussian's deviation along the strand, over the spacing between them. At 0.75 two neighbours of opacity 1 add up to 0.96 halfway; at 0.5 to 0.85 |
 | `--fibre-opacity` | number 0.01 to 1 | `1` | a fibre gaussian's peak opacity `o`. Its deviation across is `width / (o √(2π))`, so the integral of its alpha across the strand is the strand's width whatever `o` is: lower is wider and fainter, the same coverage |
+| `--fibre-plain-bake` | flag | off | `--fibres`: bake each fibre as a surface facing its own normal, from the strand's side that normal faces, instead of turning the normal about the tangent among eight strata. For comparison: on Einar the two came out within 0.001 of relMSE |
 | `--budget-in-order` | flag | off | the behaviour before 1 Nov 2026: a part whose share is under what it counts at its coarsened cell keeps its first gaussians in mesh order, rather than thinning its sub-cell triangles across the whole part (see the budget below) |
 | `--no-displacement` | flag | off | ignore the materials' displacement: every gaussian stands on the flat mesh |
 | `--displace-refine` | integer, 1 to 64 | `8` | where the relief stretches a cell, split it into at most this many gaussians along each of its two axes |

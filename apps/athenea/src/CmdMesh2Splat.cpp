@@ -199,6 +199,9 @@ struct Options {
     uint32_t                 fibrePerSegment = 2;
     double                   fibreAxial = -1.0;   ///< sigma along over the spacing; < 0: 0.5 for one, 0.75 for more
     double                   fibreOpacity = 1.0;
+    /// Bake a fibre as a surface facing its own normal rather than turning
+    /// that normal about the tangent (a comparison).
+    bool                     fibrePlainBake = false;
     bool                     addCamera = true;
     /// Bake the path tracer's answer into the gaussians (the default), or
     /// carry the material and be relit.
@@ -2088,6 +2091,7 @@ private:
             cursor["gather"]["baseWeight"].setData(material.baseWeight);
             cursor["gather"]["roughness"].setData(material.roughness);
             cursor["gather"]["coatRoughness"].setData(material.coatRoughness);
+            cursor["gather"]["fibreBake"].setData(options_->fibrePlainBake ? 0u : 1u);
         };
         const uint32_t threads = static_cast<uint32_t>(run.written);
         gather_.dispatch(batch, {threads, 1, 1}, bind);
@@ -3154,6 +3158,9 @@ void addMesh2Splat(CLI::App& app) {
                     "--fibres: a gaussian's deviation along the strand over the spacing between them "
                     "(default 0.5 for one a segment, 0.75 for more)")
         ->check(CLI::Range(0.05, 4.0));
+    cmd->add_flag("--fibre-plain-bake", o->fibrePlainBake,
+                  "--fibres: bake each fibre as a surface facing its own normal, from its centre, rather than "
+                  "turning that normal about the tangent (for comparison)");
     cmd->add_option("--fibre-opacity", o->fibreOpacity,
                     "--fibres: a gaussian's peak opacity; its deviation across is width / (this sqrt(2 pi)), "
                     "so what it covers is the strand's width (1)")
