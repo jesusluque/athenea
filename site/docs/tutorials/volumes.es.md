@@ -41,6 +41,12 @@ Un grid mayor que el dispositivo se ajusta brick a brick (`--tile-dir`): el
 plan sale solo de la estructura del árbol, cada brick se lee con la carga
 diferida de OpenVDB y una segunda pasada (`--tile-refine`) cierra las
 costuras.
+Cada brick recibe su parte de `-n` (por masa, `--tile-weight`) menos lo que
+se quedaron cortos los bricks anteriores: la media nube de Disney a 50k en 4
+bricks conserva 49 897 gaussianas con un error de densidad de 0,1523, frente
+a 0,1522 ajustada entera. Los bricks solo ajustan la densidad: con
+`--tile-dir` no se leen `--temperature`, `--colour`, `--quantise` ni las
+secuencias.
 
 ## Qué guarda cada gaussiana
 

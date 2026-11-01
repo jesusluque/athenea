@@ -35,6 +35,11 @@ voxels a frame), downloadable from
 A grid larger than the device is fitted a brick at a time (`--tile-dir`): the
 plan is made from the tree's structure alone, each brick read with OpenVDB's
 delayed loading, and a second pass (`--tile-refine`) closes the seams.
+Each brick gets its share of `-n` (by mass, `--tile-weight`), less what the
+bricks before it fell short by: the half Disney cloud at 50k in 4 bricks keeps
+49 897 gaussians at a density error of 0.1523, against 0.1522 fitted whole.
+Bricks fit the density alone: `--temperature`, `--colour`, `--quantise` and
+the sequences are not read with `--tile-dir`.
 
 ## What each gaussian holds
 
