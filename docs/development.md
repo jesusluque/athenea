@@ -914,6 +914,20 @@ metalness into the w of its third ray entry (`1 + m/4` raised, `m/4` flat), so
 Schlick lobe as the metal it is wherever the material is metal at all and was
 not written with a conductor, whatever its reflectivity.
 
+**Fibres** (`mesh2splat --fibres`, proposal 106). `usd::MeshStage` reads a
+linear `BasisCurves` as a `StageMesh` with `fibres` set: each segment a
+triangle (a, b, b), the curve's `UVMap` as `st`, its `widths` as `st2`
+(width, 0) -- bookkeeping only. The effect's `fibre` mode
+(`m2sFibreEmit`) counts and writes `fibrePerSegment` gaussians a segment in
+closed form, first axis on the tangent, sigma across `w / (o √(2π))`, and
+puts the strand's radius in the w of the record's sizes. The gather reads that
+w as the flag: the third ray entry becomes the tangent with w minus the
+radius, and the tracer's bake (`bakeFibre`, `bakeFacingOf`) turns each
+sample's normal about the tangent among eight strata and comes down onto the
+strand from that side, so a fibre's transfer is the azimuthal average of a
+Lambert (Kajiya-Kay's diffuse). A fibre piece is never `closed`, and its
+count is its own budget.
+
 **Joints and weights**, with `--skinned`: four of each a gaussian, blended
 from the triangle's corners, so the cloud deforms with the skeleton that
 carried the mesh; and how those weights change across the gaussian, so it

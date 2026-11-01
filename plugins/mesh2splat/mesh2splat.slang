@@ -181,8 +181,19 @@ struct M2sParams {
     // how many of its sizes a gaussian may reach across a hard edge.
     uint  hasEdges;
     float edgeReach;
-    uint  edgePad0;
+    float floorKeep;         // the share of sub-cell triangles that keep their one gaussian (m2sFloorKept)
     uint  edgePad1;
+
+    // FIBRES (m2sFibreEmit): the mesh is curve segments, (a, b, b) a triangle,
+    // with the widths in the second set of coordinates.
+    uint  fibre;             // 1: the triangles are a curve's segments
+    uint  fibrePerSegment;   // gaussians a segment, spaced evenly along it
+    float fibreAxial;        // sigma along the fibre, over that spacing
+    float fibreOpacity;      // each one's peak; sigma across is width / (this sqrt(2 pi))
+    float fibreScale;        // the widths' unit in the world
+    uint  fibrePad0;
+    uint  fibrePad1;
+    uint  fibrePad2;
 };
 
 StructuredBuffer<float4>   mesh;        // per triangle: (position, u) and (normal, v), three corners
@@ -951,6 +962,143 @@ uint2 m2sSplit(const M2sTriangle t, float2 centre, out bool capped) {
 }
 
 /// How many gaussians this triangle stands, one thread a triangle.
+/// A CURVE'S SEGMENT AS A CHAIN OF GAUSSIANS (proposal 106, option a).
+///
+/// The triangle is (a, b, b): the segment's two ends, the widths at each in
+/// the second set of coordinates, the strand's root UV as its texture
+/// coordinate. `fibrePerSegment` gaussians stand evenly along it, each with
+/// its first axis on the tangent:
+///
+/// - sigma along it is `fibreAxial` of the spacing (0.5 for one a segment,
+///   0.75 for two, where neighbours at opacity 1 meet at 0.96);
+/// - sigma across is w / (o sqrt(2 pi)) at the peak opacity o, so the
+///   integral of its alpha across the strand, o sigma sqrt(2 pi), is the
+///   strand's width: what a thread of three quarters of a pixel covers. The
+///   raster's Mip-Splatting filter then widens it to a pixel and lowers its
+///   peak in proportion, which is sub-pixel coverage for nothing.
+///
+/// Its other two axes are a normal square to the tangent, turned away from
+/// the middle of the model's box (the bake's facing, before the fibre bake
+/// turns it about the tangent), and their cross product. Record 1's w holds
+/// the strand's radius, which is what says to the gather that it is a fibre.
+bool m2sFibreSegment(uint triangle, out float3 a, out float3 b, out float2 widths, out float2 uv) {
+    const uint base = triangle * 6;
+    const float4 p0 = meshEntry(base + 0);
+    const float4 n0 = meshEntry(base + 1);
+    const float4 p1 = meshEntry(base + 2);
+    a = p0.xyz;
+    b = p1.xyz;
+    uv = float2(p0.w, n0.w);
+    widths = params.hasUv2 != 0 ? float2(texcoord2Entry(base + 0).x, texcoord2Entry(base + 2).x) * params.fibreScale
+                                : float2(0.0);
+    const float3 d = b - a;
+    return dot(d, d) > 1.0e-24 && max(widths.x, widths.y) > 0.0;
+}
+
+uint m2sFibreCount(uint triangle) {
+    float3 a, b;
+    float2 widths, uv;
+    return m2sFibreSegment(triangle, a, b, widths, uv) ? max(params.fibrePerSegment, 1u) : 0u;
+}
+
+void m2sFibreEmit(uint triangle, uint slot, uint end) {
+    float3 a, b;
+    float2 widths, uv;
+    if (!m2sFibreSegment(triangle, a, b, widths, uv)) {
+        return;
+    }
+    const uint k = max(params.fibrePerSegment, 1u);
+    const float3 d = b - a;
+    const float segment = sqrt(dot(d, d));
+    const float3 tangent = d / segment;
+    const float3 middle = params.boundsMin.xyz + 0.5 * params.boundsExtent.xyz;
+    float3 away = 0.5 * (a + b) - middle;
+    away -= tangent * dot(away, tangent);
+    if (!(dot(away, away) > 1.0e-20)) {
+        away = abs(tangent.y) < 0.9 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
+        away -= tangent * dot(away, tangent);
+    }
+    const float3 normal = normalize(away);
+    const float3 side = cross(normal, tangent);
+    const float4 rotation = quaternionOfFrame(tangent, side, normal);
+
+    float3 colour = params.materialColour.xyz;
+    if (params.hasAlbedo != 0) {
+        colour *= sampleWrapped(albedo, params.albedoWidth, params.albedoHeight, params.albedoStride, uv).xyz;
+    }
+    float metallic = params.metallic;
+    float roughness = params.roughness;
+    if (params.hasMetallicRoughness != 0) {
+        const float4 texel = sampleWrapped(metallicRoughness, params.mrWidth, params.mrHeight, params.mrStride, uv);
+        metallic *= texel.z;
+        roughness *= texel.y;
+    }
+    const float peak = clamp(params.fibreOpacity, 1.0e-3, 1.0);
+    const float spacing = segment / float(k);
+    const uint own = params.recordPixels - (params.displaceRefine != 0 ? 3u : 0u) -
+                     (params.emissionEntry != 0 ? 1u : 0u) - (params.lobesEntry != 0 ? 4u : 0u) -
+                     (params.curvatureEntry != 0 ? 1u : 0u);
+    for (uint j = 0; j < k && slot < end; ++j, ++slot) {
+        const float f = (float(j) + 0.5) / float(k);
+        const float3 centre = a + d * f;
+        const float width = lerp(widths.x, widths.y, f);
+        const float across = width / (peak * 2.5066282746);
+        const float along = max(params.fibreAxial * spacing, across);
+        records[recordAt(slot, 0)] = float4(centre, peak * params.materialOpacity);
+        records[recordAt(slot, 1)] = float4(along, across, across, 0.5 * width);
+        records[recordAt(slot, 2)] = rotation;
+        records[recordAt(slot, 3)] = float4(colour, 0.0);
+        if (own >= 6) {
+            records[recordAt(slot, 4)] = float4(normal, metallic);
+            records[recordAt(slot, 5)] = float4(roughness, params.transmission, uv.x, uv.y);
+        }
+        if (own >= 9) {
+            // Carried by nothing (the strand's root weights are not read yet).
+            records[recordAt(slot, 6)] = float4(0.0);
+            records[recordAt(slot, 7)] = float4(0.0);
+            records[recordAt(slot, 8)] = float4(0.0);
+        }
+        if (params.displaceRefine != 0) {
+            records[recordAt(slot, own)] = float4(centre, 0.0);
+            records[recordAt(slot, own + 1)] = float4(normal, 0.0);
+            records[recordAt(slot, own + 2)] = float4(normal, 0.0);
+        }
+        if (params.emissionEntry != 0) {
+            records[recordAt(slot, params.emissionEntry)] = float4(0.0);
+        }
+        if (params.lobesEntry != 0) {
+            records[recordAt(slot, params.lobesEntry)] = params.specular;
+            records[recordAt(slot, params.lobesEntry + 1)] = params.coat;
+            records[recordAt(slot, params.lobesEntry + 2)] = params.sheen;
+            records[recordAt(slot, params.lobesEntry + 3)] = float4(params.coatDarkening, 0.0, 0.0, 0.0);
+        }
+        if (params.curvatureEntry != 0) {
+            records[recordAt(slot, params.curvatureEntry)] = float4(0.0);
+        }
+    }
+}
+
+/// WHETHER A TRIANGLE SMALLER THAN A CELL KEEPS ITS ONE GAUSSIAN.
+///
+/// That gaussian is the least a triangle is worth, and so it does not shrink
+/// when the budget coarsens the cell: a hair tube of 0.16 mm is three faces
+/// of sub-cell triangles at any cell, and Einar's beard wanted 0.97 M at the
+/// coarsened cell for a share of 0.36 M. A run then kept the first of them in
+/// the mesh's order -- the first 37 % of the strands whole and the rest not at
+/// all. Where the host knows the share is smaller than the count it says how
+/// many of these to keep, and which ones is a hash of the triangle: a thinning
+/// spread over the whole part, the same in the count and the emit (the emit
+/// writes the slots the count gave, so it needs no second look).
+bool m2sFloorKept(uint triangle) {
+    if (!(params.floorKeep < 1.0)) {
+        return true;
+    }
+    uint h = triangle * 747796405u + 2891336453u;
+    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    h = (h >> 22u) ^ h;
+    return float(h >> 8) * (1.0 / 16777216.0) < params.floorKeep;
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void m2sCount(uint3 tid: SV_DispatchThreadID) {
@@ -960,6 +1108,10 @@ void m2sCount(uint3 tid: SV_DispatchThreadID) {
     }
     if (triangle < params.firstTriangle) {
         cellCounts[countAt(triangle)] = 0;   // an earlier slice's
+        return;
+    }
+    if (params.fibre != 0) {
+        cellCounts[countAt(triangle)] = m2sFibreCount(triangle);
         return;
     }
     const M2sTriangle t = m2sTriangleOf(triangle);
@@ -1008,7 +1160,7 @@ void m2sCount(uint3 tid: SV_DispatchThreadID) {
     // gaussian at its middle, and a plane whose map was all under the cut
     // still covered 2% of what stood behind it.
     if (inside == 0) {
-        inside = m2sCovered(t, float3(1.0 / 3.0)) ? 1u : 0u;
+        inside = m2sCovered(t, float3(1.0 / 3.0)) && m2sFloorKept(triangle) ? 1u : 0u;
     }
     cellCounts[countAt(triangle)] = inside;
 }
@@ -1778,6 +1930,13 @@ void m2sEmit(uint3 tid: SV_DispatchThreadID) {
     }
     if (triangle < params.firstTriangle || triangle >= counters[4]) {
         return;   // an earlier slice's, or the budget cut into it: the next slice's
+    }
+    if (params.fibre != 0) {
+        const uint first = cellCounts[countAt(triangle)];
+        const uint last = min(triangle + 1 < params.triangles ? cellCounts[countAt(triangle + 1)] : counters[0],
+                              params.maxSplats);
+        m2sFibreEmit(triangle, first, last);
+        return;
     }
     const M2sTriangle t = m2sTriangleOf(triangle);
     if (!t.valid) {

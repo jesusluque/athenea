@@ -300,6 +300,13 @@ struct StageMesh {
     /// or its nearest ancestor that has it (an int or a float), else 0.
     bool                  hasExtraUv = false;
     int32_t               lightmapAtlas = 0;
+    /// LINEAR BASIS CURVES READ AS FIBRES (MeshStageOptions::fibres): each
+    /// segment of a curve is a triangle of three corners -- its two ends and
+    /// the second end again -- whose `st` is the curve's (the root's surface
+    /// UV, per point) and whose `st2` is (width, 0) at each corner, the
+    /// curve's `widths` as authored. Nothing here is a surface: the
+    /// conversion builds a chain of gaussians along each segment instead.
+    bool                  fibres = false;
 };
 
 /// A camera of the stage, as a conversion that sizes its cells by what that
@@ -342,6 +349,13 @@ struct MeshStageOptions {
     /// name where a mesh has it (`st_lightmap` for `athenea lightmap`).
     /// Empty: none.
     std::string extraUv;
+    /// Read linear `UsdGeomBasisCurves` as well, each as a `StageMesh` with
+    /// `fibres` set (mesh2splat --fibres). Other bases are left out, said.
+    bool        fibres = false;
+    /// Prims (and what is under them) left out of the read but not hidden:
+    /// a stage that holds a groom twice -- tubes the bake traces, curves
+    /// the conversion reads -- converts one and lights with the other.
+    std::vector<std::string> skipped;
 };
 
 /// Opens `path` and reads its meshes. The stage stays open for as long as this

@@ -178,6 +178,20 @@ void m2sGather(uint3 tid: SV_DispatchThreadID) {
         rays[out * 3 + 0] = float4(flat.xyz, 0.0);
         rays[out * 3 + 1] = float4(flatNormal.xyz, footprint);
         rays[out * 3 + 2] = float4(relief.xyz, 1.0 + 0.25 * saturate(shading.w));
+    } else if (sizes.w > 0.0) {
+        // A FIBRE (Mesh2Splat's `fibre`): record 1's w is the strand's radius.
+        // The bake turns its normal about the tangent (PathTracer's
+        // bakeFibre), so the third entry is the tangent -- the first axis of
+        // the rotation, w x y z -- and minus the radius.
+        const float qw = rotation.x;
+        const float qx = rotation.y;
+        const float qy = rotation.z;
+        const float qz = rotation.w;
+        const float3 tangent = float3(1.0 - 2.0 * (qy * qy + qz * qz), 2.0 * (qx * qy + qw * qz),
+                                      2.0 * (qx * qz - qw * qy));
+        rays[out * 3 + 0] = float4(position.xyz, 0.0);
+        rays[out * 3 + 1] = float4(shading.xyz, footprint);
+        rays[out * 3 + 2] = float4(normalize(tangent), -sizes.w);
     } else {
         rays[out * 3 + 0] = float4(position.xyz, 0.0);
         rays[out * 3 + 1] = float4(shading.xyz, footprint);

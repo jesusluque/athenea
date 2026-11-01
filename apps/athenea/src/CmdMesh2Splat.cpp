@@ -187,6 +187,18 @@ struct Options {
     /// edge of its triangle (open, or folded past kCreaseDegrees) is held to
     /// its distance from it over this (the effect's `edgeReach`; 0: not held).
     double                   edgeReach = 1.5;
+    /// A part whose share of the budget is under what it counts at its
+    /// coarsened cell keeps the first of its gaussians in mesh order (the
+    /// behaviour before 1 Nov 2026), instead of thinning its sub-cell
+    /// triangles across the whole part.
+    bool                     budgetInOrder = false;
+    /// FIBRES (proposal 106): linear BasisCurves read as strands, each segment
+    /// a chain of `fibrePerSegment` gaussians along it, with a budget of
+    /// their own (what they count is theirs; the surfaces share the rest).
+    bool                     fibres = false;
+    uint32_t                 fibrePerSegment = 2;
+    double                   fibreAxial = -1.0;   ///< sigma along over the spacing; < 0: 0.5 for one, 0.75 for more
+    double                   fibreOpacity = 1.0;
     bool                     addCamera = true;
     /// Bake the path tracer's answer into the gaussians (the default), or
     /// carry the material and be relit.
@@ -1259,6 +1271,7 @@ public:
         const size_t pieces = pieces_.size();
         wantedBy_.assign(pieces, 0);
         shareOf_.assign(pieces, 0);
+        floorKeep_.assign(pieces, 1.0F);
         ATHENEA_TRY(deriveCells());
         // Which glass is a sheet or a slab, now that the cell is known.
         ATHENEA_TRY(classifySheets());
@@ -1291,6 +1304,12 @@ public:
                        (path.size() > prim.size() && path.compare(0, prim.size(), prim) == 0 && path[prim.size()] == '/');
             });
         };
+        // FIBRES COUNT ON THEIR OWN: a strand's gaussians do not depend on the
+        // cell, so a coarser cell would not make fewer of them, and the
+        // surfaces would pay for it. What they count is theirs, and the
+        // surfaces share what is left.
+        uint64_t fibreTotal = 0;
+        const auto isFibre = [&](size_t k) { return meshes[pieces_[k].mesh].fibres; };
         for (size_t k = 0; k < pieces; ++k) {
             if (triangles_[k] == 0 || coversNothing(*pieces_[k].material) || skipped(pieces_[k].path)) {
                 continue;
@@ -1298,16 +1317,23 @@ public:
             auto counted = runOne(effect, meshes[pieces_[k].mesh], k, 1, 0);
             if (!counted) return std::move(counted).error();
             wantedBy_[k] = static_cast<uint32_t>(std::min<uint64_t>(counted->wanted, 0xFFFFFFFFu));
-            total += wantedBy_[k];
+            (isFibre(k) ? fibreTotal : total) += wantedBy_[k];
         }
-        if (total > options_->maxSplats) {
+        if (fibreTotal > 0) {
+            std::printf("mesh2splat: the fibres want %llu gaussians, their own; the surfaces share the %llu left\n",
+                        static_cast<unsigned long long>(fibreTotal),
+                        static_cast<unsigned long long>(options_->maxSplats > fibreTotal
+                                                            ? options_->maxSplats - fibreTotal : 0));
+        }
+        const uint64_t surfaceBudget = options_->maxSplats > fibreTotal ? options_->maxSplats - fibreTotal : 0;
+        if (total > surfaceBudget) {
             // A slot for every piece that wants any, and the rest of the
             // budget in proportion: counts, not values.
             uint64_t wanting = 0;
             for (size_t k = 0; k < pieces; ++k) {
-                wanting += wantedBy_[k] > 0 ? 1 : 0;
+                wanting += wantedBy_[k] > 0 && !isFibre(k) ? 1 : 0;
             }
-            const uint64_t spread = options_->maxSplats > wanting ? options_->maxSplats - wanting : 0;
+            const uint64_t spread = surfaceBudget > wanting ? surfaceBudget - wanting : 0;
             // A PIECE ASKED FOR IN MORE DETAIL (`--detail PRIM=FACTOR`) takes
             // FACTOR^2 times its proportional part, so its cell comes out
             // FACTOR times finer than the others' -- never more than it
@@ -1330,6 +1356,12 @@ public:
                 }
             }
             std::vector<bool> full(pieces, false);
+            for (size_t k = 0; k < pieces; ++k) {
+                if (isFibre(k)) {
+                    full[k] = true;
+                    shareOf_[k] = wantedBy_[k];
+                }
+            }
             uint64_t left = spread;
             for (int round = 0; round < 8; ++round) {
                 double sum = 0.0;
@@ -1360,6 +1392,44 @@ public:
                 left = left > given ? left - given : 0;
             }
             ATHENEA_TRY(deriveCells());
+            // A SHARE SPENT ACROSS THE WHOLE PART, NOT ON ITS FIRST TRIANGLES.
+            //
+            // The coarser cell takes every piece down by the same factor only
+            // where its gaussians are cells. A triangle smaller than a cell
+            // is one gaussian at any cell, so a part of thin triangles -- a
+            // hair tube is three faces 0.16 mm across -- still counts nearly
+            // what it did, and a run with a smaller share kept the first of
+            // them in the mesh's order: Einar's beard wrote 0.36 M of the
+            // 0.97 M it counted, the first 37 % of its strands whole and the
+            // rest not at all. So each piece is counted again at its own
+            // cell, and where that is over its share, counted once more with
+            // none of its sub-cell triangles: what they add is what can be
+            // thinned, and the share of them kept is what the share leaves.
+            // Counts, which is the host's business; which triangles is a
+            // hash in the effect (m2sFloorKept).
+            for (size_t k = 0; k < pieces && !options_->budgetInOrder; ++k) {
+                if (shareOf_[k] == 0 || isFibre(k)) {
+                    continue;
+                }
+                auto coarse = runOne(effect, meshes[pieces_[k].mesh], k, 1, 0);
+                if (!coarse) return std::move(coarse).error();
+                if (coarse->wanted <= shareOf_[k]) {
+                    continue;
+                }
+                floorKeep_[k] = 0.0F;
+                auto cells = runOne(effect, meshes[pieces_[k].mesh], k, 1, 0);
+                if (!cells) return std::move(cells).error();
+                const uint64_t floors = coarse->wanted - std::min(coarse->wanted, cells->wanted);
+                const uint64_t room = shareOf_[k] > cells->wanted ? shareOf_[k] - cells->wanted : 0;
+                floorKeep_[k] = floors > 0 ? static_cast<float>(std::min(1.0, static_cast<double>(room) /
+                                                                                   static_cast<double>(floors)))
+                                           : 1.0F;
+                std::printf("mesh2splat: %s counts %llu at its cell for a share of %llu: %llu of them are "
+                            "sub-cell triangles, %.1f%% of those kept\n",
+                            pieces_[k].path.c_str(), static_cast<unsigned long long>(coarse->wanted),
+                            static_cast<unsigned long long>(shareOf_[k]), static_cast<unsigned long long>(floors),
+                            100.0 * static_cast<double>(floorKeep_[k]));
+            }
             cli::err(
                          "mesh2splat: warning: the meshes want %llu splats and --max-splats is %llu: the budget "
                          "is shared in proportion, every piece's cell coarsened alike\n",
@@ -1508,9 +1578,11 @@ public:
                 schlickMetal_.insert(schlickMetal_.end(), out->written,
                                      material.schlickMetal ? int32_t{1} : int32_t{0});
                 // And whether its mesh is closed (markEdges): where its back
-                // is hidden by its own front.
+                // is hidden by its own front. Never a fibre's: its segments
+                // (a, b, b) share every edge, and a strand has no back.
                 closedOf_.insert(closedOf_.end(), out->written,
-                                 k < closed_.size() && closed_[k] != 0 ? int32_t{1} : int32_t{0});
+                                 k < closed_.size() && closed_[k] != 0 && !owner.fibres ? int32_t{1}
+                                                                                         : int32_t{0});
                 // And the material's own roughness, before --specular-filter
                 // widens the stored one: what says whether a frame's field
                 // answers the polish (splat_relight's kPolishFieldRoughness).
@@ -1794,6 +1866,15 @@ private:
                                                                : (options_->transfer ? 1.0 : 0.0));
         number("simplify", options_->simplify);
         number("edgeReach", options_->edgeReach);
+        number("floorKeep", at < floorKeep_.size() ? static_cast<double>(floorKeep_[at]) : 1.0);
+        if (mesh.fibres) {
+            number("fibre", 1.0);
+            number("fibrePerSegment", static_cast<double>(options_->fibrePerSegment));
+            number("fibreAxial", options_->fibreAxial >= 0.0 ? options_->fibreAxial
+                                 : options_->fibrePerSegment > 1 ? 0.75 : 0.5);
+            number("fibreOpacity", options_->fibreOpacity);
+            number("fibreScale", static_cast<double>(mesh.displacementUnit));
+        }
         number("simplifyLevels", static_cast<double>(options_->simplifyLevels));
         if (cutMap) {
             const char channel = material.opacityMap.channel;
@@ -2256,6 +2337,7 @@ private:
     gpu::Buffer                              boxes_;        ///< the model's box, then each mesh's
     std::vector<uint32_t>                    wantedBy_;     ///< what each piece wants, counted
     std::vector<uint32_t>                    shareOf_;      ///< what the budget gives it
+    std::vector<float>                       floorKeep_;    ///< the share of its sub-cell triangles kept
     std::vector<float>                       cellValues_;   ///< mesh2splat_cells' answer
     std::optional<usd::StageCamera>          camera_;
     uint32_t                                 cameraPixels_ = 1920;
@@ -3063,6 +3145,23 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_flag("--no-textures", o->noTextures, "ignore the maps; materials keep their constant values");
     cmd->add_flag("--normal-map-turns", o->normalMapTurns,
                   "orient each gaussian by the normal map rather than the surface");
+    cmd->add_flag("--fibres", o->fibres,
+                  "read linear BasisCurves as strands: each segment a chain of gaussians along it, with a "
+                  "budget of its own (the surfaces share what --max-splats leaves)");
+    cmd->add_option("--fibre-per-segment", o->fibrePerSegment, "--fibres: gaussians a segment (2)")
+        ->check(CLI::Range(1, 8));
+    cmd->add_option("--fibre-axial", o->fibreAxial,
+                    "--fibres: a gaussian's deviation along the strand over the spacing between them "
+                    "(default 0.5 for one a segment, 0.75 for more)")
+        ->check(CLI::Range(0.05, 4.0));
+    cmd->add_option("--fibre-opacity", o->fibreOpacity,
+                    "--fibres: a gaussian's peak opacity; its deviation across is width / (this sqrt(2 pi)), "
+                    "so what it covers is the strand's width (1)")
+        ->check(CLI::Range(0.01, 1.0));
+    cmd->add_flag("--budget-in-order", o->budgetInOrder,
+                  "a part whose share of --max-splats is under what it counts at its coarsened cell keeps "
+                  "its first gaussians in mesh order, as before, instead of thinning its sub-cell triangles "
+                  "across the whole part");
     cmd->add_option("--edge-reach", o->edgeReach,
                     "how far a gaussian may reach across an edge where its surface stops or folds, in its "
                     "sizes: held to its distance from the edge over this (0: not held)")
@@ -3407,6 +3506,7 @@ void addMesh2Splat(CLI::App& app) {
             read.skinned = o->skinned;
             read.hidden = o->hidden;
             read.thinGlass = o->thinGlass;
+            read.fibres = o->fibres;
             if (o->transfer) {
                 // The two are different answers to the same question and the file
                 // has room for one: a transfer keeps the geometry, a radiance

@@ -201,9 +201,20 @@ struct Mesh2SplatUniforms {
     /// edge of its triangle.
     uint32_t hasEdges = 0;
     float    edgeReach = 1.5F;
-    uint32_t edgePad[2] = {0, 0};
+    /// The share of triangles smaller than a cell that keep their one
+    /// gaussian (m2sFloorKept): 1 all of them.
+    float    floorKeep = 1.0F;
+    uint32_t edgePad = 0;
+
+    /// FIBRES (m2sFibreEmit): the triangles are a curve's segments.
+    uint32_t fibre = 0;
+    uint32_t fibrePerSegment = 2;
+    float    fibreAxial = 0.75F;
+    float    fibreOpacity = 1.0F;
+    float    fibreScale = 1.0F;
+    uint32_t fibrePad[3] = {0, 0, 0};
 };
-static_assert(sizeof(Mesh2SplatUniforms) == 560, "must match M2sParams exactly");
+static_assert(sizeof(Mesh2SplatUniforms) == 592, "must match M2sParams exactly");
 
 class Mesh2Splat final : public aofx::Effect {
 public:
@@ -459,6 +470,51 @@ public:
         reach.hardMin = {0.0};
         reach.hardMax = {8.0};
         into.params.push_back(reach);
+
+        aofx::ParamDesc floorKeep;
+        floorKeep.name = "floorKeep";
+        floorKeep.label = "Sub-cell triangles kept";
+        floorKeep.hint =
+            "A triangle no cell centre falls in is written as one gaussian at its middle. This is the share "
+            "of those that are, chosen by a hash of the triangle, so a budget smaller than the count thins "
+            "the whole mesh instead of keeping its first triangles. 1 keeps all of them.";
+        floorKeep.type = aofx::ParamType::Double;
+        floorKeep.defaults = {1.0};
+        floorKeep.hardMin = {0.0};
+        floorKeep.hardMax = {1.0};
+        into.params.push_back(floorKeep);
+
+        // FIBRES: the Mesh input is a curve's segments, (a, b, b) a triangle,
+        // the widths in Texcoord2's first channel, and each segment becomes a
+        // chain of gaussians along it (proposal 106).
+        const auto fibreParam = [&into](const char* name, const char* label, const char* hint,
+                                        aofx::ParamType type, double value, double lo, double hi) {
+            aofx::ParamDesc d;
+            d.name = name;
+            d.label = label;
+            d.hint = hint;
+            d.type = type;
+            d.defaults = {value};
+            d.hardMin = {lo};
+            d.hardMax = {hi};
+            into.params.push_back(d);
+        };
+        fibreParam("fibre", "Fibres",
+                   "The triangles are curve segments (a, b, b), their widths in Texcoord2's first channel: "
+                   "each becomes a chain of gaussians along it, its first axis on the tangent.",
+                   aofx::ParamType::Boolean, 0.0, 0.0, 1.0);
+        fibreParam("fibrePerSegment", "Fibre gaussians a segment", "Evenly spaced along it.",
+                   aofx::ParamType::Integer, 2.0, 1.0, 8.0);
+        fibreParam("fibreAxial", "Fibre sigma along",
+                   "A fibre gaussian's deviation along the strand, over the spacing between them: 0.5 for one "
+                   "a segment, 0.75 for two (neighbours at opacity 1 meet at 0.96).",
+                   aofx::ParamType::Double, 0.75, 0.05, 4.0);
+        fibreParam("fibreOpacity", "Fibre opacity",
+                   "A fibre gaussian's peak opacity o. Its deviation across is width / (o sqrt(2 pi)), so the "
+                   "integral of its alpha across the strand is the strand's width whatever o is.",
+                   aofx::ParamType::Double, 1.0, 0.01, 1.0);
+        fibreParam("fibreScale", "Fibre width unit", "The widths' unit in the world.",
+                   aofx::ParamType::Double, 1.0, 0.0, 1.0e6);
 
         aofx::ParamDesc curved;
         curved.name = "writeCurvature";
@@ -987,6 +1043,13 @@ public:
         const bool withEdges = hardEdges != nullptr && hardEdges->buffer.isValid();
         uniforms.hasEdges = withEdges ? 1U : 0U;
         uniforms.edgeReach = static_cast<float>(std::clamp(request.number("edgeReach", 1.5), 0.0, 8.0));
+        uniforms.floorKeep = static_cast<float>(std::clamp(request.number("floorKeep", 1.0), 0.0, 1.0));
+        uniforms.fibre = request.number("fibre", 0.0) >= 0.5 ? 1U : 0U;
+        uniforms.fibrePerSegment =
+            static_cast<uint32_t>(std::clamp(std::lround(request.number("fibrePerSegment", 2.0)), 1L, 8L));
+        uniforms.fibreAxial = static_cast<float>(std::clamp(request.number("fibreAxial", 0.75), 0.05, 4.0));
+        uniforms.fibreOpacity = static_cast<float>(std::clamp(request.number("fibreOpacity", 1.0), 0.01, 1.0));
+        uniforms.fibreScale = static_cast<float>(std::max(request.number("fibreScale", 1.0), 0.0));
         uniforms.albedoUv2 = byUv2("albedoUv2");
         uniforms.normalUv2 = byUv2("normalUv2");
         uniforms.mrUv2 = byUv2("mrUv2");

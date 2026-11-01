@@ -672,6 +672,11 @@ recipe is §3.1 below.
 | `--no-textures` | flag | off | ignore the maps; materials keep their constant values |
 | `--normal-map-turns` | flag | off | the normal map turns the gaussian, not only its shading. The shading normal is written either way (`primvars:athenea:splat:normal`) |
 | `--edge-reach` | number, 0 to 8 | `1.5` | how far a gaussian may reach across an edge where its surface stops (an open edge) or folds (two triangles turning by more than 40°), in its own sizes: its size square to that edge is held to its distance from it over this. Keeps a flange folded into a panel gap from standing out over the paint as a dark line, and paint from reaching over into the gap. `0` holds nothing |
+| `--fibres` | flag | off | read linear `BasisCurves` as strands (proposal 106): each segment of a curve becomes a chain of `--fibre-per-segment` gaussians along it, first axis on the tangent, colour from the material at the curve's `st`/`UVMap` (the root's surface UV, one per point). `widths` per point (or one) are required. The strands have a budget of their own: what they count is theirs, and the surfaces share what `--max-splats` leaves. Other curve bases are left out, said in the log. A strand is not skinned yet |
+| `--fibre-per-segment` | integer 1 to 8 | `2` | gaussians a segment, evenly spaced along it |
+| `--fibre-axial` | number 0.05 to 4 | `0.5` for one a segment, `0.75` for more | a fibre gaussian's deviation along the strand, over the spacing between them. At 0.75 two neighbours of opacity 1 add up to 0.96 halfway; at 0.5 to 0.85 |
+| `--fibre-opacity` | number 0.01 to 1 | `1` | a fibre gaussian's peak opacity `o`. Its deviation across is `width / (o √(2π))`, so the integral of its alpha across the strand is the strand's width whatever `o` is: lower is wider and fainter, the same coverage |
+| `--budget-in-order` | flag | off | the behaviour before 1 Nov 2026: a part whose share is under what it counts at its coarsened cell keeps its first gaussians in mesh order, rather than thinning its sub-cell triangles across the whole part (see the budget below) |
 | `--no-displacement` | flag | off | ignore the materials' displacement: every gaussian stands on the flat mesh |
 | `--displace-refine` | integer, 1 to 64 | `8` | where the relief stretches a cell, split it into at most this many gaussians along each of its two axes |
 | `--simplify` | number, 0 to 1 | `0` (off) | a block of cells whose colour, metallic, roughness, emission, cut-out and normals move by no more than this -- over the block and a block past each side, all inside one triangle -- becomes one gaussian of its size. Colours and cut-out are 0 to 1; emission is compared in its own units, so a bright one merges less; normals are compared as the length of their difference, about the angle in radians |
@@ -686,7 +691,7 @@ recipe is §3.1 below.
 | `--bake-filter-indirect-only` | flag | off | filter the indirect light alone and leave the direct as traced |
 | `--bake-bounces` | integer | `3` | after the first hit |
 | `--bake-degree` | 0..3 | `2` | harmonics fitted; 0 is a colour |
-| `--skip` | prim path ‹repeatable› | none | not converted, with everything beneath it; unlike `--hide` the prim stays in the stage the bake traces, so what it reflects, shadows and bounces is still in the others' light |
+| `--skip` | prim path ‹repeatable› | none | not converted, with everything beneath it; unlike `--hide` the prim stays in the stage the bake traces, so what it reflects, shadows and bounces is still in the others' light. For a groom held twice: the tubes the bake should see, and the same strands as curves of purpose `guide` (which no renderer draws) that `--fibres` converts |
 | `--detail` | `PRIM=FACTOR` ‹repeatable› | none | where the budget is shared, the meshes at or under `PRIM` take FACTOR² times their proportional part, so their cell comes out FACTOR times finer than the rest's; never more than they want, and what they cannot take goes back to the others |
 | `--bake-toward` | 3 numbers, world units | none | bake what a camera standing there sees, reflections included, as one colour a gaussian (degree 0): for a camera that only turns about that point. A gaussian facing away bakes its body over its hemisphere |
 | `--bake-toward-radius` | world units | `0.15` | `--bake-toward`: the ball about the point the camera may stand in; each path looks from a point of it |
@@ -1226,9 +1231,19 @@ want more than the budget it is shared in proportion: each gets
 `sqrt(wanted / share)` times coarser so that it wants about that. That is one
 density floor for the whole stage: every mesh loses density alike and none is
 dropped. The warning says how many were wanted, and each mesh's log line how
-much coarser it walked. A mesh that still wants a little more than its share
-after the coarsening keeps its first triangles' gaussians, in the mesh's
-order. The count costs one short run a mesh.
+much coarser it walked. A triangle smaller than a cell is still one
+gaussian at its middle, so a part made of them -- a hair tube is three faces
+0.16 mm across -- counts nearly as much at the coarser cell as before. Such a
+part is counted again at its own cell and once more without its sub-cell
+triangles, and the share of those it keeps is what its share leaves, chosen
+by a hash of the triangle: the thinning is spread over the whole part (the
+log says `N of them are sub-cell triangles, P% of those kept`). Before 1 Nov
+2026 it kept its first gaussians in mesh order instead -- Einar's beard got
+the first 37 % of its strands and none of the rest; `--budget-in-order`
+brings that back. Whatever still does not fit keeps its first triangles'
+gaussians, in the mesh's order. The count costs one short run a mesh, and
+two more for a part over its share. With `--fibres` the strands are counted
+apart and keep what they count; the surfaces share the rest.
 
 **From a camera.** `--cell-from-camera` sizes each mesh's cell by the camera
 that will look at it (Mesh2GS's rule): `z × (aperture / pixels) / focal`,
@@ -2892,7 +2907,9 @@ bundle declares. `athenea aofx run` runs one effect over EXR files, with
 ### 7.1 Measure — `rt.sparrow.aofx.measure`
 
 A QC node: `Source` against `Reference` (optional), measured on the device
-they are on, the numbers attached to the output. It is `athenea compare`'s
+they are on, the numbers attached to the output. A third input, `Mask`
+(optional, Source's size), limits the differences to the pixels whose colour
+is above zero in it. It is `athenea compare`'s
 implementation, and the same bundle loads in openFXplayer.
 
 | Parameter | Value | Default | Notes |
@@ -3124,6 +3141,8 @@ A script's own header says what it needs and where it puts things.
 | `colour: no colour space '<name>' in <config>; read as the file says` | a texture names a colour space neither the config nor the studio config knows | correct the name (`athenea info` says whether OpenColorIO is built in); the texture is read as if no colour space were given |
 | `no Measure bundle on the AOFX search path` | `athenea compare` found no `rt.sparrow.aofx.measure` | build the `athenea_aofx_measure` target, or give its directory with `--path` |
 | `measure: an empty window` | `athenea compare --window` (or the effect's `window`) holds no pixel | give X0 < X1 and Y0 < Y1 inside the image |
+| `measure: the Mask is not the size of Source`, `the mask is WxH and the image …` | `athenea compare --mask` (or the effect's `Mask`) was given an image of another size | render the mask at the image's size |
+| `--fibres needs widths per point or one` | a linear BasisCurves read by `mesh2splat --fibres` has no `widths`, or a number of them that is neither one nor one a point | author `widths` per point (vertex interpolation) or one constant |
 | a shader compile error naming a path | the shaders on disk do not match the binary | rebuild, or point `ATHENEA_SHADER_DIR` at this build's `shaders` |
 | `this build reads no .spz` | zstd was missing when this binary was built | rebuild with zstd, or convert the capture elsewhere |
 | `video: the stream's SPS says video range (16-235); video planes are full range` | an HEVC stream whose VUI does not set full range was given to the planes decoder | encode with `athenea video-encode` (full range, '420f'), or re-encode the stream full range |

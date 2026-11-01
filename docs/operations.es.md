@@ -688,6 +688,11 @@ receta es §3.1.
 | `--no-textures` | flag | apagado | ignorar los mapas; los materiales se quedan con sus valores constantes |
 | `--normal-map-turns` | flag | apagado | el mapa de normales gira la gaussiana, no solo su sombreado. La normal de sombreado se escribe en ambos casos (`primvars:athenea:splat:normal`) |
 | `--edge-reach` | número, 0 a 8 | `1.5` | cuánto puede asomar una gaussiana por un borde donde su superficie termina (una arista abierta) o se pliega (dos triángulos que giran más de 40°), en sus propios tamaños: su tamaño en perpendicular a ese borde se limita a su distancia a él dividida por esto. Evita que la pestaña que un panel pliega hacia su junta asome sobre la pintura como una línea oscura, y que la pintura invada la junta. `0` no limita nada |
+| `--fibres` | flag | no | lee las `BasisCurves` lineales como hebras (propuesta 106): cada segmento de una curva se convierte en una cadena de `--fibre-per-segment` gaussianas a lo largo de él, con el primer eje en la tangente y el color del material en el `st`/`UVMap` de la curva (la UV de superficie de la raíz, una por punto). Hacen falta `widths` por punto (o uno). Las hebras tienen su propio presupuesto: lo que cuentan es suyo, y las superficies se reparten lo que deja `--max-splats`. Las curvas de otras bases se dejan fuera, y el log lo dice. Una hebra todavía no lleva skinning |
+| `--fibre-per-segment` | entero 1 a 8 | `2` | gaussianas por segmento, repartidas por igual a lo largo de él |
+| `--fibre-axial` | número 0,05 a 4 | `0.5` con una por segmento, `0.75` con más | la desviación de una gaussiana de fibra a lo largo de la hebra, dividida por la separación entre ellas. Con 0,75 dos vecinas de opacidad 1 suman 0,96 a medio camino; con 0,5, 0,85 |
+| `--fibre-opacity` | número 0,01 a 1 | `1` | la opacidad de pico `o` de una gaussiana de fibra. Su desviación transversal es `ancho / (o √(2π))`, así que la integral de su alfa a través de la hebra es el ancho de la hebra sea cual sea `o`: más baja es más ancha y más tenue, con la misma cobertura |
+| `--budget-in-order` | flag | no | el comportamiento anterior al 1 nov 2026: una pieza cuya parte es menor que lo que cuenta con su celda engrosada conserva sus primeras gaussianas en el orden de la malla, en lugar de aclarar sus triángulos menores que una celda en toda la pieza (ver el presupuesto, abajo) |
 | `--no-displacement` | flag | apagado | ignorar el displacement de los materiales: toda gaussiana se queda sobre la malla plana |
 | `--displace-refine` | entero, 1 a 64 | `8` | donde el relieve estira una celda, partirla en como mucho este número de gaussianas en cada uno de sus dos ejes |
 | `--simplify` | número, 0 a 1 | `0` (apagado) | un bloque de celdas cuyo color, metallic, roughness, emisión, recorte y normales varían no más que esto -- en el bloque y en un bloque más allá de cada lado, todo dentro de un triángulo -- se convierte en una gaussiana de su tamaño. Colores y recorte van de 0 a 1; la emisión se compara en sus propias unidades, así que una brillante se funde menos; las normales se comparan por la longitud de su diferencia, más o menos el ángulo en radianes |
@@ -702,7 +707,7 @@ receta es §3.1.
 | `--bake-filter-indirect-only` | flag | desactivado | filtra solo la luz indirecta y deja la directa como se trazó |
 | `--bake-bounces` | entero | `3` | tras el primer impacto |
 | `--bake-degree` | 0..3 | `2` | armónicos ajustados; 0 es un color |
-| `--skip` | ruta de prim ‹repetible› | ninguno | no se convierte, con todo lo que cuelga de ella; a diferencia de `--hide`, la prim sigue en la stage que traza el horneado, así que lo que refleja, sombrea y rebota sigue en la luz de las demás |
+| `--skip` | ruta de prim ‹repetible› | ninguno | no se convierte, con todo lo que cuelga de ella; a diferencia de `--hide`, la prim sigue en la stage que traza el horneado, así que lo que refleja, sombrea y rebota sigue en la luz de las demás. Para un peinado que está dos veces: los tubos que el horneado debe ver, y las mismas hebras como curvas de purpose `guide` (que ningún renderer dibuja) que convierte `--fibres` |
 | `--detail` | `PRIM=FACTOR` ‹repetible› | ninguno | cuando se reparte el presupuesto, las mallas en `PRIM` o por debajo toman FACTOR² veces su parte proporcional, así que su celda sale FACTOR veces más fina que la del resto; nunca más de lo que piden, y lo que no pueden tomar vuelve a las demás |
 | `--bake-toward` | 3 números, unidades del mundo | ninguno | hornea lo que ve una cámara situada ahí, reflejos incluidos, como un color por gaussiana (grado 0): para una cámara que solo gira en torno a ese punto. Una gaussiana que mira hacia otro lado hornea su cuerpo sobre su hemisferio |
 | `--bake-toward-radius` | unidades del mundo | `0.15` | `--bake-toward`: la bola alrededor del punto en la que puede estar la cámara; cada camino mira desde un punto de ella |
@@ -1260,9 +1265,21 @@ más que el presupuesto se reparte en proporción: cada una recibe
 `sqrt(quiere / parte)` veces más gruesa para querer más o menos eso. Es un
 solo suelo de densidad para toda la escena: todas las mallas pierden densidad
 por igual y no se tira ninguna. El aviso dice cuántas se querían, y la línea
-de log de cada malla cuánto más gruesa recorrió. Una malla que aún quiere un
-poco más que su parte tras engrosarla conserva las gaussianas de sus primeros
-triángulos, en el orden de la malla. Contar cuesta una pasada corta por malla.
+de log de cada malla cuánto más gruesa recorrió. Un triángulo menor que una
+celda sigue siendo una gaussiana en su centro, así que una pieza hecha de ellos
+-- un tubo de pelo son tres caras de 0,16 mm -- cuenta casi lo mismo con la
+celda engrosada que antes. Esa pieza se vuelve a contar con su propia celda y
+otra vez sin sus triángulos menores que una celda, y la fracción de estos que
+conserva es la que deja su parte, elegida por un hash del triángulo: el
+aclarado se reparte por toda la pieza (el log dice `N of them are sub-cell
+triangles, P% of those kept`). Antes del 1 nov 2026 conservaba en cambio sus
+primeras gaussianas en el orden de la malla -- la barba de Einar se quedó con
+el primer 37 % de sus hebras y nada del resto; `--budget-in-order` lo
+recupera. Lo que aun así no cabe conserva las gaussianas de sus primeros
+triángulos, en el orden de la malla. Contar cuesta una pasada corta por malla,
+y dos más para una pieza que pasa de su parte. Con `--fibres` las hebras se
+cuentan aparte y conservan lo que cuentan; las superficies se reparten el
+resto.
 
 **Desde una cámara.** `--cell-from-camera` da a cada malla la celda de la
 cámara que la va a mirar (la regla de Mesh2GS): `z × (apertura / píxeles) /
@@ -2986,7 +3003,9 @@ declara cada bundle. `athenea aofx run` corre un efecto sobre ficheros EXR, con
 ### 7.1 Measure — `rt.sparrow.aofx.measure`
 
 Un nodo de QC: `Source` frente a `Reference` (opcional), medidas en el
-dispositivo donde ya están, con los números colgados de la salida. Es la
+dispositivo donde ya están, con los números colgados de la salida. Una tercera
+entrada, `Mask` (opcional, del tamaño de Source), limita las diferencias a los
+píxeles cuyo color es mayor que cero en ella. Es la
 implementación de `athenea compare`, y el mismo bundle carga en openFXplayer.
 
 | Parámetro | Valor | Por defecto | Notas |
@@ -3224,6 +3243,8 @@ La cabecera de cada script dice qué necesita y dónde deja las cosas.
 | `colour: no colour space '<nombre>' in <config>; read as the file says` | una textura nombra un espacio de color que no conocen ni el config ni el studio config | corrige el nombre (`athenea info` dice si OpenColorIO está compilado); la textura se lee como si no se hubiera dado espacio de color |
 | `no Measure bundle on the AOFX search path` | `athenea compare` no encontró `rt.sparrow.aofx.measure` | compila el target `athenea_aofx_measure`, o da su directorio con `--path` |
 | `measure: an empty window` | `athenea compare --window` (o el `window` del efecto) no contiene ningún píxel | da X0 < X1 e Y0 < Y1 dentro de la imagen |
+| `measure: the Mask is not the size of Source`, `the mask is WxH and the image …` | a `athenea compare --mask` (o al `Mask` del efecto) se le dio una imagen de otro tamaño | renderiza la máscara al tamaño de la imagen |
+| `--fibres needs widths per point or one` | unas BasisCurves lineales leídas por `mesh2splat --fibres` no tienen `widths`, o tienen un número que no es ni uno ni uno por punto | pon `widths` por punto (interpolación vertex) o uno constante |
 | un error de compilación de shader con una ruta | los shaders del disco no son los del binario | recompila, o apunta `ATHENEA_SHADER_DIR` al `shaders` de esta compilación |
 | `this build reads no .spz` | faltaba zstd cuando se compiló este binario | recompila con zstd, o convierte la captura en otro sitio |
 | `video: the stream's SPS says video range (16-235); video planes are full range` | se dio al decodificador de planos un stream HEVC cuyo VUI no marca rango completo | codifícalo con `athenea video-encode` (rango completo, '420f'), o vuelve a codificarlo en rango completo |

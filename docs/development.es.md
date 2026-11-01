@@ -957,6 +957,21 @@ la lee (`bakeMetalness`) y conserva un lóbulo Schlick como el metal que es
 siempre que el material sea metal en algo y no esté escrito con un conductor,
 sea cual sea su reflectividad.
 
+**Fibras** (`mesh2splat --fibres`, propuesta 106). `usd::MeshStage` lee unas
+`BasisCurves` lineales como un `StageMesh` con `fibres` activado: cada segmento
+un triángulo (a, b, b), el `UVMap` de la curva como `st`, sus `widths` como
+`st2` (ancho, 0) -- solo contabilidad. El modo `fibre` del efecto
+(`m2sFibreEmit`) cuenta y escribe `fibrePerSegment` gaussianas por segmento en
+forma cerrada, con el primer eje en la tangente y sigma transversal
+`w / (o √(2π))`, y pone el radio de la hebra en la w de los tamaños del
+registro. El gather lee esa w como marca: la tercera entrada del rayo pasa a
+ser la tangente con w igual a menos el radio, y el bake del trazador
+(`bakeFibre`, `bakeFacingOf`) gira la normal de cada muestra alrededor de la
+tangente entre ocho estratos y baja sobre la hebra desde ese lado, así que la
+transferencia de una fibra es el promedio azimutal de un Lambert (el difuso de
+Kajiya-Kay). Una pieza de fibras nunca es `closed`, y lo que cuenta es su
+propio presupuesto.
+
 **Joints y pesos**, con `--skinned`: cuatro de cada por gaussiana, mezclados
 desde las esquinas del triángulo, para que la nube se deforme con el esqueleto
 que llevaba la malla; y cómo cambian esos pesos a lo largo de la gaussiana,

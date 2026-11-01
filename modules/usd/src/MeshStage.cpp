@@ -20,6 +20,7 @@
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usdGeom/basisCurves.h>
 #include <pxr/usd/usdGeom/camera.h>
 #include <pxr/usd/usdGeom/imageable.h>
 #include <pxr/usd/usdGeom/mesh.h>
@@ -1193,6 +1194,118 @@ StageSkinning skinningOf(const UsdSkelSkinningQuery& query, const UsdSkelSkeleto
     return out;
 }
 
+/// A LINEAR BASISCURVES PRIM AS A MESH OF SEGMENTS (StageMesh::fibres).
+///
+/// What the host does is bookkeeping: the segments' corner indices (a, b, b)
+/// laid out from the curves' vertex counts, the widths copied into the
+/// second set of texture coordinates, the root UV carried as the first. The
+/// builder puts them where the conversion reads a triangle's corners, and the
+/// chain of gaussians along each segment is the effect's (m2sFibreEmit).
+[[nodiscard]] static Result<std::optional<StageMesh>> readFibres(const UsdPrim& prim, const UsdTimeCode& at,
+                                                                 UsdGeomXformCache& transforms,
+                                                          geom::MeshBuilder& builder) {
+    const UsdGeomBasisCurves curves(prim);
+    TfToken type;
+    curves.GetTypeAttr().Get(&type);
+    if (type != UsdGeomTokens->linear) {
+        athenea::log::info("mesh2splat: '{}' is a {} curve; --fibres reads linear ones only, skipped",
+                           prim.GetPath().GetString(), type.GetString());
+        return std::optional<StageMesh>{};
+    }
+    VtVec3fArray points;
+    VtIntArray   counts;
+    VtFloatArray widths;
+    curves.GetPointsAttr().Get(&points, at);
+    curves.GetCurveVertexCountsAttr().Get(&counts, at);
+    curves.GetWidthsAttr().Get(&widths, at);
+    if (points.empty() || counts.empty()) {
+        return std::optional<StageMesh>{};
+    }
+    const TfToken widthsAre = curves.GetWidthsInterpolation();
+    if (widths.empty() || (widths.size() != points.size() && widths.size() != 1)) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': --fibres needs widths per point or one ({} for {} points, {})",
+                           prim.GetPath().GetString(), widths.size(), points.size(), widthsAre.GetString());
+    }
+    // The faces: one a segment, three corners (a, b, b).
+    std::vector<int32_t> faceCounts;
+    std::vector<int32_t> faceIndices;
+    int32_t first = 0;
+    for (const int32_t n : counts) {
+        for (int32_t k = 0; k + 1 < n; ++k) {
+            faceCounts.push_back(3);
+            faceIndices.insert(faceIndices.end(), {first + k, first + k + 1, first + k + 1});
+        }
+        first += n;
+    }
+    if (static_cast<size_t>(first) != points.size()) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': curveVertexCounts add up to {} for {} points",
+                           prim.GetPath().GetString(), first, points.size());
+    }
+    // The widths, per point, as (width, 0).
+    std::vector<GfVec2f> widthPairs(points.size());
+    for (size_t i = 0; i < points.size(); ++i) {
+        widthPairs[i] = GfVec2f(widths[widths.size() == 1 ? 0 : i], 0.0F);
+    }
+    const UsdGeomPrimvarsAPI primvars(prim);
+    VtVec2fArray uvs;
+    VtIntArray   uvIndices;
+    TfToken      uvInterpolation = UsdGeomTokens->vertex;
+    bool         hasUvs = false;
+    for (const char* name : {"st", "st0", "uv", "UVMap"}) {
+        const UsdGeomPrimvar primvar = primvars.GetPrimvar(TfToken(name));
+        if (primvar && primvar.Get(&uvs, at) && !uvs.empty()) {
+            uvInterpolation = primvar.GetInterpolation();
+            primvar.GetIndices(&uvIndices, at);
+            hasUvs = true;
+            break;
+        }
+    }
+    if (hasUvs && (uvInterpolation != UsdGeomTokens->vertex || !uvIndices.empty() || uvs.size() != points.size())) {
+        athenea::log::info("mesh2splat: '{}': --fibres reads a UV per point, unindexed; this one is {}, read "
+                           "without it", prim.GetPath().GetString(), uvInterpolation.GetString());
+        hasUvs = false;
+    }
+    std::vector<geom::PrimvarInput> inputs;
+    if (hasUvs) {
+        geom::PrimvarInput primvar;
+        primvar.name = "st";
+        primvar.interpolation = geom::Interpolation::Vertex;
+        primvar.components = 2;
+        primvar.values = {std::as_bytes(std::span<const GfVec2f>(uvs.cdata(), uvs.size())), false};
+        inputs.push_back(std::move(primvar));
+    }
+    {
+        geom::PrimvarInput primvar;
+        primvar.name = "st2";
+        primvar.interpolation = geom::Interpolation::Vertex;
+        primvar.components = 2;
+        primvar.values = {std::as_bytes(std::span<const GfVec2f>(widthPairs.data(), widthPairs.size())), false};
+        inputs.push_back(std::move(primvar));
+    }
+    geom::MeshInput input;
+    input.source = prim.GetPath().GetString();
+    input.points = {std::as_bytes(std::span<const GfVec3f>(points.cdata(), points.size())), false};
+    input.faceVertexCounts = std::span<const int32_t>(faceCounts.data(), faceCounts.size());
+    input.faceVertexIndices = std::span<const int32_t>(faceIndices.data(), faceIndices.size());
+    input.smoothNormals = false;
+    input.primvars = inputs;
+    auto built = builder.build(input);
+    if (!built) {
+        return std::move(built).error();
+    }
+    StageMesh out;
+    out.path = input.source;
+    out.mesh = std::move(*built);
+    const GfMatrix4d toWorld = transforms.GetLocalToWorldTransform(prim);
+    out.toWorld = rowsOf(toWorld);
+    out.normalToWorld = normalRowsOf(toWorld);
+    out.displacementUnit = static_cast<float>(std::cbrt(std::abs(toWorld.GetDeterminant3())));
+    out.material = materialOf(prim);
+    out.uv2 = "widths";
+    out.fibres = true;
+    return std::optional<StageMesh>{std::move(out)};
+}
+
 Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const MeshStageOptions& options) {
     if (impl_ == nullptr) {
         return Error(ErrorCode::InvalidArgument, "no stage");
@@ -1222,7 +1335,24 @@ Result<std::vector<StageMesh>> MeshStage::read(geom::MeshBuilder& builder, const
     const SkelBindings bindings = options.skinned ? resolveSkinning(impl_->stage) : SkelBindings{};
     UsdGeomXformCache transforms(at);
     std::vector<StageMesh> meshes;
+    std::vector<SdfPath> skipped;
+    for (const std::string& path : options.skipped) {
+        skipped.emplace_back(path);
+    }
     for (const UsdPrim& prim : impl_->stage->Traverse()) {
+        if (std::any_of(skipped.begin(), skipped.end(),
+                        [&](const SdfPath& s) { return prim.GetPath().HasPrefix(s); })) {
+            continue;
+        }
+        if (options.fibres && prim.IsA<UsdGeomBasisCurves>() && prim.GetPath().HasPrefix(under) &&
+            UsdGeomImageable(prim).ComputeVisibility(at) != UsdGeomTokens->invisible) {
+            auto fibre = readFibres(prim, at, transforms, builder);
+            if (!fibre) return std::move(fibre).error();
+            if (fibre->has_value()) {
+                meshes.push_back(std::move(**fibre));
+            }
+            continue;
+        }
         if (!prim.IsA<UsdGeomMesh>() || !prim.GetPath().HasPrefix(under)) {
             continue;
         }

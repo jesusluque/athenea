@@ -649,6 +649,37 @@ float3 bakeFacing(uint at) {
     return own.w > 0.5 ? normalize(own.xyz) : normalize(bakeRays[at * 3 + 1].xyz);
 }
 
+/// A FIBRE (mesh2splat --fibres): the third entry is its tangent, and its w
+/// minus the strand's radius. A strand has no one normal: the diffuse a
+/// cylinder sends is the Lambert of every normal round it averaged, sin of
+/// the angle from the tangent over pi (Kajiya-Kay), which is what the tubes
+/// of a path-traced groom look like from further than their width. So each
+/// sample faces one of eight normals turned about the tangent, a stratum of
+/// the circle with a jitter, and comes down onto the strand from that side:
+/// the projection over the samples is then the average of the eight. Zonal
+/// about the tangent, so it turns with the strand (proposal 106).
+bool bakeFibre(uint at) {
+    return bakeRays[at * 3 + 2].w < 0.0;
+}
+
+float bakeFibreRadius(uint at) {
+    return bakeFibre(at) ? -bakeRays[at * 3 + 2].w : 0.0;
+}
+
+/// Which way a sample's gaussian faces: a fibre's turned normal, else bakeFacing.
+float3 bakeFacingOf(uint at, uint sample) {
+    if (!bakeFibre(at)) {
+        return bakeFacing(at);
+    }
+    const float3 t = normalize(bakeRays[at * 3 + 2].xyz);
+    float3 n = bakeRays[at * 3 + 1].xyz;
+    n = normalize(n - t * dot(n, t));
+    const float3 b = cross(t, n);
+    const uint2 pixel = uint2(at % max(camera.width, 1u), at / max(camera.width, 1u));
+    const float phi = 2.0 * 3.14159265358979 * (float(sample % 8u) + random2(pixel, sample, 0u, 53u).x) / 8.0;
+    return n * cos(phi) + b * sin(phi);
+}
+
 /// The material a bake shades its first vertex with: its body, not its polish.
 ///
 /// A gaussian carries one colour, and a reflection is exactly the part of a
@@ -728,7 +759,7 @@ bool bakeTowardFaces(uint at) {
 
 /// Which way this sample looks at the point, in the world.
 float3 bakeDirection(uint at, uint sample) {
-    const float3 n = bakeFacing(at);
+    const float3 n = bakeFacingOf(at, sample);
     const uint2 pixel = uint2(at % max(camera.width, 1u), at / max(camera.width, 1u));
     // SEEN FROM ONE PLACE: from a point of the ball about it, drawn a sample
     // at a time, so the colour is the mean of what a camera standing anywhere
@@ -779,7 +810,7 @@ float3 bakeDirection(uint at, uint sample) {
 /// through the tangent plane, so the grid covers both halves evenly. What a
 /// transmitting gaussian's transfer draws its first direction from.
 float3 bakeSphereDirection(uint at, uint sample) {
-    const float3 n = bakeFacing(at);
+    const float3 n = bakeFacingOf(at, sample);
     const uint2 pixel = uint2(at % max(camera.width, 1u), at / max(camera.width, 1u));
     const uint side = max(uint(sqrt(float(max(path.samples, 1u))) + 0.5), 1u);
     const uint2 cell = uint2(sample % side, (sample / side) % side);
@@ -793,7 +824,7 @@ float3 bakeSphereDirection(uint at, uint sample) {
 /// them does now that they are drawn from that half, and the test stands for
 /// a normal that is not quite the one the ray was built on.
 bool bakeInFront(uint at, uint sample) {
-    return dot(bakeDirection(at, sample), bakeFacing(at)) > 0.0;
+    return dot(bakeDirection(at, sample), bakeFacingOf(at, sample)) > 0.0;
 }
 
 /// THE SURFACE UNDER A GAUSSIAN, MET FROM OUTSIDE ITS GLASS. The ray down
@@ -846,15 +877,17 @@ Found foundBaked(uint at, uint sample, uint mask) {
     // sends towards the eye -- which for a bake is wherever this sample looks
     // from.
     const float4 surface = bakeRays[at * 3 + 1];
-    const float3 n = normalize(surface.xyz);
-    float3 from = o.xyz + n * o.w;
+    // A fibre's sample comes down onto the strand's side it faces: from its
+    // radius off the centre line, past the offset.
+    const float3 n = bakeFibre(at) ? bakeFacingOf(at, sample) : normalize(surface.xyz);
+    float3 from = o.xyz + n * (o.w + bakeFibreRadius(at));
     // OVER THE GAUSSIAN'S FOOTPRINT, where the caller gave its width (the w
     // of the normal): each sample comes down onto a point of a disc half that
     // wide rather than onto the centre. A gaussian that stands for a block of
     // cells carries the block's light, and what one point's paths happen to
     // catch -- a glint of the sun at 64 paths -- is no longer spread over the
     // whole block.
-    if (surface.w > 0.0) {
+    if (surface.w > 0.0 && !bakeFibre(at)) {
         const uint2 pixel = uint2(at % max(camera.width, 1u), at / max(camera.width, 1u));
         const float2 u = random2(pixel, sample, 0u, 43u);
         const float radius = 0.5 * surface.w * sqrt(u.x);
@@ -918,8 +951,8 @@ bool bakeCellOrigin(uint at, uint k, uint mask, float3 centre, out float3 p, out
     const float4 o = bakeRays[at * 3];
     const float4 surface = bakeRays[at * 3 + 1];
     const float wide = abs(surface.w);
-    if (k == 0u || !(wide > 0.0)) {
-        return false;
+    if (k == 0u || !(wide > 0.0) || bakeFibre(at)) {
+        return false;   // a fibre's cells are traced from the centre's point
     }
     const float3 axis = normalize(surface.xyz);
     // Stratified over the disc: the k-th of the ring's angles, a radius by
