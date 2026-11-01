@@ -12560,6 +12560,16 @@ floor's closed form in its field straight down and next to nothing straight
 up ([glass] in athenea_usd_tests); the glass ball on a ground in
 `tx_conversions_render_like_the_mesh`.
 
+**Measured** after the volumes, mesh lights and live streams came into main (release, M5 Pro, the shared
+GPU lock): `tx_conversions_render_like_the_mesh` fails before and after, at the same check -- the chrome
+ball under the pale sky, TX 0.0277 against the first-order cloud's 0.0250 (0.0277 / 0.0249 after). Under
+the lamp sky every error about halves: paint 0.166 / 0.168 before, 0.093 / 0.095 after (TX / first); chrome
+0.195 / 0.211, 0.122 / 0.138; rubber 0.165 / 0.165, 0.092 / 0.092; glass 0.106 / 0.102, 0.061 / 0.057.
+The glass ball's check, TX at most 1.05 times first, held at a ratio of 1.035 and now reads 1.063: the
+difference between the two stayed near 0.004 while both errors dropped, so a relative bound that held at
+the old errors no longer does at the new ones. The bound wants restating as an absolute one (TX at most
+first plus a fixed epsilon) or on a measure the lamp's change does not halve.
+
 ### A reflection off a curved strip is the mean over the gaussian (Toksvig)
 
 The Corvette's chrome read 1.6 times the path traced one (relMSE 15.5) while
