@@ -19717,8 +19717,8 @@ first gaussians in the mesh's order. The beard was the first 37 % of its strands
 (the v2 front view shows half a beard). Now a part over its share is counted twice more at its own cell -- as it
 is, and with none of its sub-cell triangles -- and keeps the share of those that its share leaves, chosen by a
 hash of the triangle in the effect (`floorKeep`, `m2sFloorKept`): the same total, spread over the whole part.
-`--budget-in-order` keeps the old cut. Surfaces lose little: the head counted 25 % over its share at the coarse
-cell, all of it sub-cell triangles in dense places its cells already cover.
+`--budget-in-order` keeps the old cut. Surfaces lose little: at 2.4 M the head counted 4 % over its share at the
+coarse cell, all of it sub-cell triangles in dense places its cells already cover.
 
 **The fibre.** `--fibres` reads linear `BasisCurves` (`MeshStage`, a segment a triangle (a, b, b), widths in the
 second texture set -- bookkeeping), and the effect writes `--fibre-per-segment` gaussians a segment in closed
@@ -19742,7 +19742,8 @@ and `--fibres` reads. Baked either way, the first fibres still came out grey: th
 `--splat-view 1`) and their sky visibility about 0.5, but every fibre of the chain faced the same way, out of the
 model, and the polish reflected the dome as one mirror -- the whole beard caught one highlight. A strand's normals
 turn round it, so each segment's normal is now turned about the tangent by a hash of it, within the half that
-faces out of the model.
+faces out of the model. That darkened the chin by a tenth (0.096 to 0.090 in red) and no more: the
+grey is not that one mirror (below).
 
 **Measured** (Einar, 2.4 M gaussians, TX 32 paths, the v2 command; 1024 px against the mesh path traced; the mask is
 where the mesh rasterised with and without beard, moustache and brows differs: 48 749 pixels in CamFront; ms is the
