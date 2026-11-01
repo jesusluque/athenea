@@ -155,6 +155,10 @@ private:
 /// `name` from the environment, or empty.
 [[nodiscard]] std::string env(const char* name);
 
+/// `name` set to `value` in this process's environment, or removed when
+/// `value` is empty (a test that drives a switch read from the environment).
+void setEnv(const char* name, const std::string& value);
+
 /// A window's Metal layer drawn at the window's backing scale (2 on a Retina
 /// display), so a drawable of the framebuffer's pixels maps one to one.
 /// `nsWindow` is an NSWindow*; a no-op elsewhere.

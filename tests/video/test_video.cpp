@@ -580,6 +580,8 @@ TEST_CASE("a .athv keeps its pictures, their side data and their slices", "[vide
     header.rateNumerator = 24;
     header.rendition = 7;
     header.quality = 0.5F;
+    header.volume = true;
+    header.volumeDensityScale = 0.03F;
     {
         auto writer = video::AthvWriter::create(path, header);
         REQUIRE(writer);
@@ -619,6 +621,9 @@ TEST_CASE("a .athv keeps its pictures, their side data and their slices", "[vide
     CHECK(h.rendition == 7);
     CHECK(h.sourceFrames == 2);
     CHECK(h.quality == 0.5F);
+    // A medium's flag and its density scale (`video-encode --volume`).
+    CHECK(h.volume);
+    CHECK(h.volumeDensityScale == 0.03F);
     REQUIRE((*reader)->frames() == 3);
     REQUIRE((*reader)->sourceFrames() == 2);
     CHECK((*reader)->slicesOf(0) == std::vector<uint32_t>{0, 1});

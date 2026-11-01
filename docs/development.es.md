@@ -602,7 +602,12 @@ hace que todos los casos de un binario lo requieran). Y un caso de
 Catch2 que ctest corre aparte, `materialx_root`: `athenea_usd_tests
 "[materialx_root]"` con `ATHENEA_MATERIALX_ROOT` definida, porque el motor lee
 la variable una vez por proceso. El caso está oculto (`[.materialx_root]`), así
-que el descubrimiento que registra todos los demás casos lo deja fuera.
+que el descubrimiento que registra todos los demás casos lo deja fuera. Otros
+dos corren en pareja: `volume_ply_bake` (`athenea_usd_tests "[ply]"`, que hornea
+un stage de dos medios en dos PLY con `ATHENEA_VOLUME_PLY`, definida desde el
+caso con `platform::setEnv`, en el directorio que nombra
+`ATHENEA_TEST_VOLUME_PLY_DIR`) es el fixture de `volume_ply_encode`, el
+`athenea video-encode --volume --cells --check` real sobre esos dos ficheros.
 
 **Por qué `athenea_host_tests` no enlaza nada.** Conduce el plugin como lo hace un
 host, por su nombre. Si además enlazara `athenea::usd`, una plantilla instanciada

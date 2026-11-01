@@ -20,7 +20,9 @@
 
 #include <pxr/base/plug/registry.h>
 
+#include "athenea/core/Platform.h"
 #include "athenea/gpu/CommandBatch.h"
+#include "athenea/io/Readers.h"
 #include "athenea/io/Vdb.h"
 #include "athenea/render/ReferenceRenderer.h"
 #include "athenea/usd/Export.h"
@@ -326,4 +328,63 @@ TEST_CASE("a lit medium of gaussians and its shadow on the ground follow the pat
     CHECK(std::abs(statsTruth->mean[1] - statsBare->mean[1]) > 0.005);
     CHECK(std::abs(stats->mean[1] - statsTruth->mean[1]) < 0.1 * std::abs(statsTruth->mean[1] - statsBare->mean[1]) + 0.01);
     CHECK(hdr->relMse < 0.03);
+}
+
+// THE LIGHT BAKED FOR A PLAYER (ATHENEA_VOLUME_PLY): a frame of a stage with
+// two media writes each as a 3DGS PLY of its own -- the first at the path
+// asked, the second beside it with `_1` -- one record a gaussian, which a
+// loader takes back whole. ctest runs this with ATHENEA_TEST_VOLUME_PLY_DIR
+// set to where `volume_ply_encode` reads the two files as the frames of a
+// medium's stream (video-encode --volume --cells).
+TEST_CASE("a medium's baked light is written as a PLY a medium, one record a gaussian",
+          "[usd][volume][vdb2splat][ply]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("needs rasterisation");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    constexpr uint32_t kCount = 300;
+    const Mixture first = makeMixture(*gpu, kCount, 4u);
+    const fs::path firstSplats = scratch("ply_first.usdc");
+    fs::copy_file(first.splats, firstSplats, fs::copy_options::overwrite_existing);
+    const Mixture second = makeMixture(*gpu, kCount, 5u);
+    const fs::path stage = scratch("ply_bake.usda");
+    {
+        std::ofstream out(stage);
+        out << sceneHead(true, false);
+        int k = 0;
+        for (const fs::path& splats : {firstSplats, second.splats}) {
+            out << "def \"Smoke" << k++ << "\" (\n    prepend references = @" << splats.string()
+                << "@</World/Splats>\n)\n{\n    float primvars:athenea:densityScale = 4\n"
+                << "    color3f primvars:athenea:albedo = (0.8, 0.8, 0.8)\n}\n";
+        }
+    }
+    const std::string asked = platform::env("ATHENEA_TEST_VOLUME_PLY_DIR");
+    const fs::path dir = asked.empty() ? scratch("ply") : fs::path(asked);
+    fs::create_directories(dir);
+    const fs::path ply = dir / "b.ply";
+    const fs::path ply1 = dir / "b_1.ply";
+    std::error_code ignored;
+    fs::remove(ply, ignored);
+    fs::remove(ply1, ignored);
+    platform::setEnv("ATHENEA_VOLUME_PLY", ply.string());
+    auto renderer = usd::StageRenderer::open(stage);
+    if (!renderer) FAIL(renderer.error().toString());
+    auto drawn = (*renderer)->render(boxCamera(), 0.0, 64, 48, "raster");
+    platform::setEnv("ATHENEA_VOLUME_PLY", "");
+    if (!drawn) FAIL(drawn.error().toString());
+    for (const fs::path& path : {ply, ply1}) {
+        INFO(path.string());
+        REQUIRE(fs::exists(path));
+        auto raw = io::readSplats(path);
+        if (!raw) FAIL(raw.error().toString());
+        CHECK(raw->count == kCount);
+        auto loader = scene::CloudLoader::create(*gpu->library);
+        REQUIRE(loader);
+        auto cloud = loader->upload(*raw);
+        if (!cloud) FAIL(cloud.error().toString());
+        CHECK(cloud->count == kCount);
+    }
 }

@@ -505,6 +505,18 @@ std::string env(const char* name) {
     return value != nullptr ? std::string(value) : std::string();
 }
 
+void setEnv(const char* name, const std::string& value) {
+#if defined(_WIN32)
+    _putenv_s(name, value.c_str());
+#else
+    if (value.empty()) {
+        unsetenv(name);
+    } else {
+        setenv(name, value.c_str(), 1);
+    }
+#endif
+}
+
 void matchLayerToBacking(void* nsWindow) {
 #if defined(__APPLE__)
     if (nsWindow == nullptr) {

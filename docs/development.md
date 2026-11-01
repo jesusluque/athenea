@@ -578,7 +578,12 @@ it ran the Measure effect (`tests/aofx/CheckCompare.cmake`), and
 ctest runs on its own, `materialx_root`: `athenea_usd_tests
 "[materialx_root]"` with `ATHENEA_MATERIALX_ROOT` set, since the engine reads
 the variable once a process. The case is hidden (`[.materialx_root]`), so the
-discovery that registers every other case leaves it out.
+discovery that registers every other case leaves it out. Two more run as a
+pair: `volume_ply_bake` (`athenea_usd_tests "[ply]"`, which bakes a stage of
+two media into two PLYs through `ATHENEA_VOLUME_PLY`, set from the case with
+`platform::setEnv`, into the directory `ATHENEA_TEST_VOLUME_PLY_DIR` names) is
+the fixture of `volume_ply_encode`, the real `athenea video-encode --volume
+--cells --check` over those two files.
 
 **Why `athenea_host_tests` links nothing.** It drives the plugin the way a host
 does, by name. Were it to link `athenea::usd` as well, a template instantiated in

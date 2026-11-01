@@ -19424,3 +19424,12 @@ density scale 0.03, a key light (2, normalised, 1°) and a dim blue dome (0.05),
 - **Not done:** a slot order across independent fits (a GPU matching of each frame's gaussians to the frame
   before), which would let the geometry layer predict and cut its 0.37 MB a frame at 50k; a bake inside
   `vdb2splat` (no process a frame); fire in the path tracer, to judge the emission too.
+
+**vol-stream merged, the web route under test** (1 Nov). vol-web carries vol-stream's velocity reading, advection
+on changing topology, per-frame flicker and slots, the dead slot at 1/254 and NVDEC; the temperature a sequence's
+fit reads is packed with the density, the flow laid on each frame's own leaves as vol-stream does. Release build,
+M5 Pro: video 9 passed / 1 skipped (the device-memory encoder), aofx [vdb2splat] 3/3, volume 8/8, technique
+[vdb2splat] 1/1, lod 37/37, usd [lod] 7/7, usd [volume] 13/13. New: `volume_ply_bake` (a stage of two media
+baked into two PLYs through `ATHENEA_VOLUME_PLY`, each one record a gaussian and loaded back whole; 17.8 s) as
+the fixture of `volume_ply_encode` (`video-encode --volume --cells --order stable --geometry --check` over the
+two; 3.3 s), and the .athv round trip now holds the volume flag and its density scale.

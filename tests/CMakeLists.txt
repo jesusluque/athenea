@@ -136,6 +136,25 @@ target_compile_definitions(athenea_usd_tests PRIVATE ATHENEA_HYDRA_PLUGIN_DIR="$
 # $ATHENEA_MATERIALX_ROOT is read once a process, so the case that sets it is
 # hidden from the discovery above and run here alone, with it set to a
 # directory the case fills with an edited copy of the build's libraries.
+# A MEDIUM'S STREAM FROM ITS BAKED LIGHT: the [ply] case bakes a stage of two
+# media into two PLYs (ATHENEA_VOLUME_PLY), and `athenea video-encode` takes
+# them as the two frames of a medium's stream, laid out by space (--cells,
+# a stable order) and decoded again (--check).
+set(ATHENEA_VOLUME_PLY_DIR ${CMAKE_CURRENT_BINARY_DIR}/volume_ply)
+add_test(NAME volume_ply_bake COMMAND athenea_usd_tests "[ply]")
+set_tests_properties(volume_ply_bake PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR};ATHENEA_TEST_VOLUME_PLY_DIR=${ATHENEA_VOLUME_PLY_DIR}"
+    FIXTURES_SETUP volume_plys
+    LABELS gpu)
+add_test(NAME volume_ply_encode
+    COMMAND athenea video-encode ${ATHENEA_VOLUME_PLY_DIR}/b.ply ${ATHENEA_VOLUME_PLY_DIR}/b_1.ply --each-a-frame
+            -o ${ATHENEA_VOLUME_PLY_DIR}/v.athv --order stable --cells 1 --range-group 2 --sh-degree 1 --geometry
+            --geometry-key 2 --geometry-predict 3 --volume 4 --check)
+set_tests_properties(volume_ply_encode PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_REQUIRED volume_plys
+    PASS_REGULAR_EXPRESSION "--cells 1: [0-9]+ x [0-9]+ x [0-9]+ cells.*--check over 2 pictures"
+    LABELS gpe)
 add_test(NAME materialx_root COMMAND athenea_usd_tests "[materialx_root]")
 set_tests_properties(materialx_root PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR};ATHENEA_MATERIALX_ROOT=${CMAKE_CURRENT_BINARY_DIR}/materialx_root"
