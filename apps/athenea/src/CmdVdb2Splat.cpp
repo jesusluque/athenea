@@ -26,6 +26,7 @@
 
 #include "Commands.h"
 #include "aofx/Effect.h"
+#include "gpe/pool.h"
 #include "athenea/aofx/EffectRegistry.h"
 #include "athenea/aofx/EffectRender.h"
 #include "athenea/core/Platform.h"
@@ -276,7 +277,11 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
     if (has(o.temperature)) {
         auto read = io::readVdbGrid(o.input, o.temperature);
         if (!read) return std::move(read).error();
-        temperature = std::move(*read);
+        // An empty grid (a fire's flames once it has burnt out) is none: its
+        // values would be read from no leaf, and every block's emission error
+        // was NaN, so the coarsest cut was the whole grid.
+        if (read->leafCount > 0) temperature = std::move(*read);
+        else cli::out("vdb2splat: '%s' is empty here: no temperature fitted\n", o.temperature.c_str());
     }
     if (has(o.colour)) {
         auto read = io::readVdbVec3Grid(o.input, o.colour);
@@ -374,6 +379,10 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
         auto rendered = aofx_host::renderEffect(context, effect, job);
         if (!rendered) return std::move(rendered).error();
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        // The fit's working buffers, back in the pool now, go back to the
+        // system: on unified memory the way back's grid is allocated from
+        // what the machine has free, which a large volume's fit had held.
+        if (gpe::PooledDevice* pool = context.compute()) pool->trim();
         const std::vector<float>* told = (*rendered)->attached("gaussians");
         if (told == nullptr || told->size() < 8) {
             return Error(ErrorCode::DeviceFailure, "the Vdb2Splat effect did not say how many gaussians it wrote");
