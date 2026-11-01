@@ -35,6 +35,7 @@
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/algo/PrefixSum.h"
+#include "athenea/gpu/algo/RadixSort.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/io/Exr.h"
 #include "athenea/io/Readers.h"
@@ -199,6 +200,215 @@ struct Reduction {
     uint32_t    score = 0;
     /// lod::PairSettings::maxAspect: no merge longer than this against its width.
     float       maxAspect = 1000.0F;
+};
+
+/// A STABLE ORDER BY SPACE (`--cells SIZE`, shaders/athenea/scene/video_cells.slang):
+/// frames that share no gaussian identity laid out so that index i is the same
+/// place every frame. `survey` reads every frame once (the box, then each cell's
+/// most gaussians); `lay` puts a frame's gaussians into their cells' slots, the
+/// rest dead. Counts, starts and the box are bookkeeping on the host; every
+/// value of a gaussian moves on the device.
+struct CellOrder {
+    gpu::ShaderLibrary* library = nullptr;
+    std::optional<gpu::ComputeKernel> bounds, keys, dead, scatter;
+    std::optional<gpu::RadixSort> sort;
+    float    size = 0.0F;
+    float    boxMin[3] = {0, 0, 0};
+    uint32_t dims[3] = {1, 1, 1};
+    uint32_t cells = 0, total = 0, subBits = 5;
+    std::vector<uint32_t> most;   // a cell's most gaussians over the sequence
+    gpu::Buffer base, ofSlot;
+
+    Result<void> create(gpu::ShaderLibrary& lib, float cellSize) {
+        library = &lib;
+        size = cellSize;
+        for (auto [k, entry] : {std::pair{&bounds, "videoCellBounds"}, {&keys, "videoCellKeys"},
+                                {&dead, "videoCellDead"}, {&scatter, "videoCellScatter"}}) {
+            auto made = gpu::ComputeKernel::create(lib, "athenea/scene/video_cells", entry);
+            if (!made) return std::move(made).error();
+            k->emplace(std::move(*made));
+        }
+        auto s = gpu::RadixSort::create(lib);
+        if (!s) return std::move(s).error();
+        sort.emplace(std::move(*s));
+        return ok();
+    }
+
+    static Result<gpu::Buffer> words(gpu::Device& device, uint64_t n, const char* label, const uint32_t* data = nullptr) {
+        gpu::BufferDesc desc;
+        desc.bytes = std::max<uint64_t>(n, 1) * 4;
+        desc.elementBytes = 4;
+        desc.label = label;
+        std::vector<uint32_t> zeros;
+        if (data == nullptr) {
+            zeros.assign(std::max<uint64_t>(n, 1), 0u);
+            data = zeros.data();
+        }
+        return gpu::Buffer::create(device, desc, data);
+    }
+
+    void bind(rhi::ShaderCursor c, uint32_t count, uint32_t shWords) const {
+        c["cellParams"]["count"].setData(count);
+        c["cellParams"]["shWords"].setData(shWords);
+        c["cellParams"]["cellsX"].setData(dims[0]);
+        c["cellParams"]["cellsY"].setData(dims[1]);
+        c["cellParams"]["cellsZ"].setData(dims[2]);
+        c["cellParams"]["cells"].setData(cells);
+        c["cellParams"]["cellSize"].setData(size);
+        c["cellParams"]["deadLogSigma"].setData(-10.0F);
+        c["cellParams"]["boxMin"].setData(boxMin, sizeof boxMin);
+        c["cellParams"]["subBits"].setData(subBits);
+    }
+
+    /// A frame's keys sorted and its count a cell, read back.
+    Result<std::vector<uint32_t>> counted(const scene::GpuSplats& cloud, gpu::SortBuffers* sorted) {
+        gpu::Device& device = library->device();
+        auto counts = words(device, cells, "video.cells.counts");
+        if (!counts) return std::move(counts).error();
+        gpu::SortBuffers local;
+        gpu::SortBuffers& b = sorted != nullptr ? *sorted : local;
+        for (gpu::Buffer* buf : {&b.keysLo, &b.keysHi, &b.values, &b.scratchKeysLo, &b.scratchKeysHi, &b.scratchValues}) {
+            if (!buf->valid() || buf->bytes() < uint64_t{cloud.count} * 4) {
+                auto made = words(device, cloud.count, "video.cells.sort");
+                if (!made) return std::move(made).error();
+                *buf = std::move(*made);
+            }
+        }
+        gpu::CommandBatch batch(device);
+        keys->dispatch(batch, {cloud.count, 1, 1}, [&](rhi::ShaderCursor c) {
+            c["inPositions"].setBinding(cloud.positions.rhi());
+            c["cellKeys"].setBinding(b.keysLo.rhi());
+            c["cellValues"].setBinding(b.values.rhi());
+            c["cellCounts"].setBinding(counts->rhi());
+            bind(c, cloud.count, cloud.shWords);
+        });
+        if (sorted != nullptr) {
+            batch.markDirty();
+            ATHENEA_TRY(sort->sort(batch, b, cloud.count, 32));
+        }
+        ATHENEA_TRY(batch.submit(true));
+        std::vector<uint32_t> n(cells);
+        ATHENEA_TRY(counts->read(device, 0, uint64_t{cells} * 4, n.data()));
+        return n;
+    }
+
+    /// Every frame read once: the sequence's box, then each cell's most.
+    template <class Load>
+    Result<void> survey(size_t first, size_t last, Load&& load) {
+        gpu::Device& device = library->device();
+        float lo[3] = {1e30F, 1e30F, 1e30F}, hi[3] = {-1e30F, -1e30F, -1e30F};
+        for (size_t k = first; k <= last; ++k) {
+            scene::GpuSplats cloud = load(k);
+            const uint32_t init[6] = {~0u, ~0u, ~0u, 0u, 0u, 0u};
+            auto box = words(device, 6, "video.cells.box", init);
+            if (!box) return std::move(box).error();
+            gpu::CommandBatch batch(device);
+            bounds->dispatch(batch, {cloud.count, 1, 1}, [&](rhi::ShaderCursor c) {
+                c["inPositions"].setBinding(cloud.positions.rhi());
+                c["cellBounds"].setBinding(box->rhi());
+                bind(c, cloud.count, cloud.shWords);
+            });
+            ATHENEA_TRY(batch.submit(true));
+            uint32_t u[6];
+            ATHENEA_TRY(box->read(device, 0, sizeof u, u));
+            for (int a = 0; a < 6; ++a) {
+                const uint32_t bits = (u[a] & 0x80000000u) != 0 ? (u[a] & 0x7FFFFFFFu) : ~u[a];
+                float f;
+                std::memcpy(&f, &bits, 4);
+                if (a < 3) lo[a] = std::min(lo[a], f); else hi[a - 3] = std::max(hi[a - 3], f);
+            }
+        }
+        uint64_t n = 1;
+        for (int a = 0; a < 3; ++a) {
+            boxMin[a] = lo[a];
+            dims[a] = std::max(1u, static_cast<uint32_t>(std::ceil((hi[a] - lo[a]) / size + 1e-4F)));
+            n *= dims[a];
+        }
+        if (n >= (1u << 26)) {
+            return Error::make(ErrorCode::InvalidArgument, "video-encode: --cells {} cuts the box into {} cells, past "
+                               "the 2^26 a key holds; take larger cells", size, n);
+        }
+        cells = static_cast<uint32_t>(n);
+        uint32_t cellBits = 0;
+        while ((uint64_t{1} << cellBits) < n) ++cellBits;
+        subBits = std::min(10u, (32u - cellBits) / 3u);
+        most.assign(cells, 0u);
+        for (size_t k = first; k <= last; ++k) {
+            scene::GpuSplats cloud = load(k);
+            auto c = counted(cloud, nullptr);
+            if (!c) return std::move(c).error();
+            for (uint32_t i = 0; i < cells; ++i) most[i] = std::max(most[i], (*c)[i]);
+        }
+        std::vector<uint32_t> starts(cells), owner;
+        total = 0;
+        for (uint32_t i = 0; i < cells; ++i) {
+            starts[i] = total;
+            total += most[i];
+            owner.insert(owner.end(), most[i], i);
+        }
+        auto b = words(device, cells, "video.cells.base", starts.data());
+        if (!b) return std::move(b).error();
+        base = std::move(*b);
+        auto o = words(device, total, "video.cells.ofSlot", owner.data());
+        if (!o) return std::move(o).error();
+        ofSlot = std::move(*o);
+        uint32_t used = 0;
+        for (uint32_t m : most) used += m > 0 ? 1u : 0u;
+        cli::out("video-encode: --cells %g: %u x %u x %u cells, %u holding gaussians, %u slots a frame\n", size, dims[0],
+                 dims[1], dims[2], used, total);
+        return ok();
+    }
+
+    /// A frame laid into the slots.
+    Result<scene::GpuSplats> lay(const scene::GpuSplats& cloud) {
+        gpu::Device& device = library->device();
+        gpu::SortBuffers sorted;
+        auto c = counted(cloud, &sorted);
+        if (!c) return std::move(c).error();
+        std::vector<uint32_t> firsts(cells);
+        uint32_t at = 0;
+        for (uint32_t i = 0; i < cells; ++i) {
+            if ((*c)[i] > most[i]) {
+                return Error::make(ErrorCode::InvalidArgument, "video-encode: --cells: a frame holds more in a cell "
+                                   "than the survey saw ({} > {})", (*c)[i], most[i]);
+            }
+            firsts[i] = at;
+            at += (*c)[i];
+        }
+        auto first = words(device, cells, "video.cells.first", firsts.data());
+        if (!first) return std::move(first).error();
+        auto out = video::PlanesCodec::allocate(device, total, cloud.restPerColour, "video.cells");
+        if (!out) return std::move(out).error();
+        out->count = total;
+        out->antialiased = cloud.antialiased;
+        out->linear = cloud.linear;
+        gpu::CommandBatch batch(device);
+        const auto bindOut = [&](rhi::ShaderCursor k) {
+            k["outPositions"].setBinding(out->positions.rhi());
+            k["outShape"].setBinding(out->shape.rhi());
+            k["outSh"].setBinding(out->sh.rhi());
+        };
+        dead->dispatch(batch, {total, 1, 1}, [&](rhi::ShaderCursor k) {
+            k["cellOfSlot"].setBinding(ofSlot.rhi());
+            bindOut(k);
+            bind(k, total, out->shWords);
+        });
+        batch.markDirty();
+        scatter->dispatch(batch, {cloud.count, 1, 1}, [&](rhi::ShaderCursor k) {
+            k["cellKeys"].setBinding(sorted.keysLo.rhi());
+            k["cellValues"].setBinding(sorted.values.rhi());
+            k["cellFirst"].setBinding(first->rhi());
+            k["cellBase"].setBinding(base.rhi());
+            k["inPositions"].setBinding(cloud.positions.rhi());
+            k["inShape"].setBinding(cloud.shape.rhi());
+            k["inSh"].setBinding(cloud.sh.rhi());
+            bindOut(k);
+            bind(k, cloud.count, cloud.shWords);
+        });
+        batch.markDirty();
+        ATHENEA_TRY(batch.submit(true));
+        return std::move(*out);
+    }
 };
 
 struct Reducer {
@@ -776,6 +986,7 @@ void addVideo(CLI::App& app) {
         uint32_t geometryRotationBits = 10;
         std::string chromaWeight = "mean";
         double volume = 0.0;
+        double cells = 0.0;
     };
     auto o = std::make_shared<Options>();
     auto* enc = app.add_subcommand("video-encode",
@@ -826,6 +1037,13 @@ void addVideo(CLI::App& app) {
                     "fitted from what the decoder holds, the rotation sent as a turn in steps by the gaussian's "
                     "shape, and keys that send what the decoder would hold")
         ->check(CLI::Range(1u, 3u));
+    enc->add_option("--cells", o->cells,
+                    "with --order stable: frames whose gaussians share no identity laid out by space -- the "
+                    "sequence's box cut into cubes of this side (world units), each owning as many slots as the "
+                    "most gaussians it holds in any frame, a frame's in Morton order within the cube and the rest "
+                    "dead (no extinction, no opacity); a side past the box is one cube: every frame in the Morton "
+                    "order of the sequence's box, padded to the largest frame")
+        ->check(CLI::PositiveNumber);
     enc->add_option("--volume", o->volume,
                     "the splats are a medium's (vdb2splat --cloud, ATHENEA_VOLUME_PLY): marks the file so and "
                     "records this density scale, the extinction a unit of length of a sigma of one")
@@ -970,6 +1188,14 @@ void addVideo(CLI::App& app) {
             reducer.score = std::move(*k);
         }
         const uint32_t restAsked = o->shDegree == 0 ? 0u : (o->shDegree + 1) * (o->shDegree + 1) - 1;
+        CellOrder cellOrder;
+        if (o->cells > 0.0) {
+            if (o->order != "stable" || o->gaussians != 0) {
+                cli::err("video-encode: --cells wants --order stable and no --gaussians\n");
+                throw CLI::RuntimeError(kExitFailure);
+            }
+            if (auto r = cellOrder.create(library, static_cast<float>(o->cells)); !r) cli::fail(r.error());
+        }
 
         std::unique_ptr<video::AthvWriter> writer;
         std::unique_ptr<video::VideoEncoder> encoder;
@@ -1030,6 +1256,10 @@ void addVideo(CLI::App& app) {
             bool aa = false;
             auto cloud = loadFrame(**device, *loader, (*frames)[k], o->shDegree, aa);
             if (!cloud) cli::fail(cloud.error());
+            if (o->cells > 0.0) {
+                cloud = cellOrder.lay(*cloud);
+                if (!cloud) cli::fail(cloud.error());
+            }
             if (o->gaussians != 0) {
                 cloud = reducer.reduce(std::move(*cloud), o->gaussians,
                                        Reduction{o->reduce, o->mergeGrowth, o->mergeOpacity, o->pruneShare,
@@ -1169,6 +1399,15 @@ void addVideo(CLI::App& app) {
                                            : "software");
             return std::move(*cloud);
         };
+        if (o->cells > 0.0) {
+            auto surveyed = cellOrder.survey(first, last, [&](size_t k) {
+                bool aa = false;
+                auto cloud = loadFrame(**device, *loader, (*frames)[k], o->shDegree, aa);
+                if (!cloud) cli::fail(cloud.error());
+                return std::move(*cloud);
+            });
+            if (!surveyed) cli::fail(surveyed.error());
+        }
         const uint32_t groupFrames = o->rangeGroup != 0 ? o->rangeGroup : keyInterval;
         // THE GEOMETRY LAYER: each frame's quantised geometry and the frame
         // before's, frame-wide (a stable order's index), and the check's

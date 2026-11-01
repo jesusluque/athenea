@@ -19168,6 +19168,16 @@ density scale 0.03, a key light (2, normalised, 1°) and a dim blue dome (0.05),
   against 4 real bounces). vol-raster frame with the fire 9.3 ms.
 - **The bake** costs one `athenea stage` process a frame, 3.5 s, almost all of it start-up and the stage's
   load: 96 frames in 5.6 min a rung.
+- **A spatial order does not save it** (`video-encode --cells`, gasoline 50k, q0.7, 11/6/6): cubes of 16 units,
+  each owning its most gaussians over the sequence, gave 271 457 slots a frame (5.4x) and 0.616 MB at L2 0.135;
+  one cube (the box's Morton rank, padded to 50 000) 0.508 MB at 0.140 predicting from the frame before, 0.486 MB
+  at 0.148 with rigid runs -- against 0.490 MB at 0.129 with every frame a key. An independent fit places every
+  gaussian anew, so the k-th of a cube is another gaussian the next frame and its residual costs a key.
+- **All in video** (`--geometry-video`, 50k, q0.7): 0.887 MB a frame at L2 0.284 in each frame's order, 0.877 at
+  0.341 in the box's Morton rank: the folded planes carry the positions of gaussians that jump frame to frame.
+- **The browser against the engine** (gasoline frame 64, 50k, the same camera, masked, display values): blending
+  the stream's display colours 0.012 relMSE (26.2 dB); undoing Reinhard in the decoder, blending linear radiance
+  in float and applying Reinhard after, as the engine does, 0.0056 (29.8 dB).
 - **Not done:** a slot order across independent fits (a GPU matching of each frame's gaussians to the frame
   before), which would let the geometry layer predict and cut its 0.37 MB a frame at 50k; a bake inside
   `vdb2splat` (no process a frame); fire in the path tracer, to judge the emission too.
