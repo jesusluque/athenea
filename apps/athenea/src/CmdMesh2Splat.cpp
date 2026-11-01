@@ -148,6 +148,7 @@ struct Options {
     std::string              cellFromCamera;
     std::vector<std::string> detail;               // PRIM=FACTOR: that prim's cells finer than the rest's, linearly
     std::vector<std::string> skip;                 // prims not converted, though they stay in the stage the bake lights
+    uint32_t                 deviceMb = 2048;       // the device pool's ceiling (unified memory); its pictures take half
     uint32_t                 cameraPixels = 1920;
     // Their 0.65 is the width they chose for their own renderer; traced here
     // it leaves a converted surface 30% transparent (docs/decisions.md has
@@ -3275,6 +3276,10 @@ void addMesh2Splat(CLI::App& app) {
     cmd->add_option("--bake-degree", o->bakeDegree,
                     "harmonics the bake fits, 0 to 3: 0 is one colour a gaussian and cannot hold a "
                     "reflection, and each degree costs a pass over the paths");
+    cmd->add_option("--device-mb", o->deviceMb,
+                    "the device pool's ceiling in MB on unified memory; the maps and the conversion's other "
+                    "pictures take half of it (a discrete card takes three quarters of what is free when that is "
+                    "more)");
     cmd->add_option("--skip", o->skip,
                     "a prim not converted, with all beneath it, though the bake still sees it (unlike --hide) "
                     "(repeatable)");
@@ -3399,7 +3404,9 @@ void addMesh2Splat(CLI::App& app) {
             cli::out("mesh2splat: the %s catcher of %s on %s, a cell of %.4g\n",
                         o->lightCatcher ? "light" : "shadow", catcher.object.c_str(), made->ground.c_str(), cell);
         }
-        gpu_host::Context* context = gpu_host::installProcessContext();
+        gpu_host::ContextDesc desc;
+        desc.budgetBytes = size_t{o->deviceMb} << 20;
+        gpu_host::Context* context = gpu_host::installProcessContext(desc);
         if (context == nullptr || context->compute() == nullptr) {
             cli::err("no GPU compute device for AOFX kernels (gpe has no backend here)\n");
             throw CLI::RuntimeError(1);

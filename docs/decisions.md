@@ -19771,3 +19771,11 @@ any fibre variant; A is 44.5 ms. Conversion 200-215 s each, clouds 1.29-1.30 GB.
 
 Not done: the fibres' shading (the polish of a strand, the R/TT/TRT lobes the bake leaves out), their skin weights
 (a strand is carried by nothing yet), the LOD of chains, and the engine's own curve tubes reading the hair map.
+
+### A whole character's maps and the picture pool (1 Nov)
+
+Einar whole (215 meshes, 3.98 M triangles, every material baked into its own maps: 792 maps, 0.93 GB as float
+pictures at `--texture-size 1024`) did not fit the conversion's picture pool: the process context's default device
+budget is 2 GB and pictures take half of it, so the trousers' maps onward were left out and the edges picture then
+failed. `mesh2splat --device-mb` sets that budget as `vdb2splat` already could; at 6144 the same conversion
+(`--skinned --transfer`, 3 M gaussians, 32 paths) ran in 200 s with every map, 6.1 GB resident.
