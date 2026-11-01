@@ -19460,3 +19460,32 @@ encoded with `--order stable --slots N`, the geometry layer at 12 / 7 / 7, video
 - **Not done:** order 3 in the web player; a fit whose first frame fills the pool (the plume's first frames are
   a small puff); fire whose flame grid does not fill the fireball (Mantaflow's flame here glows flat at any
   temperature mapping).
+
+### The fireball's 50k rung on a phone (1 Nov)
+
+A phone's Safari reported "Decoder failure" on the fireball's 50k rung (1024 x 896, level 3.1, `hvc1.1.6.L93.B0`)
+and then drew nothing. Every published rung of every explosion ladder was decoded picture by picture through
+WebCodecs on the Mac (Safari and Chrome, VideoToolbox, the player's own codec string and coded size): all decode,
+none fails. Each rung's SPS level matches its codec string and its picture size (3.0 for 512 x 832, 3.1 for
+1024 x 896, 4.0 for the all-in-video 1024 x 1280); every picture is within the sparrow's phone ladder's largest
+(1024 x 960). What sets the fireball's 50k apart is its bit rate: quality 0.95, predicted pictures as large as its
+keys (median 0.23 / 0.28 MB), 48 Mbit/s of video at 24 a second against 26-33 for the other explosions' 50k rungs
+and 16 for the sparrow's top rung, the one stream seen to play on a phone (all-intra). Level 3.1 allows 10 Mbit/s;
+the encoder writes the level from the picture's size alone. Whether the phone's decoder fails on that is not
+known: no phone was at hand.
+
+The player did not recover from any decoder failure: the failed decoder is closed, and closing it again at the
+next key threw, so no new decoder was made. It now makes a new one at the next key, and a rung that fails twice
+steps the ladder down (athv-player.js / athv-live.html, the web player's repository).
+
+The same frames at lower video qualities (geometry layer unchanged, 0.456 MB a frame):
+
+| quality | MB a frame (video + side) | video Mbit/s at 24 | decoded L2 |
+|---|---:|---:|---:|
+| 0.95 (published) | 0.706 (0.250 + 0.456) | 48.0 | 0.0499 |
+| 0.9 | 0.669 (0.213 + 0.456) | 40.9 | 0.0514 |
+| 0.8 | 0.613 (0.157 + 0.456) | 30.1 | 0.0613 |
+| 0.7 | 0.578 (0.122 + 0.456) | 23.4 | 0.0800 |
+
+The 20k rung (0.0670) decodes nearly as close as 50k at 0.8, so the rung stays at 0.95 until a phone shows that
+its rate is what fails.
