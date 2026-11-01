@@ -19352,3 +19352,9 @@ the frame ("frame 12 has 19999 gaussians, the first 20000"); a dead slot is now 
 On the plume the stable slots are what the stream keeps: 3 % more bytes and 39 % less decoded error, though the
 independent fits are closer before the codec -- a slot of an independent fit is another gaussian each frame, and
 the layer's residuals from one to the next are coarse at 11/6/6 bits.
+
+Finer settings on the same warm-slot frames (encode and decode only, `sim13.sh`): quality 0.95 with 12 / 7 / 7
+bits is 0.220 MB a frame on the plume (decoded L2 0.0223, flicker 0.075) and 0.214 on the explosion (0.0373,
+0.106); 12 / 8 / 8 at 0.9 is no better (0.0238 / 0.0382 at 0.223 / 0.216 MB); round 1's 16 / 10 / 10 with the
+frame-before prediction at 0.95 is 0.29 MB for 0.0178 / 0.0341. For these grids 12 / 7 / 7 at 0.95 is the one
+to stream: 12 % more bytes than 11 / 6 / 6 at 0.9 for a third less error on the plume.
