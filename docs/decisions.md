@@ -19368,7 +19368,9 @@ outer face is a cut through dense cloud, an edge the fit chases), so of 200k ask
 back what the bricks before kept: each brick aims at its share of the budget less what its predecessors fell short
 by, and scales its read budget by the ratio of kept to mass-predicted kept so far: the half at 50k in 4 bricks then
 keeps 49 897 (was 50 889) at 0.15226 against the unbricked 0.15215, fits 64.7 + 18.2 s; in 37 bricks of at most
-30 000 cells (2.06 cells read a cell), 50 155 kept, fits 107.1 s.
+30 000 cells (2.06 cells read a cell), 50 121 kept after the seams' pass at 0.16245 (fits 110.8 + 32.2 s, a peak
+footprint of 1.7 GB): small bricks cost error (+7 %) and time, as their margins are a larger share of what is read,
+so a brick should be as large as the pool allows.
 
 The whole cloud's original is not path traced (its NanoVDB, ~4.4 GB, read whole needs ~12 GB of host memory first):
 its gaussians are judged on the half resolution's topology against the half original, at its camera, light and
