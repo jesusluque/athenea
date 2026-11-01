@@ -27,6 +27,7 @@
 #include "AthvFrames.h"
 #include "Commands.h"
 #include "aofx/Effect.h"
+#include "gpe/pool.h"
 #include "athenea/aofx/EffectRegistry.h"
 #include "athenea/aofx/EffectRender.h"
 #include "athenea/core/Platform.h"
@@ -96,9 +97,14 @@ struct Options {
     uint32_t                 warmEm = 0;
     uint32_t                 warmIterations = 30;
     uint32_t                 warmDensifyEvery = 20;
+    double                   pruneMass = 1e-6;      // a gaussian under this share of the mass goes, at a round
+    double                   warmPruneMass = 1e-6;  // ... on a warm frame
     double                   dt = 1.0;
     bool                     noAdvect = false;
     double                   warmLearningRate = 0.03;
+    std::string              velocity = "vel";        // a sequence: the flow's grid
+    std::string              velocityUnits = "world"; // world units a frame, or mantaflow's cells a time unit
+    double                   fps = 24.0;              // with mantaflow units: frames a second
 };
 
 /// `pattern` with its run of '#' replaced by `frame`, zero-padded to the run.
@@ -330,7 +336,11 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
     if (has(o.temperature)) {
         auto read = io::readVdbGrid(o.input, o.temperature);
         if (!read) return std::move(read).error();
-        temperature = std::move(*read);
+        // An empty grid (a fire's flames once it has burnt out) is none: its
+        // values would be read from no leaf, and every block's emission error
+        // was NaN, so the coarsest cut was the whole grid.
+        if (read->leafCount > 0) temperature = std::move(*read);
+        else cli::out("vdb2splat: '%s' is empty here: no temperature fitted\n", o.temperature.c_str());
     }
     if (has(o.colour)) {
         auto read = io::readVdbVec3Grid(o.input, o.colour);
@@ -421,6 +431,7 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
         number(job, "initFraction", o.initFraction);
         number(job, "densifyEvery", o.densifyEvery);
         number(job, "densifyRounds", o.densifyRounds);
+        number(job, "pruneMass", o.pruneMass);
         number(job, "learningRate", o.learningRate);
         number(job, "hasTemperature", temperature ? 1.0 : 0.0);
         number(job, "hasColour", colour ? 1.0 : 0.0);
@@ -428,6 +439,10 @@ Result<void> convert(gpu_host::Context& context, gpu::ShaderLibrary& library, ao
         auto rendered = aofx_host::renderEffect(context, effect, job);
         if (!rendered) return std::move(rendered).error();
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        // The fit's working buffers, back in the pool now, go back to the
+        // system: on unified memory the way back's grid is allocated from
+        // what the machine has free, which a large volume's fit had held.
+        if (gpe::PooledDevice* pool = context.compute()) pool->trim();
         const std::vector<float>* told = (*rendered)->attached("gaussians");
         if (told == nullptr || told->size() < 8) {
             return Error(ErrorCode::DeviceFailure, "the Vdb2Splat effect did not say how many gaussians it wrote");
@@ -589,9 +604,9 @@ Result<void> runSequence(gpu_host::Context& context, gpu::ShaderLibrary& library
     }
     std::optional<gpu::Buffer> decodedBefore;
     image::ImagePtr before;          // the frame before's output, slot for slot
-    image::ImagePtr flowBefore;      // its flow, as the effect reads it
-    std::optional<gpu::Buffer> backBefore, originalBefore;
-    world::PackedGrids packedBefore;
+    uint32_t        slotsBefore = 0; // and how many slots it wrote
+    std::optional<io::NanoGrid> velBefore;      // its flow, laid on each frame's own leaves when it is used
+    std::optional<io::NanoGrid> densityBefore;  // its density, resampled on the next frame's leaves for the flicker
     double errorSum = 0.0, flickerSum = 0.0, keptSum = 0.0, secondsSum = 0.0;
     uint32_t frames = 0, judged = 0;
     for (int frame = o.frames[0]; frame <= o.frames[1]; ++frame) {
@@ -601,8 +616,8 @@ Result<void> runSequence(gpu_host::Context& context, gpu::ShaderLibrary& library
         auto names = io::vdbGridNames(path);
         if (!names) return std::move(names).error();
         std::optional<io::NanoGrid> vel;
-        if (std::find(names->begin(), names->end(), "vel") != names->end()) {
-            auto read = io::readVdbVec3Grid(path, "vel");
+        if (std::find(names->begin(), names->end(), o.velocity) != names->end()) {
+            auto read = io::readVdbVec3Grid(path, o.velocity);
             if (!read) return std::move(read).error();
             vel = std::move(*read);
         }
@@ -618,8 +633,7 @@ Result<void> runSequence(gpu_host::Context& context, gpu::ShaderLibrary& library
             // the frame's gaussians keep none.
             if (read->leafCount > 0) temperature = std::move(*read);
         }
-        world::PackedGrids packed = world::PackedGrids::of(*density, temperature ? &*temperature : nullptr,
-                                                           vel ? &*vel : nullptr);
+        world::PackedGrids packed = world::PackedGrids::of(*density, temperature ? &*temperature : nullptr, nullptr);
         auto words = wordsOn(device, packed.words, "vdb2splat.frame");
         if (!words) return std::move(words).error();
         auto leaves = image::Image::create(pictureFor(uint64_t{packed.leafCount} * world::VolumeSplats::kLeafEntries));
@@ -665,7 +679,28 @@ Result<void> runSequence(gpu_host::Context& context, gpu::ShaderLibrary& library
             job.inputs.push_back({"Grid", *leaves});
             if (warm) {
                 job.inputs.push_back({"Previous", before});
-                if (flowBefore && !o.noAdvect) job.inputs.push_back({"Velocity", flowBefore});
+                // THE FRAME BEFORE'S FLOW ON THIS FRAME'S LEAVES: the effect
+                // reads the flow through this frame's leaf map, so it is laid
+                // on this frame's topology, which a sequence whose active
+                // voxels change every frame needs.
+                if (velBefore && !o.noAdvect) {
+                    world::PackedGrids flowGrids = world::PackedGrids::of(*density, nullptr, &*velBefore);
+                    auto flowWords = wordsOn(device, flowGrids.words, "vdb2splat.flowWords");
+                    if (!flowWords) return std::move(flowWords).error();
+                    auto flow = image::Image::create(
+                        pictureFor(uint64_t{flowGrids.leafCount} * world::VolumeSplats::kLeafEntries));
+                    if (!flow) return std::move(flow).error();
+                    auto view = viewOf(context, *flow, "vdb2splat.flow");
+                    if (!view) return std::move(view).error();
+                    const double scale =
+                        o.velocityUnits == "mantaflow" ? 0.1 * 25.0 / o.fps : 1.0 / density->voxelSize;
+                    gpu::CommandBatch batch(device);
+                    splats->packVelocity(batch, *flowWords, flowGrids, static_cast<float>(scale), *view,
+                                         velBefore->staggered);
+                    ATHENEA_TRY(batch.submit(true));
+                    (*flow)->deviceWrote();
+                    job.inputs.push_back({"Velocity", *flow});
+                }
             }
             number(job, "leaves", packed.leafCount);
             number(job, "target", o.target);
@@ -678,6 +713,7 @@ Result<void> runSequence(gpu_host::Context& context, gpu::ShaderLibrary& library
             // schedule (a count, or a long period) would leave them no round.
             number(job, "densifyEvery", warm ? o.warmDensifyEvery : o.densifyEvery);
             number(job, "densifyRounds", warm ? 0 : o.densifyRounds);
+            number(job, "pruneMass", warm ? o.warmPruneMass : o.pruneMass);
             number(job, "learningRate", warm ? o.warmLearningRate : o.learningRate);
             number(job, "splitShare", o.splitShare);
             number(job, "keepSlots", 1.0);
@@ -710,10 +746,7 @@ Result<void> runSequence(gpu_host::Context& context, gpu::ShaderLibrary& library
                            std::to_string(alive) + " gaussians, density relative L2 " +
                            std::to_string(error->relativeL2) + (video ? ", decode " : ", fit ") +
                            std::to_string(seconds) + " s, NanoVDB " + std::to_string(packed.words.size() * 4) + " B";
-        if (backBefore && packedBefore.leafCount == packed.leafCount && packedBefore.words.size() == packed.words.size()) {
-            auto flick = splats->flicker(*returned, *words, *backBefore, *originalBefore, packed.density,
-                                         packed.leafCount);
-            if (!flick) return std::move(flick).error();
+        if ((video ? decodedBefore.has_value() : before != nullptr) && densityBefore) {
             gpu::Buffer before0;
             if (video) {
                 before0 = *decodedBefore;
@@ -722,6 +755,22 @@ Result<void> runSequence(gpu_host::Context& context, gpu::ShaderLibrary& library
                 if (!view) return std::move(view).error();
                 before0 = std::move(*view);
             }
+            // THE FRAME BEFORE ON THIS FRAME'S LEAVES, whatever its own: its
+            // original density resampled here, its gaussians evaluated here.
+            world::PackedGrids beforeGrids = world::PackedGrids::of(*density, &*densityBefore, nullptr);
+            auto originalBefore = wordsOn(device, beforeGrids.words, "vdb2splat.originalBefore");
+            if (!originalBefore) return std::move(originalBefore).error();
+            {
+                gpu::CommandBatch batch(device);
+                splats->resample(batch, *originalBefore, beforeGrids);
+                ATHENEA_TRY(batch.submit(true));
+            }
+            auto backBefore = wordsOn(device, packed.words, "vdb2splat.backBefore");
+            if (!backBefore) return std::move(backBefore).error();
+            ATHENEA_TRY(splats->splatToGrid(before0, slotsBefore, *backBefore, packed.density, packed.leafCount));
+            auto flick = splats->flicker(*returned, *words, *backBefore, *originalBefore, packed.density,
+                                         packed.leafCount);
+            if (!flick) return std::move(flick).error();
             auto kept = splats->slots(before0, gaussians, slotsOut);
             if (!kept) return std::move(kept).error();
             const double share = kept->aliveBefore > 0 ? double(kept->aliveBoth) / kept->aliveBefore : 0.0;
@@ -766,24 +815,13 @@ Result<void> runSequence(gpu_host::Context& context, gpu::ShaderLibrary& library
                 "athenea vdb2splat: a medium of gaussians, f_rest_0 ln sigma, f_rest_1 temperature"};
             ATHENEA_TRY(io::writePly3dgs(framePath(o.cloud, frame), rows, comments));
         }
-        // What the next frame starts from: this frame's slots, and its flow.
+        // What the next frame starts from: this frame's slots, its flow and
+        // its density (laid on the next frame's leaves there).
         before = rendered;
         if (video) decodedBefore = gaussians;
-        flowBefore = nullptr;
-        if (vel) {
-            auto flow = image::Image::create(pictureFor(uint64_t{packed.leafCount} * world::VolumeSplats::kLeafEntries));
-            if (!flow) return std::move(flow).error();
-            auto view = viewOf(context, *flow, "vdb2splat.flow");
-            if (!view) return std::move(view).error();
-            gpu::CommandBatch batch(device);
-            splats->packVelocity(batch, *words, packed, static_cast<float>(1.0 / density->voxelSize), *view);
-            ATHENEA_TRY(batch.submit(true));
-            (*flow)->deviceWrote();
-            flowBefore = *flow;
-        }
-        backBefore = std::move(*returned);
-        originalBefore = std::move(*words);
-        packedBefore = std::move(packed);
+        slotsBefore = slotsOut;
+        velBefore = std::move(vel);
+        densityBefore = std::move(*density);
     }
     cli::out("vdb2splat: %u frames (%s): mean density relative L2 %.5f, mean flicker %.5f, mean slots kept %.4f, "
              "mean fit %.2f s a frame\n",
@@ -859,9 +897,19 @@ void addVdb2Splat(CLI::App& app) {
     cmd->add_option("--warm-iterations", o->warmIterations, "a sequence: Adam steps of a warm frame");
     cmd->add_flag("--no-advect", o->noAdvect, "a sequence: warm frames start where the frame before left them");
     cmd->add_option("--warm-learning-rate", o->warmLearningRate, "a sequence: Adam's step on a warm frame");
+    cmd->add_option("--prune-mass", o->pruneMass, "at a densify round, a gaussian under this share of the total mass "
+                    "goes (its slot is reborn)")->check(CLI::Range(0.0, 1.0));
+    cmd->add_option("--warm-prune-mass", o->warmPruneMass, "a sequence: --prune-mass on a warm frame, where the "
+                    "slots freed are the only ones a round can give to new density")->check(CLI::Range(0.0, 1.0));
     cmd->add_option("--warm-densify-every", o->warmDensifyEvery,
                     "a sequence: steps between a warm frame's densify-and-prune rounds")
         ->check(CLI::Range(1u, 100000u));
+    cmd->add_option("--velocity", o->velocity, "a sequence: the flow's grid (vec3; a staggered one is averaged to "
+                    "the voxels' centres)");
+    cmd->add_option("--velocity-units", o->velocityUnits, "a sequence: the flow's units -- world (world units a "
+                    "frame) or mantaflow (grid cells a Mantaflow time unit, 0.1 x 25 / --fps of them a frame)")
+        ->check(CLI::IsMember({"world", "mantaflow"}));
+    cmd->add_option("--fps", o->fps, "a sequence with mantaflow units: frames a second")->check(CLI::Range(1.0, 1000.0));
     cmd->add_option("--dt", o->dt, "a sequence: frames the flow carries the gaussians over, frame to frame");
     cmd->callback([o] {
         const auto fail = [](const Error& error) {

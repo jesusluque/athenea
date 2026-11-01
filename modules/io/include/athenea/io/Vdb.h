@@ -81,6 +81,9 @@ struct NanoGrid {
     /// background value, which for a level set is its band's half width in
     /// the distance's units; read from the header, as the class is.
     bool  levelSet = false;
+    /// A staggered vector grid (OpenVDB's GRID_STAGGERED, a MAC grid): each
+    /// component on its voxel's lower face. Read from the header, as the class is.
+    bool  staggered = false;
     float background = 0.0F;
 };
 

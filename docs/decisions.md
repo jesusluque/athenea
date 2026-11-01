@@ -18849,7 +18849,7 @@ p99 position.
 ### Not done
 
 - NVDEC: the decoder, `createLumaTextures` on CUDA and `--check` where NVENC encodes. Until then a round trip is
-  checked on a Mac with `--units`.
+  checked on a Mac with `--units`. (Done 1 Nov: the NVDEC section below.)
 - A QP mapping fitted to VideoToolbox's quality (the table above is where one would start), and a constant quality
   mode by NVENC's own target quality (VBR with `targetQuality`) rather than constant QP.
 - Linux: built and run on Windows only; the Linux path differs in the library names alone.
@@ -18980,6 +18980,107 @@ The target -- the 300-step fit's error in 3.1 s -- is met on the density error a
 density error is equal in 2.71 s (−48 %) and the ×16 trace 13 % further. Fewer steps buy the time, the schedule
 buys back the error. The defaults are not changed (100 steps; the knobs at 100 steps were worse on two of six
 volumes, round 1).
+
+### Public volumes at the limits (1 Nov, round 2)
+
+Disney's cloud (`wdas_cloud`, CC BY-SA 3.0, five resolutions) and JangaFX EmberGen's free sets (CC0: gasoline and
+ground explosions, a cloud pack, a campfire, a fire; half-float grids, no `vel`), one frame each: read, converted
+to NanoVDB (`nanovdb_convert`), path traced, fitted at 50k with the 100-step defaults and given back. Release, M5
+Pro, the shared GPU lock, the Mac's interactive use not known (`~/luc/athenea-gpu/ext*.sh`); path traces 512²,
+1024 paths, 4 bounces, a normalized sun, the camera from the NanoVDB header's world box (`athenea stage
+--frame-all` frames nothing on a stage of volumes alone: `Engine::bounds` counts clouds, points and meshes, not
+media -- not fixed here), density scale 4 over the box's largest side; masked relMSE of the grid given back
+against the original's trace; peak = the process's peak memory footprint (unified memory: host and device).
+
+| volume | active voxels / leaves | `.vdb` / NanoVDB density MB | fit s | L2 | fit peak MB | PT masked (PSNR) | PT ms (64 paths) original / back |
+|---|---|---|---|---|---|---|---|
+| wdas_cloud sixteenth | 0.42 M / 1995 | 1.6 / 5.1 | 0.50 | 0.0451 | 469 | 3.2·10⁻⁴ (47.0) | 183 / 187 |
+| wdas_cloud eighth | 3.1 M / 10905 | 10.0 / 17.3 | 1.97 | 0.1351 | 808 | 4.7·10⁻⁴ (45.3) | 240 / 242 |
+| wdas_cloud quarter | 24 M / 68113 | 68.4 / 92.5 | 8.98 | 0.1520 | 3317 | 5.6·10⁻⁴ (44.6) | 338 / 358 |
+| wdas_cloud quarter, 200k | | | 12.75 | 0.1172 | 3517 | | |
+| wdas_cloud half (`--device-mb 16384`) | 188 M / 461463 | 492 / 590 | 51.2 | 0.1522 | 15887 | 5.5·10⁻⁴ (44.6) | 548 / 557 |
+| gasoline explosion, frame 60, its temperature | 8600 leaves | 13.5 / 14.7 | 1.87 | 0.1068 | 983 | 2.8·10⁻⁴ (47.7) | 246 / 247 |
+| cloud pack, cloud 5 | 22587 leaves | 21.4 / 40.2 | 3.28 | 0.2977 | 1209 | 5.7·10⁻⁴ (43.4) | 101 / 112 |
+| small campfire, frame 100, flames as temperature | 1795 leaves | 1.8 / 2.7 | 0.39 | 0.0188 | 472 | 1.8·10⁻⁵ (53.9) | 40 / 42 |
+| simple fire, frame 60, temperature as density | 1913 leaves | 1.4 / 3.2 | 0.55 | 0.0213 | 504 | 1.8·10⁻⁴ (49.7) | 211 / 213 |
+
+The usdc is 3.2–3.3 MB at 50k, 12.8 MB at 200k. Where it broke:
+
+- **The half cloud's way back** (188 M voxels): the fit ran (50.5 s, 15.5 GB at its peak) and the grid given back
+  (955 MB) was refused -- "does not fit in the memory the system has free: 2403 MiB" -- because the effect's
+  working buffers, released into gpe's pool, were still held by it. The command now trims the pool after the
+  effect renders (`PooledDevice::trim`); the same run then writes and measures the grid (row above).
+- **The ground explosion with `--temperature flames`** on frames 100 and 150: "the coarsest blocks need 366633
+  gaussians, more than the budget". The flames grid is empty there (the fire has burnt out; frame 50 fits), and an
+  empty temperature grid made every block's emission error NaN, so no block merged. An empty temperature grid is
+  now none ("'flames' is empty here: no temperature fitted").
+- **The whole cloud** (1.49 G voxels, 2.9 GB of `.vdb`) is not run: the fit's working buffers are some 60 bytes a
+  voxel of its leaves (half: 15.9 GB for 236 M voxels of leaves), some 110 GB here, against the 16 GB the shared
+  machine may give it; reading it takes some 12 GB of host memory first. Tiling the fit by leaves (streamed
+  through a smaller pool) is what it would take; not done. The half is the largest that fits, at 15.9 GB.
+
+**The explosions' settings** (one frame; s / density L2 / temperature density-weighted L2 / masked PT; the
+knobs are round 2's 240-step schedule, `--iterations 240 --checkerboard --init-fraction 0.7 --split-share 1
+--max-block 32 --densify-rounds 4`):
+
+| | 50k defaults | 50k `--min-std 1.0` | 50k knobs | 100k defaults | 200k defaults | 200k knobs |
+|---|---|---|---|---|---|---|
+| gasoline, frame 60, temperature | 1.87 / 0.107 / 0.303 / 2.8·10⁻⁴ | 1.93 / 0.118 / 0.300 / 3.1·10⁻⁴ | 2.76 / 0.105 / 0.300 / 2.7·10⁻⁴ | 2.43 / 0.086 / 0.272 / 2.0·10⁻⁴ | 3.01 / 0.047 / 0.234 / 8.6·10⁻⁵ | 4.17 / 0.032 / 0.232 / 9.8·10⁻⁵ |
+| ground, frame 50, flames | 1.06 / 0.132 / 0.354 / 3.0·10⁻⁴ | | 1.58 / 0.114 / 0.354 / 2.3·10⁻⁴ | | 1.54 / 0.043 / 0.296 / 8.1·10⁻⁵ | 2.19 / 0.019 / 0.291 / 4.8·10⁻⁵ |
+| ground, frame 100 (flames empty) | 1.63 / 0.104 / – / 2.1·10⁻⁴ | | | | | |
+
+The temperature does not follow the fit's settings: at 200k, 60 attribute steps 0.2322, an emission weight of 4
+0.2319, both 0.2308, against 0.2336 -- one temperature a gaussian is its floor, and only more gaussians lower it.
+The compact record at 200k is 4.00 MB (20 B a gaussian) against 13.2 MB of usdc and 13.5 MB of `.vdb`.
+
+### Sequences with a simulation's velocity (1 Nov, round 2)
+
+Two Mantaflow bakes (Blender 5.3): an explosion, 128 x 128 x 192, and a smoke plume, 80 x 80 x 160, 120 frames each
+at 24 fps, `density`, `temperature`, `flame` and `velocity` -- a staggered (MAC) vec3 grid in cells a Mantaflow time
+unit, active where the density is; the active voxels change every frame. What a sequence needed for them:
+
+- **`--velocity NAME`** (default `vel`) and **`--velocity-units world|mantaflow`** with **`--fps`**: Mantaflow's
+  cells a time unit, of which a frame is 0.1 x 25 / fps (0.10417 at 24) -- no voxel size enters; `world` keeps
+  world units a frame over the voxel. A grid of class `staggered` (read from the header, `NanoGrid::staggered`)
+  has each component on its voxel's lower face: the voxel's own is the mean of its two faces (`vsPackLeaves`).
+- **The flow on the frame's own leaves.** The frame before's flow was packed on the frame before's leaves and read
+  through the current frame's leaf map, so wherever the topology changed (every frame here) it was read from the
+  wrong voxels or not at all. It is now laid on the current frame's active voxels when the frame is fitted, and a
+  gaussian on a voxel with none takes the mean of its neighbours' within two voxels.
+- **Flicker and slots kept every frame**: the frame before's original density resampled onto the current leaves
+  (a new kind of `vsFixture`, `VolumeSplats::resample`) and its gaussians evaluated there; before, both were
+  reported only when two frames had the same leaves. The blob fixture's figures are unchanged (0.02244 / 0.27405).
+- **The deformation of a carried gaussian.** The flow's gradient at the edge of a sparse flow read the outside as
+  zero -- a whole velocity over a voxel -- and F = I + dt grad u crushed gaussians there: the explosion's warm fit
+  went to a relative L2 of 26.8. Now: one-sided differences where a neighbour has no flow; a step whose det F
+  leaves (0.5, 2) or whose dt grad u is past 0.25 (Frobenius) carries the centre alone; otherwise F keeps the
+  volume. With volume kept but every gradient taken, the carried start still drifted (explosion frames 20-27,
+  no warm step: 0.68 after one frame, 3.4 after seven) -- turbulence a voxel wide sheared gaussians into needles;
+  with the gate, 0.60 then 0.84, against 0.47 then 1.17 not carried. The blob fixture (a rigid turn) is under the
+  gate: 0.02262 against 0.02244.
+- **`--prune-mass`, `--warm-prune-mass`** (new; the effect's `pruneMass`, 1e-6): a warm frame keeps every slot,
+  so its densify rounds have none to give to new density; a larger floor frees slots there.
+
+Measured (release, M5 Pro, the shared GPU lock -- shared with another agent's jobs --, the Mac's interactive use not
+known; 20k gaussians; `~/luc/athenea-gpu/sim*.sh`), mean over the frames / last frame / flicker / fit s a frame:
+
+| | explosion, frames 5-34 | plume, frames 30-59 |
+|---|---|---|
+| independent | 0.0235 / 0.061 / 0.061 / 0.24 | 0.0109 / 0.016 / 0.031 / 0.19 |
+| warm, not carried (30 Adam steps) | 0.639 / 0.508 / 1.461 / 0.22 | 0.472 / 0.414 / 1.340 / 0.11 |
+| warm, carried (before the fixes above) | 26.8 / 36.4 / 21.7 / 1.77 | 0.380 / 0.332 / 1.130 / 0.23 |
+| warm, carried, 30 Adam steps (fixed) | 0.287 / 0.321 / 0.773 / 0.36 | |
+| warm, carried, 10 EM + 60 Adam | 0.068 / 0.097 / 0.187 / 0.27 | |
+| warm, carried, 40 EM + 100 Adam at 0.1, `--warm-prune-mass 1e-5` | 0.0320 / 0.057 / 0.089 / 0.38 | |
+
+A warm frame does not keep up with these: the density changes too much in a frame (not carried, one frame later
+the error is 0.47 on the explosion and 0.38 on the plume, from 0.017 and 0.009), and only a full fit's steps from
+the carried start come near the independent fits -- 36 % further, with more flicker, and slower. More Adam steps
+alone made it worse (60 steps 0.89 against 30 steps 0.78, both with `--warm-prune-mass 3e-5`, before the gate),
+more EM better: the warm frame's Adam,
+whose moments start at zero and whose steps are normalised, moves every parameter whatever its gradient. Not done:
+EM-only warm frames; the carried start at a coarser floor (`--min-std`) for these; recycling slots by contribution
+rather than mass.
 
 ### Bytes a gaussian: the compact record (1 Nov)
 
@@ -19115,6 +19216,148 @@ density error: the 50k rung's is 2.8 times round 1's, the 20k's 14 % above -- ga
 what the 0.5 floor kept, and frame 15's view is lit through the blob's surface, where that detail is. The voxel
 centres' L2 and the path trace disagree here; which to trust for a stream is for a sequence that is not a
 fixture to say.
+
+The floor between the two (`--min-std 0.75`, the same layer; `volstream_g8.sh`):
+
+| rung | `--min-std` | MB a frame | L2 decoded | flicker decoded | PT f32 / decoded | raster relMSE, ms |
+|---|---|---|---|---|---|---|
+| 50k | 0.5 (round 1, 16/10/10) | 0.487 | 0.0230 | 0.278 | 9.7·10⁻⁵ / 1.05·10⁻⁴ | 0.030, 9.3 |
+| 50k | 0.75 | 0.202 | 0.0218 | 0.261 | 1.25·10⁻⁴ / 1.40·10⁻⁴ | 0.030, 9.4 |
+| 50k | 1.0 | 0.187 | 0.0170 | 0.201 | 2.8·10⁻⁴ / 2.9·10⁻⁴ | 0.027, 7.6 |
+| 20k | 0.5 (round 1) | 0.196 | 0.0244 | 0.287 | 2.9·10⁻⁴ / 2.9·10⁻⁴ | 0.026, 9.2 |
+| 20k | 0.75 | 0.078 | 0.0236 | 0.277 | 2.6·10⁻⁴ / 2.7·10⁻⁴ | 0.027, 9.9 |
+| 20k | 1.0 | 0.075 | 0.0207 | 0.243 | 3.3·10⁻⁴ / 3.3·10⁻⁴ | 0.027, 9.8 |
+
+At 0.75 the 20k rung is better than round 1's on every measure at 40 % of its bytes, and the 50k rung's path
+trace is a third further than round 1's instead of 2.8 times: 0.75 is the floor to stream with when the path
+trace is the judge, 1.0 when the density at the voxels is.
+
+## NVDEC: the video planes' decoder on CUDA (1 Nov)
+
+`athenea video-encode --check`, `video-decode` and the live stream on Linux and Windows: NVIDIA's hardware HEVC
+decoder behind the same `VideoDecoder` and `LumaTextures` as VideoToolbox (`modules/video/src/Nvdec.cpp`), so a
+round trip is checked on the machine that encoded it.
+
+### Design
+
+- **Nothing linked, as NVENC.** The decoder library (`nvcuvid.dll`, `libnvcuvid.so.1`) is opened at run time by
+  `platform::SharedLibrary`; its types are `dynlink_cuviddec.h` and `dynlink_nvcuvid.h` from the same
+  nv-codec-headers tag (`n12.2.72.0`, MIT, NVDEC API 12.2). The CUDA driver's entry points the two codecs share
+  moved to `src/Cuda.h` / `Cuda.cpp` (loaded and `cuInit`'ed once a process); NVENC's own loader keeps only its
+  library. Where neither Apple nor Linux/Windows, `src/CodecNone.cpp` answers `Unsupported` for all three
+  factories.
+- **On the engine's context.** `createHardwareDecoder(codec, bits, device)` takes the engine's device (new,
+  defaulted to none, VideoToolbox ignores it): on CUDA the decoder, its parser and a `cuvidCtxLock` live on the
+  device's own `CUcontext` and copy on its stream; without one, on the first device's primary context (the one
+  slang-rhi's CUDA device uses).
+- **A unit in, its picture out.** The unit's 4-byte lengths are rewritten as start codes, the parameter sets
+  before a key frame's (`annexB`, which now also takes a unit and its sets), and given to NVDEC's parser as one
+  packet with `CUVID_PKT_ENDOFPICTURE` and no display delay, so the sequence, decode and display callbacks all
+  run inside that call and the picture is out when it returns. The sequence callback makes the decoder (again
+  only when the size changes): NV12, or P016 at 10 bits (the 10 bits high, as P010), cropped to the display
+  area, and refuses a stream that is not HEVC 4:2:0, whose bit depth is not the header's, or whose SPS says
+  video range -- NVDEC hands the samples over as coded, so nothing would be stretched, but a file then reads
+  the same on both decoders.
+- **The frame outlives the decoder's surfaces.** The picture is mapped (`cuvidMapVideoFrame64`), copied on the
+  device (`cuMemcpy2DAsync`, luma then the second plane) into a pitched allocation the `DecodedFrame` owns,
+  and unmapped. The allocations are pooled per picture size, so a decode allocates only while more frames are
+  alive than before; VideoToolbox's pixel buffers are held the same way.
+- **Textures of the device.** A CUDA array cannot alias linear memory, so `LumaTextures::wrap` makes an
+  R8Unorm (R16Unorm at 10 bits) texture and, at 8 bits, an RG8Unorm one for the second plane, takes their
+  `CUarray` from slang-rhi's native handle and copies the frame in (device to array, on the device's stream).
+  The planes decode reads them as it reads VideoToolbox's. Nothing is read back: the samples go decoder ->
+  device memory -> texture -> the planes kernels.
+
+### Measured
+
+RTX 3070 Laptop GPU (Windows, driver 621.01, CUDA backend), release build; whether the machine was otherwise in
+use is not known. The sparrow's PLY pages, frames 0-29, as in the NVENC section: NVENC encodes, NVDEC decodes in
+the same process (`--check`), against the Mac's `--units` replay of NVENC's file through VideoToolbox (the
+NVENC section's figures). Means in steps of each attribute's quantisation, position error median / p99:
+
+| setting | decoded by | position / opacity / log scale / rotation / DC / rest, mean steps | max steps (position / opacity / rotation) | position um, median / p99 |
+|---|---|---|---|---|
+| quality 0.5 (QP 26) | VideoToolbox, `--units` on the Mac | 4.15 / 1.67 / 3.49 / 4.35 / 3.80 / 3.91 | 115 / 247 / 214 | 24 / 56 |
+| quality 0.5 (QP 26) | NVDEC, `--check` on CUDA | 4.148 / 1.666 / 3.491 / 4.351 / 3.804 / 3.910 | 29.4 / 47.9 / 40.2 | 23.5 / 55.8 |
+| `--bits 10` (P010 / P016) | VideoToolbox, `--units` | 17.1 / 11.6 / 15.1 / 18.3 / 16.0 | -- | 6.4 / 14.0 |
+| `--bits 10` | NVDEC, `--check` | 17.10 / 11.55 / 15.11 / 18.33 / 15.95 / 16.26 | 113 / 158 / 201 | 6.4 / 14.0 |
+| `--chroma --sh-degree 0` | VideoToolbox, `--units` | 4.15 / 1.65 / 3.50 / 4.35 / 11.0 | -- | 24 / 56 |
+| `--chroma --sh-degree 0` | NVDEC, `--check` | 4.149 / 1.653 / 3.498 / 4.354 / 11.03 | 29.4 / 35.9 / 44.4 | 23.5 / 55.8 |
+
+- **The same samples.** HEVC decoding is exact, so the two decoders give the same pictures; the means agree to the
+  third digit and the position errors to the micrometre. The maxima are what differs: through `--units` a few
+  splats took another Morton rank on the Mac than on CUDA and were measured against a neighbour (the NVENC
+  section's reading); measured where the order was computed they fall from 115-247 to 29-48 steps at 8 bits.
+  Every position high part came back exact in every run.
+- **The volume ladder's 20k rung** (quality 0.9, `--order stable --geometry --geometry-key 30 --sh-degree 1`, the
+  NVENC section's settings; the same PLY frames, checked equal by hash): 0.197 MB a frame (video 0.010), means
+  0.219 / 0.692 / 0.054 / 0 / 0 / 0.797 steps, position 33.2 / 51.2 um, every high part exact. The same NVENC file
+  replayed on the Mac (`--units --check`, VideoToolbox) gives every figure to the last digit, maxima included
+  (0.50 / 12.1 / 0.12 / 0 / 0 / 13.6 steps), but a rotation p99 of 0.041 degrees against 0: a 20k-splat stable
+  order is the same on both machines, so here nothing is measured against a neighbour.
+- **Decode time** (medians a picture, p95 in brackets; `video-decode` is the stream already written, the same
+  file on both machines; the Mac's under the shared GPU lock, its interactive use not known):
+
+| stream | VideoToolbox, M5 Pro | NVDEC, RTX 3070 Laptop |
+|---|---:|---:|
+| sparrow, NVENC quality 0.5 (4.45 MB of video a picture, 4608 x 4480), `video-decode` | 34.0 (37.2) | 40.8 (42.7) |
+| the same, inside `--check` (beside NVENC's encode) | -- | 43.5 (88.5) |
+| `--bits 10`, inside `--check` | -- | 41.8 (88.9) |
+| `--chroma --sh-degree 0` (1.58 MB, 2048 x 1920), inside `--check` | -- | 13.7 (27.7) |
+| 20k rung (0.010 MB, 512 x 832), inside `--check` (the Mac's through `--units`) | 2.77 (3.95) | 0.73 (0.99) |
+
+  The decode includes the unit's rewrite to Annex B, the map and the device copy out of the decoder's surface
+  (about 31 MB at 4608 x 4480, not timed apart); it grows with the bits, as VideoToolbox's does (16 ms at 1.68 MB,
+  45 ms at 5.89 MB in the sparrow table). Inside `--check` the p95 doubles, the decoder sharing the device with
+  NVENC's encode and the planes kernels; alone (`video-decode`) it is 42.7 ms. The planes -> gaussians kernel
+  after it took 3.1-3.3 ms at 4608 x 4480 (2.75 on the Mac). On the large pictures the laptop's NVDEC is 20 %
+  slower than the M5 Pro's decoder; on the small ones, where a call's fixed cost is what is measured, four times
+  faster.
+- Tests: `athenea_video_tests` on the Windows machine (CUDA): 10 passed, the round trip through NVDEC among them
+  (skipped before for want of a decoder). On the Mac: 9 passed, 1 skipped (VideoToolbox takes host samples only),
+  as before.
+
+### Not done
+
+- Linux: built and run on Windows only; the path differs in the library names alone (`libnvcuvid.so.1`).
+- The frame's two copies (surface -> the frame's memory -> a texture): a frame held as a mapped surface would save
+  the first, but mapped surfaces are few and a live stream holds frames past the next decode; a texture over the
+  frame's memory would save the second, which slang-rhi's CUDA backend does not offer (its textures are arrays).
+- The textures are made for each frame; reusing the last frame's when the caller has let them go is not done.
+- A device of another backend (Vulkan) gets a decoder but no textures (`Unsupported`): that would take the
+  frame's memory exported to the other API, as gpu_host does for buffers.
+
+The Mantaflow explosion (vdb2splat's section "Sequences with a simulation's velocity", frames 5-34, 20k) as a
+stream with the same layer (`~/luc/athenea-gpu/sim10.sh`):
+
+| | fit mean L2 / flicker / s a frame | MB a frame | Mbit/s at 24 / 30 | decoded L2 / flicker |
+|---|---|---|---|---|
+| independent fits | 0.0235 / 0.061 / 0.23 | 0.204 | 39.2 / 49.0 | 0.0461 / 0.131 |
+| warm, carried, a full fit's steps, `--warm-prune-mass 1e-5` | 0.0321 / 0.090 / 0.38 | 0.187 | 36.0 / 45.0 | 0.0461 / 0.133 |
+
+Stable slots save 8 % of the bytes at the same decoded error: on this explosion the layer's residuals are the
+fit's own moves, as on the blob before the floor; and the codec doubles the fit's error (11/6/6 bits and
+quality 0.9 were chosen on the blob, whose gaussians are larger).
+
+The plume (frames 30-59, 20k) the same way -- after a fix: a dead slot (one frame here had one) was written with an
+opacity logit of −20, which the loader drops (it keeps 1/255 and over), so `video-encode --order stable` refused
+the frame ("frame 12 has 19999 gaussians, the first 20000"); a dead slot is now written at the live ones' floor,
+1/254, its ln σ still −10:
+
+| | fit mean L2 / flicker / s a frame | MB a frame | Mbit/s at 24 / 30 | decoded L2 / flicker |
+|---|---|---|---|---|
+| independent fits | 0.0109 / 0.031 / 0.19 | 0.189 | 36.3 / 45.3 | 0.0558 / 0.201 |
+| warm, carried, a full fit's steps, `--warm-prune-mass 1e-5` | 0.0144 / 0.043 / 0.27 | 0.194 | 37.2 / 46.5 | 0.0341 / 0.120 |
+
+On the plume the stable slots are what the stream keeps: 3 % more bytes and 39 % less decoded error, though the
+independent fits are closer before the codec -- a slot of an independent fit is another gaussian each frame, and
+the layer's residuals from one to the next are coarse at 11/6/6 bits.
+
+Finer settings on the same warm-slot frames (encode and decode only, `sim13.sh`): quality 0.95 with 12 / 7 / 7
+bits is 0.220 MB a frame on the plume (decoded L2 0.0223, flicker 0.075) and 0.214 on the explosion (0.0373,
+0.106); 12 / 8 / 8 at 0.9 is no better (0.0238 / 0.0382 at 0.223 / 0.216 MB); round 1's 16 / 10 / 10 with the
+frame-before prediction at 0.95 is 0.29 MB for 0.0178 / 0.0341. For these grids 12 / 7 / 7 at 0.95 is the one
+to stream: 12 % more bytes than 11 / 6 / 6 at 0.9 for a third less error on the plume.
 
 ## A medium on the web player (vol-web, 1 Nov)
 

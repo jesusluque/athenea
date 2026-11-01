@@ -575,7 +575,7 @@ exacta, la baja por el códec. La croma se queda en gris medio, así que el
 | `--rendition` | 0..65535 | `0` | el id que lleva cada registro, uno por rendición de una escalera (`athv_stream.py`) |
 | `--rate` | frames por segundo | el de la secuencia, o 30 | se guarda en el fichero; `athenea stream` lo reproduce a ese ritmo |
 | `--hevc` | ruta | ninguna | el vídeo solo como Annex B, para `ffprobe`; sus imágenes son planos, no una imagen |
-| `--check` | flag | no | cada imagen se decodifica otra vez con el decodificador hardware, vuelve a gaussianas en el dispositivo y se mide contra su fuente. Necesita un decodificador hardware: donde no lo hay (Linux, Windows) se rechaza diciéndolo; allí se comprueba con `--units` |
+| `--check` | flag | no | cada imagen se decodifica otra vez con el decodificador hardware, vuelve a gaussianas en el dispositivo y se mide contra su fuente. Necesita un decodificador hardware (VideoToolbox, NVDEC): donde no lo hay (sin driver de NVIDIA en Linux o Windows) se rechaza diciéndolo; allí se comprueba con `--units` |
 | `--units` | `.athv` | ninguno | las unidades del vídeo tomadas de este fichero -- el codificador de otra máquina, los mismos frames y las mismas opciones -- en lugar del codificador de esta máquina; con `--check`, el flujo de ese codificador por el decodificador de esta máquina contra la misma fuente. Un fichero cuyas imágenes se disponen de otro modo (bits, colores, tiles) se rechaza |
 | `--each-a-frame` | flag | no | los ficheros de splats dados son una secuencia, cada fichero un frame en el orden dado; sin él son las páginas de un frame |
 
@@ -611,6 +611,15 @@ motor y toma los planos donde los dejaron los kernels, así que no se leen de
 vuelta: la línea de cabecera dice `encoder hardware, from device memory`.
 Ambos escriben HEVC Main (Main 10 con `--bits 10`), 4:2:0, rango completo en
 la VUI, solo imágenes I y P.
+
+**Dónde decodifica** (`--check`, `video-decode`, `stream`). macOS:
+VideoToolbox. Linux y Windows: NVDEC, mediante la biblioteca propia del driver
+(`libnvcuvid.so.1`, `nvcuvid.dll`) abierta en tiempo de ejecución, el mismo
+driver que pide NVENC, sobre el propio contexto del dispositivo CUDA; la imagen
+se copia en el dispositivo a las texturas de los planos, nunca a la CPU. Sin un
+dispositivo CUDA (otro backend) el decodificador se abre pero sus frames no
+pueden hacerse texturas, y eso se rechaza (`Unsupported`). Ambos rechazan un
+flujo cuyo SPS dice rango de vídeo (16-235).
 
 ### 2.7.3 `athenea video-decode` — los frames de un vídeo, decodificados y cronometrados
 
@@ -957,11 +966,16 @@ tracer dibuja como dibuja cualquier volumen.
 | `--warm-em` | entero | `0` | pasos de EM de un frame en caliente (EM después de los pasos de Adam mueve mucho las gaussianas: apagado por defecto) |
 | `--warm-iterations` | entero | `30` | pasos de Adam de un frame en caliente |
 | `--warm-learning-rate` | número | `0.03` | el paso de Adam en un frame en caliente |
+| `--prune-mass` | 0 a 1 | `1e-6` | en una ronda de densificar, una gaussiana por debajo de esta fracción de la masa total se va y su hueco se vuelve a dar |
+| `--warm-prune-mass` | 0 a 1 | `1e-6` | `--prune-mass` en los frames en caliente de una secuencia, cuyas rondas solo tienen para la densidad nueva los huecos que esto libera |
 | `--warm-densify-every` | entero | `20` | pasos entre las rondas de densificar y podar de un frame en caliente (ninguna después del 70 % de ellos; 30 pasos: una ronda): el calendario de un ajuste completo no llega a un frame en caliente |
 | `--no-advect` | flag | apagado | un frame en caliente arranca donde el anterior dejó sus gaussianas |
 | `--dt` | número | `1` | frames sobre los que el flujo lleva las gaussianas, de un frame al siguiente |
 | `--cloud` | ruta con una tira de `#` | ninguna | una secuencia: las gaussianas de cada frame, todos los huecos (uno muerto es una mota de ln σ −30 en el origen, para que los huecos conserven su sitio), como PLY de 3DGS: posición, desviaciones y rotación en el mundo, el albedo como color base, ln σ en `f_rest_0` y la temperatura en `f_rest_1` (los dos primeros coeficientes de resto del rojo), la opacidad como la escribe `-o` para un visor. Lo que toma `video-encode --each-a-frame` |
 | `--from-athv` | `.athv` | ninguno | una secuencia: las gaussianas de cada frame decodificadas de este vídeo de splats de `--cloud` (en orden, con el decodificador hardware) en vez de ajustadas, y luego devueltas y juzgadas como un ajuste: el error de densidad frente al frame de `input`, el parpadeo, `--back`. `input` puede ser las grids que devolvió un ajuste, para juzgar el vídeo frente a la nube f32 |
+| `--velocity` | nombre de grid | `vel` | la grid del flujo (vec3), leída de cada frame; el flujo del frame anterior se pone sobre los vóxeles activos del actual. Una grid escalonada (clase `staggered`, una grid MAC como `velocity` de Mantaflow) se promedia de las dos caras de cada vóxel a su centro |
+| `--velocity-units` | `world`, `mantaflow` | `world` | `world`: unidades del mundo por frame (divididas por el vóxel). `mantaflow`: celdas por unidad de tiempo de Mantaflow, de las que un frame es 0,1 x 25 / `--fps` (0,10417 a 24) |
+| `--fps` | número | `24` | con `--velocity-units mantaflow`: frames por segundo de la secuencia |
 
 Una secuencia imprime, por frame: las gaussianas vivas, el error L2 relativo de la densidad devuelta, el tiempo del ajuste y, desde el segundo frame, el parpadeo -- sqrt(Σ((b₁ − b₀) − (o₁ − o₀))² / Σ(o₁ − o₀)²) sobre los vóxeles activos, lo que el cambio de un frame al siguiente de la grid devuelta tiene de mal frente al del original -- y cuántas de las gaussianas del frame anterior siguen vivas en el mismo hueco, y cuánto se movieron frente a su desviación media. `--measure` imprime también el error de la temperatura, ponderado por la densidad (la medida del propio ajuste: donde no hay densidad la temperatura de una gaussiana no dice nada) y sin ponderar. `--make-fixture blob-sequence` escribe `--frames` de la bola de ruido llevada por un flujo conocido -- un giro alrededor de su vertical de 2π/120 por frame y una subida de 0,3 vóxeles por frame --, cada uno con su `density` y su `vel` (unidades del mundo por frame).
 

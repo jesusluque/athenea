@@ -949,7 +949,7 @@ Result<std::unique_ptr<AthvFrames>> AthvFrames::open(gpu::Device& device, gpu::S
     auto codec = video::PlanesCodec::create(library);
     if (!codec) return std::move(codec).error();
     out->codec.emplace(std::move(*codec));
-    auto decoder = video::createHardwareDecoder(h.codec, h.bits);
+    auto decoder = video::createHardwareDecoder(h.codec, h.bits, &device);
     if (!decoder) return std::move(decoder).error();
     out->decoder = std::move(*decoder);
     auto textures = video::createLumaTextures(device);
@@ -1375,7 +1375,7 @@ void addVideo(CLI::App& app) {
             if (!w) cli::fail(w.error());
             writer = std::move(*w);
             if (o->check) {
-                auto d = video::createHardwareDecoder(header.codec, layout.bits);
+                auto d = video::createHardwareDecoder(header.codec, layout.bits, device->get());
                 if (!d) {
                     cli::err("video-encode: --check decodes every picture again and this platform has no hardware "
                              "decoder yet (%s); write the stream and check it where one is: video-encode --units "
@@ -1857,7 +1857,7 @@ void addVideo(CLI::App& app) {
         gpu::ShaderLibrary library(*device);
         auto codec = video::PlanesCodec::create(library);
         if (!codec) cli::fail(codec.error());
-        auto decoder = video::createHardwareDecoder(h.codec, h.bits);
+        auto decoder = video::createHardwareDecoder(h.codec, h.bits, device->get());
         if (!decoder) cli::fail(decoder.error());
         auto textures = video::createLumaTextures(**device);
         if (!textures) cli::fail(textures.error());

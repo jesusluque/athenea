@@ -562,7 +562,7 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 | `--rendition` | 0..65535 | `0` | the id every record carries, one a rendition of a ladder (`athv_stream.py`) |
 | `--rate` | frames a second | the sequence's, or 30 | stored in the file; `athenea stream` plays at it |
 | `--hevc` | path | none | the video alone as Annex B, for `ffprobe`; its pictures are planes, not an image |
-| `--check` | flag | off | each picture decoded again by the hardware decoder, turned back into splats on the device and measured against its source. Needs a hardware decoder: where there is none (Linux, Windows) it is refused, saying so -- check there with `--units` |
+| `--check` | flag | off | each picture decoded again by the hardware decoder, turned back into splats on the device and measured against its source. Needs a hardware decoder (VideoToolbox, NVDEC): where there is none (no NVIDIA driver on Linux or Windows) it is refused, saying so -- check there with `--units` |
 | `--units` | `.athv` | none | the video's units from this file -- another machine's encoder, the same frames and the same options -- instead of this machine's encoder; with `--check`, that encoder's stream through this machine's decoder against the same source. A file whose pictures are laid otherwise (bits, colours, tiles) is refused |
 | `--each-a-frame` | flag | off | the splat files given are a sequence, each file one frame in the order given; without it they are the pages of one frame |
 
@@ -596,6 +596,15 @@ the engine's own context and takes the planes where the kernels laid them, so
 they are not read back: the header line says `encoder hardware, from device
 memory`. Both write HEVC Main (Main 10 at `--bits 10`), 4:2:0, full range in
 the VUI, I and P pictures only.
+
+**Where it decodes** (`--check`, `video-decode`, `stream`). macOS:
+VideoToolbox. Linux and Windows: NVDEC, through the driver's own library
+(`libnvcuvid.so.1`, `nvcuvid.dll`) opened at run time, the same driver NVENC
+wants, on the CUDA device's own context; the picture is copied on the device
+into the planes' textures, never to the CPU. Without a CUDA device (another
+backend) the decoder opens but its frames cannot be made textures, which is
+refused (`Unsupported`). Both refuse a stream whose SPS says video range
+(16-235).
 
 ### 2.7.3 `athenea video-decode` — a video's frames decoded and timed
 
@@ -931,11 +940,16 @@ renders as it renders any volume.
 | `--warm-em` | integer | `0` | EM steps of a warm frame (EM after Adam's steps moves gaussians far: off by default) |
 | `--warm-iterations` | integer | `30` | Adam steps of a warm frame |
 | `--warm-learning-rate` | number | `0.03` | Adam's step on a warm frame |
+| `--prune-mass` | 0 to 1 | `1e-6` | at a densify round, a gaussian under this share of the total mass goes and its slot is given again |
+| `--warm-prune-mass` | 0 to 1 | `1e-6` | `--prune-mass` on a sequence's warm frames, whose rounds have only the slots it frees to give to new density |
 | `--warm-densify-every` | integer | `20` | steps between a warm frame's densify-and-prune rounds (none after 70 % of them; 30 steps: one round): a full fit's schedule does not reach a warm frame |
 | `--no-advect` | flag | off | a warm frame starts where the frame before left its gaussians |
 | `--dt` | number | `1` | frames the flow carries the gaussians over, frame to frame |
 | `--cloud` | path with a run of `#` | none | a sequence: each frame's gaussians, every slot (a dead one a speck of ln σ −30 at the origin, so the slots keep their places), as a 3DGS PLY: position, deviations and rotation in the world, the albedo as the base colour, ln σ in `f_rest_0` and the temperature in `f_rest_1` (the first two rest coefficients of red), opacity as `-o` writes it for a viewer. What `video-encode --each-a-frame` takes |
 | `--from-athv` | `.athv` | none | a sequence: each frame's gaussians decoded from this video of `--cloud`'s splats (in order, through the hardware decoder) instead of fitted, then given back and judged as a fit is: the density error against `input`'s frame, the flicker, `--back`. `input` may be the grids a fit gave back, to judge the video against the f32 cloud |
+| `--velocity` | grid name | `vel` | the flow's grid (vec3), read from each frame; the frame before's flow is laid on the current frame's active voxels. A staggered grid (class `staggered`, a MAC grid such as Mantaflow's `velocity`) is averaged from its voxels' two faces to their centres |
+| `--velocity-units` | `world`, `mantaflow` | `world` | `world`: world units a frame (divided by the voxel). `mantaflow`: grid cells a Mantaflow time unit, of which a frame is 0.1 x 25 / `--fps` (0.10417 at 24) |
+| `--fps` | number | `24` | with `--velocity-units mantaflow`: the sequence's frames a second |
 
 A sequence prints, a frame: the gaussians alive, the density's relative L2 error given back, the fit's time, and from the second frame on the flicker -- sqrt(Σ((b₁ − b₀) − (o₁ − o₀))² / Σ(o₁ − o₀)²) over the active voxels, what the frame-to-frame change of the grid given back gets wrong of the original's -- and how many of the frame before's gaussians are alive in the same slot, and how far they moved over their mean deviation. `--measure` prints the temperature's error too, weighed by the density (the fit's own measure: where there is no density a gaussian's temperature says nothing) and unweighted. `--make-fixture blob-sequence` writes `--frames` of the noise blob carried by a known flow -- a turn about the vertical through it of 2π/120 a frame and a rise of 0.3 voxels a frame -- each with its `density` and `vel` (world units a frame).
 

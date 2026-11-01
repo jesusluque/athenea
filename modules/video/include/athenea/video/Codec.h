@@ -16,12 +16,13 @@
 // IOSurface the Metal device reads through CVMetalTextureCache
 // (src/VideoToolbox.mm, the only file here that calls a framework). Linux
 // and Windows: NVENC encodes (src/Nvenc.cpp), on the CUDA device's own
-// context and from its memory (`encodeDevice`), the driver's library loaded
-// at run time; with no NVIDIA driver the factory says Unsupported. Their
-// decoder and textures are Unsupported still (src/CodecNone.cpp): NVDEC
-// (CUDA: the frame in device memory, wrapped the way gpu_host wraps buffers)
-// and WebCodecs (a VideoFrame copied plane by plane -- GPUExternalTexture
-// converts to RGB, which would alter the values) are where they go.
+// context and from its memory (`encodeDevice`), and NVDEC decodes
+// (src/Nvdec.cpp), the frame copied on the device out of the decoder's
+// surface into memory the frame owns and from there into the device's
+// textures; the driver's libraries are loaded at run time, and with no NVIDIA
+// driver the factories say Unsupported. WebCodecs (a VideoFrame copied plane
+// by plane -- GPUExternalTexture converts to RGB, which would alter the
+// values) is where the web goes (src/CodecNone.cpp: no hardware codec).
 #pragma once
 
 #include <cstddef>
@@ -128,12 +129,17 @@ public:
     [[nodiscard]] virtual bool hardware() const noexcept = 0;
 };
 
-/// `codec` the stream's FourCC ('hvc1'); `bits` 8 or 10.
-[[nodiscard]] Result<std::unique_ptr<VideoDecoder>> createHardwareDecoder(uint32_t codec, uint32_t bits);
+/// `codec` the stream's FourCC ('hvc1'); `bits` 8 or 10. `device` the
+/// engine's device the frames go to: NVDEC opens on a CUDA device's own
+/// context (without one, the first CUDA device's primary context, which is
+/// the one slang-rhi's CUDA device uses); VideoToolbox ignores it.
+[[nodiscard]] Result<std::unique_ptr<VideoDecoder>> createHardwareDecoder(uint32_t codec, uint32_t bits,
+                                                                          gpu::Device* device = nullptr);
 
 /// A decoded frame's luma plane as a texture of `device` (R8Unorm, R16Unorm
-/// at 10 bits), sharing the decoder's memory; `keep` holds what the texture
-/// reads alive.
+/// at 10 bits): on Metal sharing the decoder's memory, `keep` holding what
+/// the texture reads alive; on CUDA a texture of its own the frame is copied
+/// into on the device (a CUDA array cannot alias linear memory), `keep` null.
 struct LumaTexture {
     rhi::ComPtr<rhi::ITexture> texture;
     /// The second plane, (Cb, Cr) a 2 x 2 block, as RG8Unorm (8 bits only;
