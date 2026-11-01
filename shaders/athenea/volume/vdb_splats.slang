@@ -787,7 +787,10 @@ void vsExportPly(uint3 tid: SV_DispatchThreadID) {
     if (!(r3.w > 0.5) || !(r0.w > 0.0)) {
         for (uint a = 0; a < 3; ++a) exported[o + 55 + a] = log(1e-6);
         exported[o + 9] = kDeadLogSigma;
-        exported[o + 54] = -20.0;
+        // The loader keeps a splat of opacity 1/255 and over: a dead slot at
+        // the smallest it keeps (as a live one's floor, 1/254), so a frame
+        // with one keeps every slot -- the stable order counts them.
+        exported[o + 54] = log((1.0 / 254.0) / (253.0 / 254.0));
         exported[o + 58] = 1.0;
         return;
     }

@@ -19338,3 +19338,17 @@ stream with the same layer (`~/luc/athenea-gpu/sim10.sh`):
 Stable slots save 8 % of the bytes at the same decoded error: on this explosion the layer's residuals are the
 fit's own moves, as on the blob before the floor; and the codec doubles the fit's error (11/6/6 bits and
 quality 0.9 were chosen on the blob, whose gaussians are larger).
+
+The plume (frames 30-59, 20k) the same way -- after a fix: a dead slot (one frame here had one) was written with an
+opacity logit of −20, which the loader drops (it keeps 1/255 and over), so `video-encode --order stable` refused
+the frame ("frame 12 has 19999 gaussians, the first 20000"); a dead slot is now written at the live ones' floor,
+1/254, its ln σ still −10:
+
+| | fit mean L2 / flicker / s a frame | MB a frame | Mbit/s at 24 / 30 | decoded L2 / flicker |
+|---|---|---|---|---|
+| independent fits | 0.0109 / 0.031 / 0.19 | 0.189 | 36.3 / 45.3 | 0.0558 / 0.201 |
+| warm, carried, a full fit's steps, `--warm-prune-mass 1e-5` | 0.0144 / 0.043 / 0.27 | 0.194 | 37.2 / 46.5 | 0.0341 / 0.120 |
+
+On the plume the stable slots are what the stream keeps: 3 % more bytes and 39 % less decoded error, though the
+independent fits are closer before the codec -- a slot of an independent fit is another gaussian each frame, and
+the layer's residuals from one to the next are coarse at 11/6/6 bits.
