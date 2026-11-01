@@ -380,6 +380,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--splat-reflections` | flag | off | rt: a gaussian reflects the cloud it belongs to rather than only the sky |
 | `--splat-shadows` | flag | off | rt: a relit cloud shadows itself, one ray a splat |
 | `--no-antialias` | flag | antialias on | |
+| `--splat-view` | integer 0 to 15 | `0` | a parameter of the gaussians drawn in place of their light (`athenea:splatView`, numbered as in §4.2: 1 albedo, 6 normal, 7 opacity, 9 sky visibility, 10 bounce, …); 0 draws the light |
 | `--no-cloud-shadows` | flag | cloud shadows on | |
 | `--no-dome-prefilter` | flag | prefiltered | raster: a dome lights a mesh by one sample a pixel and a shadow ray |
 | `--screen-space-reflections` | flag | off | raster: `athenea:screenSpaceReflections` |

@@ -1018,7 +1018,20 @@ void m2sFibreEmit(uint triangle, uint slot, uint end) {
         away = abs(tangent.y) < 0.9 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
         away -= tangent * dot(away, tangent);
     }
-    const float3 normal = normalize(away);
+    // A STRAND HAS NO ONE NORMAL, and a chain whose gaussians all faced the
+    // same way reflected the dome as one mirror: the whole beard caught the
+    // same highlight, grey where the path traced tubes -- each of whose
+    // normals turns round it -- are dark with a glint here and there. So each
+    // segment's normal is turned about the tangent by a hash of it, within
+    // the half that faces away from the model: the population is the
+    // cylinder's front half, which is what an eye outside sees of it.
+    const float3 outward = normalize(away);
+    const float3 sideways = cross(tangent, outward);
+    uint h = triangle * 747796405u + 2891336453u;
+    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    h = (h >> 22u) ^ h;
+    const float turn = (float(h >> 8) * (1.0 / 16777216.0) - 0.5) * 3.14159265;
+    const float3 normal = outward * cos(turn) + sideways * sin(turn);
     const float3 side = cross(normal, tangent);
     const float4 rotation = quaternionOfFrame(tangent, side, normal);
 

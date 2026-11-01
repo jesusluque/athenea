@@ -19704,3 +19704,42 @@ pictures are sized for the first frame and a twentieth more, so each frame is on
 
 - **Not done:** order 3 for media with velocity-carried slots (a per-run fit weighted by the velocity, or smaller
   runs); bit-exact float steps across compilers (an integer rotation step would make them exact).
+
+## Hair from curves: a chain of fibre gaussians a strand (proposal 106, 1 Nov)
+
+**The budget first.** Einar (Blender Studio, CC-BY) at 2.4 M gaussians lost its beard and brows. The log said
+"the budget is exhausted: 1273410 splats did not fit", which read as the brows getting nothing; they got 34 859
+of the 117 040 they counted at the coarsened cell. Every part got its share -- the cut was inside each part. A
+triangle smaller than a cell is written as one gaussian at its middle (the Buick's grille), so it does not shrink
+when the budget coarsens the cell, and a hair tube is three faces 0.16 mm across: the beard's 922 740 triangles
+counted 973 847 at the coarse cell for a share of 364 712, and a run with a budget under its count keeps the
+first gaussians in the mesh's order. The beard was the first 37 % of its strands, whole, and nothing of the rest
+(the v2 front view shows half a beard). Now a part over its share is counted twice more at its own cell -- as it
+is, and with none of its sub-cell triangles -- and keeps the share of those that its share leaves, chosen by a
+hash of the triangle in the effect (`floorKeep`, `m2sFloorKept`): the same total, spread over the whole part.
+`--budget-in-order` keeps the old cut. Surfaces lose little: the head counted 25 % over its share at the coarse
+cell, all of it sub-cell triangles in dense places its cells already cover.
+
+**The fibre.** `--fibres` reads linear `BasisCurves` (`MeshStage`, a segment a triangle (a, b, b), widths in the
+second texture set -- bookkeeping), and the effect writes `--fibre-per-segment` gaussians a segment in closed
+form: centre on the segment, first axis on the tangent, sigma along `--fibre-axial` of the spacing (0.5 for one,
+0.75 for two), sigma across `w / (o sqrt(2 pi))` at peak opacity `o`, so the integral of alpha across the strand
+is its width; the raster's Mip-Splatting compensation then draws a strand of three quarters of a pixel as a
+line of a pixel at that coverage. The colour is the material's map at the curve's UV (the root's surface UV).
+The second axis is the strand's normal turned away from the middle of the model's box. The strands count on their
+own budget: they do not depend on the cell, and the surfaces share what is left.
+
+**The fibre's transfer.** A strand has no one normal. The gather marks a fibre's bake ray (third entry: the
+tangent, w minus the radius), and the tracer's bake turns each sample's normal about the tangent among eight
+strata and comes down onto the strand from that side (`bakeFibre`, `bakeFacingOf`): the projection over the
+samples is the azimuthal average of a Lambert, `sin(theta) / pi` from the tangent (Kajiya-Kay's diffuse). That
+is what the path traced tubes look like from further than their width.
+
+**The stage it bakes against.** The engine's path tracer drew the curves grey (its curve tubes did not read
+the hair's map; not looked into), so the stage holds the groom twice: the tubes, which the bake traces as the
+ground truth does and `--skip` leaves out of the cloud, and the curves with purpose `guide`, which no renderer draws
+and `--fibres` reads. Baked either way, the first fibres still came out grey: their albedo was right (dark, by
+`--splat-view 1`) and their sky visibility about 0.5, but every fibre of the chain faced the same way, out of the
+model, and the polish reflected the dome as one mirror -- the whole beard caught one highlight. A strand's normals
+turn round it, so each segment's normal is now turned about the tangent by a hash of it, within the half that
+faces out of the model.

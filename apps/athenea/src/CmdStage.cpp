@@ -142,6 +142,7 @@ void addStage(CLI::App& app) {
         bool screenSpaceReflections = false;
         uint32_t meshAntialias = 0;
         bool antialias = true;
+        uint32_t splatView = 0;
         uint32_t cloudShadowTexels = 1024;
         uint32_t cloudShadowTerms = 0;
         double cloudShadowDensity = 1.0;
@@ -201,6 +202,10 @@ void addStage(CLI::App& app) {
                   "a cloud that carries a transfer is drawn without the indirect half of it -- the "
                   "light it bounced off the scene it was converted in (it is added by default), so "
                   "what that half is worth can be seen on the same file");
+    cmd->add_option("--splat-view", o->splatView,
+                    "a parameter of the gaussians drawn in place of their light (athenea:splatView: 1 albedo, "
+                    "6 normal, 7 opacity, 9 sky visibility, 10 bounce, ...; 0 the light)")
+        ->check(CLI::Range(0, 15));
     cmd->add_flag("!--no-antialias", o->antialias,
                   "every ray through the middle of its pixel: a gathered frame is not averaged over "
                   "the pixel's area (it is by default)");
@@ -300,6 +305,9 @@ void addStage(CLI::App& app) {
         (*renderer)->setCloudShadowTerms(o->cloudShadowTerms);
         (*renderer)->setCloudShadowDensity(static_cast<float>(o->cloudShadowDensity));
         (*renderer)->setAntialias(o->antialias);
+        if (o->splatView != 0) {
+            (*renderer)->setSplatView(o->splatView);
+        }
         // The lamps: a state, and levels over it (usd/LightGroups.h).
         if (!o->lightState.empty()) {
             (*renderer)->setLightState(o->lightState);

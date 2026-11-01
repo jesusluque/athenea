@@ -388,6 +388,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--splat-reflections` | flag | apagado | rt: una gaussiana refleja la nube a la que pertenece, no sólo el cielo |
 | `--splat-shadows` | flag | apagado | rt: una nube relit se sombrea a sí misma, un rayo por splat |
 | `--no-antialias` | flag | antialias encendido | |
+| `--splat-view` | entero 0 a 15 | `0` | un parámetro de las gaussianas dibujado en lugar de su luz (`athenea:splatView`, numerado como en el §4.2: 1 albedo, 6 normal, 7 opacidad, 9 visibilidad del cielo, 10 rebote, …); 0 dibuja la luz |
 | `--no-cloud-shadows` | flag | sombras de nube encendidas | |
 | `--no-dome-prefilter` | flag | prefiltrado | raster: un domo ilumina una malla con una muestra por píxel y un rayo de sombra |
 | `--screen-space-reflections` | flag | apagado | raster: `athenea:screenSpaceReflections` |
