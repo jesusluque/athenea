@@ -1107,6 +1107,8 @@ Result<void> runTiled(gpu_host::Context& context, gpu::ShaderLibrary& library, a
     uint32_t total = 0;
     double fitSeconds = 0.0;
     std::vector<uint32_t> kept(bricks.size(), 0);
+    double shareSoFar = 0.0, keptPredicted = 0.0;
+    uint64_t keptSeen = 0;
     for (size_t i = 0; i < bricks.size(); ++i) {
         const std::string path = brickPath(o, "fit", i, "rec");
         if (std::filesystem::exists(path)) {
@@ -1119,16 +1121,29 @@ Result<void> runTiled(gpu_host::Context& context, gpu::ShaderLibrary& library, a
                 kept[i] = head[1];
                 total += head[1];
                 fitSeconds += seconds;
+                shareSoFar += weightOf(sums[i]) / weightTotal;
+                if (sums[i].read > 0.0) {
+                    keptSeen += head[1];
+                    keptPredicted += head[3] * sums[i].core / sums[i].read;
+                }
                 continue;
             }
         }
         const BrickSums& s = sums[i];
         const double share = weightOf(s) / weightTotal;
-        // The brick's budget is its core's share; the fit also spends on the
-        // margin, in the share of the mass read the margin holds.
-        const auto target = static_cast<uint32_t>(std::lround(
-            std::min<double>(static_cast<double>(o.target) * share * (s.core > 0.0 ? s.read / s.core : 1.0),
-                             4.0 * o.target)));
+        shareSoFar += share;
+        // The brick's budget is its core's share, less what the bricks before
+        // it kept over theirs (within half and twice its share). The fit also
+        // spends on the margin: more than the margin's share of the mass read
+        // (its outer face is a cut edge of the volume), by the ratio the
+        // bricks fitted so far kept against that share.
+        const double nominal = static_cast<double>(o.target) * share;
+        const double goal = std::clamp(static_cast<double>(o.target) * shareSoFar - static_cast<double>(total),
+                                       0.5 * nominal, 2.0 * nominal);
+        const double calibration =
+            keptPredicted > 0.0 ? std::clamp(static_cast<double>(keptSeen) / keptPredicted, 0.25, 1.5) : 1.0;
+        const auto target = static_cast<uint32_t>(std::lround(std::min<double>(
+            goal * (s.core > 0.0 ? s.read / s.core : 1.0) / calibration, 4.0 * o.target)));
         uint32_t keep = 0;
         std::vector<float> records;
         double seconds = 0.0, readSeconds = 0.0;
@@ -1223,6 +1238,10 @@ Result<void> runTiled(gpu_host::Context& context, gpu::ShaderLibrary& library, a
         kept[i] = keep;
         total += keep;
         fitSeconds += seconds;
+        if (s.read > 0.0) {
+            keptSeen += keep;
+            keptPredicted += written * s.core / s.read;
+        }
         cli::out("vdb2splat: brick %zu/%zu fitted: %u leaves, budget %u, %u written, %u kept in its core; read %.2f s, "
                  "fit %.2f s, the pool held %.0f MB\n",
                  i + 1, bricks.size(), s.leaves, target, written, keep, readSeconds, seconds,

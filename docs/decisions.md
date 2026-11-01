@@ -19346,6 +19346,37 @@ budget comes out 1.8 % over N (the margin's share of the gaussians is not exactl
 Images: `vdb2splat/opt/img/tile_half50_full.png`, `tile_half50_close_seam.png` (close-up across the boundary:
 original, unbricked, plain stitch with its band, seams' pass), `tile_half50_close_seam_zoom.png`.
 
+**Measured, the whole cloud** (1.49 G voxels; `-n 200000 --device-mb 10240`, margin 32, 30 seams' steps; 32
+bricks of at most 218 453 cells, 1.46 cells read a cell; four GPU jobs of two commands, each command beginning no
+brick after 200 s, resumed from the directory):
+
+| | |
+|---|---|
+| plan | 3 122 022 cells (1 890 760 leaves, 789 002 active tiles); the structure read in ~4 s |
+| sums pass | 32 bricks, 2.1–3.2 s each (a brick's read: the tree's structure, then its ~150 k leaves) |
+| fits | 533.6 s (11.8–19.6 s a brick), a read 2.7–6.5 s each; the pool held 3.5–5.3 GB |
+| seams' pass | 141.9 s; 185 122 → 184 812 gaussians |
+| density relative L2 (brick by brick, 1.49 G voxels) | 0.1259 (bricks 0.085–0.193), largest difference 1.23; 110 s |
+| given back on the half resolution's topology | 107.5 s; 0.1270 against the half's own density (its own 50k fit: 0.152) |
+| peak footprint / RSS a job | 10.7 / 7.2 GB (sums and fits), 8.6 / 5.2 (fits, seams), 6.8 / 5.2 (measure), 8.6 / 5.5 (the half read whole for the way back) |
+| sizes | `.vdb` 2930 MB; NanoVDB density ~4.4 GB (estimated from the half's 590 MB by cells); usdc 11.8 MB; compact record 3.7 MB (20 B a gaussian) |
+
+A first try at `--device-mb 14336` (16 bricks, pool 8.4 GB) peaked at 17.6 GB of footprint -- the leaves' picture
+(16 B a voxel of the brick) and the brick's grid sit beside the pool -- and was stopped; 10240 keeps it under 11 GB.
+The budget lands short: a brick's fit spends more on its margin than the margin's share of the mass (the margin's
+outer face is a cut through dense cloud, an edge the fit chases), so of 200k asked 185k were kept. The fits now feed
+back what the bricks before kept: each brick aims at its share of the budget less what its predecessors fell short
+by, and scales its read budget by the ratio of kept to mass-predicted kept so far: the half at 50k in 4 bricks then
+keeps 49 897 (was 50 889) at 0.15226 against the unbricked 0.15215, fits 64.7 + 18.2 s; in 37 bricks of at most
+30 000 cells (2.06 cells read a cell), 50 155 kept, fits 107.1 s.
+
+The whole cloud's original is not path traced (its NanoVDB, ~4.4 GB, read whole needs ~12 GB of host memory first):
+its gaussians are judged on the half resolution's topology against the half original, at its camera, light and
+1024 paths. Masked PT relMSE 5.16·10⁻⁴ (PSNR 44.98) -- the half's own 50k fits: 5.49·10⁻⁴ unbricked, 5.66·10⁻⁴
+bricked; in the close-up 3.40·10⁻⁴ (the half's bricked 50k 2.90·10⁻⁴). No boundary of the 32 bricks shows
+(`vdb2splat/opt/img/tile_whole200k_full.png`: half original, half bricked 50k, whole 185k given back on the half;
+`tile_whole200k_close.png`, the same close-up as above). The PT of the grid given back peaked at 5.7 GB.
+
 ## NVDEC: the video planes' decoder on CUDA (1 Nov)
 
 `athenea video-encode --check`, `video-decode` and the live stream on Linux and Windows: NVIDIA's hardware HEVC
