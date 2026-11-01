@@ -19489,3 +19489,56 @@ The same frames at lower video qualities (geometry layer unchanged, 0.456 MB a f
 
 The 20k rung (0.0670) decodes nearly as close as 50k at 0.8, so the rung stays at 0.95 until a phone shows that
 its rate is what fails.
+
+### Order 3 in the web player, and where it pays (1 Nov)
+
+The web player (`athv-player.js`) now decodes the geometry layer's order 3 (FORMAT.md §8d) in its WGSL kernel.
+Positions use the integer cluster motion. Rotations take the float steps in the engine's order of operations, with
+Metal's rounding (half away from zero).
+
+**Against the engine.** `video-decode --dump-state` writes the engine's state words for a frame. The player's
+state words were read back after decoding the same stream to the same frame (Mac, Chrome and Safari give the same
+words):
+
+| stream | frame (from its key) | positions, scales | rotation words apart | codes apart |
+|---|---|---|---:|---|
+| plume 20k, keys every 24 | 60 (12 after the key) | exact | 32 of 20 000 (0.16 %) | 18 by one, at most 3 |
+| sparrow 150k, motion, keys staggered over 60 | 60 (all 61 frames) | exact | 61 of 149 714 (0.04 %) | 38 by one, at most 4 |
+
+The words that differ are rotation steps that round the other way: sines, cosines and exponentials differ between
+the two compilers. The difference carries to the next key, as §8d allows. Rounding half to even instead of away
+from zero gave more differences (40 and 306), and normalising with `inverseSqrt` changed nothing.
+
+**Where it pays.** Each published ladder was re-encoded at order 3 with otherwise the same options:
+
+| stream | order 1 Mbit/s at 30 | order 3 | decoded quality, order 1 / order 3 |
+|---|---:|---:|---|
+| sparrow 150k (all-intra q0.4, chroma, 11/8/8, keys 30) | 147.8 | 100.5 | close PSNR 34.17 / 34.15, flicker 3.06 / 3.07 |
+| sparrow 75k | 76.6 | 57.4 | 29.34 / 29.33, flicker 4.89 / 4.89 |
+| sparrow 40k | 44.9 | 34.4 | -- |
+| sparrow 20k | 25.9 | 20.0 | -- |
+| sparrow 10k (15 576) | 21.7 | 16.9 | 26.02 / 26.02, flicker 5.62 / 5.62 |
+| plume 20k (90 frames, 12/7/7, q0.95) | 66.7 | 67.1 | density L2 0.0355 / 0.0366 |
+| plume 10k | 33.1 | 33.2 | 0.0440 / 0.0455 |
+| fireball 20k (60 frames) | 62.7 | 63.0 | 0.0670 / 0.0677 |
+
+- **The sparrow** is a rig whose 256-runs move rigidly. Its order-3 ladder is 23-32 % smaller at the same picture.
+- **The simulated media** have warm slots carried by a velocity field, so a run does not move as one body. Order 3
+  is 0.2-0.6 % larger there and a little worse, and those ladders stay at order 1.
+- **Independent fits** (the EmberGen explosions) have no stable order, so they have no prediction at all.
+
+**The ground explosion (EmberGen, CC0).** Frames 20-115 were fitted independently and baked with density scale
+0.05, emission 6 and K = 800 + 1200 flames. They were encoded as the gasoline was: each frame in its own order,
+the geometry layer every frame at 11/6/6, video q0.7, keys every 30. The fits vary by a few gaussians a frame
+(49 948 - 50 000), and the first frame sized the pictures. Every later frame with more gaussians then took a
+second picture of its last few tens, which is no key where the ladder needs one. With `--max-picture 1024x896` the
+pictures are sized for the first frame and a twentieth more, so each frame is one picture.
+
+| rung | fit L2 (f32) | decoded L2 | MB a frame (video + side) | Mbit/s at 30 (video alone) |
+|---|---:|---:|---|---:|
+| 50k | 0.1175 | 0.156 | 0.469 (0.096 + 0.373) | 112.6 (23.0) |
+| 20k | 0.2044 | 0.227 | 0.195 (0.043 + 0.152) | 46.7 (10.3) |
+| 10k | 0.2732 | 0.288 | 0.103 (0.023 + 0.079) | 24.7 (5.5) |
+
+- **Not done:** order 3 for media with velocity-carried slots (a per-run fit weighted by the velocity, or smaller
+  runs); bit-exact float steps across compilers (an integer rotation step would make them exact).
