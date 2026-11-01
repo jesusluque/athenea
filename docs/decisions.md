@@ -19443,3 +19443,20 @@ at the origin, as `vdb2splat --cloud` writes a dead slot (video_cells.slang's vi
 A dead slot `--slots` or `--cells` lays is a speck (log deviation ln 1e-6, as `vdb2splat --cloud` writes one): at
 a deviation of one unit, the 10 363 dead slots of the plume's first 20k frame, all at the origin, would add an
 optical depth of about 20 there (ln sigma -10, density scale 20).
+
+**Our own simulations on the web player** (1 Nov, Blender Mantaflow bakes with their velocity). Warm stable slots
+carried by the flow (40 EM + 100 Adam at 0.1, prune 1e-5), the light baked (`ATHENEA_VOLUME_PLY`, a z-up stage),
+encoded with `--order stable --slots N`, the geometry layer at 12 / 7 / 7, video at quality 0.95, a key a second.
+- **Which prediction.** On the plume's 120 frames at 20k: rigid runs (order 3) 0.285 MB a frame, decoded L2
+  0.0404; linear (2) 0.288, 0.0431; the frame before (1) 0.275, 0.0431. Order 1 is the smallest and the web
+  player decodes it (it has no order 3); the ladders use it.
+- **Which rungs.** The plume's 50k pool fills slowly from a first frame of 9 662 gaussians and decodes no closer
+  than 20k (0.0413 against 0.0404) at 2.6 times the bytes: its ladder is 20k / 10k, frames 1-90 (from about frame
+  96 the smoke spreads flat on the domain's wall): 0.278 / 0.138 MB a frame (53 / 26 Mbit/s at 24 frames a
+  second), decoded L2 0.0355 / 0.0440 (fit 0.0247 / 0.0328). The fireball's 50k does decode closer (frames 3-62:
+  0.0499, 20k 0.0670, 10k 0.0985) at 0.706 / 0.261 / 0.123 MB a frame. For comparison, the EmberGen ladders
+  (independent fits, the layer exact every frame, quality 0.7) are 0.20 MB a frame at 20k for a decoded L2 of
+  0.154 (gasoline).
+- **Not done:** order 3 in the web player; a fit whose first frame fills the pool (the plume's first frames are
+  a small puff); fire whose flame grid does not fill the fireball (Mantaflow's flame here glows flat at any
+  temperature mapping).
