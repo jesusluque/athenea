@@ -19167,3 +19167,18 @@ density error: the 50k rung's is 2.8 times round 1's, the 20k's 14 % above -- ga
 what the 0.5 floor kept, and frame 15's view is lit through the blob's surface, where that detail is. The voxel
 centres' L2 and the path trace disagree here; which to trust for a stream is for a sequence that is not a
 fixture to say.
+
+The floor between the two (`--min-std 0.75`, the same layer; `volstream_g8.sh`):
+
+| rung | `--min-std` | MB a frame | L2 decoded | flicker decoded | PT f32 / decoded | raster relMSE, ms |
+|---|---|---|---|---|---|---|
+| 50k | 0.5 (round 1, 16/10/10) | 0.487 | 0.0230 | 0.278 | 9.7·10⁻⁵ / 1.05·10⁻⁴ | 0.030, 9.3 |
+| 50k | 0.75 | 0.202 | 0.0218 | 0.261 | 1.25·10⁻⁴ / 1.40·10⁻⁴ | 0.030, 9.4 |
+| 50k | 1.0 | 0.187 | 0.0170 | 0.201 | 2.8·10⁻⁴ / 2.9·10⁻⁴ | 0.027, 7.6 |
+| 20k | 0.5 (round 1) | 0.196 | 0.0244 | 0.287 | 2.9·10⁻⁴ / 2.9·10⁻⁴ | 0.026, 9.2 |
+| 20k | 0.75 | 0.078 | 0.0236 | 0.277 | 2.6·10⁻⁴ / 2.7·10⁻⁴ | 0.027, 9.9 |
+| 20k | 1.0 | 0.075 | 0.0207 | 0.243 | 3.3·10⁻⁴ / 3.3·10⁻⁴ | 0.027, 9.8 |
+
+At 0.75 the 20k rung is better than round 1's on every measure at 40 % of its bytes, and the 50k rung's path
+trace is a third further than round 1's instead of 2.8 times: 0.75 is the floor to stream with when the path
+trace is the judge, 1.0 when the density at the voxels is.
