@@ -876,11 +876,11 @@ struct BrickSums {
 /// The k-d split: `inside` the cells (indices into `cells`) whose 8^3 meets
 /// the box widened by the margin.
 void splitBricks(const io::VdbCells& cells, std::array<int32_t, 3> lo, std::array<int32_t, 3> hi,
-                 const std::vector<uint32_t>& near, uint32_t margin, uint64_t maxCells, std::vector<Brick>& out) {
+                 const std::vector<uint32_t>& nearby, uint32_t margin, uint64_t maxCells, std::vector<Brick>& out) {
     std::vector<uint32_t> inside;
     uint64_t core = 0;
     const auto m = static_cast<int32_t>(margin);
-    for (uint32_t i : near) {
+    for (uint32_t i : nearby) {
         const auto& o = cells.origins[i];
         bool meets = true, in = true;
         for (int k = 0; k < 3; ++k) {
@@ -1293,7 +1293,7 @@ Result<void> runTiled(gpu_host::Context& context, gpu::ShaderLibrary& library, a
             }
             if (outOfTime()) return stopped("refined", i);
             std::vector<float> records;
-            uint32_t keep = 0, near = 0;
+            uint32_t keep = 0, nearby = 0;
             double seconds = 0.0;
             if (sums[i].core > 0.0) {
                 auto grid = readBrick(o, bricks[i], o.tileMargin);
@@ -1324,18 +1324,18 @@ Result<void> runTiled(gpu_host::Context& context, gpu::ShaderLibrary& library, a
                     const std::array<int32_t, 3> hi{bricks[i].hi[0] + m, bricks[i].hi[1] + m, bricks[i].hi[2] + m};
                     auto n = splats->select(*gaussians, total, lo, hi, 1, *view);
                     if (!n) return std::move(n).error();
-                    near = *n;
+                    nearby = *n;
                     (*start)->deviceWrote();
                 }
-                if (near > 0) {
-                    auto out = image::Image::create(pictureFor(uint64_t{near} * 4));
+                if (nearby > 0) {
+                    auto out = image::Image::create(pictureFor(uint64_t{nearby} * 4));
                     if (!out) return std::move(out).error();
                     aofx_host::EffectJob job;
                     job.bounds = (*out)->bounds();
                     job.inputs.push_back({"Grid", *leaves});
                     job.inputs.push_back({"Previous", *start});
                     number(job, "leaves", packed.leafCount);
-                    number(job, "target", near);
+                    number(job, "target", nearby);
                     number(job, "iterations", o.tileRefine);
                     number(job, "emIterations", 0);
                     number(job, "maxBlock", o.maxBlock);
@@ -1377,7 +1377,7 @@ Result<void> runTiled(gpu_host::Context& context, gpu::ShaderLibrary& library, a
                     if (keep > 0) ATHENEA_TRY(chosen->read(device, 0, records.size() * 4, records.data()));
                 }
             }
-            const uint32_t head[4] = {0x4B435242u, keep, o.tileRefine, near};
+            const uint32_t head[4] = {0x4B435242u, keep, o.tileRefine, nearby};
             const auto secondsF = static_cast<float>(seconds);
             ATHENEA_TRY(platform::writeAtomically(path, [&](const std::filesystem::path& partial) {
                 std::ofstream out(partial, std::ios::binary);
@@ -1390,7 +1390,7 @@ Result<void> runTiled(gpu_host::Context& context, gpu::ShaderLibrary& library, a
             refinedTotal += keep;
             refineSeconds += seconds;
             cli::out("vdb2splat: brick %zu/%zu refined from %u gaussians that reach it: %u kept in its core, %.2f s\n",
-                     i + 1, bricks.size(), near, keep, seconds);
+                     i + 1, bricks.size(), nearby, keep, seconds);
         }
         std::vector<float> again(size_t{refinedTotal} * 16);
         size_t at = 0;
@@ -1420,8 +1420,8 @@ Result<void> runTiled(gpu_host::Context& context, gpu::ShaderLibrary& library, a
         desc.bytes = uint64_t{total} * 64;
         desc.elementBytes = 16;
         desc.label = "vdb2splat.near";
-        auto near = gpu::Buffer::create(device, desc);
-        if (!near) return std::move(near).error();
+        auto nearby = gpu::Buffer::create(device, desc);
+        if (!nearby) return std::move(nearby).error();
         for (size_t i = 0; i < bricks.size(); ++i) {
             const std::string path = brickPath(o, measureTag, i, "txt");
             double ss = 0.0, sr = 0.0, lg = 0.0, sec = 0.0;
@@ -1442,10 +1442,10 @@ Result<void> runTiled(gpu_host::Context& context, gpu::ShaderLibrary& library, a
                     if (!words) return std::move(words).error();
                     auto returned = wordsOn(device, packed.words, "vdb2splat.coreBack");
                     if (!returned) return std::move(returned).error();
-                    auto n = splats->select(*gaussians, total, bricks[i].lo, bricks[i].hi, 1, *near);
+                    auto n = splats->select(*gaussians, total, bricks[i].lo, bricks[i].hi, 1, *nearby);
                     if (!n) return std::move(n).error();
                     chosen = *n;
-                    ATHENEA_TRY(splats->splatToGrid(*near, chosen, *returned, packed.density, packed.leafCount));
+                    ATHENEA_TRY(splats->splatToGrid(*nearby, chosen, *returned, packed.density, packed.leafCount));
                     auto error = splats->compare(*returned, *words, packed.density, packed.leafCount);
                     if (!error) return std::move(error).error();
                     ss = error->sumSquares;
