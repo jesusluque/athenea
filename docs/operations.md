@@ -388,7 +388,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--eye` | 3 numbers | none | a camera of its own, instead of one on the stage |
 | `--target` | 3 numbers | none | where that camera looks |
 | `--up` | 3 numbers | `0 1 0` | |
-| `--frame-all` | flag | off, and implied when the stage has no camera | frame everything |
+| `--frame-all` | flag | off, and implied when the stage has no camera | frame everything: meshes, clouds, points and volumes (a volume's box is its grid's leaves', in either technique); the box and the time it took are logged (`framed (...) - (...) in N ms`) |
 | `--focal` | number | `35` | mm, 24.576 mm aperture |
 | `--fstop` | number | `0` | 0 is a pinhole |
 | `--focus` | number | `0` | the depth in focus, scene units |

@@ -396,7 +396,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--eye` | 3 números | ninguno | una cámara propia, en vez de una de la escena |
 | `--target` | 3 números | ninguno | adónde mira esa cámara |
 | `--up` | 3 números | `0 1 0` | |
-| `--frame-all` | flag | apagado, e implícito si la escena no tiene cámara | encuadra todo |
+| `--frame-all` | flag | apagado, e implícito si la escena no tiene cámara | encuadra todo: mallas, nubes, puntos y volúmenes (la caja de un volumen es la de las hojas de su grid, con cualquier técnica); se registran la caja y el tiempo que llevó (`framed (...) - (...) in N ms`) |
 | `--focal` | número | `35` | mm, apertura 24.576 mm |
 | `--fstop` | número | `0` | 0 es estenopeica |
 | `--focus` | número | `0` | la profundidad enfocada, unidades de escena |

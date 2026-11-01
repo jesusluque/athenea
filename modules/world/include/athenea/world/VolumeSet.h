@@ -24,6 +24,7 @@
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/io/Vdb.h"
 #include "athenea/render/Camera.h"
+#include "athenea/scene/GpuClouds.h"
 
 namespace athenea::gpu {
 class CommandBatch;
@@ -114,6 +115,11 @@ public:
     [[nodiscard]] const gpu::Buffer& bounds() const noexcept { return bounds_; }
     /// A float's bits a grid: its largest leaf maximum.
     [[nodiscard]] const gpu::Buffer& majorant() const noexcept { return majorant_; }
+    /// Where the records stand in the world, one box over them all: each
+    /// record's index box (its grid's leaves) through its world-to-index's
+    /// inverse, folded by a kernel and read back as two corners. Nothing
+    /// where no record has a leaf. After set(); waits for the device.
+    [[nodiscard]] Result<std::optional<scene::Bounds>> worldBounds() const;
 
     static constexpr uint32_t kHeaderWords = 8;
     static constexpr uint32_t kMaxFields = 8;
@@ -124,7 +130,7 @@ public:
 private:
     gpu::Device*                     device_ = nullptr;
     gpu::ComputeKernel               boundsKernel_, leafMaxKernel_, instancesKernel_, finishKernel_, levelSetKernel_,
-                                     fillKernel_;
+                                     fillKernel_, worldBoundsKernel_;
     gpu::Buffer                      words_, bounds_, majorant_;
     std::vector<VolumeGridPlacement> placements_;
     uint32_t                         records_ = 0;

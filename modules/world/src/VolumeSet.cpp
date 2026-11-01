@@ -27,6 +27,9 @@ Result<VolumeSet> VolumeSet::create(gpu::ShaderLibrary& library) {
     if (!fog) return std::move(fog).error();
     auto fill = gpu::ComputeKernel::create(library, "athenea/volume/volume_prepare", "volumeScalarFill");
     if (!fill) return std::move(fill).error();
+    auto worldBounds = gpu::ComputeKernel::create(library, "athenea/volume/volume_bounds", "volumeWorldBounds");
+    if (!worldBounds) return std::move(worldBounds).error();
+    set.worldBoundsKernel_ = std::move(*worldBounds);
     set.fillKernel_ = std::move(*fill);
     set.levelSetKernel_ = std::move(*fog);
     set.boundsKernel_ = std::move(*bounds);
@@ -288,6 +291,33 @@ Result<void> VolumeSet::set(gpu::CommandBatch& batch, std::span<const VolumeInpu
         finishKernel_.dispatch(batch, {count, 1, 1}, bind);
     }
     return ok();
+}
+
+Result<std::optional<scene::Bounds>> VolumeSet::worldBounds() const {
+    if (records_ == 0 || !words_.valid()) {
+        return std::optional<scene::Bounds>{};
+    }
+    gpu::BufferDesc desc;
+    desc.bytes = 2 * 16;
+    desc.elementBytes = 16;
+    desc.label = "volumes.worldBounds";
+    auto result = gpu::Buffer::create(*device_, desc);
+    if (!result) return std::move(result).error();
+    gpu::CommandBatch batch(*device_);
+    worldBoundsKernel_.dispatch(batch, {256, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["words"].setBinding(words_.rhi());
+        cursor["result"].setBinding(result->rhi());
+    });
+    ATHENEA_TRY(batch.submit(true));
+    float box[8];
+    ATHENEA_TRY(result->read(*device_, 0, sizeof(box), box));
+    if (box[3] < 1.0F) {
+        return std::optional<scene::Bounds>{};   // no record with a leaf
+    }
+    scene::Bounds bounds;
+    std::copy(box, box + 3, bounds.min.begin());
+    std::copy(box + 4, box + 7, bounds.max.begin());
+    return std::optional<scene::Bounds>(bounds);
 }
 
 }   // namespace athenea::world

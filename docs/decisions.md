@@ -3518,6 +3518,67 @@ a ratio of 5.03 where independent paths give (1/1024 - 1/16384) / (1/4096 -
 1/16384) = 5. Frame times are the same (10.7 s / 26.7 s / 90.4 s before,
 10.3 s / 27.3 s / 95.8 s after, wall clock with loading, one run each).
 
+### A stage of volumes alone, framed (1 Nov)
+
+`athenea stage --frame-all` (and a stage without a camera, and `athenea view`
+as it opens) failed on a stage of volumes alone: "the stage draws nothing to
+frame". The framing frame is a raster one, which lays no volume out, and
+`Engine::bounds` folded clouds, points and meshes only.
+
+**Now.** `Engine::bounds` holds the volumes too. The layout that a path
+traced frame did inline is `Engine::layoutVolumes`, which `bounds` calls when
+any volume is visible: nothing happens if the volumes are already laid out,
+and otherwise the grids are read into the cache the path traced frame then
+uses, so the framing pays a read the frame would have paid. Each record's
+index box (its grid's leaves, which `volume_prepare` already folds) goes
+through the inverse of the record's world-to-index on the device
+(`VolumeSet::worldBounds`, `volume/volume_bounds.slang`: one group of 256
+threads folding a stride of records each, a record of no leaf left out), and
+two corners are read back. Instanced volumes are covered, since each
+instance is a record. No path traced framing frame is drawn. The box is the
+leaves', so it may reach up to a leaf (8 voxels) past the active voxels.
+
+**The 65536-pass hang** of the first attempt (a path traced framing frame
+after the raster one, in one renderer, never gathering its total) did not
+reproduce in the engine. One renderer that draws a raster frame and then a
+path traced one gathers in total / samples passes, by `render` and by
+`draw` a frame at a time as a viewport switching from raster to rt does. Its
+image matches a fresh renderer's: p99 0, max 0. With the volumes laid out by
+`bounds` between the two (the order --frame-all now has), the real EmberGen
+stages gather at once. The hang came from the reverted framing code, which
+is not kept, so its exact cause is not known.
+
+**Checked.** `[usd][volume][passes]` "a path traced frame after a raster one
+in the same renderer gathers its total" (32 of 32 paths, the same image as a
+fresh renderer's, the viewport way gathered in 8 frames of 4 paths).
+`[usd][volume][framing]`: a box of 32³ voxels of 0.1, scaled 2 in x, turned
+90° about y and moved, with a sun and nothing else, framed by (-2.4, -2.4,
+-11.4) - (1.6, 1.6, -3.4) where its voxels span (-1.6, -1.6, -11.4) - (1.6,
+1.6, -5). The grid's extra leaf below the box in index space is the
+overshoot, and it falls on the sides the turn and the scale put it on, which
+checks the inverse. From that camera a 16-path frame gathers and 484 of 3072
+pixels are lit. Suites: volume 8/8, usd `[volume]` 14/14, technique 64/64, view 1/1; usd `*fram*` 21/22, the
+one failure (the cloud shadow floor, p99 26 against 8) the same on the build before the change.
+
+**Timed** (release, M5 Pro, the shared GPU lock, wall clock with loading;
+the framing time is from the new `framed ... in N ms` line). On the EmberGen
+gasoline explosion f60 (147.6 MB NanoVDB): before, `--frame-all --technique
+rt` failed in 2.7 s; now it frames in 438 ms, grid read included, and a
+256², 64-path frame is written in 5.1 s in all. The campfire f100 frames in
+226 ms (3.5 s in all). On a mesh stage (the chess pawn, raster, 256², five
+runs) `--frame-all` takes 6.66 s median against 6.74 s with a camera given
+by `--eye` (6.29 / 6.26 s before the change, two runs each). Framing a mesh
+stage is unchanged: `bounds` adds a scan of the volume map when it has no
+volume. The framing call's 3.65 s there is the first commit of the scene,
+which a given camera pays in its first frame.
+
+**Not done.** The box is the leaves', not the voxels' above a density: a
+sparse simulation whose leaves hold near-zero density far from the visible
+smoke is framed by all of them (the gasoline explosion fills about a third
+of the frame). The raster technique still draws no volume. A stage framed
+with `--technique raster` places the camera on its volumes and draws an
+empty frame.
+
 ### Filtering, and where a voxel's value stands
 
 The medium read the voxel a point fell in, `floor(p)`: a voxel's value
@@ -18989,7 +19050,7 @@ to NanoVDB (`nanovdb_convert`), path traced, fitted at 50k with the 100-step def
 Pro, the shared GPU lock, the Mac's interactive use not known (`~/luc/athenea-gpu/ext*.sh`); path traces 512²,
 1024 paths, 4 bounces, a normalized sun, the camera from the NanoVDB header's world box (`athenea stage
 --frame-all` frames nothing on a stage of volumes alone: `Engine::bounds` counts clouds, points and meshes, not
-media -- not fixed here), density scale 4 over the box's largest side; masked relMSE of the grid given back
+media -- fixed since, "A stage of volumes alone, framed"), density scale 4 over the box's largest side; masked relMSE of the grid given back
 against the original's trace; peak = the process's peak memory footprint (unified memory: host and device).
 
 | volume | active voxels / leaves | `.vdb` / NanoVDB density MB | fit s | L2 | fit peak MB | PT masked (PSNR) | PT ms (64 paths) original / back |

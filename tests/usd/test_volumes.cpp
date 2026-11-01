@@ -628,3 +628,163 @@ TEST_CASE("a frame of volumes alone gathered over many passes covers what one pa
     CHECK(c[0] == 0);
     CHECK(c[1] == 0);
 }
+
+namespace {
+
+/// A scattering box of 32^3 voxels of 0.1 at (-1.6, -1.6, -5) under a sun,
+/// nothing else on the stage; its world box is [-1.6, 1.6]^2 x [-5, -1.8].
+fs::path halfBoxStage(const std::string& name) {
+    const fs::path vdb = scratch(name + ".vdb");
+    const io::VdbBox box{{0, 0, 0}, {32, 32, 32}, 1.0, {0, 0, 0}};
+    REQUIRE(io::writeVdbBoxes(vdb, "density", 0.1, std::span<const io::VdbBox>(&box, 1)));
+    const fs::path path = scratch(name + ".usda");
+    std::ofstream out(path);
+    out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+           "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    float inputs:angle = 0\n}\n"
+           "def Volume \"Fog\"\n{\n"
+           "    double3 xformOp:translate = (-1.6, -1.6, -5)\n"
+           "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+           "    rel field:density = </Fog/density>\n"
+           "    float primvars:athenea:densityScale = 0.2166\n"
+           "    color3f primvars:athenea:albedo = (1, 1, 1)\n"
+           "    def OpenVDBAsset \"density\"\n    {\n"
+           "        asset filePath = @" << vdb.string() << "@\n"
+           "        token fieldName = \"density\"\n    }\n}\n";
+    return path;
+}
+
+}   // namespace
+
+// RASTER, THEN PATH TRACED, IN ONE RENDERER. A raster frame of a stage of
+// volumes alone lays no volume out; the path traced frame after it, in the
+// same renderer, must gather its total as one in a fresh renderer does, and
+// draw what that one draws.
+TEST_CASE("a path traced frame after a raster one in the same renderer gathers its total",
+          "[usd][gpu][volume][passes]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const fs::path path = halfBoxStage("raster_then_rt");
+    const uint32_t w = 64, h = 48;
+    const auto open = [&]() {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setAntialias(false);
+        (*renderer)->setPathSamples(4);
+        (*renderer)->setPathBounces(4);
+        (*renderer)->setPathTotal(32);
+        return std::move(*renderer);
+    };
+    auto fresh = open();
+    auto alone = fresh->render(frontCamera(), 1.0, w, h, "rt");
+    if (!alone) FAIL(alone.error().toString());
+    auto renderer = open();
+    auto raster = renderer->render(frontCamera(), 1.0, 32, 32, "raster");
+    if (!raster) FAIL(raster.error().toString());
+    auto traced = renderer->render(frontCamera(), 1.0, w, h, "rt");
+    if (!traced) FAIL(traced.error().toString());
+    std::printf("  raster then rt: %u paths gathered of 32\n", renderer->pathAccumulated());
+    CHECK(renderer->pathAccumulated() >= 32);
+    gpu::Buffer a = upload(*gpu, *alone);
+    gpu::Buffer b = upload(*gpu, *traced);
+    auto same = render::compareImages(*gpu->library, a, b, w, h);
+    REQUIRE(same);
+    std::printf("  against a fresh renderer's: p99 %u max %u, %llu pixels over 2\n", same->p99, same->max,
+                static_cast<unsigned long long>(same->over2));
+    CHECK(same->p99 <= 1);
+    // A viewport's way: draw() a frame at a time, raster then rt, until the
+    // path traced one says it has gathered.
+    auto viewport = open();
+    if (auto drawn = viewport->draw(frontCamera(), 1.0, w, h, "raster"); !drawn) FAIL(drawn.error().toString());
+    uint32_t frames = 0;
+    for (; frames < 64 && (frames == 0 || !viewport->pathConverged()); ++frames) {
+        if (auto drawn = viewport->draw(frontCamera(), 1.0, w, h, "rt"); !drawn) FAIL(drawn.error().toString());
+    }
+    std::printf("  viewport raster then rt: gathered in %u frames\n", frames);
+    CHECK(viewport->pathConverged());
+    CHECK(frames <= 8);
+}
+
+// A STAGE OF VOLUMES ALONE, FRAMED. --frame-all and athenea view frame what
+// the engine's bounds say the stage draws; a raster frame lays no volume
+// out, so a stage of a Volume and a light had nothing to frame ("the stage
+// draws nothing to frame"). The bounds now hold each volume's box, from its
+// grid's leaves through its world (scaled and turned here, so the inverse
+// of the record's world-to-index is what is checked), and the camera they
+// place sees the medium in a path traced frame that gathers its total.
+TEST_CASE("a stage of volumes alone is framed by its volumes' world boxes and drawn from there",
+          "[usd][gpu][volume][framing]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    if (!io::haveOpenVdb()) {
+        SKIP("built without OpenVDB");
+    }
+    const fs::path vdb = scratch("framed_box.vdb");
+    const io::VdbBox box{{0, 0, 0}, {32, 32, 32}, 1.0, {0, 0, 0}};
+    REQUIRE(io::writeVdbBoxes(vdb, "density", 0.1, std::span<const io::VdbBox>(&box, 1)));
+    const fs::path path = scratch("framed_box.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n"
+               "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n    float inputs:angle = 0\n}\n"
+               "def Volume \"Fog\"\n{\n"
+               "    double3 xformOp:translate = (-1.6, -1.6, -5)\n"
+               "    float3 xformOp:rotateXYZ = (0, 90, 0)\n"
+               "    float3 xformOp:scale = (2, 1, 1)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateXYZ\", \"xformOp:scale\"]\n"
+               "    rel field:density = </Fog/density>\n"
+               "    float primvars:athenea:densityScale = 0.2166\n"
+               "    color3f primvars:athenea:albedo = (1, 1, 1)\n"
+               "    def OpenVDBAsset \"density\"\n    {\n"
+               "        asset filePath = @" << vdb.string() << "@\n"
+               "        token fieldName = \"density\"\n    }\n}\n";
+    }
+    auto renderer = usd::StageRenderer::open(path);
+    if (!renderer) FAIL(renderer.error().toString());
+    (*renderer)->setAntialias(false);
+    (*renderer)->setPathSamples(4);
+    (*renderer)->setPathBounces(2);
+    (*renderer)->setPathTotal(16);
+    auto camera = (*renderer)->framingCamera(1.0, 35.0, "raster");
+    if (!camera) FAIL(camera.error().toString());
+    auto bounds = (*renderer)->bounds();
+    if (!bounds) FAIL(bounds.error().toString());
+    REQUIRE(bounds->has_value());
+    const scene::Bounds& got = **bounds;
+    // [0, 3.2]^3 scaled 2 in x, turned 90 degrees about y (x to -z, z to x),
+    // moved: x [-1.6, 1.6], y [-1.6, 1.6], z [-11.4, -5]. The leaves may
+    // reach one leaf past the voxels (8 of 0.1, 1.6 along the scaled axis).
+    const std::array<float, 3> lo{-1.6F, -1.6F, -11.4F};
+    const std::array<float, 3> hi{1.6F, 1.6F, -5.0F};
+    std::printf("  framed by (%.3f %.3f %.3f) - (%.3f %.3f %.3f)\n", double(got.min[0]), double(got.min[1]),
+                double(got.min[2]), double(got.max[0]), double(got.max[1]), double(got.max[2]));
+    for (size_t k = 0; k < 3; ++k) {
+        CHECK(got.min[k] <= lo[k] + 1e-3F);
+        CHECK(got.max[k] >= hi[k] - 1e-3F);
+        CHECK(got.min[k] >= lo[k] - 1.6F - 1e-3F);
+        CHECK(got.max[k] <= hi[k] + 1.6F + 1e-3F);
+    }
+    // From the framing camera, a path traced frame gathers its total and
+    // the medium covers it.
+    const uint32_t w = 64, h = 48;
+    auto image = (*renderer)->render(*camera, 1.0, w, h, "rt");
+    if (!image) FAIL(image.error().toString());
+    CHECK((*renderer)->pathAccumulated() >= 16);
+    gpu::Buffer drawn = upload(*gpu, *image);
+    usd::StageImage black = *image;
+    std::fill(black.rgba.begin(), black.rgba.end(), 0.0F);
+    gpu::Buffer empty = upload(*gpu, black);
+    auto lit = render::compareImages(*gpu->library, drawn, empty, w, h);
+    REQUIRE(lit);
+    std::printf("  framed frame against black: %llu of %u pixels over 2\n",
+                static_cast<unsigned long long>(lit->over2), w * h);
+    CHECK(lit->over2 > w * h / 8);
+}

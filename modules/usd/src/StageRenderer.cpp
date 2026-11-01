@@ -10,6 +10,7 @@
 #include <optional>
 #include <cmath>
 #include <array>
+#include <chrono>
 #include <cstring>
 
 #include <pxr/base/plug/registry.h>
@@ -265,7 +266,10 @@ Result<std::unique_ptr<StageRenderer>> StageRenderer::open(const std::filesystem
 
 /// A camera framing what the stage draws, as athenea view opens on a stage: a
 /// small raster frame commits the scene, the engine's bounds of what it
-/// drew (a kernel's) place the camera, from the same yaw and pitch.
+/// drew (a kernel's) place the camera, from the same yaw and pitch. The
+/// volumes are in those bounds although the raster frame draws none: the
+/// engine lays them out to fold their boxes, so no path traced framing frame
+/// is needed for a stage of volumes alone.
 Result<render::Camera> StageRenderer::framingCamera(double time, double focal, const std::string& technique) {
     const char axis = upAxis();
     const std::array<double, 3> up = axis == 'Z' ? std::array<double, 3>{0.0, 0.0, 1.0}
@@ -285,6 +289,7 @@ Result<render::Camera> StageRenderer::framingCamera(double time, double focal, c
         camera.lens.farZ = distance + radius * 8.0 + 1.0;
         return camera;
     };
+    const auto started = std::chrono::steady_clock::now();
     ATHENEA_TRY(draw(orbit({0.0, 0.0, 0.0}, 10.0, 5.0), time, 64, 64, technique == "rt" ? "raster" : technique));
     auto found = bounds();
     if (!found) return std::move(found).error();
@@ -300,6 +305,9 @@ Result<render::Camera> StageRenderer::framingCamera(double time, double focal, c
         diagonal += d * d;
     }
     const double radius = std::max(0.5 * std::sqrt(diagonal), 1e-3);
+    athenea::log::info("framed ({:.3g} {:.3g} {:.3g}) - ({:.3g} {:.3g} {:.3g}) in {:.0f} ms", bounds->min[0],
+                       bounds->min[1], bounds->min[2], bounds->max[0], bounds->max[1], bounds->max[2],
+                       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
     const double halfFov = std::atan(0.5 * 18.672 / focal);
     return orbit(target, radius / std::sin(halfFov) * 1.05, radius);
 }
