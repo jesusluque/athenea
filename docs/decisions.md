@@ -19433,3 +19433,10 @@ M5 Pro: video 9 passed / 1 skipped (the device-memory encoder), aofx [vdb2splat]
 baked into two PLYs through `ATHENEA_VOLUME_PLY`, each one record a gaussian and loaded back whole; 17.8 s) as
 the fixture of `volume_ply_encode` (`video-encode --volume --cells --order stable --geometry --check` over the
 two; 3.3 s), and the .athv round trip now holds the volume flag and its density scale.
+
+**`video-encode --slots`** (1 Nov). A warm fit keeps each gaussian in its slot but its pool fills over the first
+frames (the Mantaflow plume's first frame holds 9 662 gaussians, its 50k pool full from about frame 30) and a
+frame may leave its last slot or two unused, so `--order stable` refused it ("frame 1 has 34024 gaussians, the
+first 9637"). `--slots N` lays every frame out as N slots, its own first in their order and the rest dead specks
+at the origin, as `vdb2splat --cloud` writes a dead slot (video_cells.slang's videoPadSlots). Checked by
+`volume_ply_encode_slots` (two frames of 300 gaussians as 400 slots, decoded again, 2.2 s).

@@ -155,6 +155,17 @@ set_tests_properties(volume_ply_encode PROPERTIES
     FIXTURES_REQUIRED volume_plys
     PASS_REGULAR_EXPRESSION "--cells 1: [0-9]+ x [0-9]+ x [0-9]+ cells.*--check over 2 pictures"
     LABELS gpe)
+# The same two frames as 400 slots each (`--slots`, a warm fit's pool not yet
+# full): their 300 gaussians and 100 dead slots, decoded again.
+add_test(NAME volume_ply_encode_slots
+    COMMAND athenea video-encode ${ATHENEA_VOLUME_PLY_DIR}/b.ply ${ATHENEA_VOLUME_PLY_DIR}/b_1.ply --each-a-frame
+            -o ${ATHENEA_VOLUME_PLY_DIR}/s.athv --order stable --slots 400 --range-group 2 --sh-degree 1 --geometry
+            --geometry-key 2 --geometry-predict 3 --volume 4 --check)
+set_tests_properties(volume_ply_encode_slots PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_REQUIRED volume_plys
+    PASS_REGULAR_EXPRESSION "2 frames of 400 splats.*--check over 2 pictures"
+    LABELS gpe)
 add_test(NAME materialx_root COMMAND athenea_usd_tests "[materialx_root]")
 set_tests_properties(materialx_root PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR};ATHENEA_MATERIALX_ROOT=${CMAKE_CURRENT_BINARY_DIR}/materialx_root"

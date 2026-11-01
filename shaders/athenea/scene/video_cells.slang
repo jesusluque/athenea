@@ -15,6 +15,8 @@
 //                     (subBits an axis, up to 10), and one count more for its cell
 //   videoCellDead     every slot a dead speck at its cell's middle
 //   videoCellScatter  the sorted splats into their slots
+//   videoPadSlots     a frame's splats kept in their slots, the slots past its
+//                     count dead specks at the origin (`--slots`)
 module video_cells;
 import athenea.common.packing;
 
@@ -121,4 +123,29 @@ void videoCellScatter(uint3 tid: SV_DispatchThreadID) {
     outPositions[d] = inPositions[s];
     for (uint w = 0; w < 4; ++w) outShape[d * 4 + w] = inShape[s * 4 + w];
     for (uint w = 0; w < p.shWords; ++w) outSh[d * p.shWords + w] = inSh[s * p.shWords + w];
+}
+
+/// `--slots`: slot t < count is the frame's splat t; every slot past it, up
+/// to `cells` (the slots a frame), a dead speck at the origin -- where a dead
+/// slot of `vdb2splat --cloud` stands -- with ln sigma `deadLogSigma`.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void videoPadSlots(uint3 tid: SV_DispatchThreadID) {
+    const CellParams p = cellParams;
+    const uint t = tid.x;
+    if (t >= p.cells) return;
+    if (t < p.count) {
+        outPositions[t] = inPositions[t];
+        for (uint w = 0; w < 4; ++w) outShape[t * 4 + w] = inShape[t * 4 + w];
+        for (uint w = 0; w < p.shWords; ++w) outSh[t * p.shWords + w] = inSh[t * p.shWords + w];
+        return;
+    }
+    outPositions[t] = float4(0.0, 0.0, 0.0, 0.0);
+    outShape[t * 4 + 0] = encodeQuaternion(float4(0.0, 0.0, 0.0, 1.0));
+    outShape[t * 4 + 1] = packHalves(0.0, 0.0);
+    outShape[t * 4 + 2] = packHalves(0.0, 0.5);
+    outShape[t * 4 + 3] = packHalves(0.5, 0.5);
+    for (uint w = 0; w < p.shWords; ++w) {
+        outSh[t * p.shWords + w] = w == 0 ? packHalves(p.deadLogSigma, 0.0) : 0u;
+    }
 }

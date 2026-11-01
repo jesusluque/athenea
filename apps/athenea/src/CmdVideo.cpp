@@ -411,6 +411,50 @@ struct CellOrder {
     }
 };
 
+/// A STABLE SLOT COUNT (`--slots N`, video_cells.slang's videoPadSlots): a
+/// sequence whose slots keep their gaussians but whose frames list fewer than
+/// N of them (a warm fit's pool still filling, the last slots of a frame
+/// unused) laid out as N a frame, the slots past a frame's count dead.
+struct SlotPad {
+    std::optional<gpu::ComputeKernel> pad;
+    uint32_t slots = 0;
+
+    Result<void> create(gpu::ShaderLibrary& lib, uint32_t n) {
+        auto made = gpu::ComputeKernel::create(lib, "athenea/scene/video_cells", "videoPadSlots");
+        if (!made) return std::move(made).error();
+        pad.emplace(std::move(*made));
+        slots = n;
+        return ok();
+    }
+
+    Result<scene::GpuSplats> padded(gpu::Device& device, const scene::GpuSplats& cloud) const {
+        if (cloud.count > slots) {
+            return Error::make(ErrorCode::InvalidArgument, "video-encode: --slots {}: a frame holds {} gaussians",
+                               slots, cloud.count);
+        }
+        auto out = video::PlanesCodec::allocate(device, slots, cloud.restPerColour, "video.slots");
+        if (!out) return std::move(out).error();
+        out->count = slots;
+        out->antialiased = cloud.antialiased;
+        out->linear = cloud.linear;
+        gpu::CommandBatch batch(device);
+        pad->dispatch(batch, {slots, 1, 1}, [&](rhi::ShaderCursor k) {
+            k["inPositions"].setBinding(cloud.positions.rhi());
+            k["inShape"].setBinding(cloud.shape.rhi());
+            k["inSh"].setBinding(cloud.sh.rhi());
+            k["outPositions"].setBinding(out->positions.rhi());
+            k["outShape"].setBinding(out->shape.rhi());
+            k["outSh"].setBinding(out->sh.rhi());
+            k["cellParams"]["count"].setData(cloud.count);
+            k["cellParams"]["shWords"].setData(out->shWords);
+            k["cellParams"]["cells"].setData(slots);
+            k["cellParams"]["deadLogSigma"].setData(-10.0F);
+        });
+        ATHENEA_TRY(batch.submit(true));
+        return std::move(*out);
+    }
+};
+
 struct Reducer {
     gpu::ShaderLibrary* library = nullptr;
     std::optional<lod::LodBuilder> builder;
@@ -987,6 +1031,7 @@ void addVideo(CLI::App& app) {
         std::string chromaWeight = "mean";
         double volume = 0.0;
         double cells = 0.0;
+        uint32_t slots = 0;
     };
     auto o = std::make_shared<Options>();
     auto* enc = app.add_subcommand("video-encode",
@@ -1044,6 +1089,11 @@ void addVideo(CLI::App& app) {
                     "dead (no extinction, no opacity); a side past the box is one cube: every frame in the Morton "
                     "order of the sequence's box, padded to the largest frame")
         ->check(CLI::PositiveNumber);
+    enc->add_option("--slots", o->slots,
+                    "with --order stable: every frame laid out as this many slots, its own gaussians first in their "
+                    "order and the slots past them dead (a speck at the origin, no extinction), for a sequence whose "
+                    "slots keep their gaussians but whose frames list fewer (a warm fit's pool still filling); a "
+                    "frame with more is an error");
     enc->add_option("--volume", o->volume,
                     "the splats are a medium's (vdb2splat --cloud, ATHENEA_VOLUME_PLY): marks the file so and "
                     "records this density scale, the extinction a unit of length of a sigma of one")
@@ -1188,6 +1238,14 @@ void addVideo(CLI::App& app) {
             reducer.score = std::move(*k);
         }
         const uint32_t restAsked = o->shDegree == 0 ? 0u : (o->shDegree + 1) * (o->shDegree + 1) - 1;
+        SlotPad slotPad;
+        if (o->slots != 0) {
+            if (o->order != "stable" || o->gaussians != 0 || o->cells > 0.0) {
+                cli::err("video-encode: --slots wants --order stable, and no --gaussians or --cells\n");
+                throw CLI::RuntimeError(kExitFailure);
+            }
+            if (auto r = slotPad.create(library, o->slots); !r) cli::fail(r.error());
+        }
         CellOrder cellOrder;
         if (o->cells > 0.0) {
             if (o->order != "stable" || o->gaussians != 0) {
@@ -1258,6 +1316,10 @@ void addVideo(CLI::App& app) {
             if (!cloud) cli::fail(cloud.error());
             if (o->cells > 0.0) {
                 cloud = cellOrder.lay(*cloud);
+                if (!cloud) cli::fail(cloud.error());
+            }
+            if (o->slots != 0) {
+                cloud = slotPad.padded(**device, *cloud);
                 if (!cloud) cli::fail(cloud.error());
             }
             if (o->gaussians != 0) {
