@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -196,5 +197,8 @@ private:
 /// The access unit and, on a key frame, its parameter sets as an Annex B
 /// stream (start codes), for a player or a probe to read.
 [[nodiscard]] std::vector<uint8_t> annexB(const AthvFrame& frame);
+/// The same from a unit and its parameter sets (none on a predicted frame).
+[[nodiscard]] std::vector<uint8_t> annexB(std::span<const uint8_t> unit,
+                                          const std::vector<std::vector<uint8_t>>& parameterSets);
 
 }   // namespace athenea::video

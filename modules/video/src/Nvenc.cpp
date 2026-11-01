@@ -36,9 +36,9 @@
 #include <cstring>
 #include <mutex>
 
-#include <ffnvcodec/dynlink_cuda.h>
 #include <ffnvcodec/nvEncodeAPI.h>
 
+#include "Cuda.h"
 #include "athenea/core/Platform.h"
 #include "athenea/gpu/Device.h"
 
@@ -47,42 +47,20 @@ namespace {
 
 #if defined(_WIN32)
 constexpr const char* kEncodeLibrary = "nvEncodeAPI64.dll";
-constexpr const char* kCudaLibrary = "nvcuda.dll";
 #else
 constexpr const char* kEncodeLibrary = "libnvidia-encode.so.1";
-constexpr const char* kCudaLibrary = "libcuda.so.1";
 #endif
 
-// The two the dynlink header has no typedef for.
-typedef CUresult CUDAAPI tcuMemsetD8Async_(CUdeviceptr, unsigned char, size_t, CUstream);
-typedef CUresult CUDAAPI tcuMemsetD16Async_(CUdeviceptr, unsigned short, size_t, CUstream);
 typedef NVENCSTATUS NVENCAPI tNvEncodeAPICreateInstance(NV_ENCODE_API_FUNCTION_LIST*);
 typedef NVENCSTATUS NVENCAPI tNvEncodeAPIGetMaxSupportedVersion(uint32_t*);
 
-/// The driver's entry points, loaded once a process.
+/// The encoder's entry points, loaded once a process, beside the CUDA
+/// driver's (Cuda.h).
 struct Driver {
-    platform::SharedLibrary      cudaLibrary, encodeLibrary;
-    tcuInit*                     cuInit = nullptr;
-    tcuDeviceGet*                cuDeviceGet = nullptr;
-    tcuDevicePrimaryCtxRetain*   cuDevicePrimaryCtxRetain = nullptr;
-    tcuDevicePrimaryCtxRelease*  cuDevicePrimaryCtxRelease = nullptr;
-    tcuCtxPushCurrent_v2*        cuCtxPushCurrent = nullptr;
-    tcuCtxPopCurrent_v2*         cuCtxPopCurrent = nullptr;
-    tcuMemAllocPitch_v2*         cuMemAllocPitch = nullptr;
-    tcuMemFree_v2*               cuMemFree = nullptr;
-    tcuMemcpy2DAsync_v2*         cuMemcpy2DAsync = nullptr;
-    tcuMemsetD8Async_*           cuMemsetD8Async = nullptr;
-    tcuMemsetD16Async_*          cuMemsetD16Async = nullptr;
-    tcuStreamSynchronize*        cuStreamSynchronize = nullptr;
-    tcuGetErrorName*             cuGetErrorName = nullptr;
-    NV_ENCODE_API_FUNCTION_LIST  nvenc{};
+    const cuda::Driver*         cuda = nullptr;
+    platform::SharedLibrary     encodeLibrary;
+    NV_ENCODE_API_FUNCTION_LIST nvenc{};
 };
-
-template <typename F>
-bool bind(const platform::SharedLibrary& library, F*& to, const char* name) {
-    to = reinterpret_cast<F*>(library.symbol(name));
-    return to != nullptr;
-}
 
 Result<Driver*> driver() {
     static std::mutex          guard;
@@ -94,24 +72,12 @@ Result<Driver*> driver() {
     if (tried) return failed;
     tried = true;
     auto d = std::make_unique<Driver>();
-    auto cuda = platform::SharedLibrary::open(kCudaLibrary);
-    if (!cuda) {
-        failed = Error::make(ErrorCode::Unsupported, "video: no NVIDIA driver for NVENC ({})", cuda.error().message());
+    auto c = cuda::driver("NVENC");
+    if (!c) {
+        failed = c.error();
         return failed;
     }
-    d->cudaLibrary = std::move(*cuda);
-    const platform::SharedLibrary& c = d->cudaLibrary;
-    if (!bind(c, d->cuInit, "cuInit") || !bind(c, d->cuDeviceGet, "cuDeviceGet") ||
-        !bind(c, d->cuDevicePrimaryCtxRetain, "cuDevicePrimaryCtxRetain") ||
-        !bind(c, d->cuDevicePrimaryCtxRelease, "cuDevicePrimaryCtxRelease_v2") ||
-        !bind(c, d->cuCtxPushCurrent, "cuCtxPushCurrent_v2") || !bind(c, d->cuCtxPopCurrent, "cuCtxPopCurrent_v2") ||
-        !bind(c, d->cuMemAllocPitch, "cuMemAllocPitch_v2") || !bind(c, d->cuMemFree, "cuMemFree_v2") ||
-        !bind(c, d->cuMemcpy2DAsync, "cuMemcpy2DAsync_v2") || !bind(c, d->cuMemsetD8Async, "cuMemsetD8Async") ||
-        !bind(c, d->cuMemsetD16Async, "cuMemsetD16Async") ||
-        !bind(c, d->cuStreamSynchronize, "cuStreamSynchronize") || !bind(c, d->cuGetErrorName, "cuGetErrorName")) {
-        failed = Error(ErrorCode::Unsupported, "video: the CUDA driver lacks an entry point NVENC needs");
-        return failed;
-    }
+    d->cuda = *c;
     auto enc = platform::SharedLibrary::open(kEncodeLibrary);
     if (!enc) {
         failed = Error::make(ErrorCode::Unsupported, "video: no NVENC in this driver ({})", enc.error().message());
@@ -120,8 +86,8 @@ Result<Driver*> driver() {
     d->encodeLibrary = std::move(*enc);
     tNvEncodeAPIGetMaxSupportedVersion* maxVersion = nullptr;
     tNvEncodeAPICreateInstance* create = nullptr;
-    if (!bind(d->encodeLibrary, maxVersion, "NvEncodeAPIGetMaxSupportedVersion") ||
-        !bind(d->encodeLibrary, create, "NvEncodeAPICreateInstance")) {
+    if (!cuda::bind(d->encodeLibrary, maxVersion, "NvEncodeAPIGetMaxSupportedVersion") ||
+        !cuda::bind(d->encodeLibrary, create, "NvEncodeAPICreateInstance")) {
         failed = Error(ErrorCode::Unsupported, "video: the NVENC library has no NvEncodeAPICreateInstance");
         return failed;
     }
@@ -138,28 +104,9 @@ Result<Driver*> driver() {
         failed = Error(ErrorCode::Unsupported, "video: NvEncodeAPICreateInstance failed");
         return failed;
     }
-    if (d->cuInit(0) != CUDA_SUCCESS) {
-        failed = Error(ErrorCode::Unsupported, "video: cuInit failed (no CUDA device)");
-        return failed;
-    }
     loaded = std::move(d);
     return loaded.get();
 }
-
-/// The context current on this thread while it lives.
-class Pushed {
-public:
-    Pushed(const Driver& d, CUcontext context) : d_(d) { d_.cuCtxPushCurrent(context); }
-    ~Pushed() {
-        CUcontext popped = nullptr;
-        d_.cuCtxPopCurrent(&popped);
-    }
-    Pushed(const Pushed&) = delete;
-    Pushed& operator=(const Pushed&) = delete;
-
-private:
-    const Driver& d_;
-};
 
 /// The NAL unit type of an HEVC NAL unit's first header byte.
 uint32_t nalType(uint8_t first) { return (first >> 1u) & 0x3Fu; }
@@ -168,15 +115,15 @@ class NvEncoder final : public VideoEncoder {
 public:
     ~NvEncoder() override {
         if (d_ == nullptr) return;
-        const Pushed pushed(*d_, context_);
+        const cuda::Pushed pushed(*d_->cuda, context_);
         const NV_ENCODE_API_FUNCTION_LIST& f = d_->nvenc;
         if (encoder_ != nullptr) {
             if (registered_ != nullptr) f.nvEncUnregisterResource(encoder_, registered_);
             if (bitstream_ != nullptr) f.nvEncDestroyBitstreamBuffer(encoder_, bitstream_);
             f.nvEncDestroyEncoder(encoder_);
         }
-        if (input_ != 0) d_->cuMemFree(input_);
-        if (primary_) d_->cuDevicePrimaryCtxRelease(cudaDevice_);
+        if (input_ != 0) d_->cuda->cuMemFree(input_);
+        if (primary_) d_->cuda->cuDevicePrimaryCtxRelease(cudaDevice_);
     }
 
     static Result<std::unique_ptr<VideoEncoder>> create(const EncoderSettings& s) {
@@ -203,8 +150,8 @@ public:
             e->takesDevice_ = e->context_ != nullptr;
         }
         if (e->context_ == nullptr) {
-            if (d->cuDeviceGet(&e->cudaDevice_, 0) != CUDA_SUCCESS ||
-                d->cuDevicePrimaryCtxRetain(&e->context_, e->cudaDevice_) != CUDA_SUCCESS) {
+            if (d->cuda->cuDeviceGet(&e->cudaDevice_, 0) != CUDA_SUCCESS ||
+                d->cuda->cuDevicePrimaryCtxRetain(&e->context_, e->cudaDevice_) != CUDA_SUCCESS) {
                 return Error(ErrorCode::Unsupported, "video: no CUDA device for NVENC");
             }
             e->primary_ = true;
@@ -225,7 +172,7 @@ public:
             return Error::make(ErrorCode::InvalidArgument, "video: {} bytes of chroma for {} x {}", chroma.size(),
                                s.width, s.height);
         }
-        const Pushed pushed(*d_, context_);
+        const cuda::Pushed pushed(*d_->cuda, context_);
         ATHENEA_TRY(copyIn(CU_MEMORYTYPE_HOST, luma.data(), 0, row, s.height, 0));
         if (!chroma.empty()) {
             ATHENEA_TRY(copyIn(CU_MEMORYTYPE_HOST, chroma.data(), 0, row, s.height / 2, chromaOffset()));
@@ -251,7 +198,7 @@ public:
             if (!c) return std::move(c).error();
             chroma = *c;
         }
-        const Pushed pushed(*d_, context_);
+        const cuda::Pushed pushed(*d_->cuda, context_);
         ATHENEA_TRY(copyIn(CU_MEMORYTYPE_DEVICE, nullptr, *luma + p.lumaOffset, p.lumaPitch != 0 ? p.lumaPitch : row,
                            s.height, 0));
         if (p.chroma != nullptr) {
@@ -269,7 +216,7 @@ public:
     Result<std::vector<EncodedUnit>> finish() override {
         // No B pictures and no look-ahead: every frame came out with its own
         // call, and the end of the stream flushes nothing.
-        const Pushed pushed(*d_, context_);
+        const cuda::Pushed pushed(*d_->cuda, context_);
         NV_ENC_PIC_PARAMS eos{};
         eos.version = NV_ENC_PIC_PARAMS_VER;
         eos.encodePicFlags = NV_ENC_PIC_FLAG_EOS;
@@ -295,14 +242,7 @@ private:
                            last != nullptr && *last != '\0' ? ": " : "", last != nullptr ? last : "");
     }
 
-    Result<void> cuda(CUresult r, const char* what) const {
-        if (r == CUDA_SUCCESS) return ok();
-        const char* name = nullptr;
-        d_->cuGetErrorName(r, &name);
-        constexpr int kOutOfMemory = 2;   // CUDA_ERROR_OUT_OF_MEMORY
-        return Error::make(static_cast<int>(r) == kOutOfMemory ? ErrorCode::OutOfMemory : ErrorCode::DeviceFailure,
-                           "video: CUDA failed at {} ({})", what, name != nullptr ? name : "?");
-    }
+    Result<void> cuda(CUresult r, const char* what) const { return cuda::check(*d_->cuda, r, what); }
 
     Result<CUdeviceptr> devicePointer(rhi::IBuffer* buffer) const {
         rhi::NativeHandle handle;
@@ -327,25 +267,25 @@ private:
         c.dstPitch = pitch_;
         c.WidthInBytes = size_t{settings_.width} * sample();
         c.Height = rows;
-        ATHENEA_TRY(cuda(d_->cuMemcpy2DAsync(&c, stream_), "the copy into the encoder's input"));
-        return cuda(d_->cuStreamSynchronize(stream_), "the copy into the encoder's input");
+        ATHENEA_TRY(cuda(d_->cuda->cuMemcpy2DAsync(&c, stream_), "the copy into the encoder's input"));
+        return cuda(d_->cuda->cuStreamSynchronize(stream_), "the copy into the encoder's input");
     }
 
     /// The second plane at mid grey: 128, or 0x8000 as P010 holds 512.
     Result<void> grey() {
         if (greyed_) return ok();
         const size_t bytes = size_t{pitch_} * (settings_.height / 2);
-        const CUresult r = sample() == 1 ? d_->cuMemsetD8Async(input_ + chromaOffset(), 128, bytes, stream_)
-                                         : d_->cuMemsetD16Async(input_ + chromaOffset(), 0x8000, bytes / 2, stream_);
+        const CUresult r = sample() == 1 ? d_->cuda->cuMemsetD8Async(input_ + chromaOffset(), 128, bytes, stream_)
+                                         : d_->cuda->cuMemsetD16Async(input_ + chromaOffset(), 0x8000, bytes / 2, stream_);
         ATHENEA_TRY(cuda(r, "the grey chroma"));
-        ATHENEA_TRY(cuda(d_->cuStreamSynchronize(stream_), "the grey chroma"));
+        ATHENEA_TRY(cuda(d_->cuda->cuStreamSynchronize(stream_), "the grey chroma"));
         greyed_ = true;
         return ok();
     }
 
     Result<void> open() {
         const EncoderSettings& s = settings_;
-        const Pushed pushed(*d_, context_);
+        const cuda::Pushed pushed(*d_->cuda, context_);
         const NV_ENCODE_API_FUNCTION_LIST& f = d_->nvenc;
         NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS session{};
         session.version = NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER;
@@ -426,7 +366,7 @@ private:
 
         // The input: one pitched allocation, luma then the second plane.
         size_t pitch = 0;
-        ATHENEA_TRY(cuda(d_->cuMemAllocPitch(&input_, &pitch, size_t{s.width} * sample(), size_t{s.height} * 3 / 2, 16),
+        ATHENEA_TRY(cuda(d_->cuda->cuMemAllocPitch(&input_, &pitch, size_t{s.width} * sample(), size_t{s.height} * 3 / 2, 16),
                          "the encoder's input"));
         pitch_ = static_cast<uint32_t>(pitch);
         format_ = s.bits > 8 ? NV_ENC_BUFFER_FORMAT_YUV420_10BIT : NV_ENC_BUFFER_FORMAT_NV12;

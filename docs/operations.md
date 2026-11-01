@@ -558,7 +558,7 @@ decoder takes loses nothing. The file is a `.athv` (§8.2).
 | `--rendition` | 0..65535 | `0` | the id every record carries, one a rendition of a ladder (`athv_stream.py`) |
 | `--rate` | frames a second | the sequence's, or 30 | stored in the file; `athenea stream` plays at it |
 | `--hevc` | path | none | the video alone as Annex B, for `ffprobe`; its pictures are planes, not an image |
-| `--check` | flag | off | each picture decoded again by the hardware decoder, turned back into splats on the device and measured against its source. Needs a hardware decoder: where there is none (Linux, Windows) it is refused, saying so -- check there with `--units` |
+| `--check` | flag | off | each picture decoded again by the hardware decoder, turned back into splats on the device and measured against its source. Needs a hardware decoder (VideoToolbox, NVDEC): where there is none (no NVIDIA driver on Linux or Windows) it is refused, saying so -- check there with `--units` |
 | `--units` | `.athv` | none | the video's units from this file -- another machine's encoder, the same frames and the same options -- instead of this machine's encoder; with `--check`, that encoder's stream through this machine's decoder against the same source. A file whose pictures are laid otherwise (bits, colours, tiles) is refused |
 | `--each-a-frame` | flag | off | the splat files given are a sequence, each file one frame in the order given; without it they are the pages of one frame |
 
@@ -592,6 +592,15 @@ the engine's own context and takes the planes where the kernels laid them, so
 they are not read back: the header line says `encoder hardware, from device
 memory`. Both write HEVC Main (Main 10 at `--bits 10`), 4:2:0, full range in
 the VUI, I and P pictures only.
+
+**Where it decodes** (`--check`, `video-decode`, `stream`). macOS:
+VideoToolbox. Linux and Windows: NVDEC, through the driver's own library
+(`libnvcuvid.so.1`, `nvcuvid.dll`) opened at run time, the same driver NVENC
+wants, on the CUDA device's own context; the picture is copied on the device
+into the planes' textures, never to the CPU. Without a CUDA device (another
+backend) the decoder opens but its frames cannot be made textures, which is
+refused (`Unsupported`). Both refuse a stream whose SPS says video range
+(16-235).
 
 ### 2.7.3 `athenea video-decode` — a video's frames decoded and timed
 

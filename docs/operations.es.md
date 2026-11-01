@@ -571,7 +571,7 @@ exacta, la baja por el códec. La croma se queda en gris medio, así que el
 | `--rendition` | 0..65535 | `0` | el id que lleva cada registro, uno por rendición de una escalera (`athv_stream.py`) |
 | `--rate` | frames por segundo | el de la secuencia, o 30 | se guarda en el fichero; `athenea stream` lo reproduce a ese ritmo |
 | `--hevc` | ruta | ninguna | el vídeo solo como Annex B, para `ffprobe`; sus imágenes son planos, no una imagen |
-| `--check` | flag | no | cada imagen se decodifica otra vez con el decodificador hardware, vuelve a gaussianas en el dispositivo y se mide contra su fuente. Necesita un decodificador hardware: donde no lo hay (Linux, Windows) se rechaza diciéndolo; allí se comprueba con `--units` |
+| `--check` | flag | no | cada imagen se decodifica otra vez con el decodificador hardware, vuelve a gaussianas en el dispositivo y se mide contra su fuente. Necesita un decodificador hardware (VideoToolbox, NVDEC): donde no lo hay (sin driver de NVIDIA en Linux o Windows) se rechaza diciéndolo; allí se comprueba con `--units` |
 | `--units` | `.athv` | ninguno | las unidades del vídeo tomadas de este fichero -- el codificador de otra máquina, los mismos frames y las mismas opciones -- en lugar del codificador de esta máquina; con `--check`, el flujo de ese codificador por el decodificador de esta máquina contra la misma fuente. Un fichero cuyas imágenes se disponen de otro modo (bits, colores, tiles) se rechaza |
 | `--each-a-frame` | flag | no | los ficheros de splats dados son una secuencia, cada fichero un frame en el orden dado; sin él son las páginas de un frame |
 
@@ -607,6 +607,15 @@ motor y toma los planos donde los dejaron los kernels, así que no se leen de
 vuelta: la línea de cabecera dice `encoder hardware, from device memory`.
 Ambos escriben HEVC Main (Main 10 con `--bits 10`), 4:2:0, rango completo en
 la VUI, solo imágenes I y P.
+
+**Dónde decodifica** (`--check`, `video-decode`, `stream`). macOS:
+VideoToolbox. Linux y Windows: NVDEC, mediante la biblioteca propia del driver
+(`libnvcuvid.so.1`, `nvcuvid.dll`) abierta en tiempo de ejecución, el mismo
+driver que pide NVENC, sobre el propio contexto del dispositivo CUDA; la imagen
+se copia en el dispositivo a las texturas de los planos, nunca a la CPU. Sin un
+dispositivo CUDA (otro backend) el decodificador se abre pero sus frames no
+pueden hacerse texturas, y eso se rechaza (`Unsupported`). Ambos rechazan un
+flujo cuyo SPS dice rango de vídeo (16-235).
 
 ### 2.7.3 `athenea video-decode` — los frames de un vídeo, decodificados y cronometrados
 
