@@ -1527,13 +1527,43 @@ void v2sBinSort(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
 
 /// The flow at a point (voxels a frame), at the voxel under it; zero outside
 /// the leaves.
-float3 flowAt(float3 p) {
+float3 flowAt(float3 p, out bool has) {
     const int3 ijk = int3(floor(p));
     const int leaf = leafAtCell(floorDiv8(ijk) - params.cellLo.xyz);
+    has = false;
     if (leaf < 0) return float3(0.0);
     const uint3 c = uint3(ijk - leafOrigin(uint(leaf)));
     const float4 v = velocity[uint(leaf) * params.leafEntries + 1 + voxelIndex(c)];
-    return v.w > 0.5 ? v.xyz : float3(0.0);
+    has = v.w > 0.5;
+    return has ? v.xyz : float3(0.0);
+}
+/// The flow where a gaussian stands, reaching past the flow's edge: a sparse
+/// flow (a simulation's, active where its density is) laid on this frame's
+/// voxels has none where the frame before's density has gone, and a gaussian
+/// there would stay behind while the ones inside move on and pile onto it.
+/// Where the voxel has none, the mean of its neighbours' within two voxels.
+float3 flowAt(float3 p) {
+    bool has;
+    const float3 v = flowAt(p, has);
+    if (has) return v;
+    for (int r = 1; r <= 2; ++r) {
+        float3 sum = float3(0.0);
+        float count = 0.0;
+        for (int dz = -r; dz <= r; ++dz) {
+            for (int dy = -r; dy <= r; ++dy) {
+                for (int dx = -r; dx <= r; ++dx) {
+                    bool near;
+                    const float3 w = flowAt(p + float3(dx, dy, dz), near);
+                    if (near) {
+                        sum += w;
+                        count += 1.0;
+                    }
+                }
+            }
+        }
+        if (count > 0.0) return sum / count;
+    }
+    return float3(0.0);
 }
 
 /// One thread a slot: the frame before's gaussian in its own slot -- carried
@@ -1564,13 +1594,48 @@ void v2sWarm(uint3 tid: SV_DispatchThreadID) {
         const float3 moved = g.mu + dt * flowAt(mid);
         // The gradient by central differences a voxel apart; its columns
         // are the flow's derivative along each axis.
+        // Only where the flow is: a neighbour with none (outside the active
+        // voxels, where a sparse flow such as a simulation's stops) gives a
+        // one-sided difference, two give none -- the flow's edge read as zero
+        // made gradients of the whole velocity over a voxel there.
         float3x3 f = float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1);
+        bool hereHas;
+        const float3 here = flowAt(g.mu, hereHas);
         for (uint k = 0; k < 3; ++k) {
             float3 e = float3(0.0);
             e[k] = 1.0;
-            const float3 du = 0.5 * (flowAt(g.mu + e) - flowAt(g.mu - e));
+            bool upHas, downHas;
+            const float3 up = flowAt(g.mu + e, upHas);
+            const float3 down = flowAt(g.mu - e, downHas);
+            float3 du = float3(0.0);
+            if (upHas && downHas) du = 0.5 * (up - down);
+            else if (upHas && hereHas) du = up - here;
+            else if (downHas && hereHas) du = here - down;
             f[0][k] += dt * du.x; f[1][k] += dt * du.y; f[2][k] += dt * du.z;
         }
+        // A step the deformation cannot take as a linear map (a volume
+        // change past a factor of two, or a fold) keeps the shape: the centre
+        // alone is carried. Otherwise the shape keeps its volume (F over the
+        // cube root of its determinant): a simulation's gradient a voxel wide
+        // is noisy, and its volume changes, compounded frame after frame,
+        // shrank gaussians whose mass was kept until the density they gave
+        // was several times the grid's (an incompressible flow changes no
+        // volume anyway).
+        const float detF = determinant(f);
+        if (detF > 0.5 && detF < 2.0) f = f * (1.0 / pow(detF, 1.0 / 3.0));
+        // And a step whose gradient is steep (dt grad u past 0.25 in its
+        // Frobenius norm: a simulation's turbulence a voxel wide, noise to a
+        // gaussian of several) carries the centre alone -- shears taken from
+        // it, frame after frame, drew gaussians into needles. A rigid turn
+        // or a smooth flow stays under it.
+        float shear = 0.0;
+        for (uint r = 0; r < 3; ++r) {
+            for (uint c = 0; c < 3; ++c) {
+                const float d = f[r][c] - (r == c ? 1.0 : 0.0);
+                shear += d * d;
+            }
+        }
+        const bool smooth = shear < 0.0625;
         const float b00 = 1.0 / g.a00, b11 = 1.0 / g.a11, b22 = 1.0 / g.a22;
         const float b10 = -g.a10 * b00 / g.a11;
         const float b21 = -g.a21 * b11 / g.a22;
@@ -1580,7 +1645,7 @@ void v2sWarm(uint3 tid: SV_DispatchThreadID) {
         const float mass = g.sigma * kTwoPi32 / (g.a00 * g.a11 * g.a22);
         Gauss n = gaussFromCovariance(moved, mass, sigma[0][0], sigma[0][1], sigma[0][2], sigma[1][1], sigma[1][2],
                                       sigma[2][2]);
-        if (holdFactor(n)) g = n;
+        if (smooth && detF > 0.5 && detF < 2.0 && holdFactor(n)) g = n;
         else g.mu = moved;
     }
     holdFactor(g);

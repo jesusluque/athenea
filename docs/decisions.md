@@ -17685,6 +17685,55 @@ The temperature does not follow the fit's settings: at 200k, 60 attribute steps 
 0.2319, both 0.2308, against 0.2336 -- one temperature a gaussian is its floor, and only more gaussians lower it.
 The compact record at 200k is 4.00 MB (20 B a gaussian) against 13.2 MB of usdc and 13.5 MB of `.vdb`.
 
+### Sequences with a simulation's velocity (1 Nov, round 2)
+
+Two Mantaflow bakes (Blender 5.3): an explosion, 128 x 128 x 192, and a smoke plume, 80 x 80 x 160, 120 frames each
+at 24 fps, `density`, `temperature`, `flame` and `velocity` -- a staggered (MAC) vec3 grid in cells a Mantaflow time
+unit, active where the density is; the active voxels change every frame. What a sequence needed for them:
+
+- **`--velocity NAME`** (default `vel`) and **`--velocity-units world|mantaflow`** with **`--fps`**: Mantaflow's
+  cells a time unit, of which a frame is 0.1 x 25 / fps (0.10417 at 24) -- no voxel size enters; `world` keeps
+  world units a frame over the voxel. A grid of class `staggered` (read from the header, `NanoGrid::staggered`)
+  has each component on its voxel's lower face: the voxel's own is the mean of its two faces (`vsPackLeaves`).
+- **The flow on the frame's own leaves.** The frame before's flow was packed on the frame before's leaves and read
+  through the current frame's leaf map, so wherever the topology changed (every frame here) it was read from the
+  wrong voxels or not at all. It is now laid on the current frame's active voxels when the frame is fitted, and a
+  gaussian on a voxel with none takes the mean of its neighbours' within two voxels.
+- **Flicker and slots kept every frame**: the frame before's original density resampled onto the current leaves
+  (a new kind of `vsFixture`, `VolumeSplats::resample`) and its gaussians evaluated there; before, both were
+  reported only when two frames had the same leaves. The blob fixture's figures are unchanged (0.02244 / 0.27405).
+- **The deformation of a carried gaussian.** The flow's gradient at the edge of a sparse flow read the outside as
+  zero -- a whole velocity over a voxel -- and F = I + dt grad u crushed gaussians there: the explosion's warm fit
+  went to a relative L2 of 26.8. Now: one-sided differences where a neighbour has no flow; a step whose det F
+  leaves (0.5, 2) or whose dt grad u is past 0.25 (Frobenius) carries the centre alone; otherwise F keeps the
+  volume. With volume kept but every gradient taken, the carried start still drifted (explosion frames 20-27,
+  no warm step: 0.68 after one frame, 3.4 after seven) -- turbulence a voxel wide sheared gaussians into needles;
+  with the gate, 0.60 then 0.84, against 0.47 then 1.17 not carried. The blob fixture (a rigid turn) is under the
+  gate: 0.02262 against 0.02244.
+- **`--prune-mass`, `--warm-prune-mass`** (new; the effect's `pruneMass`, 1e-6): a warm frame keeps every slot,
+  so its densify rounds have none to give to new density; a larger floor frees slots there.
+
+Measured (release, M5 Pro, the shared GPU lock -- shared with another agent's jobs --, the Mac's interactive use not
+known; 20k gaussians; `~/luc/athenea-gpu/sim*.sh`), mean over the frames / last frame / flicker / fit s a frame:
+
+| | explosion, frames 5-34 | plume, frames 30-59 |
+|---|---|---|
+| independent | 0.0235 / 0.061 / 0.061 / 0.24 | 0.0109 / 0.016 / 0.031 / 0.19 |
+| warm, not carried (30 Adam steps) | 0.639 / 0.508 / 1.461 / 0.22 | 0.472 / 0.414 / 1.340 / 0.11 |
+| warm, carried (before the fixes above) | 26.8 / 36.4 / 21.7 / 1.77 | 0.380 / 0.332 / 1.130 / 0.23 |
+| warm, carried, 30 Adam steps (fixed) | 0.287 / 0.321 / 0.773 / 0.36 | |
+| warm, carried, 10 EM + 60 Adam | 0.068 / 0.097 / 0.187 / 0.27 | |
+| warm, carried, 40 EM + 100 Adam at 0.1, `--warm-prune-mass 1e-5` | 0.0320 / 0.057 / 0.089 / 0.38 | |
+
+A warm frame does not keep up with these: the density changes too much in a frame (not carried, one frame later
+the error is 0.47 on the explosion and 0.38 on the plume, from 0.017 and 0.009), and only a full fit's steps from
+the carried start come near the independent fits -- 36 % further, with more flicker, and slower. More Adam steps
+alone made it worse (60 steps 0.89 against 30 steps 0.78, both with `--warm-prune-mass 3e-5`, before the gate),
+more EM better: the warm frame's Adam,
+whose moments start at zero and whose steps are normalised, moves every parameter whatever its gradient. Not done:
+EM-only warm frames; the carried start at a coarser floor (`--min-std`) for these; recycling slots by contribution
+rather than mass.
+
 ### Bytes a gaussian: the compact record (1 Nov)
 
 Proposal 104's lane, gaussians and quantisation only. `--quantise half|byte` quantises the fit's records

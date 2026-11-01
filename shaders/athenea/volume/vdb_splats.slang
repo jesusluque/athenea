@@ -155,10 +155,26 @@ void vsPackLeaves(uint3 tid: SV_DispatchThreadID) {
     if (params.kind == 3) {
         // THE VELOCITY, in voxels a frame (`motion.w` scales the grid's own
         // units), at the density's voxels: what a warm start advects by.
+        // A STAGGERED grid (`motion.x` 1, OpenVDB's GRID_STAGGERED, a MAC
+        // grid such as Mantaflow's): each component of voxel ijk lies on its
+        // lower face, so the voxel's own is the mean of its two faces', the
+        // upper one the next voxel's along that axis (its own where the next
+        // voxel holds none).
         float3 vel = float3(0.0);
         if (params.colourWord != kNone && addressIn(params.colourWord, PNANOVDB_GRID_TYPE_VEC3F, ijk, at)) {
             vel = float3(pnanovdb_read_float(words, at), pnanovdb_read_float(words, pnanovdb_address_offset(at, 4u)),
-                         pnanovdb_read_float(words, pnanovdb_address_offset(at, 8u))) * params.motion.w;
+                         pnanovdb_read_float(words, pnanovdb_address_offset(at, 8u)));
+            if (params.motion.x > 0.5) {
+                for (uint k = 0; k < 3; ++k) {
+                    int3 next = ijk;
+                    next[k] += 1;
+                    pnanovdb_address_t up;
+                    if (addressIn(params.colourWord, PNANOVDB_GRID_TYPE_VEC3F, next, up)) {
+                        vel[k] = 0.5 * (vel[k] + pnanovdb_read_float(words, pnanovdb_address_offset(up, 4u * k)));
+                    }
+                }
+            }
+            vel *= params.motion.w;
         }
         leavesOut[i * kLeafEntries + 1 + n] = float4(vel, active ? 1.0 : 0.0);
         return;
@@ -293,6 +309,20 @@ void vsFixture(uint3 tid: SV_DispatchThreadID) {
     const pnanovdb_leaf_handle_t leaf = leafOf(params.densityWord, i, PNANOVDB_GRID_TYPE_FLOAT);
     if (!pnanovdb_leaf_get_value_mask(words, leaf, n)) return;
     const int3 ijk = originOf(leaf) + int3(int(n >> 6), int((n >> 3) & 7u), int(n & 7u));
+    if (params.kind == 4) {
+        // ANOTHER FRAME'S DENSITY ON THIS TOPOLOGY: the grid at
+        // `temperatureWord` read at each of this grid's active voxels (0 where
+        // it has none), written over this grid's values -- a sequence's frame
+        // before, on the leaves of the frame after, for its flicker.
+        float before = 0.0;
+        pnanovdb_address_t bAt;
+        if (params.temperatureWord != kNone && addressIn(params.temperatureWord, PNANOVDB_GRID_TYPE_FLOAT, ijk, bAt)) {
+            before = pnanovdb_read_float(words, bAt);
+        }
+        const pnanovdb_address_t at = pnanovdb_leaf_get_table_address(PNANOVDB_GRID_TYPE_FLOAT, words, leaf, n);
+        wordsOut[at.byte_offset / 4u] = asuint(before);
+        return;
+    }
     float3 x = float3(ijk) + 0.5;
     if (params.kind == 2) {
         // A SEQUENCE'S FRAME: the blob carried by a known flow, a turn about

@@ -401,6 +401,7 @@ Result<NanoGrid> readVdbVec3Grid(const std::filesystem::path& path, const std::s
     NanoGrid out;
     out.name = base->getName();
     out.components = 3;
+    out.staggered = base->getGridClass() == openvdb::GRID_STAGGERED;
     out.words.resize((handle.size() + 3) / 4, 0u);
     std::memcpy(out.words.data(), handle.data(), handle.size());
     out.leafCount = handle.gridMetaData() != nullptr ? handle.gridMetaData()->nodeCount(0) : 0;
