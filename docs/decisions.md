@@ -16967,6 +16967,11 @@ of the quadrature (0.00572 against 0.03594, every case), and the strip's floor r
 - The showcase (eight strips, a MeshLightAPI lamp, a box; 1024 x 576) in closed form against 1024 paths of
   direct light: relMSE 7.58e-4.
 - A still stage drawn twice: 0 words differ.
+- An emitter's own triangles are not lit by its cluster: the closed form over a polygon that holds the
+  receiving point in its own plane sums to the whole hemisphere, so an emissive quad rasterised read its
+  emission plus its albedo times its own radiance (the mapped quad of `emissive_conversions_render_like_the_mesh`:
+  mean 0.911 against the path traced 0.782). A point within a thousandth of the rectangle's half size of its
+  plane, inside its triangles' box, takes nothing from it, as one in the plane sees it edge on.
 
 #### Not done (stage B)
 

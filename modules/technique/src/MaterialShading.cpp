@@ -218,6 +218,15 @@ float3 meshClosedForm(uint2 tid, float3 p, float3 n, float3 toEye, float shadow,
         const float3 x = m.axisX * m.halfX;
         const float3 y = m.axisY * m.halfY;
         const float3 q = m.centre - p;
+        // A point in the rectangle's own plane sees it edge on and takes
+        // nothing from it. The closed form does not know that: for a point
+        // inside a coplanar polygon its edge sum is the whole hemisphere, so an
+        // emitter's own triangles would be lit by their own light, on top of
+        // the emission they already show.
+        const float reach = 1.0e-3 * max(max(m.halfX, m.halfY), 1.0e-6);
+        if (abs(dot(q, m.normal)) <= reach && all(p >= m.lo - reach) && all(p <= m.hi + reach)) {
+            continue;
+        }
         const float3 p0 = q - x - y;
         const float3 p1 = q + x - y;
         const float3 p2 = q + x + y;
