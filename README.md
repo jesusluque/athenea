@@ -122,12 +122,12 @@ Improvements are made in the master, and the web format is derived again. The
 
 | Where | What | Folder |
 |---|---|---|
-| Command line | `athenea`: render, stage, view, mesh2splat, convert, compare, aofx, … | `apps/athenea` |
+| Command line | `athenea`: render, stage, view, mesh2splat, vdb2splat, video-encode, stream, convert, compare, aofx, … | `apps/athenea` |
 | Any USD application | `hdAthenea`, the Hydra render delegate (`PXR_PLUGINPATH_NAME=<build>/plugin/usd`) | `modules/usd` |
 | Blender 5.3 | an add-on: athenea as a render engine, mesh2splat and export operators | `integrations/blender` |
 | Nuke, Natron | an OpenFX node: the relit asset through the shot camera, with RGBA, depth, P and Cryptomatte | `integrations/ofx` |
 | AI agents | `athenea-mcp`, an MCP server over a warm stage | `apps/athenea-mcp` |
-| AOFX hosts | effect bundles (mesh2splat, measure, …) at ABI 25 | `plugins/` |
+| AOFX hosts | effect bundles (mesh2splat, vdb2splat, measure, …) at ABI 25 | `plugins/` |
 
 ## Platforms
 

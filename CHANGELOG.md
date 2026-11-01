@@ -8,6 +8,36 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **Volumes**: OpenVDB and Field3D fields through Hydra, every field a volume
+  names (up to eight) in its own value type, level sets read as fogs,
+  instanced volumes, light linking in a medium, a least recently used grid
+  cache (`athenea:volumeCacheMB`), and trilinear lookups by default
+  (`athenea:volumeFilter`). A stage of volumes alone is framed by its volumes.
+- **vdb2splat**: a volume into volumetric gaussians on the device (`athenea
+  vdb2splat` and the Vdb2Splat effect) -- splits where the fit is worst,
+  temperature and a simulation's velocity, sequences, a compact record of 24
+  or 20 bytes a gaussian, the way back to a grid (`--back`, `--measure`), and
+  grids larger than the device fitted a brick at a time.
+- **A medium of gaussians in the raster**: drawn by its exact optical depth,
+  lit, shadowed both ways and glowing as a black body.
+- **Mesh lights**: emitting meshes and `MeshLightAPI` prims sampled by the
+  path tracer through a tree, in closed form in the raster and for relit
+  gaussians; emission groups and their baked indirect light
+  (`mesh2splat --light-groups`).
+- **Live streams**: a stage names a live stream (`AtheneaLiveSourceAPI`); pages
+  pushed from another process through MCP and shared memory, or played from a
+  sequence (`athenea stream`); SPZ, PLY and `.splat` records widened on the
+  device.
+- **Splats as video** (`modules/video`): frames through the hardware HEVC
+  encoder and decoder (VideoToolbox; NVENC and NVDEC on CUDA) as `.athv`
+  (`athenea video-encode`, `athenea video-decode`), with a stable order, an
+  exact or predicted geometry layer, renditions for the web player, and media
+  streams for volumes.
+- **Meshes**: unlit frames skip the lit kernels, edges resolved from the
+  neighbourhood's triangles (`athenea:meshAntialias`), a frame waits for the
+  device once; shadow catchers take every light and reach further with a ring
+  of coarser cells.
+
 - **Nuke and Natron**: an OpenFX node (`integrations/ofx`) draws a stage through
   the shot camera with RGBA, depth, P (world position) and Cryptomatte planes,
   and an HDRI the artist picks and rotates; the engine runs out of process
