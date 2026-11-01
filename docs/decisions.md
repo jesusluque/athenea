@@ -19024,3 +19024,64 @@ video instead of beside it (`--geometry-video`, the 20k rung, built with the fas
 
 Beside the video the layer is half the bytes for the same error (its predicted frames 0.18 MB at the median
 against 0.25 MB for the key); in the video the positions need quality 0.95 to come back as close.
+
+### The geometry layer of a volume stream, a third of the bytes (1 Nov, round 2)
+
+Round 1's ladder spent 95 % of its bytes on the lossless geometry layer: 9.3 B a gaussian a frame at 16-bit
+positions, 10-bit log scales and rotations, each frame a residual from the one before. Two things shrink it: the
+fit's own noise from frame to frame, and the layer's precision and predictor. Release, M5 Pro, VideoToolbox at
+quality 0.9, the shared GPU lock, the Mac's interactive use not known; the blob-sequence fixture (128³, 30 frames,
+a geometry key every 30); `~/luc/athenea-gpu/volstream_g1.sh` ... `volstream_g7.sh`, outputs under
+`opt/vs3`, `opt/vs4`.
+
+**The layer's options on round 1's frames** (20k rung, fitted at the default `--min-std` 0.5):
+
+| geometry layer | MB a frame | L2 decoded | against the f32 cloud |
+|---|---|---|---|
+| round 1: residual from the frame before, 16 / 10 / 10 bits | 0.196 | 0.0244 | 0.0090 |
+| the motion carried on (`--geometry-predict 2`) | 0.192 | 0.0244 | |
+| rigid motion of runs of 256 (`--geometry-predict 3`) | 0.174 | 0.0263 | 0.0125 |
+| the frame before, 12 / 8 / 8 bits | 0.141 | 0.0248 | 0.0101 |
+| rigid motion, 12 / 8 / 8 | 0.112 | 0.0250 | 0.0106 |
+| rigid motion, 12 / 7 / 7 | 0.103 | 0.0254 | 0.0114 |
+| rigid motion, 12 / 8 / 8, held within 1,1,1 steps | 0.099 | 0.0264 | 0.0134 |
+| rigid motion, 12 / 6 / 6 | 0.093 | 0.0272 | 0.0148 |
+
+The flow is a rigid turn and rise, which the run's rigid motion predicts, yet a predicted frame costs nearly a
+key: what is left is each slot's own move in its 30 warm steps (a deviation a frame). Smaller warm steps
+(`--warm-learning-rate` 0.02 / 0.01, `--warm-iterations` 15) took 5–10 % off the bytes and added 15–90 % to the
+fit's error: dropped. The move is the fit's: at `--min-std` 0.5 the mixture matches the grid at the voxel
+centres only (vdb2splat's section, "The smallest deviation"), so a slot carried off the lattice has to be refitted.
+
+**Fitted at `--min-std` 1.0**, every rung (f32 mean density L2 0.0127 / 0.0165 / 0.0217 / 0.0282 at 50k / 20k /
+10k / 5k, against round 1's 0.0193 / 0.0225 / 0.0234 / 0.0282), and the layer swept again on the 20k rung:
+
+| 20k, `--min-std` 1.0 | MB a frame | L2 decoded | against the f32 cloud | flicker decoded |
+|---|---|---|---|---|
+| the frame before, 16 / 10 / 10 | 0.191 | 0.0179 | 0.0077 | 0.208 |
+| rigid motion, 12 / 8 / 8 | 0.103 | 0.0183 | 0.0084 | 0.213 |
+| rigid motion, 12 / 7 / 7 | 0.095 | 0.0186 | 0.0091 | 0.217 |
+| rigid motion, 12 / 6 / 6 | 0.086 | 0.0200 | 0.0116 | 0.234 |
+| rigid motion, 11 / 7 / 7 | 0.082 | 0.0194 | 0.0106 | 0.227 |
+| **rigid motion, 11 / 6 / 6** | **0.075** | **0.0207** | 0.0128 | 0.243 |
+| rigid motion, 10 / 6 / 6 | 0.066 | 0.0231 | 0.0165 | 0.276 |
+| rigid motion, 12 / 7 / 7, held within 1,1,1 | 0.077 | 0.0206 | 0.0133 | 0.230 |
+| rigid motion, 12 / 7 / 7, held within 2,2,2 | 0.064 | 0.0265 | 0.0215 | 0.248 |
+
+**The ladder** with `vdb2splat --sequence --min-std 1.0` and `video-encode --geometry --geometry-key 30
+--geometry-predict 3 --geometry-position-bits 11 --geometry-scale-bits 6 --geometry-rotation-bits 6`, against round
+1's (frame 15 path traced as round 1's, 4096 paths, masked; the raster of the decoded medium):
+
+| rung | MB a frame (round 1) | Mbit/s at 24 / 30 | L2 decoded (round 1) | flicker decoded (round 1) | PT, decoded (round 1) | raster relMSE, ms |
+|---|---|---|---|---|---|---|
+| 50k | 0.187 (0.487) | 35.8 / 44.8 | 0.0170 (0.0230) | 0.201 (0.278) | 2.9·10⁻⁴ (1.05·10⁻⁴) | 0.027, 7.6 |
+| 20k | 0.075 (0.196) | 14.4 / 18.0 | 0.0207 (0.0244) | 0.243 (0.287) | 3.3·10⁻⁴ (2.9·10⁻⁴) | 0.027, 9.8 |
+| 10k | 0.039 (0.101) | 7.6 / 9.5 | 0.0249 (0.0247) | 0.287 (0.280) | 4.8·10⁻⁴ (4.6·10⁻⁴) | 0.026, 5.0 |
+| 5k | 0.022 (0.053) | 4.3 / 5.4 | 0.0305 (0.0288) | 0.335 (0.313) | 7.6·10⁻⁴ (7.0·10⁻⁴) | 0.024, 4.8 |
+
+A rung is 2.4–2.6 times smaller; at 20k the decoded density error is 15 % lower and the target (0.08 MB at 0.026)
+met. Encoding (1.3–1.6 ms laid, 2.3–3.7 ms encoded a picture) is unchanged. The path trace does not follow the
+density error: the 50k rung's is 2.8 times round 1's, the 20k's 14 % above -- gaussians of a voxel and more blur
+what the 0.5 floor kept, and frame 15's view is lit through the blob's surface, where that detail is. The voxel
+centres' L2 and the path trace disagree here; which to trust for a stream is for a sequence that is not a
+fixture to say.
