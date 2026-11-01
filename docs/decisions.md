@@ -3663,7 +3663,7 @@ four, 1024 x 1024, 64 paths a frame (16 a pass), 8 bounces, the RelWithDebInfo
 builds of mesh-lights 5d5aede, stage A (dc6e1ee) and this stage, on the M5
 Pro, one GPU job at a time through the shared queue (other sessions' jobs
 in between, the Mac otherwise in use). The stills: smoke2 x40 density and
-explosion x0.1, a sun and a dome (`~/luc/athenea-renders/volumes`).
+explosion x0.1, a sun and a dome (`athenea-renders/volumes`).
 
 | | 5d5aede | stage A | B nearest | B trilinear | B stochastic |
 |---|---|---|---|---|---|
@@ -17201,7 +17201,7 @@ grid.
 
 ### E1: the error against the number of gaussians (31 Oct)
 
-`~/luc/athenea-gpu/vdb2splat_e1.sh`: for each budget, the fit (release build, Apple M5 Pro, one GPU job at a
+`vdb2splat_e1.sh`: for each budget, the fit (release build, Apple M5 Pro, one GPU job at a
 time under the shared lock; whether the Mac was in interactive use is not known), the way back on the input's
 topology, its density error over the active voxels, 4096 random rays (closed form against 64 ratio-tracking
 estimates each), and a path trace (512², 512 paths, a sun and a dim dome, albedo 0.8) of the grid given back
@@ -17299,7 +17299,7 @@ commit 5d5aede as on this branch: not this work's.
 
 E1's relMSE (under 10⁻⁴ at every N, a 23 % density error included) did not discriminate: it was taken over
 the whole frame, mostly background, and the sun (a UsdLux DistantLight of intensity 3, not normalized) lit
-the smoke by about 10⁻⁵, so the dome alone drew it. E1b (`~/luc/athenea-gpu/vdb2splat_e1b.sh`, release build):
+the smoke by about 10⁻⁵, so the dome alone drew it. E1b (`vdb2splat_e1b.sh`, release build):
 a normalized sun of irradiance 3 and nothing else, so a pixel's alpha is the fraction of camera paths the
 volume stopped (1 − T); the density scale at ×1, ×4 and ×16 of E1's (smoke2 20, 80, 320; the blob 1, 4, 16);
 `athenea compare --min-alpha 0.01` over the pixels where T < 0.99 of the original; both renders at 4096
@@ -17329,7 +17329,7 @@ PT cost (64 paths, median of five frames): smoke2's grid given back 112–133 ms
 
 ### Shadows of the grids given back (31 Oct)
 
-`~/luc/athenea-gpu/vdb2splat_shadow.sh`: the volume at density ×4 floating over a grey ground (a quad,
+`vdb2splat_shadow.sh`: the volume at density ×4 floating over a grey ground (a quad,
 displayColor 0.5), a normalized sun of irradiance 3 at 40° elevation casting the shadow beside it, a dome
 of 0.1; path traced at 1024², 1024 paths, the same seeds, for the original grid and the grids given back by
 50k and 10k gaussians (E1b's). This is the path tracer drawing the gaussians turned back into a grid on the
@@ -17491,7 +17491,7 @@ what the map is sized from: the centres' box alone cut the far edge of a small m
 
 ### Measured: E1 (proposal §6)
 
-`~/luc/athenea-gpu/volraster_e1.sh`, release build, Apple M5 Pro, one GPU job at a time under the shared lock
+`volraster_e1.sh`, release build, Apple M5 Pro, one GPU job at a time under the shared lock
 (other sessions' jobs queued between ours; whether the Mac was in interactive use is not known). The same
 volume by three routes: (a) the path trace of the original grid, the truth; (b) the path trace of the grid its
 gaussians give back; (c) the raster drawing the gaussians as a medium. A grey ground (a mesh), a normalized sun
@@ -17565,7 +17565,7 @@ path tracer draws the grid. A grid given back is on the input's own topology and
 original, so the path traces of E1 do not depend on it. With it the case reads mean |ΔT| 0.0087 again.
 
 E1's headline again on the merged branch (release, Apple M5 Pro, the shared GPU lock held, whether the Mac was
-in interactive use not known; `~/luc/athenea-gpu/vdb2splat_opt0.sh`). The fit is the median of three runs; the
+in interactive use not known; `vdb2splat_opt0.sh`). The fit is the median of three runs; the
 path traces E1b's (a normalized sun alone, 4096 paths, 512², masked where the original lets through less than
 99 %), against references rendered with this build, which the PNanoVDB fix (96a256f) made some 30 % faster:
 
@@ -18022,7 +18022,7 @@ lie or overflow, other formats, unknown types, lists, 4096 properties, 400 bit f
 within the file. A degree-0 cloud's harmonic words are left unwritten by the upload (a comparison of them
 differs between any two uploads; nothing reads them).
 
-Cross-backend, ixwin (RTX 3070 laptop): native Windows builds without SPZ (no zstd there), so the Athc paths
+Cross-backend, a Windows laptop (RTX 3070): native Windows builds without SPZ (no zstd there), so the Athc paths
 ran: `athenea_lod_tests "[stream]"` and `"[lod]"`, `athenea_scene_tests "[io]"` (the mixed-type PLY included)
 pass on Vulkan and on CUDA. The Windows `SharedMemory` branch compiles and passes the MCP QA cases (create,
 open, the copy, the ring gone after close), with defects 8 and 9 as on macOS.
@@ -18612,7 +18612,7 @@ The ParticleField's positions are now half a voxel lower (the fit's records leav
 medium puts a voxel's value, above). `athenea_usd_tests "[vdb2splat][raster]"` on the merged branch:
 emission-absorption mean 0.10282 raster against 0.10410 path traced, relMSE 4.3·10⁻⁴ over the frame (9.1·10⁻⁴
 before, held to 5·10⁻³); lit 0.21649 against 0.22308, relMSE 0.0128 (0.013). E1 again on fits made with this
-build (`~/luc/athenea-gpu/volraster_opt0.sh`, `volraster_e1lite.sh`: the same scenes, the path traces at 512
+build (`volraster_opt0.sh`, `volraster_e1lite.sh`: the same scenes, the path traces at 512
 paths instead of 1024, the grid given back not path traced; release, M5 Pro, the shared GPU lock, the Mac's
 interactive use not known):
 
@@ -18633,7 +18633,7 @@ grid the same gaussians give back, is where the half voxel shows, and it halved.
 slower than it is). At 50k and 300 Adam steps on smoke2 the kernels' 6.95 s were the gradient (`v2sBackward`, a
 group of 64 a gaussian) 43 %, the forward pass 34 %, the births' bisection (24 counted passes a densify round
 over every voxel) 5 %, building the leaves' lists every iteration 11 %. What was tried, each measured on its own
-(`~/luc/athenea-gpu/vdb2splat_opt1*.sh`; release, M5 Pro, the shared GPU lock, the Mac's interactive use not
+(`vdb2splat_opt1*.sh`; release, M5 Pro, the shared GPU lock, the Mac's interactive use not
 known; the fit the median of three runs):
 
 | change | smoke2 50k / 300 steps | relative L2 | kept |
@@ -18681,7 +18681,7 @@ at 300 (0.03765) and 5.14 s with `--checkerboard` (0.0399), one run each, agains
 
 ### The schedule, for error at a budget (1 Nov)
 
-The fit's knobs one at a time, then together, on smoke2 at 50k (`~/luc/athenea-gpu/vdb2splat_opt2sweep*.sh`, one
+The fit's knobs one at a time, then together, on smoke2 at 50k (`vdb2splat_opt2sweep*.sh`, one
 run each, release, M5 Pro, the shared GPU lock, the Mac's interactive use not known), from the 300-step fit
 (5.21 s, density relative L2 0.0377):
 
@@ -18747,7 +18747,7 @@ decodes the video frame by frame through the hardware decoder and the planes ker
 pulled into index space, its precision's Cholesky factor, σ = exp(f_rest_0) -- which is then given back and
 judged as a fit is; `-o` writes the decoded frames as ParticleFields for the raster.
 
-**Measured** (`~/luc/athenea-gpu/volstream_e1.sh`, `volstream_e2run.sh`, `volstream_pt.sh`; release, M5 Pro,
+**Measured** (`volstream_e1.sh`, `volstream_e2run.sh`, `volstream_pt.sh`; release, M5 Pro,
 VideoToolbox, the shared GPU lock, the Mac's interactive use not known). The blob-sequence fixture at 128³
 (voxel 0.05, 30 frames, the blob carried by a known flow), its density as NanoVDB 17.1 MB a frame (2.4 MB as
 `.vdb`); the ladder fitted warm at four budgets, encoded at quality 0.9, 30 frames a second, a geometry key every
@@ -18939,7 +18939,7 @@ the same bytes is a little further from the f32 cloud than VideoToolbox (0.0116 
 reverse of the sparrow's planes in the NVENC section; it lays and encodes three to six times faster, reading the
 planes where the device wrote them. The geometry layer, the same bytes on both, is still 95 % of a frame.
 The 100-step defaults against the same steps with a first cut of 0.7, densify every 80 and every new slot a
-split, on more volumes (`~/luc/athenea-gpu/vdb2splat_opt2defaults.sh`, median of three):
+split, on more volumes (`vdb2splat_opt2defaults.sh`, median of three):
 
 | | defaults s / L2 | the three knobs s / L2 |
 |---|---|---|
@@ -18961,7 +18961,7 @@ schedule scales with the budget: 4 rounds over the default 140 iterations fall a
 default's own -- and over 560 after 80, 160, 240 and 320, round 1's recipe. 0 (the default) keeps
 `--densify-every`. A sequence's warm frames take their own period, `--warm-densify-every` (20, what they had), so
 neither a count nor a long period of the full fit reaches them. Release, M5 Pro, the shared GPU lock, the Mac's
-interactive use not known (`~/luc/athenea-gpu/vdb2splat_r2a.sh`, median of three):
+interactive use not known (`vdb2splat_r2a.sh`, median of three):
 
 | | defaults (100 steps) s / L2 | recipe, every 80 s / L2 | recipe, 4 rounds s / L2 |
 |---|---|---|---|
@@ -19016,7 +19016,7 @@ points between the centres), which is what would choose the floor per volume.
 
 Round 1's knobs with the densify rounds as a count and fewer checkerboard steps: `--checkerboard --init-fraction
 0.7 --split-share 1 --max-block 32 --densify-rounds 4` and `--iterations` n
-(`~/luc/athenea-gpu/vdb2splat_r2c.sh`, `vdb2splat_r2d.sh`; release, M5 Pro, the shared GPU lock, the Mac's
+(`vdb2splat_r2c.sh`, `vdb2splat_r2d.sh`; release, M5 Pro, the shared GPU lock, the Mac's
 interactive use not known; fits the median of three; path traces E1b's, 4096 paths, masked):
 
 | smoke2 50k | fit s | relative L2 | readbacks | PT ×1 | PT ×16 |
@@ -19047,7 +19047,7 @@ volumes, round 1).
 Disney's cloud (`wdas_cloud`, CC BY-SA 3.0, five resolutions) and JangaFX EmberGen's free sets (CC0: gasoline and
 ground explosions, a cloud pack, a campfire, a fire; half-float grids, no `vel`), one frame each: read, converted
 to NanoVDB (`nanovdb_convert`), path traced, fitted at 50k with the 100-step defaults and given back. Release, M5
-Pro, the shared GPU lock, the Mac's interactive use not known (`~/luc/athenea-gpu/ext*.sh`); path traces 512²,
+Pro, the shared GPU lock, the Mac's interactive use not known (`ext*.sh`); path traces 512²,
 1024 paths, 4 bounces, a normalized sun, the camera from the NanoVDB header's world box (`athenea stage
 --frame-all` frames nothing on a stage of volumes alone: `Engine::bounds` counts clouds, points and meshes, not
 media -- fixed since, "A stage of volumes alone, framed"), density scale 4 over the box's largest side; masked relMSE of the grid given back
@@ -19123,7 +19123,7 @@ unit, active where the density is; the active voxels change every frame. What a 
   so its densify rounds have none to give to new density; a larger floor frees slots there.
 
 Measured (release, M5 Pro, the shared GPU lock -- shared with another agent's jobs --, the Mac's interactive use not
-known; 20k gaussians; `~/luc/athenea-gpu/sim*.sh`), mean over the frames / last frame / flicker / fit s a frame:
+known; 20k gaussians; `sim*.sh`), mean over the frames / last frame / flicker / fit s a frame:
 
 | | explosion, frames 5-34 | plume, frames 30-59 |
 |---|---|---|
@@ -19153,7 +19153,7 @@ range in 16 bits each, the precision's factor as its diagonals' logs and its off
 of the diagonals beside them (which the fit holds within ±2) in halves (24 B) or in bytes over their ranges (20 B),
 Cd rgb8 and the temperature in 8 bits. Against NanoVDB's own quantisations of the same density grid
 (`nanovdb_convert --fp16/--fp8/--fp4/--fpN -r 0.01`, turned back into floats on the same topology and measured
-with `--against`). `~/luc/athenea-gpu/vdb2splat_opt3.sh`; release, M5 Pro, the shared GPU lock, the Mac's
+with `--against`). `vdb2splat_opt3.sh`; release, M5 Pro, the shared GPU lock, the Mac's
 interactive use not known; masked path traces E1b's (4096 paths):
 
 | | bytes | B a gaussian | density relative L2 | PT ×1 | PT ×16 (smoke2) or ×1 (explosion) |
@@ -19188,7 +19188,7 @@ buffers are some 60 bytes a voxel of the leaves before the lists (the leaves' pi
 changes: the attributes' model buffer (32 bytes a voxel) is allocated only where there is a temperature or a Cd
 to fit -- the mixture itself is `fitted`'s 8 bytes --, and `--device-mb` sets the pool's ceiling (8192 here). No
 tiling was needed: 2.2 M (gaussian, leaf) pairs at 50k. Release, M5 Pro, the shared GPU lock, the Mac's
-interactive use not known (`~/luc/athenea-gpu/vdb2splat_opt4*.sh`); the path trace E1b's at density scale 0.25,
+interactive use not known (`vdb2splat_opt4*.sh`); the path trace E1b's at density scale 0.25,
 512², 4096 paths, masked:
 
 | | fit s | density relative L2 | rays beyond 5 SE (of 1024) | PT relMSE (PSNR) | PT ms (64 paths) back / original | usdc |
@@ -19223,7 +19223,7 @@ Round 1's ladder spent 95 % of its bytes on the lossless geometry layer: 9.3 B a
 positions, 10-bit log scales and rotations, each frame a residual from the one before. Two things shrink it: the
 fit's own noise from frame to frame, and the layer's precision and predictor. Release, M5 Pro, VideoToolbox at
 quality 0.9, the shared GPU lock, the Mac's interactive use not known; the blob-sequence fixture (128³, 30 frames,
-a geometry key every 30); `~/luc/athenea-gpu/volstream_g1.sh` ... `volstream_g7.sh`, outputs under
+a geometry key every 30); `volstream_g1.sh` ... `volstream_g7.sh`, outputs under
 `opt/vs3`, `opt/vs4`.
 
 **The layer's options on round 1's frames** (20k rung, fitted at the default `--min-std` 0.5):
@@ -19442,7 +19442,7 @@ NVENC section's figures). Means in steps of each attribute's quantisation, posit
   frame's memory exported to the other API, as gpu_host does for buffers.
 
 The Mantaflow explosion (vdb2splat's section "Sequences with a simulation's velocity", frames 5-34, 20k) as a
-stream with the same layer (`~/luc/athenea-gpu/sim10.sh`):
+stream with the same layer (`sim10.sh`):
 
 | | fit mean L2 / flicker / s a frame | MB a frame | Mbit/s at 24 / 30 | decoded L2 / flicker |
 |---|---|---|---|---|
