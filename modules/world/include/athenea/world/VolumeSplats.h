@@ -99,8 +99,14 @@ public:
     /// The velocity grid (`grids.colour`, a vec3 grid) at the density's
     /// voxels, as the effect's Velocity picture: 513 entries a leaf, (vel x
     /// `scale`, active) -- `scale` turning the grid's units into voxels a frame.
+    /// `staggered`: the grid's components are on its voxels' lower faces
+    /// (OpenVDB's GRID_STAGGERED, a MAC grid), averaged to the voxel's centre.
     void packVelocity(gpu::CommandBatch& batch, const gpu::Buffer& words, const PackedGrids& grids, float scale,
-                      const gpu::Buffer& out) const;
+                      const gpu::Buffer& out, bool staggered = false) const;
+    /// Another frame's density on this frame's topology: `grids.temperature`
+    /// (the other frame's density grid, packed in that slot) read at each of
+    /// `grids.density`'s active voxels, written over its values in `words`.
+    void resample(gpu::CommandBatch& batch, const gpu::Buffer& words, const PackedGrids& grids) const;
 
     /// A sequence's frame `frame` of the noise blob carried by a known flow:
     /// a turn about the vertical through `centre` at `omega` radians a frame
