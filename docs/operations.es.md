@@ -398,7 +398,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--eye` | 3 números | ninguno | una cámara propia, en vez de una de la escena |
 | `--target` | 3 números | ninguno | adónde mira esa cámara |
 | `--up` | 3 números | `0 1 0` | |
-| `--frame-all` | flag | apagado, e implícito si la escena no tiene cámara | encuadra todo |
+| `--frame-all` | flag | apagado, e implícito si la escena no tiene cámara | encuadra todo: mallas, nubes, puntos y volúmenes (la caja de un volumen es la de las hojas de su grid, con cualquier técnica); se registran la caja y el tiempo que llevó (`framed (...) - (...) in N ms`) |
 | `--focal` | número | `35` | mm, apertura 24.576 mm |
 | `--fstop` | número | `0` | 0 es estenopeica |
 | `--focus` | número | `0` | la profundidad enfocada, unidades de escena |
@@ -978,8 +978,36 @@ tracer dibuja como dibuja cualquier volumen.
 | `--velocity` | nombre de grid | `vel` | la grid del flujo (vec3), leída de cada frame; el flujo del frame anterior se pone sobre los vóxeles activos del actual. Una grid escalonada (clase `staggered`, una grid MAC como `velocity` de Mantaflow) se promedia de las dos caras de cada vóxel a su centro |
 | `--velocity-units` | `world`, `mantaflow` | `world` | `world`: unidades del mundo por frame (divididas por el vóxel). `mantaflow`: celdas por unidad de tiempo de Mantaflow, de las que un frame es 0,1 x 25 / `--fps` (0,10417 a 24) |
 | `--fps` | número | `24` | con `--velocity-units mantaflow`: frames por segundo de la secuencia |
+| `--tile-dir` | directorio | ninguno | ajusta la grid por ladrillos (abajo) y guarda aquí el plan y el resultado de cada ladrillo; la misma orden lanzada otra vez sigue desde el primer ladrillo que no había terminado. Un directorio guarda un plan: otra entrada, otra grid, otro margen, otro `--tile-cells`, otro `-n` u otro `--tile-weight` se rechazan |
+| `--tile-cells` | entero | `0` | las celdas del tamaño de una hoja (8³ vóxeles: una hoja, o la parte de un tile activo) que lee como mucho un ladrillo, con su margen; `0` toma `--device-mb` × 1024 / 48, unos 48 KB del pool por celda (los 60 bytes por vóxel del ajuste, la imagen de las hojas y la grid, las hojas que añade el alcance del medio) |
+| `--tile-margin` | 0 a 256, vóxeles | `32` | cuánto se lee y se ajusta alrededor del núcleo de un ladrillo; solo se quedan las gaussianas cuyo centro cae en el núcleo |
+| `--tile-weight` | `mass`, `energy` | `mass` | qué es la parte de `-n` de un ladrillo: la densidad de su núcleo sumada, o su cuadrado sumado |
+| `--tile-refine` | entero | `30` | pasos de Adam de una segunda pasada por cada ladrillo, en caliente desde las gaussianas de toda la mezcla que lo alcanzan (sin rondas de densificar ni de podar), quedándose las que tienen el centro en su núcleo: el margen de un ladrillo tiene entonces las gaussianas de sus vecinos; `0` se la salta (en la nube a media resolución la costura sin ella dejaba una línea y un error de densidad de 0,199 frente a 0,152 sin ladrillos; con 30 pasos, 0,152) |
+| `--tile-seconds` | número, s | `0` | no se empieza ningún ladrillo pasados estos segundos (0: sin límite); la orden dice "run the same command again to go on" y sale con 0 |
+| `--back-grid` | `.vdb` | la entrada | con `--tile-dir`: la grid sobre cuya topología de densidad se escribe `--back`, leída entera -- el mismo volumen a otra resolución (con su propia transformación: las gaussianas pasan por el mundo) -- y la mezcla medida allí contra su densidad |
 
 Una secuencia imprime, por frame: las gaussianas vivas, el error L2 relativo de la densidad devuelta, el tiempo del ajuste y, desde el segundo frame, el parpadeo -- sqrt(Σ((b₁ − b₀) − (o₁ − o₀))² / Σ(o₁ − o₀)²) sobre los vóxeles activos, lo que el cambio de un frame al siguiente de la grid devuelta tiene de mal frente al del original -- y cuántas de las gaussianas del frame anterior siguen vivas en el mismo hueco, y cuánto se movieron frente a su desviación media. `--measure` imprime también el error de la temperatura, ponderado por la densidad (la medida del propio ajuste: donde no hay densidad la temperatura de una gaussiana no dice nada) y sin ponderar. `--make-fixture blob-sequence` escribe `--frames` de la bola de ruido llevada por un flujo conocido -- un giro alrededor de su vertical de 2π/120 por frame y una subida de 0,3 vóxeles por frame --, cada uno con su `density` y su `vel` (unidades del mundo por frame).
+
+**Ladrillos** (`--tile-dir`): una grid mayor que el dispositivo, o que la
+memoria del host que pide leerla entera, se corta en ladrillos y se ajusta de
+uno en uno. El plan se hace solo con la estructura del árbol (sin descomprimir
+ningún valor): sus celdas del tamaño de una hoja se cortan con un k-d por la
+celda mediana a lo largo del lado más largo hasta que un ladrillo, con su
+margen, tiene como mucho `--tile-cells`. Un ladrillo se lee solo -- la carga
+diferida de OpenVDB descomprime solo las hojas de dentro -- y pasa pasada a
+pasada por el dispositivo: sus sumas (la masa de su núcleo, la de lo que lee, la
+energía de su núcleo); su ajuste, de `-n` × la parte de su peso × lo que lee
+entre la masa de su núcleo, del que se quedan las gaussianas cuyo centro cae en
+el núcleo; la pasada de las costuras (`--tile-refine`); y con `--measure` su núcleo devuelto desde cada gaussiana cuya caja
+lo toca, con las sumas de los cuadrados sumándose al L2 relativo de toda la
+grid (impreso ladrillo a ladrillo y en total). Las opciones del ajuste valen
+para cada ladrillo; `--temperature`, `--colour`, `--quantise`, `--rays` y las
+secuencias no se leen con ladrillos (solo se ajusta la densidad). Ficheros del
+directorio: `plan.txt`, `sums_NNNN.txt`, `fit_NNNN.rec`, `refine_NNNN.rec`
+(una cabecera de 20 bytes -- `BRCK`, cuántas se quedan, el presupuesto o los
+pasos de refinado, cuántas se escribieron, los segundos del ajuste como float
+-- y luego 16 floats por gaussiana, los registros del efecto en el marco de
+índice de la entrada) y `measure*_NNNN.txt`.
 
 Lo que guarda el stage en su `UsdVolParticleField3DGaussianSplat`, además de
 las posiciones, orientaciones, escalas y `radiance:base` del esquema:
@@ -1005,6 +1033,7 @@ bloques más gruesos que tiene el volumen ya son más que `--init-fraction` de
 ```sh
 athenea vdb2splat smoke.vdb -n 50000 -o smoke_gs.usdc --back smoke_back.vdb --measure
 athenea vdb2splat blob.vdb --make-fixture blob --fixture-size 128
+athenea vdb2splat cloud.vdb -n 200000 --tile-dir cloud_bricks --device-mb 14336 --tile-refine 30 --tile-seconds 250 --measure -o cloud_gs.usdc --back cloud_half_back.vdb --back-grid cloud_half.vdb
 ```
 
 ### 2.9 `athenea visibility` — lo que proyecta una nube con esqueleto, por partes

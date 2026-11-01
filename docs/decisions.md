@@ -3518,6 +3518,67 @@ a ratio of 5.03 where independent paths give (1/1024 - 1/16384) / (1/4096 -
 1/16384) = 5. Frame times are the same (10.7 s / 26.7 s / 90.4 s before,
 10.3 s / 27.3 s / 95.8 s after, wall clock with loading, one run each).
 
+### A stage of volumes alone, framed (1 Nov)
+
+`athenea stage --frame-all` (and a stage without a camera, and `athenea view`
+as it opens) failed on a stage of volumes alone: "the stage draws nothing to
+frame". The framing frame is a raster one, which lays no volume out, and
+`Engine::bounds` folded clouds, points and meshes only.
+
+**Now.** `Engine::bounds` holds the volumes too. The layout that a path
+traced frame did inline is `Engine::layoutVolumes`, which `bounds` calls when
+any volume is visible: nothing happens if the volumes are already laid out,
+and otherwise the grids are read into the cache the path traced frame then
+uses, so the framing pays a read the frame would have paid. Each record's
+index box (its grid's leaves, which `volume_prepare` already folds) goes
+through the inverse of the record's world-to-index on the device
+(`VolumeSet::worldBounds`, `volume/volume_bounds.slang`: one group of 256
+threads folding a stride of records each, a record of no leaf left out), and
+two corners are read back. Instanced volumes are covered, since each
+instance is a record. No path traced framing frame is drawn. The box is the
+leaves', so it may reach up to a leaf (8 voxels) past the active voxels.
+
+**The 65536-pass hang** of the first attempt (a path traced framing frame
+after the raster one, in one renderer, never gathering its total) did not
+reproduce in the engine. One renderer that draws a raster frame and then a
+path traced one gathers in total / samples passes, by `render` and by
+`draw` a frame at a time as a viewport switching from raster to rt does. Its
+image matches a fresh renderer's: p99 0, max 0. With the volumes laid out by
+`bounds` between the two (the order --frame-all now has), the real EmberGen
+stages gather at once. The hang came from the reverted framing code, which
+is not kept, so its exact cause is not known.
+
+**Checked.** `[usd][volume][passes]` "a path traced frame after a raster one
+in the same renderer gathers its total" (32 of 32 paths, the same image as a
+fresh renderer's, the viewport way gathered in 8 frames of 4 paths).
+`[usd][volume][framing]`: a box of 32³ voxels of 0.1, scaled 2 in x, turned
+90° about y and moved, with a sun and nothing else, framed by (-2.4, -2.4,
+-11.4) - (1.6, 1.6, -3.4) where its voxels span (-1.6, -1.6, -11.4) - (1.6,
+1.6, -5). The grid's extra leaf below the box in index space is the
+overshoot, and it falls on the sides the turn and the scale put it on, which
+checks the inverse. From that camera a 16-path frame gathers and 484 of 3072
+pixels are lit. Suites: volume 8/8, usd `[volume]` 14/14, technique 64/64, view 1/1; usd `*fram*` 21/22, the
+one failure (the cloud shadow floor, p99 26 against 8) the same on the build before the change.
+
+**Timed** (release, M5 Pro, the shared GPU lock, wall clock with loading;
+the framing time is from the new `framed ... in N ms` line). On the EmberGen
+gasoline explosion f60 (147.6 MB NanoVDB): before, `--frame-all --technique
+rt` failed in 2.7 s; now it frames in 438 ms, grid read included, and a
+256², 64-path frame is written in 5.1 s in all. The campfire f100 frames in
+226 ms (3.5 s in all). On a mesh stage (the chess pawn, raster, 256², five
+runs) `--frame-all` takes 6.66 s median against 6.74 s with a camera given
+by `--eye` (6.29 / 6.26 s before the change, two runs each). Framing a mesh
+stage is unchanged: `bounds` adds a scan of the volume map when it has no
+volume. The framing call's 3.65 s there is the first commit of the scene,
+which a given camera pays in its first frame.
+
+**Not done.** The box is the leaves', not the voxels' above a density: a
+sparse simulation whose leaves hold near-zero density far from the visible
+smoke is framed by all of them (the gasoline explosion fills about a third
+of the frame). The raster technique still draws no volume. A stage framed
+with `--technique raster` places the camera on its volumes and draws an
+empty frame.
+
 ### Filtering, and where a voxel's value stands
 
 The medium read the voxel a point fell in, `floor(p)`: a voxel's value
@@ -18989,7 +19050,7 @@ to NanoVDB (`nanovdb_convert`), path traced, fitted at 50k with the 100-step def
 Pro, the shared GPU lock, the Mac's interactive use not known (`~/luc/athenea-gpu/ext*.sh`); path traces 512²,
 1024 paths, 4 bounces, a normalized sun, the camera from the NanoVDB header's world box (`athenea stage
 --frame-all` frames nothing on a stage of volumes alone: `Engine::bounds` counts clouds, points and meshes, not
-media -- not fixed here), density scale 4 over the box's largest side; masked relMSE of the grid given back
+media -- fixed since, "A stage of volumes alone, framed"), density scale 4 over the box's largest side; masked relMSE of the grid given back
 against the original's trace; peak = the process's peak memory footprint (unified memory: host and device).
 
 | volume | active voxels / leaves | `.vdb` / NanoVDB density MB | fit s | L2 | fit peak MB | PT masked (PSNR) | PT ms (64 paths) original / back |
@@ -19016,8 +19077,8 @@ The usdc is 3.2–3.3 MB at 50k, 12.8 MB at 200k. Where it broke:
   now none ("'flames' is empty here: no temperature fitted").
 - **The whole cloud** (1.49 G voxels, 2.9 GB of `.vdb`) is not run: the fit's working buffers are some 60 bytes a
   voxel of its leaves (half: 15.9 GB for 236 M voxels of leaves), some 110 GB here, against the 16 GB the shared
-  machine may give it; reading it takes some 12 GB of host memory first. Tiling the fit by leaves (streamed
-  through a smaller pool) is what it would take; not done. The half is the largest that fits, at 15.9 GB.
+  machine may give it; reading it takes some 12 GB of host memory first. The half is the largest that fits whole,
+  at 15.9 GB; bricks (below, "Bricks: a volume larger than the device") fit the whole.
 
 **The explosions' settings** (one frame; s / density L2 / temperature density-weighted L2 / masked PT; the
 knobs are round 2's 240-step schedule, `--iterations 240 --checkerboard --init-fraction 0.7 --split-share 1
@@ -19231,6 +19292,59 @@ The floor between the two (`--min-std 0.75`, the same layer; `volstream_g8.sh`):
 At 0.75 the 20k rung is better than round 1's on every measure at 40 % of its bytes, and the 50k rung's path
 trace is a third further than round 1's instead of 2.8 times: 0.75 is the floor to stream with when the path
 trace is the judge, 1.0 when the density at the voxels is.
+
+### Bricks: a volume larger than the device (1 Nov)
+
+The whole Disney cloud (1.49 G active voxels, 1.89 M leaves and 789 k active tiles, 2.93 GB of `.vdb`) was refused
+by memory: the fit's working buffers are some 60 bytes a voxel of its leaves (~110 GB), and reading it whole takes
+~12 GB of host memory. `vdb2splat --tile-dir` fits it a brick at a time.
+
+**The design.** The fit's error is local -- a voxel's value is the gaussians within 3.5 deviations of it -- so a
+grid splits into spatial bricks whose fits are independent once each sees what lies about it. Considered and set
+aside: splitting by Morton runs of leaves (the effect wants a box; runs make ragged boxes whose surface is all
+margin) and streaming leaves through one fit (every Adam step visits every voxel: a fit of 1.49 G voxels through a
+16 GB pool would page the whole grid in and out ~140 times).
+- *The plan* is made from the tree's structure alone (`io::readVdbCells`, OpenVDB's delayed loading: 4.3 s and
+  376 MB for the whole cloud): leaf-sized cells -- each leaf, each active tile cut into its 8³ cells -- cut by a
+  k-d split at the median cell along the longest side, on cell planes, until a brick read with a margin of
+  `--tile-margin` voxels (32) holds at most `--tile-cells` cells (from `--device-mb`: ~48 KB of pool a cell).
+- *A brick is read alone*: `readGrid(name, box)` on a delayed-loading file seeks over every leaf outside the box
+  and decompresses the ones inside (an eighth of the whole cloud: 0.8 s, 378 MB); the clip is then exact in index
+  space. Host memory is the structure plus one brick.
+- *Three passes*, every brick's result a file in the directory (a run stopped -- `--tile-seconds`, a timeout, a
+  kill -- goes on from the brick it had not finished; this is what keeps each GPU job under ten minutes):
+  1. sums (`vsBoxSums`): the core's mass, the mass read, the core's energy;
+  2. the fit, of N × (the core's mass over the whole's) × (mass read over the core's) -- the fit also spends on the
+     margin -- keeping the gaussians whose centre lies in the core (`vsSelect`);
+  3. the seams' pass (`--tile-refine`, 30 Adam steps): each brick again, warm (the effect's `Previous`, slot for
+     slot, no densify round, no prune) from every gaussian of pass 2 whose box meets what it reads, the core's kept.
+  `--measure` gives each core back from the gaussians whose box reaches it and adds the squared sums: the whole
+  grid's relative L2, the same number a whole-grid way back gives (checked on a 128³ blob: 0.06312 both ways).
+  `--back --back-grid` gives the mixture back on another grid read whole -- another resolution of the volume,
+  through `vsTransform` (the precision mapped K⁻ᵀ P K⁻¹ and factored again).
+
+**Why the seams' pass.** The plain stitch left a seam. On the half cloud at 50k (4 bricks, margin 32) each brick's
+own fit was 0.12–0.16 relative L2 over what it read, and the stitched mixture 0.199 against 0.152 unbricked, with a
+bright band along the boundary in a close-up path trace: a core gaussian near the boundary was fitted beside its
+brick's margin gaussians, which are thrown away, and the neighbour's core gaussians that replace them were fitted
+beside other ones -- the tails overlap twice. A margin of 64 voxels (1.78 cells read a cell) only got to 0.183 at 88
+s of fits. Fitting each brick again with its neighbours' own gaussians in its margin removes it: 30 steps 0.1518,
+60 steps 0.1496. The sweep is Jacobi (every brick starts from pass 2), so the bricks' order decides nothing.
+
+**Measured, the half cloud** (188 M voxels, 461 463 leaves; 50k; release build, M5 Pro, the shared GPU lock;
+untiled = round 2's run, the same camera, light and 1024 paths; peak = `/usr/bin/time` peak footprint, which on
+unified memory counts the device's buffers):
+
+| | gaussians | fits, s | density L2 | masked PT relMSE (PSNR) | close-up masked PT | peak MB |
+|---|---|---|---|---|---|---|
+| unbricked (`--device-mb 16384`) | 50000 | 51.2 | 0.1522 | 5.49·10⁻⁴ (44.59) | 2.32·10⁻⁴ | 16658 |
+| 4 bricks, plain stitch | 50884 | 61.8 | 0.1991 | | 1.27·10⁻³ | 8916 |
+| 4 bricks + seams' pass 30 (`--device-mb 8192`) | 50889 | 61.8 + 15.7 | 0.1518 | 5.66·10⁻⁴ (44.48) | 2.90·10⁻⁴ | 5244 (8799 with the half read whole for `--back`) |
+
+Bricked, each brick's reading adds ~2.2 s twice (sums, fit) and the seams' pass once; the measure is 16.8 s. The
+budget comes out 1.8 % over N (the margin's share of the gaussians is not exactly its share of the mass).
+Images: `vdb2splat/opt/img/tile_half50_full.png`, `tile_half50_close_seam.png` (close-up across the boundary:
+original, unbricked, plain stitch with its band, seams' pass), `tile_half50_close_seam_zoom.png`.
 
 ## NVDEC: the video planes' decoder on CUDA (1 Nov)
 

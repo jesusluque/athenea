@@ -1512,6 +1512,12 @@ importa en qué orden llegan sus factores. Las piezas:
 - **`io::readVdbGrid` / `readVdbVec3Grid`** leen la densidad, la temperatura
   y Cd como NanoVDB; `io::writeNanoGrids` escribe grids float de vuelta como
   `.vdb` (de NanoVDB a OpenVDB, una redisposición).
+  Un `VdbSelection` con `clip` lee un ladrillo de una grid (su caja de
+  índices): el fichero se abre con la carga diferida de OpenVDB y se lee
+  recortado a la caja, así que solo se descomprimen las hojas de dentro.
+  `io::readVdbCells` lee solo la estructura de una grid -- el origen y la
+  cuenta de activos de cada hoja, y cada tile activo cortado en las celdas de
+  8³ que cubre -- para el plan de ladrillos.
 - **`world::VolumeSplats`** (`shaders/athenea/volume/vdb_splats.slang`) es
   el lado del motor: `packLeaves` dispone las hojas de la grid de densidad
   como la imagen que lee el efecto (513 entradas por hoja; las otras grids se
@@ -1522,7 +1528,24 @@ importa en qué orden llegan sus factores. Las piezas:
   y `randomMixture` hacen en el dispositivo los volúmenes de los tests y de
   las medidas; `compare` y `rays` son las métricas; `exportRecords` convierte
   las gaussianas en los registros de un ParticleField en el mundo (la
-  covarianza M Σ Mᵀ diagonalizada con rotaciones de Jacobi).
+  covarianza M Σ Mᵀ diagonalizada con rotaciones de Jacobi). Para los
+  ladrillos: `boxSums` (la masa de un ladrillo en su núcleo y con su margen,
+  y la energía de su núcleo), `select` (los registros cuyo centro cae en una
+  caja, o cuya caja la toca, añadidos con un contador atómico: no guardan su
+  orden) y `transform` (registros al marco de índices de otra grid: la
+  precisión K⁻ᵀ P K⁻¹ factorizada de nuevo).
+- **Ladrillos** (`--tile-dir`, `runTiled` de CmdVdb2Splat.cpp): el plan es
+  un k-d de las celdas por la celda mediana a lo largo del lado más largo,
+  sobre planos de celda, hasta que un ladrillo con su margen tiene
+  `--tile-cells`; luego tres pasadas por los ladrillos, el resultado de cada
+  ladrillo un fichero para que una ejecución siga donde paró -- sumas,
+  ajustes (se quedan las gaussianas centradas en el núcleo) y la pasada de
+  las costuras (cada ladrillo otra vez, en caliente desde cada gaussiana de
+  los primeros ajustes que lo alcanza: el `Previous` del efecto con
+  `keepSlots`, sin rondas de densificar ni de podar). `--measure` devuelve
+  cada núcleo desde las gaussianas cuya caja lo toca y suma las sumas. El
+  host lee ficheros, planifica cajas y reparte el presupuesto con las sumas
+  de los kernels: contabilidad.
 - **El efecto Vdb2Splat** (`plugins/vdb2splat`) es el ajuste, cada pasada un
   kernel de `vdb2splat.slang`; su cabecera describe las pasadas:
   1. *Momentos por bloque.* Un grupo por hoja reduce sus 512 vóxeles (en orden
@@ -1594,10 +1617,12 @@ gaussianas.
 
 Lo que aún no hace: nacimientos y muertes en los huecos de una secuencia más
 allá de lo que hacen densificar y podar, y el bucle del §3.5 de la propuesta; una topología propia para la
-vuelta (se reutiliza la de la entrada); partir una gaussiana que pasa del
+vuelta (se reutiliza la de la entrada, o con ladrillos otra resolución del mismo volumen leída entera); partir una gaussiana que pasa del
 tope de tamaño (el tope es un recorte de la diagonal del factor); el
 binning para la vuelta y para los rayos, que aún visitan todas las
-gaussianas por hoja o por rayo.
+gaussianas por hoja o por rayo; con ladrillos, la temperatura y Cd, y una
+vuelta escrita ladrillo a ladrillo sobre una topología demasiado grande para
+leerla entera.
 
 ### 6.14 Un medio de gaussianas en el raster
 

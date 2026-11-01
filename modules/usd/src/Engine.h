@@ -685,8 +685,9 @@ public:
     [[nodiscard]] const render::RenderTargets* lastTargets() const noexcept { return lastTargets_; }
 
     /// Where everything drawn in the last frame is, in world space: mesh boxes
-    /// folded on the device, cloud boxes through their prims' transforms.
-    /// Nothing before a frame has drawn anything.
+    /// folded on the device, cloud boxes through their prims' transforms, and
+    /// the volumes' boxes from their grids' leaves (laid out here if no path
+    /// traced frame has). Nothing before a frame has drawn anything.
     [[nodiscard]] Result<std::optional<scene::Bounds>> bounds();
 
     /// The last frame's `aov` on the device, for a caller that shows it
@@ -736,6 +737,10 @@ public:
                                         const AovLayout& layout, const double* projection, std::span<uint8_t> into);
 
 private:
+    /// The volumes laid out on the device (volumeSet_) when a volume, a field
+    /// or an instancer in a volume's chain changed since the last layout;
+    /// nothing otherwise. The render thread's, as everything on the device.
+    [[nodiscard]] Result<void> layoutVolumes();
     Engine() = default;
 
     /// relieveMemory's state: how many levels coarser, and whether the

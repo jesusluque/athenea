@@ -1438,6 +1438,11 @@ a product that does not care what order its factors come in. The pieces:
 - **`io::readVdbGrid` / `readVdbVec3Grid`** read the density, the
   temperature and Cd as NanoVDB; `io::writeNanoGrids` writes float grids
   back as a `.vdb` (NanoVDB to OpenVDB, a re-layout).
+  A `VdbSelection` with `clip` reads one brick of a grid (its index box):
+  the file is opened with OpenVDB's delayed loading and read clipped to the
+  box, so only the leaves inside it are decompressed. `io::readVdbCells`
+  reads a grid's structure alone -- each leaf's origin and active count, and
+  each active tile cut into the 8³ cells it covers -- for a brick plan.
 - **`world::VolumeSplats`** (`shaders/athenea/volume/vdb_splats.slang`) is
   the engine's side: `packLeaves` lays the density grid's leaves out as the
   picture the effect reads (513 entries a leaf, the other grids read at the
@@ -1447,7 +1452,22 @@ a product that does not care what order its factors come in. The pieces:
   leaf, submitted in slices); `fixture` and `randomMixture` make the tests'
   and the measurements' volumes on the device; `compare` and `rays` are the
   metrics; `exportRecords` turns the gaussians into a ParticleField's records
-  in the world (the covariance M Σ Mᵀ diagonalised by Jacobi rotations).
+  in the world (the covariance M Σ Mᵀ diagonalised by Jacobi rotations). For
+  bricks: `boxSums` (a brick's mass in its core and with its margin, and its
+  core's energy), `select` (the records whose centre lies in a box, or whose
+  box meets it, appended with an atomic counter: their order is not kept)
+  and `transform` (records into another grid's index frame: the precision
+  K⁻ᵀ P K⁻¹ factored again).
+- **Bricks** (`--tile-dir`, CmdVdb2Splat.cpp's `runTiled`): the plan is a
+  k-d split of the cells at the median cell along the longest side, on
+  cell planes, until a brick with its margin holds `--tile-cells`; then
+  three passes over the bricks, each brick's result a file so a run goes on
+  where it stopped -- sums, fits (the gaussians centred in the core kept),
+  and the seams' pass (each brick again, warm from every gaussian of the
+  first fits that reaches it: the effect's `Previous` with `keepSlots`, no
+  densify round, no prune). `--measure` gives each core back from the
+  gaussians whose box meets it and adds the sums. The host reads files,
+  plans boxes and divides the budget by the kernels' sums: bookkeeping.
 - **The Vdb2Splat effect** (`plugins/vdb2splat`) is the fit, every pass a
   kernel of `vdb2splat.slang`; its header lays the passes out:
   1. *Moments by block.* One group a leaf reduces its 512 voxels (in Morton
@@ -1511,9 +1531,11 @@ in the path tracer knows it was gaussians.
 
 What it does not do yet: births and deaths kept apart in a sequence's slots beyond
 what densify and prune do, and the loop of §3.5 of the proposal; a topology of its own for the way back (the
-input's is reused); splitting a gaussian over the size cap (the cap is a
+input's is reused, or with bricks another resolution of the same volume read whole); splitting a gaussian over the size cap (the cap is a
 clamp on the factor's diagonal); binning for the way back and the rays,
-which still visit every gaussian a leaf or a ray.
+which still visit every gaussian a leaf or a ray; with bricks, the
+temperature and Cd, and a way back written brick by brick on a topology too
+large to read whole.
 
 ### 6.14 A medium of gaussians in the raster
 

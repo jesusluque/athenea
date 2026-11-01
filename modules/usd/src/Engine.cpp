@@ -1736,6 +1736,245 @@ Result<size_t> Engine::commit() {
     return uploaded;
 }
 
+/// The frame's volumes, laid out again whenever a volume or a field
+/// changed: each grid read once per file and name, and kept in the grid
+/// cache while its budget allows (nanoGrids_). A path traced frame lays
+/// them out before it traces, and Engine::bounds before it folds their
+/// boxes, so a stage of volumes alone is framed by them whatever the
+/// technique of the frame that committed it.
+Result<void> Engine::layoutVolumes() {
+    std::vector<world::VolumeInput> inputs;
+    std::vector<std::shared_ptr<const io::NanoGrid>> holding;
+    // The instance rows the inputs point at, held past the lock.
+    std::vector<gpu::Buffer> holdingRows;
+    bool rebuild = false;
+    {
+        const std::lock_guard<std::mutex> held(guard_);
+        // An instanced volume is laid out again when an instancer in
+        // its chain changed, as an instanced mesh's chain is composed
+        // again.
+        const auto chainVersions = [&](const VolumeArrays& volume, bool& complete) {
+            std::vector<uint64_t> versions;
+            complete = true;
+            for (const InstancerLink& link : volume.instancing) {
+                const auto found = instancers_.find(link.instancer);
+                complete = complete && found != instancers_.end();
+                versions.push_back(found != instancers_.end() ? found->second.version : 0);
+            }
+            return versions;
+        };
+        bool chainsMoved = false;
+        for (const auto& [id, volume] : volumes_) {
+            if (!volume.instancing.empty()) {
+                bool complete = false;
+                const std::vector<uint64_t> versions = chainVersions(volume, complete);
+                const auto found = volumeChains_.find(id);
+                chainsMoved = chainsMoved ||
+                              (complete && (found == volumeChains_.end() || found->second.versions != versions));
+            }
+        }
+        rebuild = volumesVersion_ != volumesBuilt_ || chainsMoved;
+        holdingRows.reserve(volumes_.size());
+        if (rebuild) {
+            volumesBuilt_ = volumesVersion_;
+            ++gridUse_;
+            // A field's grid, through the cache: null where its
+            // field prim has not arrived or its grid cannot be read
+            // (said once, the failure kept).
+            const auto gridFor = [&](const pxr::SdfPath& volumeId,
+                                     const pxr::SdfPath& fieldId) -> std::shared_ptr<const io::NanoGrid> {
+                const auto field = volumeFields_.find(fieldId);
+                if (field == volumeFields_.end() || field->second.path.empty()) {
+                    return nullptr;   // its field has not arrived
+                }
+                // A grid is known by its file and its selection: the
+                // name, the index among that name's grids and the
+                // type the field declares (io::VdbSelection).
+                const VolumeFieldAsset& asset = field->second;
+                const auto key = std::make_pair(asset.path, asset.gridName + '\x1f' +
+                                                                std::to_string(asset.fieldIndex) + '\x1f' +
+                                                                asset.dataType + (asset.field3d ? "\x1f" "f3d" : ""));
+                auto cached = nanoGrids_.find(key);
+                if (cached == nanoGrids_.end()) {
+                    io::VdbSelection selection;
+                    selection.name = asset.gridName;
+                    selection.index = asset.fieldIndex;
+                    selection.dataType = asset.dataType;
+                    // A Field3D asset is read by its own reader, which
+                    // a build without Field3D has as an error: said
+                    // once, as any grid that fails to read, since the
+                    // cache keeps the failure.
+                    auto read = asset.field3d ? io::readField3dGrid(asset.path, selection)
+                                              : io::readVdbGrid(asset.path, selection);
+                    ++gridReads_;
+                    if (!read) {
+                        log::warn("hdAthenea: volume {}: {}", volumeId.GetString(), read.error().toString());
+                    }
+                    CachedGrid entry;
+                    if (read) {
+                        entry.bytes = (read->words.size() + (read->scalar ? read->scalar->words.size() : 0)) *
+                                      sizeof(uint32_t);
+                        entry.grid = std::make_shared<const io::NanoGrid>(std::move(*read));
+                    }
+                    gridBytes_ += entry.bytes;
+                    cached = nanoGrids_.emplace(key, std::move(entry)).first;
+                }
+                cached->second.lastUse = gridUse_;
+                return cached->second.grid;
+            };
+            for (const auto& [id, volume] : volumes_) {
+                if (!volume.visible || volume.field.IsEmpty()) {
+                    continue;
+                }
+                const std::shared_ptr<const io::NanoGrid> density = gridFor(id, volume.field);
+                if (density == nullptr) {
+                    continue;
+                }
+                // EVERY FIELD, by the name the Volume gives it, the
+                // density's first: a table in the record (at most
+                // eight), read by name on the device. Shading reads
+                // the density alone so far.
+                std::vector<world::VolumeFieldInput> fields;
+                const auto addField = [&](const std::string& name, const std::shared_ptr<const io::NanoGrid>& grid,
+                                          const pxr::SdfPath& fieldId) {
+                    world::VolumeFieldInput f;
+                    f.grid = grid.get();
+                    f.nameHash = world::fieldNameHash(name);
+                    f.role = world::fieldRoleOf(name);
+                    f.vectorRole = grid->vectorRole;
+                    const auto asset = volumeFields_.find(fieldId);
+                    if (asset != volumeFields_.end() && !asset->second.roleHint.empty()) {
+                        if (auto hinted = io::vectorRoleFromHint(asset->second.roleHint)) f.vectorRole = *hinted;
+                    }
+                    fields.push_back(f);
+                    holding.push_back(grid);
+                };
+                addField(volume.fieldName, density, volume.field);
+                size_t dropped = 0;
+                for (const auto& [name, fieldId] : volume.fields) {
+                    if (fieldId == volume.field) {
+                        continue;
+                    }
+                    if (fields.size() >= world::VolumeSet::kMaxFields) {
+                        ++dropped;
+                        continue;
+                    }
+                    if (const std::shared_ptr<const io::NanoGrid> grid = gridFor(id, fieldId)) {
+                        addField(name, grid, fieldId);
+                    }
+                }
+                if (dropped > 0) {
+                    log::warn("hdAthenea: volume {}: {} fields past the first {} are not read", id.GetString(),
+                              dropped, world::VolumeSet::kMaxFields);
+                }
+                world::VolumeInput input;
+                input.grid = density.get();
+                input.fields = std::move(fields);
+                input.filter = volumeFilter_;
+                input.objectToWorld = volume.objectToWorld;
+                // INSTANCED: one record an instance, each the chain's
+                // transform before the prototype's, composed on the
+                // device (world::Instancing) and then into each
+                // record's world to index by VolumeSet's kernel. The
+                // grid is laid out once.
+                if (!volume.instancing.empty()) {
+                    bool complete = false;
+                    std::vector<uint64_t> versions = chainVersions(volume, complete);
+                    if (!complete) {
+                        continue;   // an instancer has not arrived
+                    }
+                    VolumeChain& vc = volumeChains_[id];
+                    if (vc.versions != versions || !vc.chain.rows.valid()) {
+                        if (!instancing_.has_value()) {
+                            auto made = world::Instancing::create(*library_);
+                            if (!made) return std::move(made).error();
+                            instancing_.emplace(std::move(*made));
+                        }
+                        world::InstanceChain start;
+                        world::InstanceChain end;
+                        double timeStart = 0.0;
+                        double timeEnd = 0.0;
+                        ATHENEA_TRY(composeChains(*instancing_, instancers_, volume.instancing, vc.chain, start,
+                                                  end, timeStart, timeEnd));
+                        vc.versions = std::move(versions);
+                    }
+                    if (vc.chain.count == 0 || !vc.chain.rows.valid()) {
+                        continue;
+                    }
+                    holdingRows.push_back(vc.chain.rows);
+                    input.instanceRows = &holdingRows.back();
+                    input.instanceCount = vc.chain.count;
+                }
+                input.densityScale = volume.densityScale;
+                input.categories = categoryMask(volume.categories);
+                input.albedo = volume.albedo;
+                input.g = volume.g;
+                // THE MATERIAL'S WORD, WHERE THE VOLUME BINDS ONE. The
+                // specification puts a medium's shading in the Material
+                // bound to the Volume (a `volume` terminal), not on the
+                // prim; the three primvars stay for a Volume without.
+                // MaterialX gives absorption and scattering per unit
+                // density; the medium here walks one extinction and
+                // scatters with an albedo, so extinction is their sum's
+                // mean over the channels and the albedo the ratio a
+                // channel: a coloured extinction is carried by the
+                // albedo, not by the free flight.
+                if (!volume.material.IsEmpty()) {
+                    const auto bound = materials_.find(volume.material);
+                    if (bound != materials_.end() && bound->second.volume.has_value()) {
+                        const material::VolumeCoefficients& c = *bound->second.volume;
+                        float extinction = 0.0F;
+                        for (size_t k = 0; k < 3; ++k) {
+                            const float sum = c.absorption[k] + c.scattering[k];
+                            input.albedo[k] = sum > 0.0F ? c.scattering[k] / sum : 0.0F;
+                            extinction += sum / 3.0F;
+                        }
+                        input.densityScale = extinction;
+                        input.g = c.anisotropy;
+                        input.emission = c.emission;
+                    }
+                }
+                inputs.push_back(std::move(input));
+            }
+            // Over the budget, the grids this layout does not draw
+            // leave, least recently drawn first: an animated
+            // sequence holds what the budget allows, not every
+            // frame it has shown. Only the host's copy is held
+            // here; the device holds the frame's grids alone, in
+            // the volume set's words, which the layout below
+            // replaces.
+            const uint64_t budget = volumeCacheBytes_.load();
+            while (gridBytes_ > budget) {
+                auto oldest = nanoGrids_.end();
+                for (auto it = nanoGrids_.begin(); it != nanoGrids_.end(); ++it) {
+                    if (it->second.lastUse != gridUse_ && it->second.grid != nullptr &&
+                        (oldest == nanoGrids_.end() || it->second.lastUse < oldest->second.lastUse)) {
+                        oldest = it;
+                    }
+                }
+                if (oldest == nanoGrids_.end()) {
+                    break;   // what is left, the frame draws
+                }
+                gridBytes_ -= oldest->second.bytes;
+                ++gridEvictions_;
+                nanoGrids_.erase(oldest);
+            }
+        }
+    }
+    if (rebuild) {
+        if (!volumeSet_.has_value()) {
+            auto made = world::VolumeSet::create(*library_);
+            if (!made) return std::move(made).error();
+            volumeSet_.emplace(std::move(*made));
+        }
+        gpu::CommandBatch volumeBatch(*device_);
+        ATHENEA_TRY(volumeSet_->set(volumeBatch, inputs));
+        ATHENEA_TRY(volumeBatch.submit(true));
+        volumesDrawn_ = static_cast<uint32_t>(inputs.size());
+    }
+    return ok();
+}
+
 Result<std::optional<scene::Bounds>> Engine::bounds() {
     std::optional<scene::Bounds> all;
     const auto grow = [&](const scene::Bounds& box, const render::Mat4& toWorld) {
@@ -1791,6 +2030,28 @@ Result<std::optional<scene::Bounds>> Engine::bounds() {
         if (!meshes) return std::move(meshes).error();
         if (meshes->has_value()) {
             grow(**meshes, render::Mat4::identity());
+        }
+    }
+    // VOLUMES: each record's box from its grid's leaves, through its world
+    // (VolumeSet::worldBounds, a kernel's fold). Laid out here when no path
+    // traced frame has yet -- the raster technique lays none out -- so a
+    // stage of volumes alone is framed by them; the path traced frame after
+    // finds them laid out and its grids in the cache.
+    bool anyVolume = false;
+    {
+        const std::lock_guard<std::mutex> held(guard_);
+        for (const auto& [id, volume] : volumes_) {
+            anyVolume = anyVolume || (volume.visible && !volume.field.IsEmpty());
+        }
+    }
+    if (anyVolume) {
+        ATHENEA_TRY(layoutVolumes());
+        if (volumesDrawn_ > 0 && volumeSet_.has_value()) {
+            auto volumes = volumeSet_->worldBounds();
+            if (!volumes) return std::move(volumes).error();
+            if (volumes->has_value()) {
+                grow(**volumes, render::Mat4::identity());
+            }
         }
     }
     return all;
@@ -3446,239 +3707,9 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             lightGroupPixels_ = pixels;
             frame.groups = {&lightGroupColour_, lightGroupCount_};
         }
-        // The frame's volumes, laid out again whenever a volume or a field
-        // changed: each grid read once per file and name, and kept in the
-        // grid cache while its budget allows (nanoGrids_).
+        // The frame's volumes (Engine::layoutVolumes).
         if (pathTracing) {
-            std::vector<world::VolumeInput> inputs;
-            std::vector<std::shared_ptr<const io::NanoGrid>> holding;
-            // The instance rows the inputs point at, held past the lock.
-            std::vector<gpu::Buffer> holdingRows;
-            bool rebuild = false;
-            {
-                const std::lock_guard<std::mutex> held(guard_);
-                // An instanced volume is laid out again when an instancer in
-                // its chain changed, as an instanced mesh's chain is composed
-                // again.
-                const auto chainVersions = [&](const VolumeArrays& volume, bool& complete) {
-                    std::vector<uint64_t> versions;
-                    complete = true;
-                    for (const InstancerLink& link : volume.instancing) {
-                        const auto found = instancers_.find(link.instancer);
-                        complete = complete && found != instancers_.end();
-                        versions.push_back(found != instancers_.end() ? found->second.version : 0);
-                    }
-                    return versions;
-                };
-                bool chainsMoved = false;
-                for (const auto& [id, volume] : volumes_) {
-                    if (!volume.instancing.empty()) {
-                        bool complete = false;
-                        const std::vector<uint64_t> versions = chainVersions(volume, complete);
-                        const auto found = volumeChains_.find(id);
-                        chainsMoved = chainsMoved ||
-                                      (complete && (found == volumeChains_.end() || found->second.versions != versions));
-                    }
-                }
-                rebuild = volumesVersion_ != volumesBuilt_ || chainsMoved;
-                holdingRows.reserve(volumes_.size());
-                if (rebuild) {
-                    volumesBuilt_ = volumesVersion_;
-                    ++gridUse_;
-                    // A field's grid, through the cache: null where its
-                    // field prim has not arrived or its grid cannot be read
-                    // (said once, the failure kept).
-                    const auto gridFor = [&](const pxr::SdfPath& volumeId,
-                                             const pxr::SdfPath& fieldId) -> std::shared_ptr<const io::NanoGrid> {
-                        const auto field = volumeFields_.find(fieldId);
-                        if (field == volumeFields_.end() || field->second.path.empty()) {
-                            return nullptr;   // its field has not arrived
-                        }
-                        // A grid is known by its file and its selection: the
-                        // name, the index among that name's grids and the
-                        // type the field declares (io::VdbSelection).
-                        const VolumeFieldAsset& asset = field->second;
-                        const auto key = std::make_pair(asset.path, asset.gridName + '\x1f' +
-                                                                        std::to_string(asset.fieldIndex) + '\x1f' +
-                                                                        asset.dataType + (asset.field3d ? "\x1f" "f3d" : ""));
-                        auto cached = nanoGrids_.find(key);
-                        if (cached == nanoGrids_.end()) {
-                            io::VdbSelection selection;
-                            selection.name = asset.gridName;
-                            selection.index = asset.fieldIndex;
-                            selection.dataType = asset.dataType;
-                            // A Field3D asset is read by its own reader, which
-                            // a build without Field3D has as an error: said
-                            // once, as any grid that fails to read, since the
-                            // cache keeps the failure.
-                            auto read = asset.field3d ? io::readField3dGrid(asset.path, selection)
-                                                      : io::readVdbGrid(asset.path, selection);
-                            ++gridReads_;
-                            if (!read) {
-                                log::warn("hdAthenea: volume {}: {}", volumeId.GetString(), read.error().toString());
-                            }
-                            CachedGrid entry;
-                            if (read) {
-                                entry.bytes = (read->words.size() + (read->scalar ? read->scalar->words.size() : 0)) *
-                                              sizeof(uint32_t);
-                                entry.grid = std::make_shared<const io::NanoGrid>(std::move(*read));
-                            }
-                            gridBytes_ += entry.bytes;
-                            cached = nanoGrids_.emplace(key, std::move(entry)).first;
-                        }
-                        cached->second.lastUse = gridUse_;
-                        return cached->second.grid;
-                    };
-                    for (const auto& [id, volume] : volumes_) {
-                        if (!volume.visible || volume.field.IsEmpty()) {
-                            continue;
-                        }
-                        const std::shared_ptr<const io::NanoGrid> density = gridFor(id, volume.field);
-                        if (density == nullptr) {
-                            continue;
-                        }
-                        // EVERY FIELD, by the name the Volume gives it, the
-                        // density's first: a table in the record (at most
-                        // eight), read by name on the device. Shading reads
-                        // the density alone so far.
-                        std::vector<world::VolumeFieldInput> fields;
-                        const auto addField = [&](const std::string& name, const std::shared_ptr<const io::NanoGrid>& grid,
-                                                  const pxr::SdfPath& fieldId) {
-                            world::VolumeFieldInput f;
-                            f.grid = grid.get();
-                            f.nameHash = world::fieldNameHash(name);
-                            f.role = world::fieldRoleOf(name);
-                            f.vectorRole = grid->vectorRole;
-                            const auto asset = volumeFields_.find(fieldId);
-                            if (asset != volumeFields_.end() && !asset->second.roleHint.empty()) {
-                                if (auto hinted = io::vectorRoleFromHint(asset->second.roleHint)) f.vectorRole = *hinted;
-                            }
-                            fields.push_back(f);
-                            holding.push_back(grid);
-                        };
-                        addField(volume.fieldName, density, volume.field);
-                        size_t dropped = 0;
-                        for (const auto& [name, fieldId] : volume.fields) {
-                            if (fieldId == volume.field) {
-                                continue;
-                            }
-                            if (fields.size() >= world::VolumeSet::kMaxFields) {
-                                ++dropped;
-                                continue;
-                            }
-                            if (const std::shared_ptr<const io::NanoGrid> grid = gridFor(id, fieldId)) {
-                                addField(name, grid, fieldId);
-                            }
-                        }
-                        if (dropped > 0) {
-                            log::warn("hdAthenea: volume {}: {} fields past the first {} are not read", id.GetString(),
-                                      dropped, world::VolumeSet::kMaxFields);
-                        }
-                        world::VolumeInput input;
-                        input.grid = density.get();
-                        input.fields = std::move(fields);
-                        input.filter = volumeFilter_;
-                        input.objectToWorld = volume.objectToWorld;
-                        // INSTANCED: one record an instance, each the chain's
-                        // transform before the prototype's, composed on the
-                        // device (world::Instancing) and then into each
-                        // record's world to index by VolumeSet's kernel. The
-                        // grid is laid out once.
-                        if (!volume.instancing.empty()) {
-                            bool complete = false;
-                            std::vector<uint64_t> versions = chainVersions(volume, complete);
-                            if (!complete) {
-                                continue;   // an instancer has not arrived
-                            }
-                            VolumeChain& vc = volumeChains_[id];
-                            if (vc.versions != versions || !vc.chain.rows.valid()) {
-                                if (!instancing_.has_value()) {
-                                    auto made = world::Instancing::create(*library_);
-                                    if (!made) return std::move(made).error();
-                                    instancing_.emplace(std::move(*made));
-                                }
-                                world::InstanceChain start;
-                                world::InstanceChain end;
-                                double timeStart = 0.0;
-                                double timeEnd = 0.0;
-                                ATHENEA_TRY(composeChains(*instancing_, instancers_, volume.instancing, vc.chain, start,
-                                                          end, timeStart, timeEnd));
-                                vc.versions = std::move(versions);
-                            }
-                            if (vc.chain.count == 0 || !vc.chain.rows.valid()) {
-                                continue;
-                            }
-                            holdingRows.push_back(vc.chain.rows);
-                            input.instanceRows = &holdingRows.back();
-                            input.instanceCount = vc.chain.count;
-                        }
-                        input.densityScale = volume.densityScale;
-                        input.categories = categoryMask(volume.categories);
-                        input.albedo = volume.albedo;
-                        input.g = volume.g;
-                        // THE MATERIAL'S WORD, WHERE THE VOLUME BINDS ONE. The
-                        // specification puts a medium's shading in the Material
-                        // bound to the Volume (a `volume` terminal), not on the
-                        // prim; the three primvars stay for a Volume without.
-                        // MaterialX gives absorption and scattering per unit
-                        // density; the medium here walks one extinction and
-                        // scatters with an albedo, so extinction is their sum's
-                        // mean over the channels and the albedo the ratio a
-                        // channel: a coloured extinction is carried by the
-                        // albedo, not by the free flight.
-                        if (!volume.material.IsEmpty()) {
-                            const auto bound = materials_.find(volume.material);
-                            if (bound != materials_.end() && bound->second.volume.has_value()) {
-                                const material::VolumeCoefficients& c = *bound->second.volume;
-                                float extinction = 0.0F;
-                                for (size_t k = 0; k < 3; ++k) {
-                                    const float sum = c.absorption[k] + c.scattering[k];
-                                    input.albedo[k] = sum > 0.0F ? c.scattering[k] / sum : 0.0F;
-                                    extinction += sum / 3.0F;
-                                }
-                                input.densityScale = extinction;
-                                input.g = c.anisotropy;
-                                input.emission = c.emission;
-                            }
-                        }
-                        inputs.push_back(std::move(input));
-                    }
-                    // Over the budget, the grids this layout does not draw
-                    // leave, least recently drawn first: an animated
-                    // sequence holds what the budget allows, not every
-                    // frame it has shown. Only the host's copy is held
-                    // here; the device holds the frame's grids alone, in
-                    // the volume set's words, which the layout below
-                    // replaces.
-                    const uint64_t budget = volumeCacheBytes_.load();
-                    while (gridBytes_ > budget) {
-                        auto oldest = nanoGrids_.end();
-                        for (auto it = nanoGrids_.begin(); it != nanoGrids_.end(); ++it) {
-                            if (it->second.lastUse != gridUse_ && it->second.grid != nullptr &&
-                                (oldest == nanoGrids_.end() || it->second.lastUse < oldest->second.lastUse)) {
-                                oldest = it;
-                            }
-                        }
-                        if (oldest == nanoGrids_.end()) {
-                            break;   // what is left, the frame draws
-                        }
-                        gridBytes_ -= oldest->second.bytes;
-                        ++gridEvictions_;
-                        nanoGrids_.erase(oldest);
-                    }
-                }
-            }
-            if (rebuild) {
-                if (!volumeSet_.has_value()) {
-                    auto made = world::VolumeSet::create(*library_);
-                    if (!made) return std::move(made).error();
-                    volumeSet_.emplace(std::move(*made));
-                }
-                gpu::CommandBatch volumeBatch(*device_);
-                ATHENEA_TRY(volumeSet_->set(volumeBatch, inputs));
-                ATHENEA_TRY(volumeBatch.submit(true));
-                volumesDrawn_ = static_cast<uint32_t>(inputs.size());
-            }
+            ATHENEA_TRY(layoutVolumes());
             if (volumesDrawn_ > 0) {
                 frame.volumes = &volumeSet_->words();
                 frame.volumeCount = volumesDrawn_;

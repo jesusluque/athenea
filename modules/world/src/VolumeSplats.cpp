@@ -74,6 +74,9 @@ Result<VolumeSplats> VolumeSplats::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(v.quantRange_, "vsQuantRange"));
     ATHENEA_TRY(make(v.quantise_, "vsQuantise"));
     ATHENEA_TRY(make(v.dequantise_, "vsDequantise"));
+    ATHENEA_TRY(make(v.boxSums_, "vsBoxSums"));
+    ATHENEA_TRY(make(v.select_, "vsSelect"));
+    ATHENEA_TRY(make(v.transform_, "vsTransform"));
     return v;
 }
 
@@ -424,6 +427,71 @@ Result<void> VolumeSplats::dequantise(const gpu::Buffer& compact, uint32_t count
         c["params"]["quantMode"].setData(mode);
     });
     return batch.submit(true);
+}
+
+Result<std::array<double, 3>> VolumeSplats::boxSums(const gpu::Buffer& words, uint32_t densityWord,
+                                                    uint32_t leafCount, std::array<int32_t, 3> lo,
+                                                    std::array<int32_t, 3> hi) const {
+    gpu::BufferDesc desc;
+    desc.bytes = (uint64_t{leafCount} * 3 + 4) * 4;
+    desc.elementBytes = 4;
+    desc.label = "vdb2splat.boxSums";
+    auto sums = gpu::Buffer::create(*device_, desc);
+    if (!sums) return std::move(sums).error();
+    const int32_t boxLo[4] = {lo[0], lo[1], lo[2], 0};
+    const int32_t boxHi[4] = {hi[0], hi[1], hi[2], 0};
+    gpu::CommandBatch batch(*device_);
+    const auto bind = [&](rhi::ShaderCursor c) {
+        c["words"].setBinding(words.rhi());
+        c["sums"].setBinding(sums->rhi());
+        c["params"]["densityWord"].setData(densityWord);
+        c["params"]["leafCount"].setData(leafCount);
+        c["params"]["count"].setData(leafCount);
+        c["params"]["kind"].setData(3u);
+        c["params"]["boxLo"].setData(boxLo, sizeof(boxLo));
+        c["params"]["boxHi"].setData(boxHi, sizeof(boxHi));
+    };
+    boxSums_.dispatch(batch, {leafCount * 256, 1, 1}, bind);
+    reduce_.dispatch(batch, {256, 1, 1}, bind);
+    ATHENEA_TRY(batch.submit(true));
+    float total[4] = {};
+    ATHENEA_TRY(sums->read(*device_, uint64_t{leafCount} * 12, sizeof(total), total));
+    return std::array<double, 3>{total[0], total[1], total[2]};
+}
+
+Result<uint32_t> VolumeSplats::select(const gpu::Buffer& gaussians, uint32_t count, std::array<int32_t, 3> lo,
+                                      std::array<int32_t, 3> hi, uint32_t mode, const gpu::Buffer& out) const {
+    const std::array<uint32_t, 4> zero{0, 0, 0, 0};
+    auto counter = gpu::Buffer::fromSpan<uint32_t>(*device_, zero, "vdb2splat.selected");
+    if (!counter) return std::move(counter).error();
+    const int32_t boxLo[4] = {lo[0], lo[1], lo[2], 0};
+    const int32_t boxHi[4] = {hi[0], hi[1], hi[2], 0};
+    gpu::CommandBatch batch(*device_);
+    select_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) {
+        c["gaussians"].setBinding(gaussians.rhi());
+        c["recordsOut"].setBinding(out.rhi());
+        c["counter"].setBinding(counter->rhi());
+        c["params"]["count"].setData(count);
+        c["params"]["kind"].setData(mode);
+        c["params"]["boxLo"].setData(boxLo, sizeof(boxLo));
+        c["params"]["boxHi"].setData(boxHi, sizeof(boxHi));
+    });
+    ATHENEA_TRY(batch.submit(true));
+    uint32_t kept = 0;
+    ATHENEA_TRY(counter->read(*device_, 0, sizeof(kept), &kept));
+    return kept;
+}
+
+void VolumeSplats::transform(gpu::CommandBatch& batch, const gpu::Buffer& gaussians, uint32_t count,
+                             const std::array<float, 12>& rows, const gpu::Buffer& out) const {
+    transform_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor c) {
+        c["gaussians"].setBinding(gaussians.rhi());
+        c["recordsOut"].setBinding(out.rhi());
+        c["params"]["count"].setData(count);
+        c["params"]["map0"].setData(rows.data() + 0, 16);
+        c["params"]["map1"].setData(rows.data() + 4, 16);
+        c["params"]["map2"].setData(rows.data() + 8, 16);
+    });
 }
 
 }   // namespace athenea::world

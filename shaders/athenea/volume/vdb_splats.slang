@@ -62,6 +62,12 @@ struct VsParams {
 
     float4 motion;          // vsFixture kind 2: (angular speed about y, rad a frame; rise, voxels a frame; the
                             // frame; the voxel size). vsPackLeaves kind 3: w the scale from vel to voxels a frame
+
+    int4  boxLo;            // vsBoxSums / vsSelect: a brick's voxels [boxLo, boxHi), index space
+    int4  boxHi;
+    float4 map0;            // vsTransform: rows of the affine map from one grid's index space to another's
+    float4 map1;
+    float4 map2;
 };
 
 StructuredBuffer<uint>     words;      // grids (NanoVDB), and for vsRays the VolumeSet's words
@@ -81,6 +87,7 @@ RWStructuredBuffer<float4> recordsOut;       // vsImportSplats: records, 4 a gau
 RWStructuredBuffer<uint>   ranges;     // vsQuantRange / vsQuantise: the cloud's ranges, ordered float bits
 RWStructuredBuffer<uint>   compact;    // vsQuantise: the compact records
 RWStructuredBuffer<float4> dequantised;// vsQuantise: the records again, from the compact ones
+RWStructuredBuffer<uint>   counter;    // vsSelect: the records kept
 ConstantBuffer<VsParams>   params;
 
 static const uint kNone = 0xFFFFFFFFu;
@@ -1070,4 +1077,141 @@ void vsDequantise(uint3 tid: SV_DispatchThreadID) {
     dequantised[g * 4 + 1] = float4(d.x, a10, d.y, a20);
     dequantised[g * 4 + 2] = float4(a21, d.z, temperature, asfloat(rgb | (255u << 24)));
     dequantised[g * 4 + 3] = float4(kReach * std, 1.0);
+}
+
+// --- Bricks: a grid larger than the device, fitted a brick at a time --------------------
+//
+// A brick is the voxels [boxLo, boxHi) of index space (its core) read with a
+// margin about it; its gaussians are fitted on the core and the margin, and
+// those whose centre lies in the core are kept. A record's frame puts voxel
+// ijk's cell at [ijk, ijk + 1), so a core of voxels [lo, hi) is the cells
+// [lo, hi) of that frame.
+
+/// One group a leaf: (the density summed inside the box, summed over the
+/// leaf, its square summed inside the box) over the active voxels, into
+/// `sums` (3 a leaf; vsReduce kind 3 sums them). A brick's mass in its core
+/// and with its margin, and the core's energy: what a brick's share of the
+/// budget is weighed by.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void vsBoxSums(uint3 gid: SV_GroupID, uint3 gtid: SV_GroupThreadID) {
+    const uint i = gid.x;
+    const uint t = gtid.x;
+    if (i >= params.leafCount) return;
+    const pnanovdb_leaf_handle_t leaf = leafOf(params.densityWord, i, PNANOVDB_GRID_TYPE_FLOAT);
+    const int3 origin = originOf(leaf);
+    float inside = 0.0, whole = 0.0, energy = 0.0;
+    for (uint h = 0; h < 2; ++h) {
+        const uint n = t + h * 256;
+        if (!pnanovdb_leaf_get_value_mask(words, leaf, n)) continue;
+        const float rho = max(pnanovdb_read_float(words, pnanovdb_leaf_get_table_address(PNANOVDB_GRID_TYPE_FLOAT,
+                                                                                            words, leaf, n)), 0.0);
+        const int3 ijk = origin + int3(int(n >> 6), int((n >> 3) & 7u), int(n & 7u));
+        whole += rho;
+        if (all(ijk >= params.boxLo.xyz) && all(ijk < params.boxHi.xyz)) {
+            inside += rho;
+            energy += rho * rho;
+        }
+    }
+    gSum[t * 3 + 0] = inside;
+    gSum[t * 3 + 1] = whole;
+    gSum[t * 3 + 2] = energy;
+    GroupMemoryBarrierWithGroupSync();
+    if (t == 0) {
+        float s0 = 0.0, s1 = 0.0, s2 = 0.0;
+        for (uint k = 0; k < 256; ++k) {
+            s0 += gSum[k * 3 + 0];
+            s1 += gSum[k * 3 + 1];
+            s2 += gSum[k * 3 + 2];
+        }
+        sums[i * 3 + 0] = s0;
+        sums[i * 3 + 1] = s1;
+        sums[i * 3 + 2] = s2;
+    }
+}
+
+/// One thread a record: a live gaussian kept -- `kind` 0 where its centre
+/// lies in the box (a brick's own), 1 where its box meets the box (what a
+/// brick's voxels are given back from) -- appended to `recordsOut`.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vsSelect(uint3 tid: SV_DispatchThreadID) {
+    const uint g = tid.x;
+    if (g >= params.count) return;
+    const float4 r0 = gaussians[g * 4 + 0];
+    const float4 r3 = gaussians[g * 4 + 3];
+    if (r3.w <= 0.5) return;
+    const float3 lo = float3(params.boxLo.xyz), hi = float3(params.boxHi.xyz);
+    const bool keep = params.kind == 0 ? all(r0.xyz >= lo) && all(r0.xyz < hi)
+                                       : all(r0.xyz + r3.xyz > lo) && all(r0.xyz - r3.xyz < hi);
+    if (!keep) return;
+    uint at;
+    InterlockedAdd(counter[0], 1u, at);
+    for (uint k = 0; k < 4; ++k) recordsOut[at * 4 + k] = gaussians[g * 4 + k];
+}
+
+/// One thread a record: the gaussian in another grid's frame, x' = K (x -
+/// 1/2) + t + 1/2 with K and t the rows `map0..2` (the first grid's index
+/// to the second's, through the world). The precision goes to K^-T P K^-1
+/// and is factored again; the box is the new deviations' reach. The peak
+/// (a density) and the attributes are the record's.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vsTransform(uint3 tid: SV_DispatchThreadID) {
+    const uint g = tid.x;
+    if (g >= params.count) return;
+    const float4 r0 = gaussians[g * 4 + 0];
+    const float4 r1 = gaussians[g * 4 + 1];
+    const float4 r2 = gaussians[g * 4 + 2];
+    const float4 r3 = gaussians[g * 4 + 3];
+    float k[3][3];
+    const float4 rows[3] = { params.map0, params.map1, params.map2 };
+    for (uint r = 0; r < 3; ++r) {
+        k[r][0] = rows[r].x; k[r][1] = rows[r].y; k[r][2] = rows[r].z;
+    }
+    float3 mu;
+    for (uint r = 0; r < 3; ++r) {
+        mu[r] = k[r][0] * (r0.x - 0.5) + k[r][1] * (r0.y - 0.5) + k[r][2] * (r0.z - 0.5) + rows[r].w + 0.5;
+    }
+    // K^-1 by its adjugate.
+    const float det = k[0][0] * (k[1][1] * k[2][2] - k[1][2] * k[2][1]) - k[0][1] * (k[1][0] * k[2][2] - k[1][2] * k[2][0]) +
+                      k[0][2] * (k[1][0] * k[2][1] - k[1][1] * k[2][0]);
+    float ki[3][3];
+    ki[0][0] = (k[1][1] * k[2][2] - k[1][2] * k[2][1]) / det;
+    ki[0][1] = (k[0][2] * k[2][1] - k[0][1] * k[2][2]) / det;
+    ki[0][2] = (k[0][1] * k[1][2] - k[0][2] * k[1][1]) / det;
+    ki[1][0] = (k[1][2] * k[2][0] - k[1][0] * k[2][2]) / det;
+    ki[1][1] = (k[0][0] * k[2][2] - k[0][2] * k[2][0]) / det;
+    ki[1][2] = (k[0][2] * k[1][0] - k[0][0] * k[1][2]) / det;
+    ki[2][0] = (k[1][0] * k[2][1] - k[1][1] * k[2][0]) / det;
+    ki[2][1] = (k[0][1] * k[2][0] - k[0][0] * k[2][1]) / det;
+    ki[2][2] = (k[0][0] * k[1][1] - k[0][1] * k[1][0]) / det;
+    // P = A A^T, A lower: A = ((a00, 0, 0), (a10, a11, 0), (a20, a21, a22)).
+    float a[3][3] = { { r1.x, 0.0, 0.0 }, { r1.y, r1.z, 0.0 }, { r1.w, r2.x, r2.y } };
+    // M = A^T K^-1, then P' = M^T M.
+    float m[3][3];
+    for (uint r = 0; r < 3; ++r) {
+        for (uint c = 0; c < 3; ++c) {
+            m[r][c] = a[0][r] * ki[0][c] + a[1][r] * ki[1][c] + a[2][r] * ki[2][c];
+        }
+    }
+    float p[3][3];
+    for (uint r = 0; r < 3; ++r) {
+        for (uint c = 0; c < 3; ++c) p[r][c] = m[0][r] * m[0][c] + m[1][r] * m[1][c] + m[2][r] * m[2][c];
+    }
+    const float l00 = sqrt(max(p[0][0], 1e-30));
+    const float l10 = p[1][0] / l00, l20 = p[2][0] / l00;
+    const float l11 = sqrt(max(p[1][1] - l10 * l10, 1e-30));
+    const float l21 = (p[2][1] - l20 * l10) / l11;
+    const float l22 = sqrt(max(p[2][2] - l20 * l20 - l21 * l21, 1e-30));
+    // The deviations: the diagonal of (L L^T)^-1 = L^-T L^-1, B = L^-1.
+    const float b00 = 1.0 / l00, b11 = 1.0 / l11, b22 = 1.0 / l22;
+    const float b10 = -l10 * b00 / l11;
+    const float b21 = -l21 * b11 / l22;
+    const float b20 = -(l20 * b00 + l21 * b10) / l22;
+    const float3 std = sqrt(float3(b00 * b00 + b10 * b10 + b20 * b20, b11 * b11 + b21 * b21, b22 * b22));
+    recordsOut[g * 4 + 0] = float4(mu, r0.w);
+    recordsOut[g * 4 + 1] = float4(l00, l10, l11, l20);
+    recordsOut[g * 4 + 2] = float4(l21, l22, r2.z, r2.w);
+    recordsOut[g * 4 + 3] = float4(kReach * std, r3.w);
 }

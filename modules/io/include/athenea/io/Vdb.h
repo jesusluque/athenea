@@ -52,6 +52,27 @@ struct VdbSelection {
     std::string name;
     int         index = -1;
     std::string dataType;
+    /// A brick of the grid alone: the voxels in the index box [clipMin,
+    /// clipMax] (both inclusive), read through OpenVDB's delayed loading so
+    /// that only the leaves inside it are decompressed -- what a grid larger
+    /// than the memory the host may give is read by, a brick at a time.
+    bool                   clip = false;
+    std::array<int32_t, 3> clipMin{0, 0, 0};
+    std::array<int32_t, 3> clipMax{0, 0, 0};
+};
+
+/// A grid's topology as leaf-sized cells, from its header and its tree's
+/// structure alone (no value is decompressed): each leaf's origin and its
+/// active voxels, and each active tile cut into the 8^3 cells it covers
+/// (512 active voxels each) -- what a brick plan counts. Bookkeeping: the
+/// counts are the masks', no value is read.
+struct VdbCells {
+    std::vector<std::array<int32_t, 3>> origins;
+    std::vector<uint32_t>               active;
+    std::array<double, 16>              indexToWorld{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    double                              voxelSize = 1.0;
+    uint64_t                            leaves = 0;   ///< leaves in the file's tree
+    uint64_t                            tiles = 0;    ///< active tiles
 };
 
 /// A grid as NanoVDB lays it out, ready to upload.
@@ -113,6 +134,9 @@ struct VdbBox {
 [[nodiscard]] Result<NanoGrid> readVdbGrid(const std::filesystem::path& path, const std::string& name = {});
 /// The grid a field's selection picks (VdbSelection).
 [[nodiscard]] Result<NanoGrid> readVdbGrid(const std::filesystem::path& path, const VdbSelection& selection);
+
+/// A float grid's leaf-sized cells (VdbCells), read with delayed loading.
+[[nodiscard]] Result<VdbCells> readVdbCells(const std::filesystem::path& path, const std::string& name);
 
 /// One vec3 grid of a .vdb (a `Cd`, a `vel`), as NanoVDB: the same re-layout
 /// as `readVdbGrid`, `components` 3.
