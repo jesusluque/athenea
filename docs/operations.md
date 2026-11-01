@@ -619,8 +619,9 @@ hardware decode (and its p95) and the kernel, submitted and waited for as
 |---|---|---|---|
 | `input` | `.athv`, required | — | |
 | `--frames` | pictures | all | |
-| `--frame` | source frame, from 0 | `0` | with `--dump-compare` |
+| `--frame` | source frame, from 0 | `0` | with `--dump-compare` or `--dump-state` |
 | `--dump-compare` | CSV path | none | another decoder's gaussians of `--frame`, a row a splat in the frame's order (`i,x,y,z,opacity,lnsx,lnsy,lnsz,r,g,b,...`, a header line first): each group's largest and mean difference from this decode and the rows past a tolerance (1 mm, 0.02, 0.1, 0.02), and this decode's opacity and widest log scale |
+| `--dump-state` | path | none | the geometry layer's state of `--frame` as this decoder holds it (the stream decoded from frame 0): four little-endian u32 a splat in the frame's order (§8c's words), no header. Another decoder's words (a web player's) are compared with these word for word. A file with no geometry layer is refused |
 | `--luma-histogram` | flag | off | each picture's plane 0 as the decoder left it: lowest and highest sample, and the share at 128, under 16 and over 235 (a full-range picture spans 0-255) |
 
 ### 2.7.4 `athenea video-flicker` — how much a decode's error moves

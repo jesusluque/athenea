@@ -634,8 +634,9 @@ cronometra un kernel `ATHENEA_STAGES`.
 |---|---|---|---|
 | `input` | `.athv`, obligatorio | — | |
 | `--frames` | imágenes | todas | |
-| `--frame` | frame de origen, desde 0 | `0` | con `--dump-compare` |
+| `--frame` | frame de origen, desde 0 | `0` | con `--dump-compare` o `--dump-state` |
 | `--dump-compare` | ruta CSV | ninguna | las gaussianas de `--frame` según otro decodificador, una fila por gaussiana en el orden del frame (`i,x,y,z,opacity,lnsx,lnsy,lnsz,r,g,b,...`, con una línea de cabecera): la mayor diferencia y la media de cada grupo respecto a esta decodificación y las filas que pasan una tolerancia (1 mm, 0,02, 0,1, 0,02), y la opacidad y la mayor escala logarítmica de esta decodificación |
+| `--dump-state` | ruta | ninguna | el estado de la capa de geometría en `--frame` tal como lo tiene este decodificador (el stream decodificado desde el frame 0): cuatro u32 little-endian por gaussiana en el orden del frame (las palabras de §8c), sin cabecera. Las palabras de otro decodificador (un reproductor web) se comparan con estas palabra por palabra. Un fichero sin capa de geometría se rechaza |
 | `--luma-histogram` | flag | no | el plano 0 de cada imagen tal como lo dejó el decodificador: la muestra más baja y la más alta, y la proporción en 128, por debajo de 16 y por encima de 235 (una imagen de rango completo cubre 0-255) |
 
 ### 2.7.4 `athenea video-flicker` — cuánto se mueve el error de una decodificación

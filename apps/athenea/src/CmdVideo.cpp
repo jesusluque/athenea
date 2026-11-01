@@ -736,10 +736,14 @@ const char* groupOf(uint32_t a) {
 /// `video-decode --dump-compare` prints.
 void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::PlanesCodec& codec,
                  video::AthvReader& reader, video::VideoDecoder& decoder, video::LumaTextures& textures,
-                 uint32_t frame, const std::string& csv) {
+                 uint32_t frame, const std::string& csv, const std::string& statePath) {
     const video::AthvHeader& h = reader.header();
     if (frame >= reader.sourceFrames()) {
         cli::err("video-decode: no frame %u\n", frame);
+        throw CLI::RuntimeError(kExitFailure);
+    }
+    if (!statePath.empty() && !h.geometry) {
+        cli::err("video-decode: --dump-state wants a geometry layer\n");
         throw CLI::RuntimeError(kExitFailure);
     }
     scene::GpuSplats store;
@@ -756,10 +760,14 @@ void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::Planes
         if (!made) cli::fail(made.error());
         state = std::move(*made);
     }
-    for (uint32_t before = h.geometry ? 0 : frame; before < frame; ++before) {
+    // The state alone (no CSV): the asked frame's layer applied too, no
+    // picture decoded (a frame between video keys has none to start from).
+    const uint32_t last = csv.empty() ? frame + 1 : frame;
+    for (uint32_t before = h.geometry ? 0 : frame; before < last; ++before) {
         for (const uint32_t k : reader.slicesOf(before)) {
             auto f = reader.read(k);
             if (!f) cli::fail(f.error());
+            total = std::max(total, f->sourceSplats);
             auto layout = video::PlaneLayout::make(f->splats, h.bits, h.restPerColour, h.hiInVideo, h.chunkSplats,
                                                    h.columns, h.maxSplats, 0, 0, h.chroma, h.geometry, h.layoutFold());
             if (!layout) cli::fail(layout.error());
@@ -780,7 +788,7 @@ void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::Planes
             if (auto r = batch.submit(true); !r) cli::fail(r.error());
         }
     }
-    for (const uint32_t k : reader.slicesOf(frame)) {
+    for (const uint32_t k : csv.empty() ? std::vector<uint32_t>{} : reader.slicesOf(frame)) {
         auto f = reader.read(k);
         if (!f) cli::fail(f.error());
         if (!store.positions.valid()) {
@@ -821,6 +829,24 @@ void dumpCompare(gpu::Device& device, gpu::ShaderLibrary& library, video::Planes
             cli::fail(r.error());
         }
         if (auto s = batch.submit(true); !s) cli::fail(s.error());
+    }
+    // The geometry layer's state words of the frame, as a decoder holds them
+    // (four u32 a splat in the frame's order): another decoder's are compared
+    // with these word for word.
+    if (!statePath.empty()) {
+        std::vector<uint32_t> words(size_t{total} * 4);
+        if (auto r = state.read(device, 0, words.size() * 4, words.data()); !r) cli::fail(r.error());
+        std::ofstream out(statePath, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(words.data()), static_cast<std::streamsize>(words.size() * 4));
+        if (!out) {
+            cli::err("video-decode: cannot write %s\n", statePath.c_str());
+            throw CLI::RuntimeError(kExitFailure);
+        }
+        cli::out("video-decode: frame %u: the geometry state of %u splats written to %s\n", frame, total,
+                 statePath.c_str());
+    }
+    if (csv.empty()) {
+        return;
     }
     // The CSV: read and parsed here, ten numbers a row (the file's i and
     // anything past the base colour are not compared).
@@ -1893,7 +1919,7 @@ void addVideo(CLI::App& app) {
     });
 
     struct DecodeOptions {
-        std::string input, dump;
+        std::string input, dump, state;
         uint32_t frames = 0, frame = 0;
         bool histogram = false;
     };
@@ -1906,7 +1932,10 @@ void addVideo(CLI::App& app) {
     dec->add_option("--dump-compare", d->dump,
                     "a CSV of another decoder's gaussians of --frame (i,x,y,z,opacity,lnsx,lnsy,lnsz,r,g,b,...): "
                     "compared, splat by splat, with this decode");
-    dec->add_option("--frame", d->frame, "with --dump-compare: the source frame, from 0");
+    dec->add_option("--dump-state", d->state,
+                    "the geometry layer's state words of --frame, four u32 a splat in the frame's order, written "
+                    "to this file (another decoder's are compared with them word for word)");
+    dec->add_option("--frame", d->frame, "with --dump-compare or --dump-state: the source frame, from 0");
     dec->add_flag("--luma-histogram", d->histogram,
                   "each picture's plane 0 as the decoder left it: its lowest and highest sample and how many are 128 "
                   "(a full-range picture spans 0-255; one squeezed to video range, 16-235)");
@@ -1923,8 +1952,8 @@ void addVideo(CLI::App& app) {
         if (!decoder) cli::fail(decoder.error());
         auto textures = video::createLumaTextures(**device);
         if (!textures) cli::fail(textures.error());
-        if (!d->dump.empty()) {
-            dumpCompare(**device, library, *codec, **reader, **decoder, **textures, d->frame, d->dump);
+        if (!d->dump.empty() || !d->state.empty()) {
+            dumpCompare(**device, library, *codec, **reader, **decoder, **textures, d->frame, d->dump, d->state);
             return;
         }
         const uint32_t count = d->frames != 0 ? std::min(d->frames, (*reader)->frames()) : (*reader)->frames();
