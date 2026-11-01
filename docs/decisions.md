@@ -18951,6 +18951,36 @@ smoke2's detail is a voxel wide. The default stays 0.5; a smooth sequence carrie
 `--min-std 1.0` (vol-stream's ladder, below). Not done: a test of the fit off the lattice (the grid given back at
 points between the centres), which is what would choose the floor per volume.
 
+### The 300-step fit's error in less time (1 Nov, round 2)
+
+Round 1's knobs with the densify rounds as a count and fewer checkerboard steps: `--checkerboard --init-fraction
+0.7 --split-share 1 --max-block 32 --densify-rounds 4` and `--iterations` n
+(`~/luc/athenea-gpu/vdb2splat_r2c.sh`, `vdb2splat_r2d.sh`; release, M5 Pro, the shared GPU lock, the Mac's
+interactive use not known; fits the median of three; path traces E1b's, 4096 paths, masked):
+
+| smoke2 50k | fit s | relative L2 | readbacks | PT ×1 | PT ×16 |
+|---|---|---|---|---|---|
+| 300 steps (round 1's reference) | 5.20 | 0.03772 | 740 | 6.4·10⁻⁴ | 5.9·10⁻³ |
+| the knobs, 160 steps | 2.19 | 0.04144 | 373 | | |
+| the knobs, 200 steps | 2.65 | 0.03788 | 413 | | |
+| the knobs, 200 steps, blocks to 64 | 2.71 | 0.03765 | 410 | 6.4·10⁻⁴ | 6.7·10⁻³ |
+| the knobs, 200 steps, 20 EM steps | 2.46 | 0.03830 | 384 | | |
+| **the knobs, 240 steps** | **3.11** | **0.03605** | 450 | 6.0·10⁻⁴ | 6.1·10⁻³ |
+| the knobs, 240 steps, 20 EM steps | 2.93 | 0.03626 | 424 | | |
+| the knobs, 280 steps | 3.52 | 0.03534 | 487 | | |
+
+| explosion 50k | fit s | relative L2 | PT |
+|---|---|---|---|
+| 100 steps (default) | 3.12 | 0.03673 | 5.3·10⁻⁴ |
+| 300 steps | 7.64 | 0.02701 | 3.5·10⁻⁴ |
+| the knobs, 240 steps | 4.61 | 0.02873 | 3.4·10⁻⁴ |
+
+The target -- the 300-step fit's error in 3.1 s -- is met on the density error and the ×1 path trace at 240 steps
+(3.11 s, −40 %; 0.0361 against 0.0377), with the ×16 path trace 4 % further; at 200 steps with 64-voxel blocks the
+density error is equal in 2.71 s (−48 %) and the ×16 trace 13 % further. Fewer steps buy the time, the schedule
+buys back the error. The defaults are not changed (100 steps; the knobs at 100 steps were worse on two of six
+volumes, round 1).
+
 ### Bytes a gaussian: the compact record (1 Nov)
 
 Proposal 104's lane, gaussians and quantisation only. `--quantise half|byte` quantises the fit's records
