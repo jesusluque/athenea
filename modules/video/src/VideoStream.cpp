@@ -33,7 +33,7 @@ Result<std::shared_ptr<VideoStream>> VideoStream::open(const std::filesystem::pa
         return Error::make(ErrorCode::InvalidArgument, "video: {} holds no frames", path.string());
     }
     const AthvHeader& h = s->reader_->header();
-    auto decoder = createHardwareDecoder(h.codec, h.bits);
+    auto decoder = createHardwareDecoder(h.codec, h.bits, &library.device());
     if (!decoder) return std::move(decoder).error();
     s->decoder_ = std::move(*decoder);
     auto textures = createLumaTextures(library.device());

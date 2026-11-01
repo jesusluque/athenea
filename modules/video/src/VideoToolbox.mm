@@ -492,7 +492,7 @@ Result<std::unique_ptr<VideoEncoder>> createHardwareEncoder(const EncoderSetting
     return VtEncoder::create(settings);
 }
 
-Result<std::unique_ptr<VideoDecoder>> createHardwareDecoder(uint32_t codec, uint32_t bits) {
+Result<std::unique_ptr<VideoDecoder>> createHardwareDecoder(uint32_t codec, uint32_t bits, gpu::Device* /*device*/) {
     if (codec != 0x31637668) {   // 'hvc1'
         return Error::make(ErrorCode::Unsupported, "video: codec {:#x} is not HEVC", codec);
     }

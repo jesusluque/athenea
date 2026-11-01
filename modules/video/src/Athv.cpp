@@ -464,24 +464,27 @@ Result<AthvFrame> AthvReader::read(uint32_t k) {
     return f;
 }
 
-std::vector<uint8_t> annexB(const AthvFrame& frame) {
+std::vector<uint8_t> annexB(const AthvFrame& frame) { return annexB(frame.unit, frame.parameterSets); }
+
+std::vector<uint8_t> annexB(std::span<const uint8_t> unit, const std::vector<std::vector<uint8_t>>& parameterSets) {
     std::vector<uint8_t> out;
+    out.reserve(unit.size() + 64);
     static constexpr uint8_t kStart[4] = {0, 0, 0, 1};
-    for (const auto& ps : frame.parameterSets) {
+    for (const auto& ps : parameterSets) {
         out.insert(out.end(), kStart, kStart + 4);
         out.insert(out.end(), ps.begin(), ps.end());
     }
     // Length-prefixed NAL units: each length read as the bytes it is.
-    for (size_t at = 0; at + 4 <= frame.unit.size();) {
-        const uint32_t n = (uint32_t{frame.unit[at]} << 24) | (uint32_t{frame.unit[at + 1]} << 16) |
-                           (uint32_t{frame.unit[at + 2]} << 8) | uint32_t{frame.unit[at + 3]};
+    for (size_t at = 0; at + 4 <= unit.size();) {
+        const uint32_t n = (uint32_t{unit[at]} << 24) | (uint32_t{unit[at + 1]} << 16) |
+                           (uint32_t{unit[at + 2]} << 8) | uint32_t{unit[at + 3]};
         at += 4;
-        if (n > frame.unit.size() - at) {
+        if (n > unit.size() - at) {
             break;
         }
         out.insert(out.end(), kStart, kStart + 4);
-        out.insert(out.end(), frame.unit.begin() + static_cast<std::ptrdiff_t>(at),
-                   frame.unit.begin() + static_cast<std::ptrdiff_t>(at + n));
+        out.insert(out.end(), unit.begin() + static_cast<std::ptrdiff_t>(at),
+                   unit.begin() + static_cast<std::ptrdiff_t>(at + n));
         at += n;
     }
     return out;

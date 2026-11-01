@@ -237,10 +237,12 @@ boundary and turned into an `Error`.
 makes outside its dependencies is behind one header, so the Windows port has
 one file to start from rather than a search. The one other place a framework is called
 is the hardware video codec (`modules/video/src/VideoToolbox.mm` on Apple,
-`modules/video/src/Nvenc.cpp` elsewhere): the encoder and the decoder are
+`modules/video/src/Nvenc.cpp` and `Nvdec.cpp` elsewhere, the CUDA driver's
+entry points they share in `Cuda.h`): the encoder and the decoder are
 fixed-function input and output, like a file read, and the decoded picture is
-handed to the device as a texture where the decoder left it; nothing there
-computes on a value. NVENC and the CUDA driver it needs are not linked: they
+handed to the device as a texture where the decoder left it (on CUDA copied
+on the device into one: a CUDA array cannot alias linear memory); nothing
+there computes on a value. NVENC, NVDEC and the CUDA driver are not linked: they
 are opened at run time through `platform::SharedLibrary` (the way to reach any
 driver library the engine does not link), with the API's types from the
 vendored MIT headers in `third_party/nv-codec-headers`. A file a command writes for
@@ -552,7 +554,7 @@ Nineteen binaries, one per area, all under `tests/`.
 | `athenea_material_tests` | the texture store, the lobes, the MaterialX compiler |
 | `athenea_technique_tests` | visibility, display, materials, lights, splat shadows and visibility |
 | `athenea_lod_tests` | building levels, cut selection, `.athc` |
-| `athenea_video_tests` | video planes through a mosaic and through the hardware codec (skipped where there is none; the round trip skipped where there is an encoder and no decoder), an encoder that reads device memory against its host input (NVENC on CUDA), `.athv` |
+| `athenea_video_tests` | video planes through a mosaic and through the hardware codec (skipped where there is none; the round trip through NVDEC on CUDA), an encoder that reads device memory against its host input (NVENC on CUDA), `.athv` |
 | `athenea_volume_tests` | volumes |
 | `athenea_usd_tests` | the delegate end to end |
 | `athenea_storm_oracle_tests` | Storm as the geometry oracle; its own process and device, and `HDX_MSAA_SAMPLE_COUNT=1` |

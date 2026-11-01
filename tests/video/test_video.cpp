@@ -476,7 +476,7 @@ TEST_CASE("the hardware video codec keeps the position high parts exact", "[vide
     REQUIRE(units->size() == 1);
     REQUIRE(units->front().keyframe);
     REQUIRE_FALSE(units->front().parameterSets.empty());
-    auto decoder = video::createHardwareDecoder(0x31637668, 8);
+    auto decoder = video::createHardwareDecoder(0x31637668, 8, &device);
     if (!decoder && decoder.error().code() == ErrorCode::Unsupported) {
         SKIP("an encoder but no hardware video decoder here: " << decoder.error().message());
     }

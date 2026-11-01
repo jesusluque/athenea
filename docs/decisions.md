@@ -18849,7 +18849,7 @@ p99 position.
 ### Not done
 
 - NVDEC: the decoder, `createLumaTextures` on CUDA and `--check` where NVENC encodes. Until then a round trip is
-  checked on a Mac with `--units`.
+  checked on a Mac with `--units`. (Done 1 Nov: the NVDEC section below.)
 - A QP mapping fitted to VideoToolbox's quality (the table above is where one would start), and a constant quality
   mode by NVENC's own target quality (VBR with `targetQuality`) rather than constant QP.
 - Linux: built and run on Windows only; the Linux path differs in the library names alone.
@@ -19182,3 +19182,92 @@ The floor between the two (`--min-std 0.75`, the same layer; `volstream_g8.sh`):
 At 0.75 the 20k rung is better than round 1's on every measure at 40 % of its bytes, and the 50k rung's path
 trace is a third further than round 1's instead of 2.8 times: 0.75 is the floor to stream with when the path
 trace is the judge, 1.0 when the density at the voxels is.
+
+## NVDEC: the video planes' decoder on CUDA (1 Nov)
+
+`athenea video-encode --check`, `video-decode` and the live stream on Linux and Windows: NVIDIA's hardware HEVC
+decoder behind the same `VideoDecoder` and `LumaTextures` as VideoToolbox (`modules/video/src/Nvdec.cpp`), so a
+round trip is checked on the machine that encoded it.
+
+### Design
+
+- **Nothing linked, as NVENC.** The decoder library (`nvcuvid.dll`, `libnvcuvid.so.1`) is opened at run time by
+  `platform::SharedLibrary`; its types are `dynlink_cuviddec.h` and `dynlink_nvcuvid.h` from the same
+  nv-codec-headers tag (`n12.2.72.0`, MIT, NVDEC API 12.2). The CUDA driver's entry points the two codecs share
+  moved to `src/Cuda.h` / `Cuda.cpp` (loaded and `cuInit`'ed once a process); NVENC's own loader keeps only its
+  library. Where neither Apple nor Linux/Windows, `src/CodecNone.cpp` answers `Unsupported` for all three
+  factories.
+- **On the engine's context.** `createHardwareDecoder(codec, bits, device)` takes the engine's device (new,
+  defaulted to none, VideoToolbox ignores it): on CUDA the decoder, its parser and a `cuvidCtxLock` live on the
+  device's own `CUcontext` and copy on its stream; without one, on the first device's primary context (the one
+  slang-rhi's CUDA device uses).
+- **A unit in, its picture out.** The unit's 4-byte lengths are rewritten as start codes, the parameter sets
+  before a key frame's (`annexB`, which now also takes a unit and its sets), and given to NVDEC's parser as one
+  packet with `CUVID_PKT_ENDOFPICTURE` and no display delay, so the sequence, decode and display callbacks all
+  run inside that call and the picture is out when it returns. The sequence callback makes the decoder (again
+  only when the size changes): NV12, or P016 at 10 bits (the 10 bits high, as P010), cropped to the display
+  area, and refuses a stream that is not HEVC 4:2:0, whose bit depth is not the header's, or whose SPS says
+  video range -- NVDEC hands the samples over as coded, so nothing would be stretched, but a file then reads
+  the same on both decoders.
+- **The frame outlives the decoder's surfaces.** The picture is mapped (`cuvidMapVideoFrame64`), copied on the
+  device (`cuMemcpy2DAsync`, luma then the second plane) into a pitched allocation the `DecodedFrame` owns,
+  and unmapped. The allocations are pooled per picture size, so a decode allocates only while more frames are
+  alive than before; VideoToolbox's pixel buffers are held the same way.
+- **Textures of the device.** A CUDA array cannot alias linear memory, so `LumaTextures::wrap` makes an
+  R8Unorm (R16Unorm at 10 bits) texture and, at 8 bits, an RG8Unorm one for the second plane, takes their
+  `CUarray` from slang-rhi's native handle and copies the frame in (device to array, on the device's stream).
+  The planes decode reads them as it reads VideoToolbox's. Nothing is read back: the samples go decoder ->
+  device memory -> texture -> the planes kernels.
+
+### Measured
+
+RTX 3070 Laptop GPU (Windows, driver 621.01, CUDA backend), release build; whether the machine was otherwise in
+use is not known. The sparrow's PLY pages, frames 0-29, as in the NVENC section: NVENC encodes, NVDEC decodes in
+the same process (`--check`), against the Mac's `--units` replay of NVENC's file through VideoToolbox (the
+NVENC section's figures). Means in steps of each attribute's quantisation, position error median / p99:
+
+| setting | decoded by | position / opacity / log scale / rotation / DC / rest, mean steps | max steps (position / opacity / rotation) | position um, median / p99 |
+|---|---|---|---|---|
+| quality 0.5 (QP 26) | VideoToolbox, `--units` on the Mac | 4.15 / 1.67 / 3.49 / 4.35 / 3.80 / 3.91 | 115 / 247 / 214 | 24 / 56 |
+| quality 0.5 (QP 26) | NVDEC, `--check` on CUDA | 4.148 / 1.666 / 3.491 / 4.351 / 3.804 / 3.910 | 29.4 / 47.9 / 40.2 | 23.5 / 55.8 |
+| `--bits 10` (P010 / P016) | VideoToolbox, `--units` | 17.1 / 11.6 / 15.1 / 18.3 / 16.0 | -- | 6.4 / 14.0 |
+| `--bits 10` | NVDEC, `--check` | 17.10 / 11.55 / 15.11 / 18.33 / 15.95 / 16.26 | 113 / 158 / 201 | 6.4 / 14.0 |
+| `--chroma --sh-degree 0` | VideoToolbox, `--units` | 4.15 / 1.65 / 3.50 / 4.35 / 11.0 | -- | 24 / 56 |
+| `--chroma --sh-degree 0` | NVDEC, `--check` | 4.149 / 1.653 / 3.498 / 4.354 / 11.03 | 29.4 / 35.9 / 44.4 | 23.5 / 55.8 |
+
+- **The same samples.** HEVC decoding is exact, so the two decoders give the same pictures; the means agree to the
+  third digit and the position errors to the micrometre. The maxima are what differs: through `--units` a few
+  splats took another Morton rank on the Mac than on CUDA and were measured against a neighbour (the NVENC
+  section's reading); measured where the order was computed they fall from 115-247 to 29-48 steps at 8 bits.
+  Every position high part came back exact in every run.
+- **The volume ladder's 20k rung** (quality 0.9, `--order stable --geometry --geometry-key 30 --sh-degree 1`, the
+  NVENC section's settings; the same PLY frames, checked equal by hash): 0.197 MB a frame (video 0.010), means
+  0.219 / 0.692 / 0.054 / 0 / 0 / 0.797 steps, position 33.2 / 51.2 um, every high part exact.
+- **Decode time** (medians a picture; `video-decode` is the stream already written):
+
+| stream | NVDEC, RTX 3070 Laptop | NVDEC p95 |
+|---|---:|---:|
+| sparrow, NVENC quality 0.5 (4.45 MB of video a picture, 4608 x 4480) | 40.8 | 42.7 |
+| the same, inside `--check` (beside NVENC's encode) | 43.5 | 88.5 |
+| `--bits 10`, inside `--check` | 41.8 | 88.9 |
+| `--chroma --sh-degree 0` (1.58 MB, 2048 x 1920), inside `--check` | 13.7 | 27.7 |
+| 20k rung (0.010 MB, 512 x 832), inside `--check` | 0.73 | 0.99 |
+
+  The decode includes the unit's rewrite to Annex B, the map and the device copy out of the decoder's surface
+  (about 31 MB at 4608 x 4480, not timed apart); it grows with the bits, as VideoToolbox's does (16 ms at 1.68 MB,
+  45 ms at 5.89 MB in the sparrow table). Inside `--check` the p95 doubles, the decoder sharing the device with
+  NVENC's encode and the planes kernels; alone (`video-decode`) it is 42.7 ms. The planes -> gaussians kernel
+  after it took 3.1-3.3 ms at 4608 x 4480.
+- Tests: `athenea_video_tests` on the Windows machine (CUDA): 10 passed, the round trip through NVDEC among them
+  (skipped before for want of a decoder). On the Mac: 9 passed, 1 skipped (VideoToolbox takes host samples only),
+  as before.
+
+### Not done
+
+- Linux: built and run on Windows only; the path differs in the library names alone (`libnvcuvid.so.1`).
+- The frame's two copies (surface -> the frame's memory -> a texture): a frame held as a mapped surface would save
+  the first, but mapped surfaces are few and a live stream holds frames past the next decode; a texture over the
+  frame's memory would save the second, which slang-rhi's CUDA backend does not offer (its textures are arrays).
+- The textures are made for each frame; reusing the last frame's when the caller has let them go is not done.
+- A device of another backend (Vulkan) gets a decoder but no textures (`Unsupported`): that would take the
+  frame's memory exported to the other API, as gpu_host does for buffers.
