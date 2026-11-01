@@ -19242,22 +19242,28 @@ NVENC section's figures). Means in steps of each attribute's quantisation, posit
   Every position high part came back exact in every run.
 - **The volume ladder's 20k rung** (quality 0.9, `--order stable --geometry --geometry-key 30 --sh-degree 1`, the
   NVENC section's settings; the same PLY frames, checked equal by hash): 0.197 MB a frame (video 0.010), means
-  0.219 / 0.692 / 0.054 / 0 / 0 / 0.797 steps, position 33.2 / 51.2 um, every high part exact.
-- **Decode time** (medians a picture; `video-decode` is the stream already written):
+  0.219 / 0.692 / 0.054 / 0 / 0 / 0.797 steps, position 33.2 / 51.2 um, every high part exact. The same NVENC file
+  replayed on the Mac (`--units --check`, VideoToolbox) gives every figure to the last digit, maxima included
+  (0.50 / 12.1 / 0.12 / 0 / 0 / 13.6 steps), but a rotation p99 of 0.041 degrees against 0: a 20k-splat stable
+  order is the same on both machines, so here nothing is measured against a neighbour.
+- **Decode time** (medians a picture, p95 in brackets; `video-decode` is the stream already written, the same
+  file on both machines; the Mac's under the shared GPU lock, its interactive use not known):
 
-| stream | NVDEC, RTX 3070 Laptop | NVDEC p95 |
+| stream | VideoToolbox, M5 Pro | NVDEC, RTX 3070 Laptop |
 |---|---:|---:|
-| sparrow, NVENC quality 0.5 (4.45 MB of video a picture, 4608 x 4480) | 40.8 | 42.7 |
-| the same, inside `--check` (beside NVENC's encode) | 43.5 | 88.5 |
-| `--bits 10`, inside `--check` | 41.8 | 88.9 |
-| `--chroma --sh-degree 0` (1.58 MB, 2048 x 1920), inside `--check` | 13.7 | 27.7 |
-| 20k rung (0.010 MB, 512 x 832), inside `--check` | 0.73 | 0.99 |
+| sparrow, NVENC quality 0.5 (4.45 MB of video a picture, 4608 x 4480), `video-decode` | 34.0 (37.2) | 40.8 (42.7) |
+| the same, inside `--check` (beside NVENC's encode) | -- | 43.5 (88.5) |
+| `--bits 10`, inside `--check` | -- | 41.8 (88.9) |
+| `--chroma --sh-degree 0` (1.58 MB, 2048 x 1920), inside `--check` | -- | 13.7 (27.7) |
+| 20k rung (0.010 MB, 512 x 832), inside `--check` (the Mac's through `--units`) | 2.77 (3.95) | 0.73 (0.99) |
 
   The decode includes the unit's rewrite to Annex B, the map and the device copy out of the decoder's surface
   (about 31 MB at 4608 x 4480, not timed apart); it grows with the bits, as VideoToolbox's does (16 ms at 1.68 MB,
   45 ms at 5.89 MB in the sparrow table). Inside `--check` the p95 doubles, the decoder sharing the device with
   NVENC's encode and the planes kernels; alone (`video-decode`) it is 42.7 ms. The planes -> gaussians kernel
-  after it took 3.1-3.3 ms at 4608 x 4480.
+  after it took 3.1-3.3 ms at 4608 x 4480 (2.75 on the Mac). On the large pictures the laptop's NVDEC is 20 %
+  slower than the M5 Pro's decoder; on the small ones, where a call's fixed cost is what is measured, four times
+  faster.
 - Tests: `athenea_video_tests` on the Windows machine (CUDA): 10 passed, the round trip through NVDEC among them
   (skipped before for want of a decoder). On the Mac: 9 passed, 1 skipped (VideoToolbox takes host samples only),
   as before.
