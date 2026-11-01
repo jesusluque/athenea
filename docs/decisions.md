@@ -19440,3 +19440,6 @@ frame may leave its last slot or two unused, so `--order stable` refused it ("fr
 first 9637"). `--slots N` lays every frame out as N slots, its own first in their order and the rest dead specks
 at the origin, as `vdb2splat --cloud` writes a dead slot (video_cells.slang's videoPadSlots). Checked by
 `volume_ply_encode_slots` (two frames of 300 gaussians as 400 slots, decoded again, 2.2 s).
+A dead slot `--slots` or `--cells` lays is a speck (log deviation ln 1e-6, as `vdb2splat --cloud` writes one): at
+a deviation of one unit, the 10 363 dead slots of the plume's first 20k frame, all at the origin, added up to an
+opaque ball in the player.

@@ -48,6 +48,10 @@ RWStructuredBuffer<uint>    outShape;
 RWStructuredBuffer<uint>    outSh;
 ConstantBuffer<CellParams>  cellParams;
 
+/// A dead slot's log deviation, as vdb2splat --cloud writes one (1e-6): a
+/// speck, so the many a frame may hold at one place add no optical depth.
+static const float kDeadLogScale = -13.815511;
+
 uint orderedOf(float f) {
     const uint u = asuint(f);
     return (u & 0x80000000u) != 0u ? ~u : (u | 0x80000000u);
@@ -103,8 +107,8 @@ void videoCellDead(uint3 tid: SV_DispatchThreadID) {
     const uint z = cell / (p.cellsX * p.cellsY);
     outPositions[t] = float4(p.boxMin + (float3(x, y, z) + 0.5) * p.cellSize, 0.0);
     outShape[t * 4 + 0] = encodeQuaternion(float4(0.0, 0.0, 0.0, 1.0));
-    outShape[t * 4 + 1] = packHalves(0.0, 0.0);
-    outShape[t * 4 + 2] = packHalves(0.0, 0.5);
+    outShape[t * 4 + 1] = packHalves(kDeadLogScale, kDeadLogScale);
+    outShape[t * 4 + 2] = packHalves(kDeadLogScale, 0.5);
     outShape[t * 4 + 3] = packHalves(0.5, 0.5);
     for (uint w = 0; w < p.shWords; ++w) {
         outSh[t * p.shWords + w] = w == 0 ? packHalves(p.deadLogSigma, 0.0) : 0u;
@@ -142,8 +146,8 @@ void videoPadSlots(uint3 tid: SV_DispatchThreadID) {
     }
     outPositions[t] = float4(0.0, 0.0, 0.0, 0.0);
     outShape[t * 4 + 0] = encodeQuaternion(float4(0.0, 0.0, 0.0, 1.0));
-    outShape[t * 4 + 1] = packHalves(0.0, 0.0);
-    outShape[t * 4 + 2] = packHalves(0.0, 0.5);
+    outShape[t * 4 + 1] = packHalves(kDeadLogScale, kDeadLogScale);
+    outShape[t * 4 + 2] = packHalves(kDeadLogScale, 0.5);
     outShape[t * 4 + 3] = packHalves(0.5, 0.5);
     for (uint w = 0; w < p.shWords; ++w) {
         outSh[t * p.shWords + w] = w == 0 ? packHalves(p.deadLogSigma, 0.0) : 0u;
