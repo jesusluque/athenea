@@ -3357,6 +3357,93 @@ TEST_CASE("athenea:denoise runs once a path traced frame is gathered, and not be
     CHECK(*unchanged == 0);
 }
 
+// The denoiser's guides used to be a variant of the path kernel, and on an
+// Apple M5 the GPU compiler failed inside it ("Internal compiler error",
+// no pipeline) for a UsdPreviewSurface whose roughness and metallic are
+// constants and whose colour is a texture -- what splat2mesh writes. This
+// stage is that material on a square: it must denoise, and the guides must
+// have reached the denoiser, so the frame differs from the one without.
+TEST_CASE("a denoised path traced frame of a textured UsdPreviewSurface with constant roughness builds",
+          "[usd][gpu][mesh][path][denoise]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!gpu->device->caps().rasterization) {
+        SKIP("no rasterisation on this device");
+    }
+    if (!technique::denoiserBuilt()) {
+        SKIP("built without OIDN");
+    }
+    if (auto probe = technique::Denoiser::create(*gpu->library); !probe) {
+        SKIP(std::string("no denoiser here: ") + probe.error().toString());
+    }
+    const fs::path png = scratch("guides_colour.png");
+    {
+        fs::remove(png);
+        std::vector<uint32_t> texels(16 * 16);
+        for (uint32_t k = 0; k < texels.size(); ++k) {
+            texels[k] = ((k % 16) / 4 + (k / 64)) % 2 == 0 ? 0xFF3399CCu : 0xFFCC9933u;
+        }
+        HioImageSharedPtr image = HioImage::OpenForWriting(png.string());
+        REQUIRE(image);
+        HioImage::StorageSpec spec;
+        spec.width = 16;
+        spec.height = 16;
+        spec.depth = 1;
+        spec.format = HioFormatUNorm8Vec4;
+        spec.data = texels.data();
+        REQUIRE(image->Write(spec));
+    }
+    const fs::path path = scratch("rt_denoise_constants.usda");
+    {
+        std::ofstream out(path);
+        out << kSquareStage
+            << "def DistantLight \"Sun\"\n{\n    float inputs:intensity = 3\n}\n"
+               "def Scope \"Materials\"\n{\n"
+               "    def Material \"Mat\"\n    {\n"
+               "        token outputs:surface.connect = </Materials/Mat/Surface.outputs:surface>\n"
+               "        def Shader \"Surface\"\n        {\n"
+               "            uniform token info:id = \"UsdPreviewSurface\"\n"
+               "            color3f inputs:diffuseColor.connect = </Materials/Mat/Colour.outputs:rgb>\n"
+               "            float inputs:metallic = 0\n"
+               "            float inputs:roughness = 0.6\n"
+               "            token outputs:surface\n        }\n"
+               "        def Shader \"Colour\"\n        {\n"
+               "            uniform token info:id = \"UsdUVTexture\"\n"
+               "            asset inputs:file = @./"
+            << png.filename().string()
+            << "@\n"
+               "            float2 inputs:st.connect = </Materials/Mat/St.outputs:result>\n"
+               "            float3 outputs:rgb\n        }\n"
+               "        def Shader \"St\"\n        {\n"
+               "            uniform token info:id = \"UsdPrimvarReader_float2\"\n"
+               "            string inputs:varname = \"st\"\n"
+               "            float2 outputs:result\n        }\n    }\n}\n";
+    }
+    const uint32_t w = 96;
+    const uint32_t h = 72;
+    const auto frame = [&](bool denoise) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setPathSamples(4);
+        (*renderer)->setPathBounces(1);
+        (*renderer)->setPathTotal(4);
+        (*renderer)->setDenoise(denoise);
+        auto image = (*renderer)->render("/Camera", 0.0, w, h, "rt");
+        if (!image) FAIL(image.error().toString());
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto buffer = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(buffer);
+        return *buffer;
+    };
+    const gpu::Buffer plain = frame(false);
+    const gpu::Buffer denoised = frame(true);
+    auto changed = render::countDifferent(*gpu->library, plain, denoised, w * h * 4);
+    REQUIRE(changed);
+    std::printf("  denoised: %llu of %u words changed\n", static_cast<unsigned long long>(*changed), w * h * 4);
+    CHECK(*changed > 0);
+}
+
 // The camera's exposure: UsdGeomCamera's `exposure`, in stops, reaches the
 // engine through HdCamera and scales the composed frame by 2^stops -- exactly,
 // since a power of two is an exponent bump in float. So the frame with

@@ -5085,6 +5085,35 @@ The engine asks for the guides only when something wants them (`denoise`, or
 an albedo/shadingNormal AOV: `AovRequest::aux`), so the ordinary path traced
 frame has room for the cloud.
 
+**Since 2 Nov the guides are a kernel of their own** (`pathGuides`), and the
+variant is gone. On an Apple M5 the GPU compiler failed inside the variant
+("Internal compiler error", no pipeline) for a UsdPreviewSurface whose
+roughness and metallic are constants and whose colour is a texture -- what
+splat2mesh writes; the same material with both textured built. The variant's
+metallib was the failing one: compiled with fast math, or from source as the
+driver compiles it, it built. Dropping either guide avoided it, writing both
+after the paths did not, so no rewrite of the variant was a fix. `pathGuides`
+finds the camera's hit as the paths do (the visibility pair, or the first
+sample's lens ray), evaluates its material once and writes the lobes' albedo
+toward the eye and the shading normal, with a transparent surface's diffuse at
+its opacity -- what the paths weighed it by on average. It is dispatched
+before the paths in the same batch. What changes:
+
+- the path kernel is the same with the denoiser or without, so a denoised
+  frame compiles one large kernel, not two;
+- the guides no longer take a buffer from the path kernel, so on Metal a
+  cloud's shadows on meshes stay on in a denoised frame (the warning that
+  they were dropped is gone);
+- the guides come from the camera's hit before any lot of a cutout's
+  coverage, where they came from the first path's vertex after it.
+
+Measured: the splat2mesh stage (`maneki_direct_b1.2`) denoises; on a stage
+the variant built (`mat_cat/asset_pbr.usda`, 768x768, 64 paths) the denoised
+frame is the same as before (`oiiotool --diff`: PASS) and takes the same time
+once its pipelines are cached, 7 s against 7 s. `[usd][path][denoise]`: "a
+denoised path traced frame of a textured UsdPreviewSurface with constant
+roughness builds" is that material on a square, which failed with the variant.
+
 **Measured** (`tests/technique/test_splat_shadows.cpp`):
 
 - **The packed tables answer what the separate ones answer**: 0 of 4 rays

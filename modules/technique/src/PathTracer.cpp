@@ -38,7 +38,6 @@ struct PathParams {
     uint accumulated;  // paths a pixel already in `sum`
     uint chooseLights;
     uint headlight;    // 1: with no lights, the first vertex is lit from the eye, as the raster lights it
-    uint writeAux;     // 1: write the first hit's albedo and normal
     uint bakeCount;    // a bake: how many harmonics it fits, 1 (a colour) to 16
     // A BAKE THAT MEASURES TRANSFER RATHER THAN RADIANCE.
     //
@@ -580,17 +579,19 @@ float splatVisibility(float3 p, float3 n, float3 wi, float distance) { return 1.
 )";
 
 /// The denoiser's guides -- the first hit's albedo and shading normal -- are
-/// a buffer of their own, and a buffer is what this kernel has none of to
-/// spare on Metal: 31 is the limit and the frame that shadows meshes with a
-/// cloud is at it. So they are declared only in the kernel of a frame that
-/// asked for them, as the light groups and the volumes are.
+/// written by a kernel of their own (kEntryGuides), not by the paths. They
+/// were a variant of the path kernel once, and on Apple's M5 the GPU compiler
+/// fails inside that variant ("Internal compiler error") for some materials --
+/// a UsdPreviewSurface whose roughness and metallic are constants, while the
+/// same material with them textured builds; the same source with fast math
+/// builds too. Which change avoids it is the compiler's luck (dropping either
+/// guide does, writing them after the paths does not), so the path kernel no
+/// longer has the variant: it is the same kernel with the denoiser or
+/// without, the frame that denoises compiles one large kernel and not two,
+/// and the guides' buffer no longer competes for the 31 Metal binds with a
+/// cloud's shadows.
 const char* kAux = R"(
-static const bool kAux = true;
 RWStructuredBuffer<float4> aux;   // the albedo's plane, then the normal's
-void writeAuxAt(uint at, uint pixels, float4 albedo, float4 normal) {
-    aux[at] = albedo;
-    aux[pixels + at] = normal;
-}
 )";
 
 /// Baking: the first hit of every path comes from a ray a caller wrote down,
@@ -977,11 +978,6 @@ void bakeGram(float3 n, out float e[6][10], uint evens[6], uint ne, uint odds[10
 }
 void bakeFit(inout float3 c[16], float e[6][10], uint evens[6], uint ne, uint odds[10], uint no,
              float measure) {}
-)";
-
-const char* kNoAux = R"(
-static const bool kAux = false;
-void writeAuxAt(uint at, uint pixels, float4 albedo, float4 normal) {}
 )";
 
 /// The surface a hit lands on, its material evaluated, and the light it
@@ -2055,10 +2051,8 @@ void tracePathsAt(uint2 group, uint index) {
     const uint samples = max(path.samples, 1u);
     // The camera's hit does not depend on the sample: rebuilt once, and its
     // material evaluated the first time a path reaches it, then kept, not
-    // evaluated once a path. What the denoiser wants of it is written then,
-    // since it is the same for every sample. With a lens it does depend on
-    // the sample, and each path casts its own; the aux then carry the first
-    // hit a path shaded.
+    // evaluated once a path. With a lens it does depend on the sample, and
+    // each path casts its own.
     const bool ownRays = kTraces && path.ownRays != 0;
     const Found firstFound = kBake      ? foundBaked(at, 0u, sampleMask(tid, 0u))
                              : ownRays  ? foundLensSample(tid, 0u, sampleMask(tid, 0u))
@@ -2068,10 +2062,6 @@ void tracePathsAt(uint2 group, uint index) {
     first.depth = 0.0;
 )"
 R"(    bool firstShaded = false;
-    bool auxWritten = false;
-    if (kAux && path.writeAux != 0) {
-        writeAuxAt(at, pixels, float4(0.0), float4(0.0));
-    }
     float3 total = float3(0.0);
     // A bake fits every harmonic in the one pass: the paths are the same for
     // all of them and only the weight differs, so tracing them once and
@@ -2539,11 +2529,6 @@ R"(
                     if (!bakeTowardFaces(at)) {
                         cur.stack = bakeBody(cur.stack, at);
                     }
-                }
-                if (kAux && bounce == 0 && path.writeAux != 0 && !auxWritten) {
-                    writeAuxAt(at, pixels, float4(stackAlbedo(cur.stack, cur.toEye), 1.0),
-                               float4(cur.inputs.normalWorld, 1.0));
-                    auxWritten = true;
                 }
                 if (!vertexSeen) {
                     vertexSeen = true;
@@ -3153,6 +3138,47 @@ void tracePathsGen() {
 }
 )";
 
+/// The denoiser's guides (kAux says why they are a kernel of their own): the
+/// camera's hit as the paths find it -- the visibility pair, or with a lens
+/// the first sample's own ray -- its material evaluated, and the lobes'
+/// albedo toward the eye and the shading normal written; zeros where nothing
+/// is hit. A transparent surface's diffuse counts at its opacity, as the
+/// paths weigh it on average. Walked in quad order, as the paths are, for the
+/// material's derivatives.
+const char* kEntryGuides = R"(
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void pathGuides(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
+    const uint2 tid = atheneaQuadPixel(group.xy, index);
+    if (tid.x >= camera.width || tid.y >= camera.height) {
+        return;
+    }
+    const uint at = tid.y * camera.width + tid.x;
+    const uint pixels = camera.width * camera.height;
+    const uint4 seen = visibility.Load(int3(int(tid.x), int(camera.height - 1 - tid.y), 0));
+    const bool ownRays = kTraces && path.ownRays != 0;
+    const Found found = ownRays ? foundLensSample(tid, 0u, sampleMask(tid, 0u)) : foundAt(tid, seen);
+    Shaded sh = shadeFound(tid, found);
+    float4 albedo = float4(0.0);
+    float4 normal = float4(0.0);
+    if (sh.valid) {
+        const float o = sh.stack.opacity;
+        if (sh.transparent && o < 1.0) {
+            for (uint k = 0; k < sh.stack.count; ++k) {
+                const uint kind = sh.stack.lobes[k].kind;
+                if (kind == kLobeOrenNayar || kind == kLobeBurley || kind == kLobeTranslucent) {
+                    sh.stack.lobes[k].weight *= o;
+                }
+            }
+        }
+        albedo = float4(stackAlbedo(sh.stack, sh.toEye), 1.0);
+        normal = float4(sh.inputs.normalWorld, 1.0);
+    }
+    aux[at] = albedo;
+    aux[pixels + at] = normal;
+}
+)";
+
 }   // namespace
 
 Result<PathTracer> PathTracer::create(gpu::ShaderLibrary& library) {
@@ -3172,18 +3198,18 @@ Result<void> PathTracer::setPrograms(const MaterialPrograms& programs, bool grou
     // rest: left out of this test, a frame that turned it on ran the kernel
     // compiled without it -- which has no rays to read and is the frame's own
     // size, so exactly one point of the bake came back (the camera's pixel).
+    // The guides are a kernel apart: asking for them builds that one alone.
+    aux_ = aux;
     if (programs.module() == module_ && groups == groups_ && volumes == volumes_ && splats == splats_ &&
-        aux == aux_ && bake_ == bakeBuilt_ && (kernel_.has_value() || rayKernel_.has_value())) {
-        return ok();
+        bake_ == bakeBuilt_ && (kernel_.has_value() || rayKernel_.has_value())) {
+        return aux ? setGuides(programs) : ok();
     }
     bakeBuilt_ = bake_;
     splats_ = splats;
-    aux_ = aux;
     const bool traces = device_->caps().rayQuery && device_->caps().accelerationStructure;
     const std::string name = programs.module() + (traces ? "_path_traced" : "_path_direct") +
                              (groups ? "_groups" : "") + (volumes ? "_volumes" : "") +
-                             (traces && splats ? "_splatshadows" : "") + (aux_ ? "_aux" : "") +
-                             (bake_ ? "_bake" : "");
+                             (traces && splats ? "_splatshadows" : "") + (bake_ ? "_bake" : "");
     // Three ways to trace, and the module carries exactly one: inline rays in
     // a compute kernel, a ray tracing pipeline where there are no inline rays
     // (CUDA, through OptiX), or no rays at all -- direct light alone, which
@@ -3192,13 +3218,12 @@ Result<void> PathTracer::setPrograms(const MaterialPrograms& programs, bool grou
     // Splats shadow meshes only where the rays are inline: the pipeline route
     // would need the traversal again as an any hit program, and it carries two.
     const bool withSplats = traces && splats;
-    const bool withAux = aux_;
     const std::string source = "import " + programs.module() + ";\n" +
                                (volumes ? std::string("import athenea.volume.medium;\n") : std::string()) +
                                (withSplats ? std::string("import athenea.rt.rt_shadow_packed;\n") : std::string()) + kPrelude +
                                (groups ? kGroups : kNoGroups) + (volumes ? kVolumes : kNoVolumes) +
                                (traces ? kRays : pipeline ? kRaysPipeline : kNoRays) +
-                               (withSplats ? kSplats : kNoSplats) + (withAux ? kAux : kNoAux) +
+                               (withSplats ? kSplats : kNoSplats) +
                                (bake_ ? kBake : kNoBake) + kBody + kBodyRest +
                                (pipeline ? kEntryRays : kEntryCompute);
     std::vector<std::string> entries{pipeline ? "tracePathsGen" : "tracePaths", "pathDecide"};
@@ -3232,6 +3257,28 @@ Result<void> PathTracer::setPrograms(const MaterialPrograms& programs, bool grou
     groups_ = groups;
     volumes_ = volumes;
     accumulated_ = 0;
+    return aux ? setGuides(programs) : ok();
+}
+
+Result<void> PathTracer::setGuides(const MaterialPrograms& programs) {
+    if (guidesKernel_.has_value() && guidesModule_ == programs.module()) {
+        return ok();
+    }
+    // None of the frame's variants touch the camera's hit, so the guides
+    // carry none of them. Where the device traces only in a pipeline its rays
+    // are not a compute kernel's, and the guides go without: a lens's own
+    // rays need inline ones.
+    const bool traces = device_->caps().rayQuery && device_->caps().accelerationStructure;
+    const std::string name = programs.module() + (traces ? "_path_guides_traced" : "_path_guides");
+    const std::string source = "import " + programs.module() + ";\n" + kPrelude + kNoGroups + kNoVolumes +
+                               (traces ? kRays : kNoRays) + kNoSplats + kAux + kNoBake + kBody + kBodyRest +
+                               kEntryGuides;
+    auto program = library_->loadSource(name, source, {"pathGuides"});
+    if (!program) return std::move(program).error();
+    auto kernel = gpu::ComputeKernel::create(*library_, name, "pathGuides");
+    if (!kernel) return std::move(kernel).error();
+    guidesKernel_.emplace(std::move(*kernel));
+    guidesModule_ = programs.module();
     return ok();
 }
 
@@ -3260,26 +3307,22 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
     const bool volumes = frame.volumes != nullptr && frame.volumeCount > 0 && frame.volumes->valid();
     // A cloud that shadows meshes is another kernel: compiled when one
     // arrives, and the kernel without it again when the frame has none.
+    // The denoiser's guides are a kernel of their own (kAux), so they no
+    // longer take a cloud's shadows away on Metal for want of a buffer.
     const bool wantAux = aux != nullptr;
-    // The cloud's tables and the denoiser's guides are a buffer each, and on
-    // Metal this kernel has one to spare: with both asked for, the guides win
-    // -- the denoiser cannot work without them, and a cloud that shadows
-    // nothing is a frame that is merely too bright in one place. Said once.
-    bool splats = frame.splatShadows != nullptr && frame.splatShadows->valid();
-    if (splats && wantAux && device_->backend() == gpu::Backend::Metal) {
-        if (!saidNoRoomForSplats_) {
-            saidNoRoomForSplats_ = true;
-            athenea::log::warn("path tracer: the denoiser's guides and a cloud's shadows want the same buffer, "
-                      "and Metal binds 31: the cloud casts no shadow on meshes this frame");
-        }
-        splats = false;
-    }
+    const bool splats = frame.splatShadows != nullptr && frame.splatShadows->valid();
     const bool wantBake = bake != nullptr;
     if ((groups != groups_ || volumes != volumes_ || splats != splats_ || wantAux != aux_ ||
          wantBake != bake_) &&
         frame.programs != nullptr) {
         bake_ = wantBake;
         ATHENEA_TRY(setPrograms(*frame.programs, groups, volumes, splats, wantAux));
+    }
+    if (wantAux && frame.programs != nullptr) {
+        ATHENEA_TRY(setGuides(*frame.programs));
+    }
+    if (wantAux && (!guidesKernel_.has_value() || guidesModule_ != module_)) {
+        return Error(ErrorCode::InvalidArgument, "path tracer: the denoiser's guides have no kernel for these materials");
     }
     const uint32_t groupCount = std::min(frame.groups.count, kMaxLightGroups);
     const uint64_t pixels = uint64_t{width} * height;
@@ -3391,13 +3434,6 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         cursor["sum"].setBinding(sum_.rhi());
         cursor["colour"].setBinding(out.colour.rhi());
         cursor["depth"].setBinding(out.depth.rhi());
-        // A buffer has to be bound either way; without aux the colour stands in
-        // and the kernel never writes it.
-        // Only the kernel of a frame that asked for the guides declares them.
-        if (const rhi::ShaderCursor guides = cursor["aux"]; guides.isValid()) {
-            guides.setBinding(aux != nullptr ? aux->planes.rhi() : out.colour.rhi());
-        }
-        cursor["path"]["writeAux"].setData(uint32_t{aux != nullptr ? 1u : 0u});
         cursor["moments"].setBinding(moments_.rhi());
         if (groups) {
             cursor["groupCount"].setData(groupCount);
@@ -3466,6 +3502,15 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         const bool tree = frame.chooseLights && frame.lightBvh && frame.lights != nullptr && frame.lights->hasBvh();
         cursor["path"]["chooseLights"].setData(uint32_t{tree ? 2u : frame.chooseLights ? 1u : 0u});
     };
+    if (aux != nullptr) {
+        // The guides' kernel reads the camera's hit as the paths do, so it
+        // takes the paths' own bindings; whatever of them it does not
+        // declare is an invalid cursor, and binding one does nothing.
+        guidesKernel_->dispatch(batch, {width, height, 1}, [&](rhi::ShaderCursor cursor) {
+            bindPath(cursor);
+            cursor["aux"].setBinding(aux->planes.rhi());
+        });
+    }
     if (rayKernel_.has_value()) {
         // A dispatch of rays has no groups: the launch is one ray a pixel of
         // the 16 x 16 blocks the body still walks in quad order.

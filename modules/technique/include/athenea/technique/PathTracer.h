@@ -77,9 +77,8 @@ struct PathProgress {
 /// What the denoiser wants beside the colour: the first hit's albedo and its
 /// shading normal, in world space, as the material saw them. Written once a
 /// frame, since they do not depend on the sample.
-/// One buffer of two planes -- a Metal kernel binds at most 31 buffers and
-/// the traced kernel stands at the limit -- the albedo's first, the
-/// normal's after it.
+/// One buffer of two planes, the albedo's first, the normal's after it,
+/// written by a kernel of their own before the paths.
 struct PathAux {
     gpu::Buffer planes;   ///< float4 a pixel, twice: the lobes' directional albedo at the view direction, then the shading normal, unit, facing the eye
     uint32_t    width = 0;
@@ -242,6 +241,8 @@ public:
     [[nodiscard]] uint32_t lightGroups() const noexcept { return (sumPlanes_ - 1) / 2; }
 
 private:
+    [[nodiscard]] Result<void> setGuides(const MaterialPrograms& programs);
+
     gpu::ShaderLibrary*               library_ = nullptr;
     gpu::Device*                      device_ = nullptr;
     std::optional<gpu::ComputeKernel> kernel_;
@@ -255,7 +256,9 @@ private:
     bool                              aux_ = false;
     bool                              bake_ = false;
     bool                              bakeBuilt_ = false;   ///< the variant the kernel was built with
-    bool                              saidNoRoomForSplats_ = false;
+    /// pathGuides: the denoiser's guides, a kernel apart from the paths'.
+    std::optional<gpu::ComputeKernel> guidesKernel_;
+    std::string                       guidesModule_;   ///< the materials it was built for
     uint32_t                          sumPlanes_ = 1;   ///< 1 + 2 * light groups
     gpu::Buffer                       sum_;           ///< float4 a pixel: the paths added so far
     gpu::Buffer                       moments_;       ///< words: the second moment's float bits a pixel, then the done flags a pixel
