@@ -26,6 +26,20 @@
 // (`weightGradients`; the weights sum to one, so the gradients sum to zero).
 // A cloud without them is carried by the first term alone, as before.
 //
+// THE GRADIENTS' REACH. The second term is a linearisation, exact where the
+// weights change across the gaussian as their gradient says. Where the
+// gaussian is wider than the triangles the weights change over -- a hair
+// tube a tenth of a millimetre across under a gaussian of two, or a weight
+// switching joints from one vertex to the next -- the gradient taken across
+// its whole extent says the weights leave [0, 1], and joints a few
+// centimetres apart stretch a millimetre gaussian into a spike tens of
+// centimetres long. The weights cannot change by more than their range
+// across what is seen of a gaussian (two sizes either side), so along each
+// rest axis the gradients are scaled down until `size * sum_k |d w_k|` is at
+// most `kWeightReach`: one weight going from nothing to all over the four
+// sizes. Everywhere the linearisation holds (a ramp wider than the gaussian)
+// they are left as they are.
+//
 // What it is for: an animated cloud that is three megabytes rather than three
 // hundred, exact at every instant of the range rather than at the frames
 // somebody sampled, and whose buffers do not change identity from one frame to
@@ -83,6 +97,10 @@ StructuredBuffer<uint>     weightGradients;
 ConstantBuffer<SplatSkinParams> params;
 
 static const float kEps = 1.0e-5;
+/// The most `size * sum_k |gradient_k|` along one rest axis may be: the
+/// weights' total change across one size, which is a half when one weight
+/// rises from nothing to all (and another falls) over four sizes.
+static const float kWeightReach = 0.5;
 
 float4x4 rows4(float4 a, float4 b, float4 c, float4 d) {
     return float4x4(a, b, c, d);
@@ -126,6 +144,7 @@ void splatSkin(uint3 tid: SV_DispatchThreadID) {
     float3   alongV = float3(0.0, 0.0, 0.0);
     float2   gradientSum = float2(0.0, 0.0);
     float2   lastGradient = float2(0.0, 0.0);
+    float2   gradientReach = float2(0.0, 0.0);
     float    total = 0.0;
     const uint offset = at * params.perSplat;
     const uint gradientWords = params.perSplat > 0 ? params.perSplat - 1 : 0;
@@ -159,6 +178,7 @@ void splatSkin(uint3 tid: SV_DispatchThreadID) {
             alongU += carried.xyz * gradient.x;
             alongV += carried.xyz * gradient.y;
             gradientSum += gradient;
+            gradientReach += abs(gradient);
         }
         if (!(weight > kEps)) {
             continue;
@@ -190,6 +210,14 @@ void splatSkin(uint3 tid: SV_DispatchThreadID) {
     // ones -- what keeps a cloud far from its origin exact in float.
     alongU -= moved.xyz * gradientSum.x;
     alongV -= moved.xyz * gradientSum.y;
+    const float3 scale = exp(float3(lowHalf(restShape[row + 1]), highHalf(restShape[row + 1]),
+                                    lowHalf(restShape[row + 2])));
+    // The weights may not change across the gaussian by more than their range
+    // (the header's "reach"): both sums are linear in the gradients, so
+    // scaling the term scales them.
+    const float2 reach = gradientReach * scale.xy;
+    alongU *= reach.x > kWeightReach ? kWeightReach / reach.x : 1.0;
+    alongV *= reach.y > kWeightReach ? kWeightReach / reach.y : 1.0;
     const float3 world = mul(skelToWorld, float4(moved.xyz, 1.0)).xyz;
     positions[at] = float4(mul(worldToPrim, float4(world, 1.0)).xyz, rest.w);
     if (params.motionOut != 0) {
@@ -208,8 +236,6 @@ void splatSkin(uint3 tid: SV_DispatchThreadID) {
     // throws the shear away, and the elastic term above is mostly shear.
     const float3x3 toPrim = mul(linearOf(worldToPrim), linearOf(skelToWorld));
     const float3x3 chain = mul(toPrim, mul(blended, linearOf(geomBind)));
-    const float3 scale = exp(float3(lowHalf(restShape[row + 1]), highHalf(restShape[row + 1]),
-                                    lowHalf(restShape[row + 2])));
     const float3x3 axes = axesOfQuaternion(decodeQuaternion(restShape[row]));
     const float3 restU = float3(axes[0][0], axes[1][0], axes[2][0]);
     const float3 restV = float3(axes[0][1], axes[1][1], axes[2][1]);

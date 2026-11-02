@@ -813,17 +813,18 @@ TEST_CASE("a skinned gaussian follows the whole Jacobian of its blend", "[scene]
 
     struct Case {
         const char* name;
-        uint32_t    mode;           // 0 bent, 1 rigid, 2 sheared joint
+        uint32_t    mode;           // 0 bent, 1 rigid, 2 sheared joint, 3 bent over a narrow ramp
         float       frameAngle;     // the gaussians' first axis from x, radians
         bool        withGradients;
     };
     // Six degrees past a multiple of a right angle, so no frame is squared up
     // by luck, and thirty, where a bend shears the gaussians as well.
-    const std::array<Case, 5> cases{Case{"bent, axes along it", 0, 0.1F, true},
+    const std::array<Case, 6> cases{Case{"bent, axes along it", 0, 0.1F, true},
                                     Case{"bent, axes turned", 0, 0.5236F, true},
                                     Case{"rigid", 1, 0.5236F, true},
                                     Case{"a sheared joint", 2, 0.5236F, true},
-                                    Case{"bent, no gradients kept", 0, 0.5236F, false}};
+                                    Case{"bent, no gradients kept", 0, 0.5236F, false},
+                                    Case{"bent, ramp under a gaussian", 3, 0.5236F, true}};
     const float halfTurn = 0.6F;
     const float s = std::sin(halfTurn);
     for (const Case& one : cases) {
@@ -874,11 +875,18 @@ TEST_CASE("a skinned gaussian follows the whole Jacobian of its blend", "[scene]
             compare->dispatch(batch, {kCount, 1, 1}, bind);
             REQUIRE(batch.submit(true));
         }
-        uint32_t seen[2] = {0, 0};
+        uint32_t seen[3] = {0, 0, 0};
         REQUIRE(counts.read(device, 0, sizeof(seen), seen));
-        std::printf("  %-24s %u compared, %u off the posed covariance by more than 3%%\n", one.name, seen[0],
-                    seen[1]);
+        std::printf("  %-28s %u compared, %u off the posed covariance by more than 3%%, %u held to the weights' reach\n",
+                    one.name, seen[0], seen[1], seen[2]);
         CHECK(seen[0] == kCount);
+        // Only a ramp narrower than the gaussians reaches past the weights'
+        // range: the wide ramps are taken whole.
+        if (one.mode == 3) {
+            CHECK(seen[2] > 0);
+        } else {
+            CHECK(seen[2] == 0);
+        }
         if (one.withGradients) {
             CHECK(seen[1] == 0);
         } else {

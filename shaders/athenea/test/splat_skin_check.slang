@@ -164,18 +164,29 @@ void splatSkinMotion(uint3 tid: SV_DispatchThreadID) {
 // Modes: 0 that bend; 1 a control, both joints the same rigid turn and slide
 // (the gradient term cancels, before as after); 2 a joint that shears, the
 // weights a constant half each, where squaring the axes up threw the shear
-// away. The gaussians' first axis is turned `frameAngle` from x in the plane,
+// away. 3 the bend over a ramp narrower than the
+// gaussians, where the term is held to the weights' reach (splat_skin.slang:
+// `size * sum_k |gradient_k|` at most a half on each rest axis) and the
+// covariance is compared against that held Jacobian; counts[2] is how many
+// were held. The gaussians' first axis is turned `frameAngle` from x in the plane,
 // so a bend shears them as well.
 RWStructuredBuffer<uint> gradients;   ///< three words of two halves a gaussian
 
 static const uint kStripAcross = 256;
 
+/// Half the width of the weights' ramp: the strip's own half in modes 0-2,
+/// and in mode 3 a ramp half a gaussian's first size across, the weights
+/// switching joints between neighbours as a per-vertex choice does.
+float stripRamp() {
+    return params.mode == 3 ? 0.005 : 0.5;
+}
+
 float stripWeight(float x) {
-    return params.mode == 2 ? 0.5 : clamp(x + 0.5, 0.0, 1.0);
+    return params.mode == 2 ? 0.5 : clamp(x / (2.0 * stripRamp()) + 0.5, 0.0, 1.0);
 }
 
 float3 stripGradient(float x) {
-    return params.mode != 2 && abs(x) < 0.5 ? float3(1.0, 0.0, 0.0) : float3(0.0, 0.0, 0.0);
+    return params.mode != 2 && abs(x) < stripRamp() ? float3(0.5 / stripRamp(), 0.0, 0.0) : float3(0.0, 0.0, 0.0);
 }
 
 [shader("compute")]
@@ -267,14 +278,21 @@ void splatStripCompare(uint3 tid: SV_DispatchThreadID) {
     const float3 grad = stripGradient(p.x);
     // `apart grad^T`: built by rows as `grad_i * apart`, which is its
     // transpose, and turned back.
-    const float3x3 elastic = float3x3(apart * grad.x, apart * grad.y, apart * grad.z);
-    const float3x3 jacobian = a0 * (1.0 - w) + a1 * w + transpose(elastic);
+    const float3x3 blend = a0 * (1.0 - w) + a1 * w;
 
     const uint row = at * 4;
     const float3x3 was = axesOfQuaternion(decodeQuaternion(restShape[row]));
     const float2 restSize = exp(float2(lowHalf(restShape[row + 1]), highHalf(restShape[row + 1])));
-    const float3 wantU = mul(jacobian, float3(was[0][0], was[1][0], was[2][0])) * restSize.x;
-    const float3 wantV = mul(jacobian, float3(was[0][1], was[1][1], was[2][1])) * restSize.y;
+    const float3 restU = float3(was[0][0], was[1][0], was[2][0]);
+    const float3 restV = float3(was[0][1], was[1][1], was[2][1]);
+    // The weights' reach on each axis: two joints, gradients g and -g.
+    const float2 reach = 2.0 * abs(float2(dot(grad, restU), dot(grad, restV))) * restSize;
+    const float2 held = float2(reach.x > 0.5 ? 0.5 / reach.x : 1.0, reach.y > 0.5 ? 0.5 / reach.y : 1.0);
+    if (any(held < 1.0)) {
+        InterlockedAdd(counts[2], 1u);
+    }
+    const float3 wantU = (mul(blend, restU) + apart * dot(grad, restU) * held.x) * restSize.x;
+    const float3 wantV = (mul(blend, restV) + apart * dot(grad, restV) * held.y) * restSize.y;
     const float3x3 is = axesOfQuaternion(decodeQuaternion(shape[row]));
     const float2 size = exp(float2(lowHalf(shape[row + 1]), highHalf(shape[row + 1])));
     const float3 gotU = float3(is[0][0], is[1][0], is[2][0]) * size.x;

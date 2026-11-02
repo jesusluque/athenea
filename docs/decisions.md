@@ -6120,6 +6120,71 @@ vertices have more) is a separate error, of position and not of frame, and is
 not measured here. A coarse LOD level's larger gaussians linearise more of the
 blend's curvature; GradRig's resampling criterion would act there.
 
+**The gradients' reach.** The elastic term is a linearisation: it says how
+the weights change across the gaussian from their gradient at its centre.
+That holds while the weights change over a distance larger than the
+gaussian. Where they change over less -- a hair tube a tenth of a millimetre
+across under a gaussian of two, or a weight that switches joints from one
+vertex to the next -- the gradient taken over the gaussian's whole extent says
+the weights leave [0, 1], and two joints a few centimetres apart stretch a
+millimetre gaussian into a spike tens of centimetres long. Einar (Blender
+Studio's rig, converted `--skinned --transfer`, 3 M gaussians) showed it:
+with the arms hanging, 90 degrees from the T-pose they were bound in, long dark
+spikes stood off both shoulders (robot-arm hoses blending the shoulder guard
+with a bolt of the other shoulder's tyre, 0.2 cm gaussians posed 12-36 cm
+long; hair tubes 0.01-0.2 cm posed 1.6-36 cm), while the blend's own part
+moved no gaussian past 1.1 cm. The kernel now holds the term to what the
+weights can do: on each rest axis, `size * sum_k |d w_k|` -- the weights'
+total change across one size -- at most a half (`kWeightReach`), one weight
+going from nothing to all and another back over the four sizes a gaussian is
+seen across. Past that the term is scaled down on that axis; below it, which
+is a ramp wider than the gaussian, nothing changes. The posed size is then
+bounded by about a quarter of the joints' disagreement rather than by the
+gradient.
+
+Measured (`tests/scene/test_loading.cpp`, the strip): a sixth case bends the
+strip over a ramp 1 cm wide under gaussians of 2 cm; 32 of 4096 are held, and
+all 4096 match the held Jacobian within 3 %; the five wide-ramp cases hold
+none and are unchanged. The sparrow's skinned TX cloud (`sparrow_skin_tx`,
+300 862 gaussians; 1 046 reach past a half) rasterised at frames 5 and 31 with
+the kernel before and after: 68 and 75 of 786 432 pixels differ by more than
+2 levels, PSNR 75 dB -- the same bird.
+
+On Einar the conversion's input was also at fault (the exporter's weights, not
+the engine): a per-vertex "best single joint" chosen over the whole skeleton at
+three frames of the wave picked joints that happened to move alike there -- a
+shoulder bolt, a knee, the satchel's chain for hair at the nape -- and they
+parted at the frames the arms hang. The exporter now chooses on nine frames
+(1 to 92), among the joints its candidates use and those within 20 cm, and
+averages the weights over the mesh's edges twice. The two changes together,
+frames 1, 4, 49 and 92 against the meshes path traced:
+
+| frame, view | PSNR dB before / after | SSIM before / after | pixels much darker than the GT, upper body (before / after) | gaussians posed > 4x their bind size and > 1 cm (before / after) | largest posed size, cm |
+|---|---|---|---|---|---|
+| 1, front | 26.76 / 27.80 | 0.897 / 0.905 | 21 020 / 13 546 | 4 205 / 27 | 35.9 / 1.7 |
+| 1, three-quarter | 27.30 / 28.56 | 0.914 / 0.921 | 16 063 / 10 344 | | |
+| 4, front | 26.83 / 27.73 | 0.896 / 0.903 | 20 135 / 13 662 | 3 911 / 28 | 32.5 / 1.7 |
+| 4, three-quarter | 27.37 / 28.42 | 0.912 / 0.918 | 15 995 / 10 942 | | |
+| 49, front | 27.66 / 27.89 | 0.899 / 0.901 | 13 591 / 12 154 | 2 220 / 55 | 9.9 / 1.7 |
+| 49, three-quarter | 28.34 / 28.47 | 0.914 / 0.915 | 10 817 / 10 167 | | |
+| 92, front | 27.02 / 27.80 | 0.896 / 0.903 | 18 788 / 13 368 | 3 652 / 28 | 28.9 / 1.6 |
+| 92, three-quarter | 27.57 / 28.42 | 0.913 / 0.918 | 15 301 / 10 984 | | |
+
+The reference is the new export's meshes path traced (512 paths, denoised,
+1024x1536) for both columns; "much darker" is `Y(GT) - 2 Y(raster) > 0.05`
+in the top 850 rows, which also counts the beard's known darkness (about 10 000
+pixels on any frame). Each change alone: the reach on the old weights takes
+the frame-1 front to 27.03 dB (the hoses' spikes stay: their two joints part by
+half a metre); the new weights on the old kernel give the same images as both
+(27.80 dB) but not the same cloud -- their smoothed weights vary across hair
+tubes fast enough that the stored gradients reach half's largest value, and
+75 gaussians at frame 49 pose past 2 cm, one to 4.9 m (a thin line across the
+frame). With the reach no gaussian poses past 1.7 cm on any of the four
+frames. Raster time is unchanged (41-43 ms a frame, median of 8, both).
+
+The Spark WebGPU player's skinner (`athenea_adapter/skin.slang`) restates this
+kernel and takes the same limit.
+
 ## The file carries the rig, not the frames
 
 `AtheneaSplatSkinningAPI` (`modules/usd/schemas/generatedSchema.usda`) is what a
