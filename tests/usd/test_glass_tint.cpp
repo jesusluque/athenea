@@ -53,6 +53,8 @@ fs::path scratch(const std::string& name) {
 struct SlabScene {
     float       thickness = 0.001F;
     bool        sheet = false;
+    bool        standard = false;   ///< standard_surface, `thin_walled` = `thin`
+    bool        thin = false;
     const char* tint = "0.8319, 0, 0.1049";
     const char* base = "0.692, 0, 0.011";
 };
@@ -104,21 +106,33 @@ fs::path stage(const std::string& name, const SlabScene& scene) {
            "            token outputs:out\n        }\n    }\n"
            "    def Material \"Glass\"\n    {\n"
            "        token outputs:mtlx:surface.connect = </Materials/Glass/Surface.outputs:out>\n"
-           "        def Shader \"Surface\"\n        {\n"
-           "            uniform token info:id = \"ND_open_pbr_surface_surfaceshader\"\n"
-           "            color3f inputs:base_color = ("
-        << scene.base
-        << ")\n"
-           "            float inputs:transmission_weight = 1\n"
-           "            color3f inputs:transmission_color = ("
-        << scene.tint
-        << ")\n"
-           "            float inputs:specular_roughness = 0\n"
-           "            float inputs:specular_ior = 1.6\n"
-           "            bool inputs:geometry_thin_walled = "
-        << (scene.sheet ? 1 : 0)
-        << "\n"
-           "            token outputs:out\n        }\n    }\n}\n"
+           "        def Shader \"Surface\"\n        {\n";
+    if (scene.standard) {
+        out << "            uniform token info:id = \"ND_standard_surface_surfaceshader\"\n"
+               "            float inputs:base = 0\n"
+               "            float inputs:transmission = 1\n"
+               "            color3f inputs:transmission_color = ("
+            << scene.tint
+            << ")\n"
+               "            float inputs:specular_roughness = 0\n"
+               "            float inputs:specular_IOR = 1.6\n"
+               "            bool inputs:thin_walled = "
+            << (scene.thin ? 1 : 0) << "\n";
+    } else {
+        out << "            uniform token info:id = \"ND_open_pbr_surface_surfaceshader\"\n"
+               "            color3f inputs:base_color = ("
+            << scene.base
+            << ")\n"
+               "            float inputs:transmission_weight = 1\n"
+               "            color3f inputs:transmission_color = ("
+            << scene.tint
+            << ")\n"
+               "            float inputs:specular_roughness = 0\n"
+               "            float inputs:specular_ior = 1.6\n"
+               "            bool inputs:geometry_thin_walled = "
+            << (scene.sheet ? 1 : 0) << "\n";
+    }
+    out << "            token outputs:out\n        }\n    }\n}\n"
            "def Camera \"Camera\"\n{\n"
            "    float focalLength = 50\n"
            "    float horizontalAperture = 24.576\n    float verticalAperture = 18.432\n"
@@ -224,4 +238,45 @@ TEST_CASE("a red lens 1 mm thick tints the lamp behind it at both its faces",
     CHECK(thin.mean[0] == Catch::Approx(tR * tR * kFace * kFace).epsilon(0.03));
     CHECK(redThin.mean[0] == Catch::Approx(0.8 * 0.8 * kFace * kFace).epsilon(0.03));
     CHECK(wall.mean[0] == Catch::Approx(tR * (1.0 - 2.0 * kReflect / (1.0 + kReflect))).epsilon(0.03));
+}
+
+// standard_surface's own graph spends `thin_walled` only on translucent over
+// subsurface and leaves the `surface` constructor's input unwired, so until
+// the compiler took the graph's input a thin-walled standard_surface glass
+// was a solid (splat2mesh's wine glass rendered the same either way). A
+// sheet reads as OpenPBR's thin wall, and a closed 10 cm box as two of them:
+// (tR (1 - 2R / (1 + R)))^2, some 10% under the solid's (tR (1 - R))^2.
+TEST_CASE("a thin-walled standard_surface glass is a thin wall, as OpenPBR's",
+          "[usd][gpu][mesh][path][emissive][glass]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    if (!tracesRays(gpu)) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    const double tR = 0.8319;
+    const double tB = 0.1049;
+    const double wallPass = 1.0 - 2.0 * kReflect / (1.0 + kReflect);
+    SlabScene openPbr;
+    openPbr.sheet = true;
+    SlabScene sheet = openPbr;
+    sheet.standard = true;
+    sheet.thin = true;
+    SlabScene box;
+    box.thickness = 0.1F;
+    box.standard = true;
+    box.thin = true;
+    SlabScene solid = box;
+    solid.thin = false;
+    const render::ImageStats wall = middle(gpu, stage("sheet_openpbr.usda", openPbr));
+    const render::ImageStats standardWall = middle(gpu, stage("sheet_standard.usda", sheet));
+    const render::ImageStats walls = middle(gpu, stage("box_standard_thin.usda", box));
+    const render::ImageStats solidBox = middle(gpu, stage("box_standard_solid.usda", solid));
+    report("an OpenPBR thin wall", wall);
+    report("a standard_surface thin wall", standardWall);
+    report("a 10 cm standard_surface box, thin-walled", walls);
+    report("the same box solid", solidBox);
+    CHECK(standardWall.mean[0] == Catch::Approx(wall.mean[0]).epsilon(0.01));
+    CHECK(standardWall.mean[2] / standardWall.mean[0] == Catch::Approx(tB / tR).epsilon(0.02));
+    CHECK(walls.mean[0] == Catch::Approx(tR * tR * wallPass * wallPass).epsilon(0.03));
+    CHECK(walls.mean[2] / walls.mean[0] == Catch::Approx((tB / tR) * (tB / tR)).epsilon(0.02));
+    CHECK(solidBox.mean[0] == Catch::Approx(tR * tR * kFace * kFace).epsilon(0.03));
 }

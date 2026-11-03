@@ -8602,6 +8602,20 @@ constructor, OpenPBR wires `geometry_thin_walled` to it, and nothing here read
 it; `standard_surface` itself only uses it to swap subsurface for
 translucency, so the bird's cards are OpenPBR.
 
+Since 3 Nov a standard_surface's `thin_walled` reaches the constructor too.
+Its graph spends the input only on choosing translucent over subsurface and
+leaves the constructor's own unwired, so the compiler now takes the graph's
+input where the constructor's has no connection. Autodesk's specification,
+Arnold and Karma read it as a sheet that transmits without bending, which is
+what a thin-walled standard_surface glass did not do here: splat2mesh's wine
+glass, a closed solid, rendered identically with it on and off. Measured on
+the red slab (`a thin-walled standard_surface glass is a thin wall, as
+OpenPBR's`): a standard_surface sheet reads **0.7494**, OpenPBR's sheet's
+value to four digits; a closed 10 cm box of it **0.5612** against
+(tR (1 - 2R/(1 + R)))^2 = 0.559, two walls, where the same box solid reads
+0.6226. With `thin_walled` off the wine glass renders bit-identical to
+before.
+
 - **The compiler** emits `gAtheneaThinWalled` from the constructor before its BSDF
   builds, and `atheneaPushLobe` marks every dielectric it pushes
   (`kFlagThinWalled`); a thin wall has no inside, so the index never inverts.

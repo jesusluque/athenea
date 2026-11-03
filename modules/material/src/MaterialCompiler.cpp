@@ -88,10 +88,20 @@ public:
         // A THIN WALL is the surface's, not a BSDF's (MaterialX puts it on the
         // `surface` constructor; OpenPBR wires `geometry_thin_walled` there):
         // said before the BSDF builds, so the dielectrics it pushes know.
+        // standard_surface's graph leaves the constructor's input unwired and
+        // spends its own `thin_walled` only on choosing translucent over
+        // subsurface, so a constructor input with no connection takes the
+        // graph's, when the graph has one.
+        const mx::ShaderGraph* graph = node.getParent();
+        const mx::ShaderGraphInputSocket* graphThin = graph ? graph->getInputSocket("thin_walled") : nullptr;
         if (const mx::ShaderInput* thin = node.getInput("thin_walled")) {
             shadergen.emitLineBegin(stage);
             shadergen.emitString("gAtheneaThinWalled = ", stage);
-            shadergen.emitInput(thin, context, stage);
+            if (!thin->getConnection() && graphThin) {
+                shadergen.emitString(graphThin->getVariable(), stage);
+            } else {
+                shadergen.emitInput(thin, context, stage);
+            }
             shadergen.emitLineEnd(stage);
         }
         if (const mx::ShaderInput* bsdfInput = node.getInput(getBsdfInputName())) {

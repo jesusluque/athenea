@@ -1244,7 +1244,10 @@ que llevan. Ninguno toca el fichero: la tabla es del frame, y vaciarla
 devuelve la nube.
 
 **Una pared fina.** Un dieléctrico bajo un `surface` con `thin_walled`
-activado (el `geometry_thin_walled` de OpenPBR) es una lámina:
+activado (el `geometry_thin_walled` de OpenPBR; el `thin_walled` propio de
+standard_surface, que su grafo no conecta al constructor, así que el
+constructor toma la entrada del grafo cuando la suya no tiene conexión) es una
+lámina:
 `kFlagThinWalled`, que pone `atheneaPushLobe` a partir de `gAtheneaThinWalled`, que a
 su vez fija el constructor de superficie compilado antes de su BSDF. Refleja
 `2R / (1 + R)` y deja pasar el resto en línea recta, como una delta. Una gaussiana convertida de

@@ -1183,7 +1183,10 @@ Neither touches the file: the table is the frame's, and clearing it puts the
 cloud back.
 
 **A thin wall.** A dielectric under a `surface` whose `thin_walled` is on
-(OpenPBR's `geometry_thin_walled`) is a sheet: `kFlagThinWalled`, set by
+(OpenPBR's `geometry_thin_walled`; standard_surface's own `thin_walled`,
+which its graph does not wire to the constructor, so the constructor takes
+the graph's input when its own has no connection) is a sheet:
+`kFlagThinWalled`, set by
 `atheneaPushLobe` from `gAtheneaThinWalled`, which the compiled surface constructor
 sets before its BSDF. It reflects `2R / (1 + R)` and sends the rest straight
 through along a delta. A gaussian converted from one (`thinWalled`, bit 24
