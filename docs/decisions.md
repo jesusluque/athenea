@@ -19842,10 +19842,21 @@ sphere, a sample behind it bent in by the index and the path sent on through
 the glass. The bake now does the same where the prim's
 `primvars:athenea:splat:ior` is over 1: a ray behind the surface is bent by
 `refractInto` and passes the glass's own particles, and the field is over the
-sphere. The crystal's open directions went from 13.8 % (99 % in front) to
-47.4 % (30 % in front), and in raster the dragon's body shows through it,
-darker and greyer than the path traced crystal. 4 min 54 s for the glass:
-the second pass now traces the whole sphere.
+sphere. A first version also opened the glass's cells behind it (47.4 % open,
+30 % in front): the dragon's body showed through the crystal, but it read
+dark grey. The raster's lens (`splat_relight`, "a solid glass is a lens")
+reads the field along the eye's ray through the glass and expects it to hold
+what comes through under a white sky -- the glass's throughput, the sky where
+nothing stands -- and draws the bent sky in proportion; the field held only
+what the rays met, so every open way through read closed and dark. As the
+path tracer bakes it now: the cells behind a glass closed by its own far face
+(13.8 % open, 99 % in front), and its field behind it the throughput (the
+dielectric's Fresnel at entry, squared for the two faces, and the tint twice)
+times what the bent ray meets plus what is left of the white sky past it,
+those directions counted closed for the field's normalisation. In raster the
+crystal then reads a light lilac glass, near the path traced one, a little
+milky where the path tracer shows the scene through it. 3 min 33 s for the
+glass.
 
 **Not done.** The far face's own bend, and its reflection back into the
 glass; a bounce off a met coat or metal (its specular share); more than one

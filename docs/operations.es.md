@@ -1080,13 +1080,13 @@ modo.
   superficie: el bake imprime qué parte de las direcciones abiertas está del
   lado al que miran, y lo avisa cuando es menos de un tercio.
 - **Un cristal sólido** (`primvars:athenea:splat:ior` mayor que 1, constante):
-  como lo hornea el path tracer, sobre toda la esfera -- una dirección detrás de
-  su superficie se dobla hacia dentro por el índice y se envía a través del
-  cristal, más allá de sus propias gaussianas --, así que lo que dicen sus
-  direcciones abiertas y su campo detrás de la superficie es lo que se ve a
-  través de ella, que es lo que dibuja la lente del raster. La refracción de la
-  cara lejana no está. Sus direcciones abiertas quedan entonces en su mayoría
-  detrás de sus normales, como deben.
+  como lo hornea el path tracer -- sus direcciones abiertas detrás de él
+  cerradas por su propia cara lejana, y su campo sobre toda la esfera, una
+  dirección detrás de su superficie doblada hacia dentro por el índice y
+  enviada más allá de sus propias gaussianas, que lleva el throughput del
+  cristal (Fresnel en las dos caras, su color como tinte dos veces) por lo que
+  encuentra y el cielo blanco más allá: lo que la lente del raster lee a
+  través de él. La refracción de la cara lejana no está.
 - **Un prim por ejecución.** Un segundo prim se hornea a partir de la salida de
   la primera ejecución: `athenea splat-transfer a.usdc --prim /A -o b.usdc`, y
   luego `athenea splat-transfer b.usdc --prim /B -o c.usdc`.

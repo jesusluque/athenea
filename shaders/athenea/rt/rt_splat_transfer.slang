@@ -32,10 +32,14 @@
 //
 // A SOLID GLASS (`ior` over 1) is baked as the path tracer bakes one in cells
 // mode (PathTracer.cpp, `bakeSphereDirection`, "behind, the way in bends"):
-// over the whole sphere, a direction behind its surface bent in by the index
-// and sent on through the glass -- its own particles let it pass, so what its
-// cells and its field say behind it is what is seen through it, which is what
-// the raster's lens reads. The far face's own bend is not there.
+// its cells behind it are closed by its own far face, and its field is over
+// the whole sphere, a direction behind its surface bent in by the index and
+// sent on through the glass -- past its own particles -- carrying what comes
+// through under a white sky: the glass's throughput (the Fresnel at both faces
+// and its tint twice, as the mesh tints at each crossing) times what the ray
+// meets beyond, and the sky (radiance one) where it meets nothing. That is
+// what the raster's lens reads along the eye's ray through it (splat_relight,
+// "a solid glass is a lens"). The far face's own bend is not there.
 //
 // The basis is athenea's environment basis (light/environment.slang), in the
 // cloud's own frame. Two passes: `splatTransferDirect` over every cloud of the
@@ -96,6 +100,19 @@ static const uint  kNearest = 8;
 
 uint recordOf(uint i) {
     return params.hasOrigin != 0 ? origin[i] : i;
+}
+
+/// The dielectric's Fresnel reflectance, unpolarised, at cos theta in a medium
+/// of relative index eta.
+float fresnelDielectricOf(float cosI, float eta) {
+    const float sinT2 = (1.0 - cosI * cosI) / (eta * eta);
+    if (sinT2 >= 1.0) {
+        return 1.0;
+    }
+    const float cosT = sqrt(1.0 - sinT2);
+    const float rs = (cosI - eta * cosT) / (cosI + eta * cosT);
+    const float rp = (eta * cosI - cosT) / (eta * cosI + cosT);
+    return 0.5 * (rs * rs + rp * rp);
 }
 
 float srgbToLinear(float c) {
@@ -247,9 +264,10 @@ void splatTransferDirect(uint3 tid: SV_DispatchThreadID) {
                 for (uint sx = 0; sx < per; ++sx) {
                     float solid;
                     const float3 w = gridDirection(cx * per + sx, cy * per + sy, params.grid, solid);
-                    bool inside;
-                    const float3 way = wayOut(n, w, inside);
-                    const float t = transmittanceAlong(rayFrom(p, n, widest, way), inside);
+                    // A glass's cells behind it are closed by its own far
+                    // face, as the path tracer's are: the field says what is
+                    // seen through it.
+                    const float t = transmittanceAlong(rayFrom(p, n, widest, w), false);
                     through += t;
                     rays += 1;
                     const float cosine = dot(n, w);
@@ -385,12 +403,21 @@ void splatTransferBounced(uint3 tid: SV_DispatchThreadID) {
                 left *= 1.0 - nearAlpha[j];
             }
             const float worth = max(cosine, 0.0) * solid / kPi;
-            const float3 white = met[0] * kSqrtFourPi;
+            float3 white = met[0] * kSqrtFourPi;
+            float closedHere = 1.0 - left;
+            if (through) {
+                // Through the glass: its throughput times what it meets and
+                // the white sky past it; closed by its own far face.
+                const float f = fresnelDielectricOf(saturate(-cosine), params.ior);
+                const float3 tint = albedo[params.base + i].rgb;
+                white = (1.0 - f) * (1.0 - f) * tint * tint * (white + float3(left));
+                closedHere = 1.0;
+            }
             for (uint k = 0; k < 16; ++k) {
                 const float y = envBasisValue(k, w) * solid;
                 indirect[k] += met[k] * worth;
                 field[k] += white * y;
-                closed[k] += (1.0 - left) * y;
+                closed[k] += closedHere * y;
             }
         }
     }
