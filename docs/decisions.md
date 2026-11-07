@@ -19858,8 +19858,19 @@ crystal then reads a light lilac glass, near the path traced one, a little
 milky where the path tracer shows the scene through it. 3 min 33 s for the
 glass.
 
-**Not done.** The far face's own bend, and its reflection back into the
-glass; a bounce off a met coat or metal (its specular share); more than one
+**The far face.** Seen from the front, splat2mesh's lighter crystal (82 892
+surfels) still read dark mauve in raster where the path traced one is light
+lilac: the ray bent in went on straight to the dragon's dark body behind it,
+where the path tracer bends it again at the far face, out to the room. The
+bake now finds that face -- the nearest of the glass's own particles of real
+opacity along the bent ray -- and bends the ray out there through that
+particle's normal (reflecting it where total internal reflection holds it),
+with that face's Fresnel in the throughput; what the ray meets past it is
+what the field holds. From splat2mesh's camera the crystal reads a light,
+see-through lilac, near the path traced frame. A ray reflected at the far
+face is followed once, not through further bounces inside.
+
+**Not done.** More than one reflection inside the glass; a bounce off a met coat or metal (its specular share); more than one
 prim a run; a test in the suite (the checks above were run by hand); a
 ComputeBvh route for devices with no ray queries.
 

@@ -1054,7 +1054,10 @@ relights the same way.
   surface bent in by the index and sent on past its own gaussians, carrying
   the glass's throughput (Fresnel at both faces, its colour as the tint
   twice) times what it meets and the white sky past it: what the raster's
-  lens reads through it. The far face's own bend is not there.
+  lens reads through it. The bent ray leaves at the glass's own far face --
+  its nearest gaussian there -- bent out again by the index through that
+  gaussian's normal, or reflected once where total internal reflection holds
+  it.
 - **One prim a run.** A second prim is baked from the first run's output:
   `athenea splat-transfer a.usdc --prim /A -o b.usdc`, then
   `athenea splat-transfer b.usdc --prim /B -o c.usdc`.

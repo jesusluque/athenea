@@ -1086,7 +1086,10 @@ modo.
   enviada más allá de sus propias gaussianas, que lleva el throughput del
   cristal (Fresnel en las dos caras, su color como tinte dos veces) por lo que
   encuentra y el cielo blanco más allá: lo que la lente del raster lee a
-  través de él. La refracción de la cara lejana no está.
+  través de él. El rayo doblado sale por la cara lejana del propio cristal --
+  su gaussiana más cercana allí --, doblado de nuevo hacia fuera por el índice
+  a través de la normal de esa gaussiana, o reflejado una vez donde la
+  reflexión total interna lo retiene.
 - **Un prim por ejecución.** Un segundo prim se hornea a partir de la salida de
   la primera ejecución: `athenea splat-transfer a.usdc --prim /A -o b.usdc`, y
   luego `athenea splat-transfer b.usdc --prim /B -o c.usdc`.

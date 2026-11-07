@@ -349,7 +349,53 @@ void splatTransferBounced(uint3 tid: SV_DispatchThreadID) {
                 nearId[k] = 0xFFFFFFFFu;
             }
             uint held = 0;
-            const AtheneaRay ray = rayFrom(p, n, widest, way);
+            AtheneaRay ray = rayFrom(p, n, widest, way);
+            // THE FAR FACE: through a glass, the bent ray goes on to where it
+            // meets the glass's own far side -- its nearest own particle of
+            // real opacity -- and leaves there, bent out by the index through
+            // that particle's normal (or reflected, where total internal
+            // reflection holds it in), as the path tracer's path does.
+            float farOut = 1.0;
+            if (through) {
+                float tFar = 3.0e38;
+                uint idFar = 0xFFFFFFFFu;
+                RayDesc inner;
+                inner.Origin = ray.Origin;
+                inner.Direction = ray.Direction;
+                inner.TMin = ray.TMin;
+                inner.TMax = ray.TMax;
+                RayQuery<RAY_FLAG_NONE> innerQuery;
+                innerQuery.TraceRayInline(scene, RAY_FLAG_NONE, 0xFF, inner);
+                while (innerQuery.Proceed()) {
+                    uint id;
+                    float alpha, tPeak;
+                    if (particleMet(innerQuery, ray, id, alpha, tPeak) && ownGlass(id) && alpha > 0.3 && tPeak < tFar) {
+                        tFar = tPeak;
+                        idFar = id;
+                    }
+                }
+                if (idFar != 0xFFFFFFFFu) {
+                    float3 farP, farN;
+                    float farWidest;
+                    gaussianAt(idFar - params.base, farP, farN, farWidest);
+                    farN = dot(farN, way) < 0.0 ? -farN : farN;
+                    const float3 at = ray.Origin + way * tFar;
+                    const float cosI = saturate(dot(way, farN));
+                    const float eta = params.ior;
+                    const float k = 1.0 - eta * eta * (1.0 - cosI * cosI);
+                    float3 out;
+                    if (k < 0.0) {
+                        out = reflect(way, farN);
+                    } else {
+                        out = normalize(eta * way - (eta * cosI - sqrt(k)) * farN);
+                        farOut = 1.0 - fresnelDielectricOf(cosI, 1.0 / eta);
+                    }
+                    ray.Origin = at + out * (params.offset * farWidest);
+                    ray.Direction = out;
+                    ray.TMin = 1.0e-4 * max(farWidest, 1.0e-6);
+                    ray.TMax = 3.0e38;
+                }
+            }
             RayDesc traced;
             traced.Origin = ray.Origin;
             traced.Direction = ray.Direction;
@@ -410,7 +456,7 @@ void splatTransferBounced(uint3 tid: SV_DispatchThreadID) {
                 // the white sky past it; closed by its own far face.
                 const float f = fresnelDielectricOf(saturate(-cosine), params.ior);
                 const float3 tint = albedo[params.base + i].rgb;
-                white = (1.0 - f) * (1.0 - f) * tint * tint * (white + float3(left));
+                white = (1.0 - f) * farOut * tint * tint * (white + float3(left));
                 closedHere = 1.0;
             }
             for (uint k = 0; k < 16; ++k) {
