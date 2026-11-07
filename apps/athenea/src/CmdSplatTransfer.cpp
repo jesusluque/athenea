@@ -70,6 +70,10 @@ int run(const Options& o) {
         if ((*prims)[i].path == o.prim) {
             baked = static_cast<int>(i);
         }
+        if ((*prims)[i].path == o.prim && (*prims)[i].ior > 1.0F) {
+            std::printf("splat-transfer: %s is a solid glass (index %.3g): what is behind its surface is baked "
+                        "through it\n", o.prim.c_str(), static_cast<double>((*prims)[i].ior));
+        }
         if ((*prims)[i].moved) {
             std::printf("splat-transfer: %s stands under a transform; it is baked in its own space\n",
                         (*prims)[i].path.c_str());
@@ -193,6 +197,7 @@ int run(const Options& o) {
         cursor["params"]["hasOrigin"].setData(c.origin.valid() ? 1u : 0u);
         cursor["params"]["offset"].setData(o.offset);
         cursor["params"]["cut"].setData(o.cut);
+        cursor["params"]["ior"].setData(writeBits || static_cast<int>(cloud) == baked ? (*prims)[cloud].ior : 0.0F);
     };
     // The direct half of every cloud (what the second pass meets), the one
     // baked last so its bits are its own.
@@ -219,7 +224,7 @@ int run(const Options& o) {
                 said[0], said[1], 100.0 * cellsOpen, 100.0 * facing);
     // A sheet is open on both sides (half and half); a surface whose normals
     // point into it has its open directions behind them.
-    if (said[2] > 0 && facing < 0.35) {
+    if (said[2] > 0 && facing < 0.35 && !((*prims)[static_cast<size_t>(baked)].ior > 1.0F)) {
         std::printf("splat-transfer: most open directions are behind the normals: are they pointing into the "
                     "surface?\n");
     }

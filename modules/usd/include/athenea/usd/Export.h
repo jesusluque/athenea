@@ -532,6 +532,7 @@ struct LodLevelFile {
 struct ParticleFieldPrim {
     std::string path;
     bool        moved = false;
+    float       ior = 0.0F;   ///< `primvars:athenea:splat:ior` (constant), 0 where none: over 1, a solid glass
 };
 [[nodiscard]] Result<std::vector<ParticleFieldPrim>> particleFieldPrims(const std::filesystem::path& path);
 

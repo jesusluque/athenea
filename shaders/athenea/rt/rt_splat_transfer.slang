@@ -30,6 +30,13 @@
 //     directions' own projection and projected again, so a closed direction
 //     reads what stands there.
 //
+// A SOLID GLASS (`ior` over 1) is baked as the path tracer bakes one in cells
+// mode (PathTracer.cpp, `bakeSphereDirection`, "behind, the way in bends"):
+// over the whole sphere, a direction behind its surface bent in by the index
+// and sent on through the glass -- its own particles let it pass, so what its
+// cells and its field say behind it is what is seen through it, which is what
+// the raster's lens reads. The far face's own bend is not there.
+//
 // The basis is athenea's environment basis (light/environment.slang), in the
 // cloud's own frame. Two passes: `splatTransferDirect` over every cloud of the
 // stage (a met particle's direct half is what the second pass reads), then
@@ -53,7 +60,7 @@ public struct SplatTransferParams {
     public uint  hasOrigin;   // 1: `origin` says each gaussian's record in the file (some were dropped)
     public float offset;      // the ray starts this many of the gaussian's widest sigma off its surface
     public float cut;         // a ray stops once less than this is left through it
-    public float pad1;
+    public float ior;         // over 1: a solid glass (below)
     public float pad2;
 };
 
@@ -135,6 +142,25 @@ AtheneaRay rayFrom(float3 p, float3 n, float widest, float3 w) {
     return ray;
 }
 
+/// A glass's own particles, which a ray sent through it lets pass.
+bool ownGlass(uint id) {
+    return params.ior > 1.0 && id >= params.base && id < params.base + params.count;
+}
+
+/// The way a direction goes out of a gaussian: behind a glass's surface, bent
+/// in by its index (PathTracer.cpp's refractInto); `through` says it then
+/// passes the glass's own particles.
+float3 wayOut(float3 n, float3 w, out bool through) {
+    through = params.ior > 1.0 && dot(n, w) < 0.0;
+    if (!through) {
+        return w;
+    }
+    const float cosIn = -dot(n, w);
+    const float eta = 1.0 / params.ior;
+    const float k = max(1.0 - eta * eta * (1.0 - cosIn * cosIn), 0.0);
+    return normalize(eta * w + (eta * cosIn - sqrt(k)) * n);
+}
+
 /// One particle met: its alpha at its peak along the ray (rt_shadow's rule).
 bool particleMet(RayQuery<RAY_FLAG_NONE> query, AtheneaRay ray, out uint id, out float alpha, out float tPeak) {
     alpha = 0.0;
@@ -157,8 +183,8 @@ bool particleMet(RayQuery<RAY_FLAG_NONE> query, AtheneaRay ray, out uint id, out
     return alpha > 0.0;
 }
 
-/// What is left through the cloud along the ray.
-float transmittanceAlong(AtheneaRay ray) {
+/// What is left through the cloud along the ray (`through`: past a glass's own particles).
+float transmittanceAlong(AtheneaRay ray, bool through) {
     ShadowState state = shadowBegin();
     RayDesc traced;
     traced.Origin = ray.Origin;
@@ -170,7 +196,7 @@ float transmittanceAlong(AtheneaRay ray) {
     while (query.Proceed()) {
         uint id;
         float alpha, tPeak;
-        if (particleMet(query, ray, id, alpha, tPeak)) {
+        if (particleMet(query, ray, id, alpha, tPeak) && !(through && ownGlass(id))) {
             shadowTake(state, id, query.CandidateInstanceIndex(), alpha);
             if (shadowDone(state, params.cut)) {
                 query.Abort();
@@ -221,7 +247,9 @@ void splatTransferDirect(uint3 tid: SV_DispatchThreadID) {
                 for (uint sx = 0; sx < per; ++sx) {
                     float solid;
                     const float3 w = gridDirection(cx * per + sx, cy * per + sy, params.grid, solid);
-                    const float t = transmittanceAlong(rayFrom(p, n, widest, w));
+                    bool inside;
+                    const float3 way = wayOut(n, w, inside);
+                    const float t = transmittanceAlong(rayFrom(p, n, widest, way), inside);
                     through += t;
                     rays += 1;
                     const float cosine = dot(n, w);
@@ -286,9 +314,13 @@ void splatTransferBounced(uint3 tid: SV_DispatchThreadID) {
             float solid;
             const float3 w = gridDirection(gx, gy, params.grid, solid);
             const float cosine = dot(n, w);
-            if (cosine <= 0.0) {
+            // A glass's field is over the whole sphere; anything else's over
+            // the half it faces.
+            if (cosine <= 0.0 && !(params.ior > 1.0)) {
                 continue;
             }
+            bool through;
+            const float3 way = wayOut(n, w, through);
             // The nearest particles the ray meets, by where each peaks.
             float nearT[kNearest];
             float nearAlpha[kNearest];
@@ -299,7 +331,7 @@ void splatTransferBounced(uint3 tid: SV_DispatchThreadID) {
                 nearId[k] = 0xFFFFFFFFu;
             }
             uint held = 0;
-            const AtheneaRay ray = rayFrom(p, n, widest, w);
+            const AtheneaRay ray = rayFrom(p, n, widest, way);
             RayDesc traced;
             traced.Origin = ray.Origin;
             traced.Direction = ray.Direction;
@@ -310,7 +342,7 @@ void splatTransferBounced(uint3 tid: SV_DispatchThreadID) {
             while (query.Proceed()) {
                 uint id;
                 float alpha, tPeak;
-                if (!particleMet(query, ray, id, alpha, tPeak)) {
+                if (!particleMet(query, ray, id, alpha, tPeak) || (through && ownGlass(id))) {
                     continue;
                 }
                 bool seen = false;
@@ -352,7 +384,7 @@ void splatTransferBounced(uint3 tid: SV_DispatchThreadID) {
                 }
                 left *= 1.0 - nearAlpha[j];
             }
-            const float worth = cosine * solid / kPi;
+            const float worth = max(cosine, 0.0) * solid / kPi;
             const float3 white = met[0] * kSqrtFourPi;
             for (uint k = 0; k < 16; ++k) {
                 const float y = envBasisValue(k, w) * solid;

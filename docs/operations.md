@@ -1048,6 +1048,13 @@ relights the same way.
   else each gaussian's thinnest axis. They must face out of the surface: the
   bake prints what share of the open directions is on the side they face, and
   says so when it is under a third.
+- **A solid glass** (`primvars:athenea:splat:ior` over 1, constant): as the
+  path tracer bakes one, over the whole sphere -- a direction behind its
+  surface bent in by the index and sent on through the glass, past its own
+  gaussians -- so what its open directions and its field say behind the
+  surface is what is seen through it, which the raster's lens draws. The far
+  face's own bend is not there. Its open directions are then mostly behind
+  its normals, as they should be.
 - **One prim a run.** A second prim is baked from the first run's output:
   `athenea splat-transfer a.usdc --prim /A -o b.usdc`, then
   `athenea splat-transfer b.usdc --prim /B -o c.usdc`.

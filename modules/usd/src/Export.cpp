@@ -776,7 +776,12 @@ Result<std::vector<ParticleFieldPrim>> particleFieldPrims(const std::filesystem:
     for (const UsdPrim& prim : stage->Traverse()) {
         if (prim.IsA<UsdVolParticleField3DGaussianSplat>()) {
             const GfMatrix4d world = xforms.GetLocalToWorldTransform(prim);
-            found.push_back({prim.GetPath().GetString(), !GfIsClose(world, GfMatrix4d(1.0), 1e-9)});
+            float ior = 0.0F;
+            const UsdGeomPrimvar index = UsdGeomPrimvarsAPI(prim).GetPrimvar(TfToken("athenea:splat:ior"));
+            if (index && index.GetInterpolation() == UsdGeomTokens->constant) {
+                index.Get(&ior);
+            }
+            found.push_back({prim.GetPath().GetString(), !GfIsClose(world, GfMatrix4d(1.0), 1e-9), ior});
         }
     }
     return found;

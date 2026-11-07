@@ -19833,7 +19833,22 @@ record dropped on loading keeps zeros and the arrays have the file's length.
   are 99 % on the side its normals face. In raster the crystal no longer
   swirls; it reads more silver than glass.
 
-**Not done.** A bounce off a met coat or metal (its specular share); more
-than one prim a run; a test in the suite (the checks above were run by hand);
-a ComputeBvh route for devices with no ray queries.
+**A solid glass, seen through.** Baked as an opaque surface, the dragon's
+crystal had its directions behind its surface closed by its own far side, and
+its field there showed its own shell: in raster it read as polished silver
+and showed nothing behind it (splat2mesh, after the user's "it is not
+transparent"). The path tracer bakes a transmitting surface over the whole
+sphere, a sample behind it bent in by the index and the path sent on through
+the glass. The bake now does the same where the prim's
+`primvars:athenea:splat:ior` is over 1: a ray behind the surface is bent by
+`refractInto` and passes the glass's own particles, and the field is over the
+sphere. The crystal's open directions went from 13.8 % (99 % in front) to
+47.4 % (30 % in front), and in raster the dragon's body shows through it,
+darker and greyer than the path traced crystal. 4 min 54 s for the glass:
+the second pass now traces the whole sphere.
+
+**Not done.** The far face's own bend, and its reflection back into the
+glass; a bounce off a met coat or metal (its specular share); more than one
+prim a run; a test in the suite (the checks above were run by hand); a
+ComputeBvh route for devices with no ray queries.
 
