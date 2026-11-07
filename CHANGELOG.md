@@ -6,8 +6,16 @@ pass). The version lives in one place, the top-level `project()` line, and is
 what `athenea --version` and `athenea info` print. A minor version is a set of
 merged work; a patch version fixes what a minor one shipped.
 
-## Unreleased
+## 0.4.0 — 2026-11-07
 
+- **splat-transfer**: a TX transfer baked onto a cloud with no mesh, tracing
+  the stage's own clouds; a solid glass baked through itself, as the path
+  tracer bakes one, and its lens taken as a ball or a slab from the far faces
+  its field meets (`primvars:athenea:splat:curvature`).
+- **Several views from one load**: `athenea stage --cameras FILE` and
+  `--turntable N`.
+- **Glass and denoising**: a thin-walled `standard_surface` glass is a thin
+  wall, as OpenPBR's; the denoiser's guides are a kernel of their own.
 - **Volumes**: OpenVDB and Field3D fields through Hydra, every field a volume
   names (up to eight) in its own value type, level sets read as fogs,
   instanced volumes, light linking in a medium, a least recently used grid
@@ -37,7 +45,6 @@ merged work; a patch version fixes what a minor one shipped.
   neighbourhood's triangles (`athenea:meshAntialias`), a frame waits for the
   device once; shadow catchers take every light and reach further with a ring
   of coarser cells.
-
 - **Nuke and Natron**: an OpenFX node (`integrations/ofx`) draws a stage through
   the shot camera with RGBA, depth, P (world position) and Cryptomatte planes,
   and an HDRI the artist picks and rotates; the engine runs out of process
