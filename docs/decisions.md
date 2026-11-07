@@ -19747,3 +19747,24 @@ pictures are sized for the first frame and a twentieth more, so each frame is on
 
 - **Not done:** order 3 for media with velocity-carried slots (a per-run fit weighted by the velocity, or smaller
   runs); bit-exact float steps across compilers (an integer rotation step would make them exact).
+
+## Several views from one load of a stage (7 Nov)
+
+`athenea stage` drew one camera a process, so a turntable paid the stage's load
+every frame: the USD, its textures, the dome, the kernels' compiles and the
+acceleration structures. splat2mesh measured it on the dwarf (80 000 faces,
+five 4096² textures, an HDRI dome): 45.8 s a 1080² frame in raster, 107 s path
+traced at 96 paths a pixel, nearly all of it load. `--cameras FILE` and
+`--turntable N` draw every view from one `StageRenderer`, writing one EXR each.
+
+**Measured** on the dwarf, M5 Pro, release build:
+
+| | three views, 540², rt, 32 paths, denoised | 24 views, 1080², raster |
+|---|---|---|
+| a process a view | 29.4 s (9.8 s a view) | 45.8 s a view (splat2mesh's figure) |
+| one process | 16.1 s: first view 5.9 s, then 3.4 s | 18.5 s in all: first view 3.0 s, then 0.56 s median |
+
+A view drawn this way is the view a process of its own draws: the same eye
+through `--eye` and through `--cameras` gives the same raster image, and the
+first path traced view is identical; later ones differ by the path seed only
+(mean 4 × 10⁻⁴), since the seed runs on across a process's frames.

@@ -401,6 +401,8 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--frames` | integer | `1` | repeat, and report first, median and fastest |
 | `--no-readback` | flag | off | with `--frames`: every frame but the last is drawn and waited for, not read back -- what a host that keeps the image on the device pays; the last is read for `-o` |
 | `--drift` | number | `0` | with `--frames` and a camera of its own (`--eye`, `--frame-all`): scene units it moves along its own x axis every frame, one way and back, to time a moving camera |
+| `--cameras` | path | none | a file of views, one a line: `NAME EX EY EZ TX TY TZ [UX UY UZ]` (`#` starts a comment; the up vector is `--up` where a line gives none). The stage is loaded once and each view written to `-o`'s directory as `NAME.exr`, with this command's lens, size and technique; `-o` is a directory, or a file whose directory is taken |
+| `--turntable` | integer | `0` | that many views around `--target`, the first from `--eye`, each turned 360/N degrees about `--up`, written to `-o`'s directory as `f_0000.exr`, `f_0001.exr`, ... from one load of the stage. Prints each view's time and, at the end, the first and the median of the rest |
 
 ```sh
 athenea stage shot.usda --camera /World/Camera -o shot.exr

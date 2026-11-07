@@ -409,6 +409,8 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--frames` | entero | `1` | repite, e informa del primero, la mediana y el más rápido |
 | `--no-readback` | flag | apagado | con `--frames`: todos los frames salvo el último se dibujan y se esperan, sin leerlos de vuelta -- lo que paga un host que deja la imagen en el dispositivo; el último se lee para `-o` |
 | `--drift` | número | `0` | con `--frames` y una cámara propia (`--eye`, `--frame-all`): unidades de escena que se mueve por su propio eje x en cada frame, a un lado y de vuelta, para medir una cámara en movimiento |
+| `--cameras` | ruta | ninguna | un fichero de vistas, una por línea: `NOMBRE EX EY EZ TX TY TZ [UX UY UZ]` (`#` empieza un comentario; el vector arriba es `--up` donde la línea no da ninguno). El stage se carga una vez y cada vista se escribe en el directorio de `-o` como `NOMBRE.exr`, con la lente, el tamaño y la técnica de esta orden; `-o` es un directorio, o un fichero del que se toma su directorio |
+| `--turntable` | entero | `0` | tantas vistas alrededor de `--target`, la primera desde `--eye`, cada una girada 360/N grados alrededor de `--up`, escritas en el directorio de `-o` como `f_0000.exr`, `f_0001.exr`, ... con una sola carga del stage. Imprime el tiempo de cada vista y, al final, el de la primera y la mediana de las demás |
 
 ```sh
 athenea stage shot.usda --camera /World/Camera -o shot.exr

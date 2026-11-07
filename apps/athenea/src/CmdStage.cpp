@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <map>
 #include <memory>
 #include <optional>
@@ -147,6 +149,8 @@ void addStage(CLI::App& app) {
         double cloudShadowDensity = 1.0;
         std::string lightState;
         std::vector<std::string> lightLevels;   ///< group=level
+        std::string cameras;                    ///< a file of views, one a line
+        uint32_t turntable = 0;                 ///< views around --target
     };
     auto o = std::make_shared<Options>();
     auto* cmd = app.add_subcommand("stage", "render a USD stage through the engine's Hydra delegate");
@@ -246,6 +250,13 @@ void addStage(CLI::App& app) {
     cmd->add_flag("--no-readback", o->noReadback,
                   "with --frames: time the frames as a host that keeps the image on the device sees them -- "
                   "drawn and waited for, not read back; the last frame is read for the output");
+    cmd->add_option("--cameras", o->cameras,
+                    "a file of views, one a line: NAME EX EY EZ TX TY TZ [UX UY UZ] (# starts a comment). "
+                    "The stage is loaded once and each view written to -o's directory as NAME.exr, with "
+                    "this command's lens, size and technique");
+    cmd->add_option("--turntable", o->turntable,
+                    "N views around --target, the first from --eye, each turned 360/N degrees about --up, "
+                    "written to -o's directory as f_0000.exr ... from one load of the stage");
     cmd->add_option("--drift", o->drift,
                     "with --frames and a camera of its own: move it this far along its own x axis every frame, "
                     "back and forth, so each frame sees a new view");
@@ -410,6 +421,119 @@ void addStage(CLI::App& app) {
                     throw CLI::RuntimeError(1);
                 }
             }
+        }
+        // Several views from one load: the stage, its textures, its kernels
+        // and its acceleration structures are made by the first and reused by
+        // the rest, so a view after the first costs its drawing.
+        if (!o->cameras.empty() || o->turntable > 0) {
+            const auto lensed = [&](const std::array<double, 3>& eye, const std::array<double, 3>& target,
+                                    const std::array<double, 3>& up) {
+                render::Camera camera = render::Camera::lookingAt({eye[0], eye[1], eye[2]},
+                                                                  {target[0], target[1], target[2]},
+                                                                  {up[0], up[1], up[2]});
+                camera.lens.focal = o->focal;
+                camera.lens.fStop = o->fStop;
+                camera.lens.focusDistance = o->focus;
+                if (o->nearZ > 0.0) {
+                    camera.lens.nearZ = o->nearZ;
+                }
+                camera.lens.farZ = o->farZ;
+                return camera;
+            };
+            std::vector<std::pair<std::string, render::Camera>> views;
+            if (!o->cameras.empty()) {
+                std::ifstream in(o->cameras);
+                if (!in) {
+                    std::fprintf(stderr, "stage: --cameras %s cannot be read\n", o->cameras.c_str());
+                    throw CLI::RuntimeError(kExitFailure);
+                }
+                std::string line;
+                uint32_t number = 0;
+                while (std::getline(in, line)) {
+                    ++number;
+                    if (const size_t hash = line.find('#'); hash != std::string::npos) {
+                        line.resize(hash);
+                    }
+                    std::istringstream words(line);
+                    std::string name;
+                    if (!(words >> name)) {
+                        continue;
+                    }
+                    std::array<double, 3> eye{}, target{}, up{o->up[0], o->up[1], o->up[2]};
+                    if (!(words >> eye[0] >> eye[1] >> eye[2] >> target[0] >> target[1] >> target[2])) {
+                        std::fprintf(stderr, "stage: %s line %u: write NAME EX EY EZ TX TY TZ [UX UY UZ]\n",
+                                     o->cameras.c_str(), number);
+                        throw CLI::RuntimeError(kExitFailure);
+                    }
+                    std::array<double, 3> said{};
+                    if (words >> said[0] >> said[1] >> said[2]) {
+                        up = said;
+                    }
+                    views.emplace_back(name, lensed(eye, target, up));
+                }
+            } else {
+                if (o->eye.size() != 3 || o->target.size() != 3) {
+                    std::fprintf(stderr, "stage: --turntable turns --eye about --target; give both\n");
+                    throw CLI::RuntimeError(kExitFailure);
+                }
+                // Rodrigues' rotation of the eye's offset about the up axis
+                // through the target.
+                const std::array<double, 3> t{o->target[0], o->target[1], o->target[2]};
+                const std::array<double, 3> v{o->eye[0] - t[0], o->eye[1] - t[1], o->eye[2] - t[2]};
+                const double un = std::sqrt(o->up[0] * o->up[0] + o->up[1] * o->up[1] + o->up[2] * o->up[2]);
+                const std::array<double, 3> k{o->up[0] / un, o->up[1] / un, o->up[2] / un};
+                const std::array<double, 3> up{o->up[0], o->up[1], o->up[2]};
+                for (uint32_t i = 0; i < o->turntable; ++i) {
+                    const double a = 2.0 * 3.14159265358979323846 * double(i) / double(o->turntable);
+                    const double c = std::cos(a), sn = std::sin(a);
+                    const double kv = k[0] * v[0] + k[1] * v[1] + k[2] * v[2];
+                    const std::array<double, 3> kxv{k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2],
+                                                    k[0] * v[1] - k[1] * v[0]};
+                    std::array<double, 3> eye{};
+                    for (int r = 0; r < 3; ++r) {
+                        eye[r] = t[r] + v[r] * c + kxv[r] * sn + k[r] * kv * (1.0 - c);
+                    }
+                    char name[32];
+                    std::snprintf(name, sizeof(name), "f_%04u", i);
+                    views.emplace_back(name, lensed(eye, t, up));
+                }
+            }
+            if (views.empty()) {
+                std::fprintf(stderr, "stage: no view to render\n");
+                throw CLI::RuntimeError(kExitFailure);
+            }
+            // -o names the directory: a path with an extension stands for the
+            // directory it is in.
+            std::filesystem::path directory(o->output);
+            if (directory.has_extension()) {
+                directory = directory.parent_path();
+            }
+            if (!directory.empty()) {
+                std::error_code made;
+                std::filesystem::create_directories(directory, made);
+            }
+            std::vector<double> took;
+            for (const auto& [name, camera] : views) {
+                const auto start = std::chrono::steady_clock::now();
+                Result<usd::StageImage> view = (*renderer)->render(camera, o->time, width, height, o->technique);
+                if (!view) {
+                    cli::fail(view.error());
+                }
+                const std::filesystem::path file = directory / (name + ".exr");
+                if (auto written = io::writeExr(file.string(), width, height, view->rgba, view->depth); !written) {
+                    cli::fail(written.error());
+                }
+                took.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+                std::printf("wrote %s (%.0f ms)\n", file.string().c_str(), took.back());
+            }
+            if (took.size() > 1) {
+                // The first view loads the stage and compiles; the rest are drawing.
+                std::vector<double> steady(took.begin() + 1, took.end());
+                std::sort(steady.begin(), steady.end());
+                std::printf("%zu views: first %.1f s; then median %.2f s, fastest %.2f s\n", took.size(),
+                            took.front() / 1000.0, steady[steady.size() / 2] / 1000.0, steady.front() / 1000.0);
+            }
+            return;
         }
         Result<usd::StageImage> image = Error(ErrorCode::InvalidArgument, "no image");
         std::vector<double> ms;
