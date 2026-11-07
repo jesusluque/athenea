@@ -67,6 +67,8 @@ plugins:
             Large clouds and levels of detail: Nubes grandes y niveles de detalle
             Gaussian splats in Blender: Gaussian splats en Blender
             "OpenFX (Nuke, Natron)": "OpenFX (Nuke, Natron)"
+            "Volumes: from a VDB to volumetric gaussians": "Volúmenes: de un VDB a gaussianas volumétricas"
+            How gaussians move: Cómo se mueven las gaussianas
             Reference: Referencia
             Paper: Paper
             Download: Descarga
@@ -94,6 +96,8 @@ nav:
       - Preparing a USD stage: tutorials/authoring-usd.md
       - Large clouds and levels of detail: tutorials/large-clouds.md
       - Gaussian splats in Blender: tutorials/blender.md
+      - "Volumes: from a VDB to volumetric gaussians": tutorials/volumes.md
+      - How gaussians move: tutorials/motion.md
   - "OpenFX (Nuke, Natron)": ofx.md
   - Reference: reference.md
   - Paper:

@@ -89,5 +89,7 @@ Each clip opens the full video.
 - [Rendering and comparing with the path trace](tutorials/render-compare.md): the same pawn drawn as Gaussians and as meshes, and measured.
 - [Preparing a USD stage](tutorials/authoring-usd.md): plugin paths, materials, lights, render settings and the schemas the engine reads.
 - [Large clouds and levels of detail](tutorials/large-clouds.md): levels, decimation and streaming under a GPU budget.
+- [Volumes: from a VDB to volumetric gaussians](tutorials/volumes.md): an OpenVDB simulation fitted as a medium of gaussians, drawn by the raster, given back to the path tracer and streamed to a browser.
+- [How gaussians move](tutorials/motion.md): skinning, a skeleton in the browser, a stream's predicted geometry, a volume carried by its flow, USD transforms, and motion blur.
 
 The full option tables are in [`docs/operations.md`](https://github.com/jesusluque/athenea/blob/main/docs/operations.md), which these pages follow.
