@@ -1054,6 +1054,57 @@ athenea vdb2splat cloud.vdb -n 200000 --tile-dir cloud_bricks --device-mb 14336 
 | `--cut` | número | `0.001` | transmitancia bajo la cual un rayo del bake se detiene |
 | `--time` | número | `0` | el instante en que se compromete la escena |
 
+### 2.9.2 `athenea splat-transfer` — un transfer TX horneado en una nube que no tiene malla
+
+`mesh2splat --transfer` hornea un transfer trazando caminos sobre una malla.
+Una nube hecha sin ella -- surfels sobre el level set de la opacidad de una
+captura, una nube hecha a partir de renders -- se hornea aquí contra sí misma y
+las demás nubes del stage, con las estructuras del ray tracer de splats (la ruta
+por hardware: un dispositivo con ray queries). Se escribe como mesh2splat
+escribe un transfer TX (16 valores directos, 48 indirectos, 48 del campo
+reflejado, las direcciones abiertas), así que la nube se reilumina del mismo
+modo.
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `stage` | ruta, obligatoria | — | `.usd`, `.usda`, `.usdc`; se traza cada `ParticleField3DGaussianSplat` que haya en ella, en su propio espacio |
+| `--prim` | ruta de prim, obligatoria | — | el ParticleField que se hornea |
+| `-o`, `--output` | ruta, obligatoria | — | la escena escrita, aplanada, con el transfer en `--prim` |
+| `--cells` | 16 o 32 | `16` | celdas por lado de las direcciones abiertas sobre toda la esfera (8 o 32 enteros por gaussiana) |
+| `--grid` | entero, múltiplo de `--cells`, como máximo 128 | `32` | rayos por lado de la parrilla octaédrica sobre la que se suman las mitades: `grid²` rayos por gaussiana y pasada |
+| `--offset` | número | `1` | un rayo parte a este número de veces el sigma más ancho de su gaussiana fuera de la superficie, por su propio lado: menos deja que los rayos rocen las gaussianas vecinas de la misma superficie |
+| `--cut` | número | `0.001` | transmitancia bajo la cual un rayo se detiene |
+
+- **Normales.** `primvars:athenea:splat:normal` donde la nube la conserva, y si
+  no el eje más fino de cada gaussiana. Deben mirar hacia fuera de la
+  superficie: el bake imprime qué parte de las direcciones abiertas está del
+  lado al que miran, y lo avisa cuando es menos de un tercio.
+- **Un cristal sólido** (`primvars:athenea:splat:ior` mayor que 1, constante):
+  como lo hornea el path tracer, sobre toda la esfera -- una dirección detrás de
+  su superficie se dobla hacia dentro por el índice y se envía a través del
+  cristal, más allá de sus propias gaussianas --, así que lo que dicen sus
+  direcciones abiertas y su campo detrás de la superficie es lo que se ve a
+  través de ella, que es lo que dibuja la lente del raster. La refracción de la
+  cara lejana no está. Sus direcciones abiertas quedan entonces en su mayoría
+  detrás de sus normales, como deben.
+- **Un prim por ejecución.** Un segundo prim se hornea a partir de la salida de
+  la primera ejecución: `athenea splat-transfer a.usdc --prim /A -o b.usdc`, y
+  luego `athenea splat-transfer b.usdc --prim /B -o c.usdc`.
+- **Gaussianas descartadas al cargar** (un registro degenerado) conservan ceros
+  en los arrays, que tienen la longitud del fichero.
+- **Qué calcula:** la mitad directa y las direcciones abiertas por cuadratura
+  sobre las celdas octaédricas, como las calcula con celdas el transfer del path
+  tracer; la mitad indirecta y el campo reflejado, a partir de lo que encuentra
+  cada rayo, un rebote sobre las nubes, con cada gaussiana encontrada aportando
+  su albedo (su color base en luz lineal) por su propia mitad directa. Los
+  rebotes especulares no están: un coat o un metal encontrado envía solo su
+  parte difusa.
+
+```sh
+athenea splat-transfer dragon.usdc --prim /Splat/Ior_1_55 -o dragon_glass.usdc
+athenea splat-transfer dragon_glass.usdc --prim /Splat/Opaque -o dragon_tx.usdc
+```
+
 ### 2.9.1 `athenea lights merge` — una nube con sus lámparas
 
 La nube base (todas las lámparas apagadas) y una nube por grupo de lámparas,
@@ -3194,6 +3245,7 @@ solo se escribe como la vista previa de MCP.
 | `athenea flatten` | ficheros `.ply`, `.spz`, `.glb` y USD de las nubes aplanadas, la escena compuesta junto a ellos, y con `--validate` lo que escribe `mesh2splat --validate` |
 | `athenea lightmap` | `lightmap_<atlas>.exr` (half, lineal, la fila de abajo primero) y `lightmapped.usda`, que pone el original como sublayer; sus materiales van bajo el prim raíz que comparten todas las mallas horneadas (`/<raíz>/AtheneaLightmaps`), así que referenciar ese prim los conserva |
 | `athenea visibility` | el fichero de la nube, editado en el sitio o copiado |
+| `athenea splat-transfer` | la escena aplanada en `--output`, con el transfer en `--prim` |
 | `athenea aofx run` | un EXR |
 | `athenea migrate` | una copia de la escena, el paquete o la nube; con `--recursive`, también de lo que nombra |
 
