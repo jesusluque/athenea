@@ -825,6 +825,9 @@ Result<void> writeSplatTransfer(const std::filesystem::path& input, const std::f
     floats("primvars:athenea:splat:transferDirect", arrays.direct, 16);
     floats("primvars:athenea:splat:transferIndirect", arrays.indirect, 48);
     floats("primvars:athenea:splat:transferReflected", arrays.reflected, 48);
+    if (arrays.curvature.size() == size_t{n} * 3) {
+        floats("primvars:athenea:splat:curvature", arrays.curvature, 3);
+    }
     UsdGeomPrimvar open = primvars.CreatePrimvar(TfToken("primvars:athenea:splat:shadowBits"),
                                                  SdfValueTypeNames->IntArray, UsdGeomTokens->vertex);
     open.Set(VtValue(VtIntArray(arrays.shadowBits.begin(), arrays.shadowBits.end())));

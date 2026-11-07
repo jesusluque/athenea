@@ -156,13 +156,14 @@ int run(const Options& o) {
     auto bits = made(uint64_t{records} * words, 4, "splatTransfer.bits");
     auto bounced = made(uint64_t{records} * 48, 4, "splatTransfer.bounced");
     auto reflected = made(uint64_t{records} * 48, 4, "splatTransfer.reflected");
-    const uint32_t zero[4] = {0, 0, 0, 0};
+    auto lensCurvature = made(uint64_t{records} * 3, 4, "splatTransfer.lensCurvature");
+    const uint32_t zero[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     gpu::BufferDesc counterDesc;
     counterDesc.bytes = sizeof(zero);
     counterDesc.elementBytes = 4;
     counterDesc.label = "splatTransfer.counters";
     auto counters = gpu::Buffer::create(dev, counterDesc, zero);
-    if (!direct || !albedo || !directOut || !bits || !bounced || !reflected || !counters) {
+    if (!direct || !albedo || !directOut || !bits || !bounced || !reflected || !lensCurvature || !counters) {
         return fail("the arrays", Error(ErrorCode::OutOfMemory, "cannot allocate the bake's arrays"));
     }
     auto first = gpu::ComputeKernel::create(library, "athenea/rt/rt_splat_transfer", "splatTransferDirect");
@@ -187,6 +188,11 @@ int run(const Options& o) {
         cursor["bounced"].setBinding(bounced->rhi());
         cursor["reflected"].setBinding(reflected->rhi());
         cursor["counters"].setBinding(counters->rhi());
+        cursor["lensCurvature"].setBinding(lensCurvature->rhi());
+        // The shape operators a glass's lens starts from, three floats a gaussian.
+        const bool curved = c.hasCurvature() && !c.curvaturePacked;
+        cursor["curvatureIn"].setBinding(curved ? c.curvature.rhi() : c.shape.rhi());
+        cursor["params"]["hasCurvature"].setData(curved ? 1u : 0u);
         cursor["params"]["count"].setData(c.count);
         cursor["params"]["base"].setData(bases[cloud]);
         cursor["params"]["grid"].setData(o.grid);
@@ -215,7 +221,7 @@ int run(const Options& o) {
         });
         if (auto done = batch.submit(true); !done) return fail("the indirect half", done.error());
     }
-    uint32_t said[4] = {0, 0, 0, 0};
+    uint32_t said[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     if (auto read = counters->read(dev, 0, sizeof(said), said); !read) return fail("the counters", read.error());
     const double cellsOpen = n > 0 ? static_cast<double>(said[2]) / (static_cast<double>(n) * o.cells * o.cells) : 0.0;
     const double facing = said[2] > 0 ? static_cast<double>(said[3]) / static_cast<double>(said[2]) : 0.0;
@@ -227,6 +233,13 @@ int run(const Options& o) {
     if (said[2] > 0 && facing < 0.35 && !((*prims)[static_cast<size_t>(baked)].ior > 1.0F)) {
         std::printf("splat-transfer: most open directions are behind the normals: are they pointing into the "
                     "surface?\n");
+    }
+
+    const bool glass = (*prims)[static_cast<size_t>(baked)].ior > 1.0F;
+    if (glass) {
+        std::printf("splat-transfer: the glass's lens, by the far faces its field met: %u gaussians a ball, %u a "
+                    "slab\n",
+                    said[4], said[5]);
     }
 
     // 4. Into the file: the stage flattened, the transfer on the prim.
@@ -252,6 +265,12 @@ int run(const Options& o) {
     }
     if (auto r = bits->read(dev, 0, arrays.shadowBits.size() * 4, arrays.shadowBits.data()); !r) {
         return fail("the cells", r.error());
+    }
+    if (glass) {
+        arrays.curvature.resize(size_t{records} * 3);
+        if (auto r = lensCurvature->read(dev, 0, arrays.curvature.size() * 4, arrays.curvature.data()); !r) {
+            return fail("the lens", r.error());
+        }
     }
     if (auto written = usd::writeSplatTransfer(o.stage, o.output, o.prim, arrays); !written) {
         return fail("the file", written.error());

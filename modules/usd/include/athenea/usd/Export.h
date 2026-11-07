@@ -546,6 +546,10 @@ struct SplatTransferArrays {
     std::vector<float>   reflected;
     std::vector<int32_t> shadowBits;
     uint32_t             shadowWords = 8;
+    /// A solid glass's shape operators as its lens reads them (three a
+    /// gaussian), written over `primvars:athenea:splat:curvature`; empty
+    /// leaves the prim's own.
+    std::vector<float>   curvature;
 };
 
 /// The stage at `input` flattened into `output`, the transfer written onto

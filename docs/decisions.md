@@ -19870,7 +19870,31 @@ what the field holds. From splat2mesh's camera the crystal reads a light,
 see-through lilac, near the path traced frame. A ray reflected at the far
 face is followed once, not through further bounces inside.
 
-**Not done.** More than one reflection inside the glass; a bounce off a met coat or metal (its specular share); more than one
+**The lens, ball or slab.** With its curvature computed from the level set's
+Hessian (median |k| about 15 /m on its flat faces), splat2mesh's crystal read
+lilac and see-through in raster, but its large prism still swirled in rings.
+The raster's lens (`splat_relight`'s `lensExit`) takes the far face from a
+sphere of the mean curvature, and that sphere's exit does not depend on its
+radius: the far normal is `t1 * 2 cos + n`, the chord over the radius being
+`2 cos` whatever the radius. Any curvature over zero turns the room over as a
+whole ball does, none leaves it straight as a slab, and on a facet whose
+curvature is noise about zero the neighbours flipped between the two. The
+bake now asks the far faces it already meets which the glass is: over the
+ways through, each far face's normal against the ball's far normal and
+against the slab's (`-n`), and the lens curvature written is the closer's --
+the prim's own where the ball wins and it is convex, else `2 / thickness`
+from the head-on thickness, and zeros where the slab wins. No new stream: the
+web player and the Unreal plugin read the curvature already. On the crystal
+(82 892 gaussians) 23 196 took the ball and 59 696 the slab, at no cost to
+the bake (2 min 17 s); from splat2mesh's camera its large prism shows the
+room straight through its facets instead of rings, and the frame costs the
+same (3.38 s against 3.31 s before, medians of three of the whole `athenea
+stage` run, load included). What a slab leaves out is a prism's own deviation, its faces not
+parallel; some rings stay at the crystal's foot, where the path traced frame
+has rings of its own.
+
+**Not done.** A prism's deviation in the raster's lens (two faces not
+parallel); more than one reflection inside the glass; a bounce off a met coat or metal (its specular share); more than one
 prim a run; a test in the suite (the checks above were run by hand); a
 ComputeBvh route for devices with no ray queries.
 

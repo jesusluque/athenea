@@ -65,7 +65,7 @@ public struct SplatTransferParams {
     public float offset;      // the ray starts this many of the gaussian's widest sigma off its surface
     public float cut;         // a ray stops once less than this is left through it
     public float ior;         // over 1: a solid glass (below)
-    public float pad2;
+    public uint  hasCurvature; // 1: `curvatureIn` holds the cloud's shape operators, three floats a gaussian
 };
 
 // The cloud's tables, as the shadow query reads them (render::ShadowScene).
@@ -90,7 +90,10 @@ RWStructuredBuffer<float>  directOut;   // 16
 RWStructuredBuffer<uint>   bits;
 RWStructuredBuffer<float>  bounced;     // 48: rgb a coefficient
 RWStructuredBuffer<float>  reflected;   // 48
-RWStructuredBuffer<uint>   counters;    // [gaussians baked, rays traced, cells open, of them on the normal's side]
+RWStructuredBuffer<float>  lensCurvature; // 3: the shape operator a frame's lens reads (below)
+RWStructuredBuffer<uint>   counters;    // [gaussians baked, rays traced, cells open, of them on the normal's side,
+                                        //  glass taken as a ball, as a slab]
+StructuredBuffer<float>    curvatureIn; // the cloud's shape operators, where `params.hasCurvature`
 
 ConstantBuffer<SplatTransferParams> params;
 
@@ -322,6 +325,18 @@ void splatTransferBounced(uint3 tid: SV_DispatchThreadID) {
     float3 indirect[16];
     float3 field[16];
     float closed[16];
+    // THE LENS A FRAME DRAWS (splat_relight's lensExit): it takes the far
+    // face from a sphere of the gaussian's mean curvature, and that sphere's
+    // exit does not depend on its radius -- any curvature over zero turns the
+    // room over as a whole ball does, none leaves it straight as a slab. On
+    // a faceted glass whose curvature is noise about zero, neighbours
+    // flipped between the two and the frame swirled. The far faces the field
+    // meets say which the glass is here: each one's normal against the
+    // ball's and the slab's, summed over the ways through.
+    float ballMiss = 0.0;
+    float slabMiss = 0.0;
+    float facing = -1.0;
+    float thickness = 0.0;
     for (uint k = 0; k < 16; ++k) {
         indirect[k] = float3(0.0);
         field[k] = float3(0.0);
@@ -379,6 +394,15 @@ void splatTransferBounced(uint3 tid: SV_DispatchThreadID) {
                     float farWidest;
                     gaussianAt(idFar - params.base, farP, farN, farWidest);
                     farN = dot(farN, way) < 0.0 ? -farN : farN;
+                    const float3 ballN = normalize(way * (2.0 * max(dot(way, -n), 0.0)) + n);
+                    ballMiss += (1.0 - dot(farN, ballN)) * solid;
+                    slabMiss += (1.0 - dot(farN, -n)) * solid;
+                    // How thick it is head on: along the way nearest the
+                    // inward normal, from the gaussian's centre.
+                    if (dot(way, -n) > facing) {
+                        facing = dot(way, -n);
+                        thickness = tFar + params.offset * widest;
+                    }
                     const float3 at = ray.Origin + way * tFar;
                     const float cosI = saturate(dot(way, farN));
                     const float eta = params.ior;
@@ -470,6 +494,30 @@ void splatTransferBounced(uint3 tid: SV_DispatchThreadID) {
     m2sFieldOverClosed(field, closed);
     const uint r = recordOf(i);
     const uint id = params.base + i;
+    float3 shapeIn = params.hasCurvature != 0
+        ? float3(curvatureIn[i * 3], curvatureIn[i * 3 + 1], curvatureIn[i * 3 + 2]) : float3(0.0);
+    if (params.ior > 1.0 && facing > 0.0) {
+        // The sign a frame reads it with: measured on the frame's third axis,
+        // read on the face the eye sees (splat_project, `faces`).
+        const uint4 s = uint4(shape[i * 4], shape[i * 4 + 1], shape[i * 4 + 2], shape[i * 4 + 3]);
+        const float3x3 axes = axesOfQuaternion(decodeQuaternion(s.x));
+        const float side = dot(n, float3(axes[0][2], axes[1][2], axes[2][2])) >= 0.0 ? 1.0 : -1.0;
+        if (ballMiss < slabMiss) {
+            // A ball: its own curvature where it has a convex one, else the
+            // sphere its head-on thickness is the diameter of.
+            if (!(side * 0.5 * (shapeIn.x + shapeIn.z) > 0.0)) {
+                const float k = 2.0 / max(thickness, 1.0e-6);
+                shapeIn = float3(side * k, 0.0, side * k);
+            }
+            InterlockedAdd(counters[4], 1u);
+        } else {
+            shapeIn = float3(0.0);
+            InterlockedAdd(counters[5], 1u);
+        }
+    }
+    lensCurvature[r * 3] = shapeIn.x;
+    lensCurvature[r * 3 + 1] = shapeIn.y;
+    lensCurvature[r * 3 + 2] = shapeIn.z;
     for (uint k = 0; k < 16; ++k) {
         directOut[r * 16 + k] = direct[id * 16 + k];
         bounced[r * 48 + k * 3] = indirect[k].x;

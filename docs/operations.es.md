@@ -1090,6 +1090,17 @@ modo.
   su gaussiana más cercana allí --, doblado de nuevo hacia fuera por el índice
   a través de la normal de esa gaussiana, o reflejado una vez donde la
   reflexión total interna lo retiene.
+- **La lente de un cristal sólido.** La lente del raster toma la cara lejana
+  de un cristal de una esfera de la curvatura media de cada gaussiana, y da la
+  vuelta a la sala como una bola entera con cualquier curvatura mayor que
+  cero; con ninguna la deja recta, como una losa. El bake escribe
+  `primvars:athenea:splat:curvature` encima de la del cristal con la de las
+  dos con la que coinciden sus caras lejanas -- la normal de cada cara lejana
+  frente a la de la bola y la de la losa, sumadas sobre los caminos a través:
+  el operador de forma del propio prim donde gana la bola y es convexo, y si
+  no una esfera cuyo diámetro es el grosor del cristal de frente
+  (`2 / grosor`, en uu y vv); ceros donde gana la losa. Imprime cuántas
+  gaussianas tomaron cada una.
 - **Un prim por ejecución.** Un segundo prim se hornea a partir de la salida de
   la primera ejecución: `athenea splat-transfer a.usdc --prim /A -o b.usdc`, y
   luego `athenea splat-transfer b.usdc --prim /B -o c.usdc`.

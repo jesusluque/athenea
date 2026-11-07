@@ -1058,6 +1058,16 @@ relights the same way.
   its nearest gaussian there -- bent out again by the index through that
   gaussian's normal, or reflected once where total internal reflection holds
   it.
+- **A solid glass's lens.** The raster's lens takes a glass's far face from a
+  sphere of each gaussian's mean curvature, and turns the room over as a
+  whole ball does for any curvature over zero; at none it leaves the room
+  straight, as a slab. The bake writes `primvars:athenea:splat:curvature`
+  over the glass's own with the one of the two its far faces agree with --
+  each far face's normal against the ball's and the slab's, summed over the
+  ways through: the prim's own shape operator where the ball wins and it is
+  convex, else a sphere whose diameter is the glass's thickness head on
+  (`2 / thickness`, in uu and vv); zeros where the slab wins. It prints how
+  many gaussians took each.
 - **One prim a run.** A second prim is baked from the first run's output:
   `athenea splat-transfer a.usdc --prim /A -o b.usdc`, then
   `athenea splat-transfer b.usdc --prim /B -o c.usdc`.
