@@ -19768,3 +19768,72 @@ A view drawn this way is the view a process of its own draws: the same eye
 through `--eye` and through `--cameras` gives the same raster image, and the
 first path traced view is identical; later ones differ by the path seed only
 (mean 4 × 10⁻⁴), since the seed runs on across a process's frames.
+
+## A transfer baked on a cloud that has no mesh (7 Nov)
+
+splat2mesh makes glass with no mesh: surfels on the level set of the opacity
+field of a capture's glass gaussians, with their normals from its gradient.
+mesh2splat's bake cannot take them: it path traces triangles, and the path
+tracer meets a cloud only as a shadow (`PathTracer.cpp`, `kSplats`). The
+crystal drawn in raster with no transfer came out chrome, and with
+mesh2splat's transfer of a marching-cubes mesh it swirled.
+
+**Design.** `athenea splat-transfer` (`CmdSplatTransfer.cpp`,
+`rt/rt_splat_transfer.slang`) uploads every ParticleField of the stage, has
+the splat ray tracer build its structures (`GaussianRayTracer::prepare`,
+`shadowScene`, the hardware route), and traces them with the shadow query's
+own rule: each particle at its peak along the ray (`shadowAlpha`). Two
+passes:
+
+- **Direct half and open directions,** for every gaussian of every cloud (a
+  met particle's direct half is what the second pass reads): `grid²` rays
+  over the octahedral grid, the direct half by the same quadrature the path
+  tracer uses with cells -- each ray's transmittance times cos / pi times its
+  cell's solid angle (4 / grid² |w|₁³) times the basis -- and a cell's bit
+  open where the mean transmittance of its rays is over a half.
+- **Indirect half and reflected field,** for the cloud baked: each ray of the
+  facing hemisphere keeps the eight nearest particles it meets and blends
+  them front to back; each met particle sends its albedo times its own
+  direct half (one bounce). The field is that light under a white sky
+  (albedo times the direct constant term times sqrt(4 pi)) projected with the
+  cell's solid angle, then divided by the closed directions' own projection
+  and projected again, as mesh2splat's bake does (`m2sFieldOverClosed`).
+
+A ray starts off its gaussian's surface by `--offset` of its widest sigma, on
+its own side, so it neither takes the gaussian itself nor grazes its
+neighbours. A sheet is then open on both sides, which is what a sheet in
+space sees; a closed shell is closed inwards by its far side. Outputs are
+written at each gaussian's record in the file (`GpuSplats::origin`), so a
+record dropped on loading keeps zeros and the arrays have the file's length.
+
+**Checked.**
+
+- A flat sheet of 101 × 101 surfels: every cell open; the direct half's
+  constant term 0.28210 (Y₀ = 0.28209), the z term 0.3261 (0.4886 × 2/3 =
+  0.3257), the zonal second-degree term 0.1584 (0.3154 / 2 = 0.1577).
+- The paint test cloud (272 907 gaussians, ball and ground) baked again from
+  its own gaussians, against mesh2splat's transfer of its meshes: direct half
+  relMSE 0.0004, open-direction bits 99.7 % the same (95.8 % open against
+  95.7 %), indirect half the same mean (0.0022 against 0.0021) with relMSE
+  0.27 (mesh2splat's is path traced and noisier). The reflected field is not
+  the same: on the ball's lower half, which reflects the ground, it reads the
+  ground's radiance under a white sky as 0.9, mesh2splat's as 0.4 -- the
+  ground's stored albedo is 1, the path tracer's bounce is off the scene's
+  ground material, and which is right is not settled without the source
+  scene. Rendered by the raster from the test camera under the studio dome,
+  the two clouds differ by relMSE 0.025, SSIM 0.974, the mean within 1 %;
+  what differs is the ball's lower half and its rim.
+- With the rays started a quarter of a sigma off the surface, they grazed the
+  ground's neighbouring gaussians, and its field read the bright ground at
+  the horizon (0.28 median against mesh2splat's 0.08 from a sigma off). One
+  sigma is the default; two changes nothing more.
+- splat2mesh's dragon (269 609 glass surfels and 215 843 gaussians of its
+  body): 2 min 9 s for the glass, 1 min 38 s for the body, on the Mac's GPU
+  (about 500 million rays a pass at grid 32). The glass's open directions
+  are 99 % on the side its normals face. In raster the crystal no longer
+  swirls; it reads more silver than glass.
+
+**Not done.** A bounce off a met coat or metal (its specular share); more
+than one prim a run; a test in the suite (the checks above were run by hand);
+a ComputeBvh route for devices with no ray queries.
+

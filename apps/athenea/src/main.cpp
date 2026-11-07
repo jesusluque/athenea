@@ -52,6 +52,7 @@ int main(int argc, char** argv) {
     athenea::cli::addVideo(app);
     athenea::cli::addLightmap(app);
     athenea::cli::addVisibility(app);
+    athenea::cli::addSplatTransfer(app);
     athenea::cli::addLights(app);
 #if ATHENEA_HAVE_LIVE
     athenea::cli::addLive(app);

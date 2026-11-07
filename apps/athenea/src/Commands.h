@@ -50,6 +50,7 @@ void addVdb2Splat(CLI::App& app);
 void addFlatten(CLI::App& app);
 void addLightmap(CLI::App& app);
 void addVisibility(CLI::App& app);
+void addSplatTransfer(CLI::App& app);
 void addLights(CLI::App& app);
 void addLive(CLI::App& app);
 void addStream(CLI::App& app);

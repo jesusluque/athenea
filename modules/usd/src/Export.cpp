@@ -766,6 +766,70 @@ Result<void> writeVisibility(const std::filesystem::path& path, const std::strin
     return ok();
 }
 
+Result<std::vector<ParticleFieldPrim>> particleFieldPrims(const std::filesystem::path& path) {
+    UsdStageRefPtr stage = UsdStage::Open(path.string());
+    if (!stage) {
+        return Error::make(ErrorCode::IoFailure, "cannot open USD stage '{}'", path.string());
+    }
+    std::vector<ParticleFieldPrim> found;
+    UsdGeomXformCache xforms;
+    for (const UsdPrim& prim : stage->Traverse()) {
+        if (prim.IsA<UsdVolParticleField3DGaussianSplat>()) {
+            const GfMatrix4d world = xforms.GetLocalToWorldTransform(prim);
+            found.push_back({prim.GetPath().GetString(), !GfIsClose(world, GfMatrix4d(1.0), 1e-9)});
+        }
+    }
+    return found;
+}
+
+Result<void> writeSplatTransfer(const std::filesystem::path& input, const std::filesystem::path& output,
+                                const std::string& prim, const SplatTransferArrays& arrays) {
+    UsdStageRefPtr source = UsdStage::Open(input.string());
+    if (!source) {
+        return Error::make(ErrorCode::IoFailure, "cannot open USD stage '{}'", input.string());
+    }
+    if (!source->Export(output.string())) {
+        return Error::make(ErrorCode::IoFailure, "cannot write '{}'", output.string());
+    }
+    UsdStageRefPtr stage = UsdStage::Open(output.string());
+    if (!stage) {
+        return Error::make(ErrorCode::IoFailure, "cannot open USD stage '{}'", output.string());
+    }
+    UsdVolParticleField3DGaussianSplat field(stage->GetPrimAtPath(SdfPath(prim)));
+    if (!field) {
+        return Error::make(ErrorCode::InvalidArgument, "'{}': no ParticleField on '{}'", prim, input.string());
+    }
+    const uint32_t n = arrays.count;
+    const uint32_t words = arrays.shadowWords == 32 ? 32u : 8u;
+    VtVec3fArray positions;
+    field.GetPrim().GetAttribute(TfToken("positions")).Get(&positions);
+    if (positions.size() != n) {
+        return Error::make(ErrorCode::InvalidArgument, "splat-transfer: {} gaussians baked for {} positions on '{}'", n,
+                           positions.size(), prim);
+    }
+    if (arrays.direct.size() != size_t{n} * 16 || arrays.indirect.size() != size_t{n} * 48 ||
+        arrays.reflected.size() != size_t{n} * 48 || arrays.shadowBits.size() != size_t{n} * words) {
+        return Error::make(ErrorCode::InvalidArgument, "splat-transfer: arrays of the wrong size for {} gaussians", n);
+    }
+    UsdGeomPrimvarsAPI primvars(field.GetPrim());
+    const auto floats = [&](const char* name, const std::vector<float>& values, int elementSize) {
+        UsdGeomPrimvar made = primvars.CreatePrimvar(TfToken(name), SdfValueTypeNames->FloatArray, UsdGeomTokens->vertex);
+        made.Set(VtValue(VtFloatArray(values.begin(), values.end())));
+        made.SetElementSize(elementSize);
+    };
+    floats("primvars:athenea:splat:transferDirect", arrays.direct, 16);
+    floats("primvars:athenea:splat:transferIndirect", arrays.indirect, 48);
+    floats("primvars:athenea:splat:transferReflected", arrays.reflected, 48);
+    UsdGeomPrimvar open = primvars.CreatePrimvar(TfToken("primvars:athenea:splat:shadowBits"),
+                                                 SdfValueTypeNames->IntArray, UsdGeomTokens->vertex);
+    open.Set(VtValue(VtIntArray(arrays.shadowBits.begin(), arrays.shadowBits.end())));
+    open.SetElementSize(static_cast<int>(words));
+    if (!stage->GetRootLayer()->Save()) {
+        return Error::make(ErrorCode::IoFailure, "cannot save '{}'", output.string());
+    }
+    return ok();
+}
+
 namespace {
 
 /// A tree's leaves kept, in place: every buffer the cloud carries a gaussian

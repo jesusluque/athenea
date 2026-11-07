@@ -1024,6 +1024,47 @@ athenea vdb2splat cloud.vdb -n 200000 --tile-dir cloud_bricks --device-mb 14336 
 | `--cut` | number | `0.001` | transmittance under which a bake ray stops |
 | `--time` | number | `0` | the instant the stage is committed at |
 
+### 2.9.2 `athenea splat-transfer` — a TX transfer baked on a cloud that has no mesh
+
+`mesh2splat --transfer` bakes a transfer by path tracing a mesh. A cloud made
+without one -- surfels on the level set of a capture's opacity, a cloud made
+from renders -- is baked here against itself and the stage's other clouds,
+with the splat ray tracer's structures (the hardware route: a device with ray
+queries). Written as mesh2splat writes a TX transfer (16 direct values, 48
+indirect, 48 of the reflected field, the open directions), so the cloud
+relights the same way.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `stage` | path, required | — | `.usd`, `.usda`, `.usdc`; every `ParticleField3DGaussianSplat` on it is traced, in its own space |
+| `--prim` | prim path, required | — | the ParticleField baked |
+| `-o`, `--output` | path, required | — | the stage written, flattened, the transfer on `--prim` |
+| `--cells` | 16 or 32 | `16` | cells a side of the open directions over the whole sphere (8 or 32 ints a gaussian) |
+| `--grid` | integer, a multiple of `--cells`, at most 128 | `32` | rays a side of the octahedral grid the halves are summed over: `grid²` rays a gaussian a pass |
+| `--offset` | number | `1` | a ray starts this many of its gaussian's widest sigma off the surface, on its own side: less lets the rays graze the gaussians beside it on the same surface |
+| `--cut` | number | `0.001` | transmittance under which a ray stops |
+
+- **Normals.** `primvars:athenea:splat:normal` where the cloud keeps it,
+  else each gaussian's thinnest axis. They must face out of the surface: the
+  bake prints what share of the open directions is on the side they face, and
+  says so when it is under a third.
+- **One prim a run.** A second prim is baked from the first run's output:
+  `athenea splat-transfer a.usdc --prim /A -o b.usdc`, then
+  `athenea splat-transfer b.usdc --prim /B -o c.usdc`.
+- **Gaussians dropped on loading** (a degenerate record) keep zeros in the
+  arrays, which have the file's length.
+- **What it computes:** the direct half and the open directions by quadrature
+  over the octahedral cells, as the path tracer's transfer computes them with
+  cells; the indirect half and the reflected field from what each ray meets,
+  one bounce off the clouds, each met gaussian its albedo (its base colour in
+  linear light) times its own direct half. Specular bounces are not there:
+  a met coat or metal sends its diffuse share alone.
+
+```sh
+athenea splat-transfer dragon.usdc --prim /Splat/Ior_1_55 -o dragon_glass.usdc
+athenea splat-transfer dragon_glass.usdc --prim /Splat/Opaque -o dragon_tx.usdc
+```
+
 ### 2.9.1 `athenea lights merge` — a cloud with its lamps
 
 The base cloud (every lamp off) and one cloud a group of lamps into the base
@@ -3094,6 +3135,7 @@ Cryptomatte layer is always float. PNG is written only as the MCP preview.
 | `athenea flatten` | `.ply`, `.spz`, `.glb` and USD files of the flattened clouds, the composed stage beside them, and with `--validate` what `mesh2splat --validate` writes |
 | `athenea lightmap` | `lightmap_<atlas>.exr` (half, linear, bottom row first) and `lightmapped.usda`, which sublayers the source; its materials are under the one root prim every baked mesh shares (`/<root>/AtheneaLightmaps`), so referencing that prim keeps them |
 | `athenea visibility` | the cloud's file, edited in place or copied |
+| `athenea splat-transfer` | the stage flattened into `--output`, the transfer on `--prim` |
 | `athenea aofx run` | one EXR |
 | `athenea migrate` | a copy of the stage, package or cloud; with `--recursive`, of what it names too |
 

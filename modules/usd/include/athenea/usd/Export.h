@@ -526,4 +526,30 @@ struct LodLevelFile {
                                            std::span<const float> parts, std::span<const int32_t> texels,
                                            std::span<const int32_t> partOf, std::span<const int32_t> ambient);
 
+/// The UsdVolParticleField3DGaussianSplat prims of the stage at `path`, in
+/// the stage's order, and whether each stands under a transform that is not
+/// the identity (`athenea splat-transfer` bakes them in their own space).
+struct ParticleFieldPrim {
+    std::string path;
+    bool        moved = false;
+};
+[[nodiscard]] Result<std::vector<ParticleFieldPrim>> particleFieldPrims(const std::filesystem::path& path);
+
+/// A TX transfer baked on a cloud, as mesh2splat's export writes one: 16
+/// direct values a gaussian, 48 indirect (rgb a coefficient), 48 of the
+/// reflected field, and the open directions (8 or 32 ints).
+struct SplatTransferArrays {
+    uint32_t             count = 0;
+    std::vector<float>   direct;
+    std::vector<float>   indirect;
+    std::vector<float>   reflected;
+    std::vector<int32_t> shadowBits;
+    uint32_t             shadowWords = 8;
+};
+
+/// The stage at `input` flattened into `output`, the transfer written onto
+/// the ParticleField at `prim` (whose gaussians must be `arrays.count`).
+[[nodiscard]] Result<void> writeSplatTransfer(const std::filesystem::path& input, const std::filesystem::path& output,
+                                              const std::string& prim, const SplatTransferArrays& arrays);
+
 }   // namespace athenea::usd
