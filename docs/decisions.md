@@ -5114,6 +5114,18 @@ once its pipelines are cached, 7 s against 7 s. `[usd][path][denoise]`: "a
 denoised path traced frame of a textured UsdPreviewSurface with constant
 roughness builds" is that material on a square, which failed with the variant.
 
+**On CUDA the guides crashed the process** (7 Nov, the 0.4.0 Windows build: an
+access violation on any `--denoise`). The guides take the paths' bindings, and
+their kernel declares none of the frame's variants -- nor `scene` where the
+device traces only in a pipeline (CUDA through OptiX), since its rays then are
+not a compute kernel's. A name a kernel does not declare is an empty cursor,
+and slang-rhi binds through it without looking, so binding `scene` there was a
+null dereference; on Metal the guides trace inline and declare it. The
+bindings the guides may lack -- `scene`, a cloud's shadow tables, the light
+groups' count, the volumes -- now ask whether the cursor is valid, which also
+covers a denoised frame on Metal with a cloud's shadows, light groups or
+volumes.
+
 **Measured** (`tests/technique/test_splat_shadows.cpp`):
 
 - **The packed tables answer what the separate ones answer**: 0 of 4 rays

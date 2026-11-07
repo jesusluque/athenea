@@ -3412,10 +3412,15 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         if (frame.lights != nullptr) {
             frame.lights->bind(cursor);
         }
-        if (frame.shadows != nullptr) {
-            cursor["scene"].setBinding(frame.shadows);
+        // The guides' kernel carries none of the frame's variants, nor rays
+        // where the device traces only in a pipeline, and a cursor to a name
+        // it does not declare is empty: slang-rhi binds through it without
+        // looking, so each of these asks first.
+        if (const rhi::ShaderCursor scene = cursor["scene"]; frame.shadows != nullptr && scene.isValid()) {
+            scene.setBinding(frame.shadows);
         }
-        if (splats_ && frame.splatShadows != nullptr && frame.splatShadows->valid()) {
+        if (splats_ && frame.splatShadows != nullptr && frame.splatShadows->valid() &&
+            cursor["splatPacked"].isValid()) {
             const PackedShadowLayout& where = frame.splatShadows->layout();
             cursor["splatPacked"].setBinding(frame.splatShadows->packed().rhi());
             cursor["splatScene"].setBinding(frame.splatShadows->topLevel());
@@ -3435,11 +3440,11 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         cursor["colour"].setBinding(out.colour.rhi());
         cursor["depth"].setBinding(out.depth.rhi());
         cursor["moments"].setBinding(moments_.rhi());
-        if (groups) {
-            cursor["groupCount"].setData(groupCount);
+        if (const rhi::ShaderCursor count = cursor["groupCount"]; groups && count.isValid()) {
+            count.setData(groupCount);
         }
-        if (volumes) {
-            cursor["volumeWords"].setBinding(frame.volumes->rhi());
+        if (const rhi::ShaderCursor words = cursor["volumeWords"]; volumes && words.isValid()) {
+            words.setBinding(frame.volumes->rhi());
         }
         cursor["path"]["adaptive"].setData(uint32_t{settings.adaptive ? 1u : 0u});
         cursor["path"]["bakeCount"].setData(bake != nullptr ? std::clamp(bake->coefficients, 1u, 16u) : 1u);
@@ -3504,8 +3509,9 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
     };
     if (aux != nullptr) {
         // The guides' kernel reads the camera's hit as the paths do, so it
-        // takes the paths' own bindings; whatever of them it does not
-        // declare is an invalid cursor, and binding one does nothing.
+        // takes the paths' own bindings; those it may not declare are asked
+        // for first (bindPath), since binding through an empty cursor is a
+        // null dereference in slang-rhi.
         guidesKernel_->dispatch(batch, {width, height, 1}, [&](rhi::ShaderCursor cursor) {
             bindPath(cursor);
             cursor["aux"].setBinding(aux->planes.rhi());
