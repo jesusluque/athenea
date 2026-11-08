@@ -35,13 +35,21 @@ merged work; a patch version fixes what a minor one shipped.
   and light groups stay one sample a pixel and only then sum to the beauty.
 - **Blender**: the render panel holds every setting the delegate declares,
   in subpanels (Raster, Path Tracing, Gaussians, Cloud Shadows, Volumes,
-  Advanced); the viewport takes the raster's, *Mesh antialias* among them; a path traced F12 gathers the paths it is asked
-  for (whole-number settings were read as `int` only, and Blender's arrive
+  Advanced); the viewport takes the raster's, *Mesh antialias* among them;
+  a path traced F12 gathers the paths it is asked for (whole-number settings were read as `int` only, and Blender's arrive
   wider), and Blender no longer ends with 0xC0000409 on Windows on its way
   out (the process GPU context is never destroyed).
 - **Packages**: the Blender add-on for macOS, Linux and Windows, one zip a
   system. On Linux the archive and the add-on open CUDA with the driver alone:
   they carry NVRTC and its headers and the engine points `CUDA_PATH` at them.
+  On Windows CUDA opens inside Blender too (the package's `bin` goes on
+  `PATH`, where NVRTC finds its builtins), and the archive stops without DXC
+  rather than leave D3D12 out.
+- **Known**: on Metal, nine tests fail as they did in 0.4.1, with the same
+  values (the zonal transfers' two, the posed cloud's refit, flatten's floor
+  and PLY/SPZ, the cloud shadow's floor, `sheet_glass_draws_whole`,
+  `tx_conversions_render_like_the_mesh`, `matx_sampled`); `tx_gate_corvette`
+  was not run to its end.
 
 ## 0.4.1 — 2026-11-08
 
