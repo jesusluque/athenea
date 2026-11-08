@@ -3183,8 +3183,11 @@ de quien lo ejecuta: están en
 ### 8.2 Formatos
 
 **Nubes que se leen.** `.ply` (3DGS), `.splat`, `.spz` (Niantic, necesita
-zstd), `.sog` o un `meta.json` suelto (PlayCanvas, necesita libwebp), `.athc`
-(el contenedor por chunks de este motor).
+zstd), `.sog` o un `meta.json` suelto (PlayCanvas, necesita libwebp), `.asg`
+(anchored surfel gaussians, el bitstream v1 de 3Dspace, §2.4), `.athc` (el
+contenedor por chunks de este motor), y el `ParticleField3DGaussianSplat` de
+USD con las primvars `athenea:splat:*` (§4.3). §8.2.1 dice qué tipos de
+gaussiana contienen.
 
 Un `.spz` (versiones 2 a 4) es el contrato de entrada de splats del motor:
 - **Ejes.** La extensión de sistema de coordenadas del fichero dice en cuál
@@ -3206,14 +3209,12 @@ fotométricos IESNA LM-63; y las texturas de materiales por los plugins de
 imagen de OpenUSD, así que lo que lea esa compilación.
 
 **Nubes que se escriben.** `athenea flatten` escribe `.ply` de 3DGS, `.spz`
-(versiones 3 y 4; la 4 necesita zstd), `.glb` de glTF con
+(versiones 3 y 4; la 4 necesita zstd; cada uno lleva la extensión de sistema de
+coordenadas diciendo right-up-back), `.glb` de glTF con
 `KHR_gaussian_splatting`, y USD (§2.8.1). `athenea vdb2splat` escribe USD (§2.8.3).
 
 **Volúmenes que se escriben.** `athenea vdb2splat --back` y `--make-fixture`
 escriben grids float `.vdb`, volúmenes de niebla, por OpenVDB.
-(versiones 3 y 4; la 4 necesita zstd; cada uno lleva la extensión de sistema de
-coordenadas diciendo right-up-back), `.glb` de glTF con
-`KHR_gaussian_splatting`, y USD (§2.8.1).
 
 **Páginas que se escriben.** `athenea flatten --range` escribe un directorio de
 páginas SPZ y su `stream.txt` (§3.7), que lee `athenea stream`.
@@ -3287,6 +3288,49 @@ abajo primero dentro del motor y escrito con la de arriba primero como quiere
 el formato. Un frame va en media por defecto con un canal `Z`; los canales de
 un producto siguen a sus vars, y una capa Cryptomatte va siempre en float. PNG
 solo se escribe como la vista previa de MCP.
+
+### 8.2.1 Tipos de gaussianas
+
+Toda nube es el mismo registro en el dispositivo -- una posición, tres
+tamaños, una rotación, una opacidad y sus armónicos (`GpuSplats`) -- y todos
+los renderers la toman. Lo que distingue un tipo de otro es un flag o una
+primvar en la prim (§4.3), y cada uno es independiente de los demás: una nube
+TX con skinning, de surfels y en niveles de detalle es una sola nube.
+
+**Por forma: qué cubre una gaussiana.**
+
+| Tipo | Qué es | Lo hace | Lo marca | Se dibuja |
+|---|---|---|---|---|
+| Gaussiana 3D (3DGS) | un elipsoide: tres tamaños y una rotación | una captura; `athenea mesh2splat` (`--flatness` mayor que 0) | el valor por defecto | proyectada y mezclada por tiles (raster), o alcanzada por un rayo (path tracer, horneado de transfer) |
+| Surfel (2DGS) | un disco plano: un tamaño exactamente 0 | `mesh2splat --flatness 0`, las fusiones planas de `decimate`, `splat-transfer` sobre el level set de una captura, un `.asg` | `primvars:athenea:splat:surfel` | el rayo de cada píxel corta su plano (2D gaussian splatting), así que no se hincha de canto |
+| Surfel duro | un surfel cuya caída es exp(-(\|u\|^p + \|v\|^p)/2), p de 2 (una gaussiana) a 32 (casi una caja) | `decimate --hardness` | `primvars:athenea:splat:hardness` | como un surfel; un lector que no conoce p dibuja la gaussiana que dan sus momentos |
+| Gaussiana volumétrica | un grumo de densidad en un medio, no una superficie | `athenea vdb2splat` (§2.8.3), el efecto Vdb2Splat | `primvars:athenea:splat:volume` | como un medio participante: absorbida y dispersada a lo largo de un rayo, sombreada por el mapa de sombras de nube |
+
+**Por luz: qué significa su color.**
+
+| Tipo | Qué guarda | Lo marca | Bajo una luz nueva |
+|---|---|---|---|
+| Radiancia | la luz con la que se capturó u horneó, en armónicos esféricos (grado 0 a 3); sRGB salvo `primvars:athenea:splat:linear` | el valor por defecto (una captura, un fichero 3DGS, la salida de `flatten`) | muestra lo que guarda; las luces del stage no lo cambian |
+| Reiluminada (PBR) | un material por gaussiana: color base, metallic, roughness, transmisión e IOR, una normal, coat, sheen y specular (§4.3) | `primvars:athenea:splat:relight` | sombreada en cada frame por las luces y el domo del stage, como una malla con ese material |
+| TX (transfer) | cómo responde el asset a la luz, trazado una vez: `transferDirect`, `transferIndirect`, `transferReflected`, `transferZonal`, con `shadowBits` para las salidas abiertas, y `curvature` y `thinWalled` para el vidrio | `mesh2splat --transfer`, `splat-transfer` | reiluminada en tiempo real por cualquier cielo, con las sombras e interreflexiones que trazó el horneado; el modo del producto |
+| Emisiva | la luz que emite, un color por gaussiana; grupos de lámparas como capas (`lightLayer:<grupo>`) | `primvars:athenea:splat:emission`; `athenea lights merge` | suma su propia luz, escalada por su grupo |
+| Shadow catcher | un parche en el suelo con la sombra (o la luz de las lámparas) que proyecta un objeto | `mesh2splat --shadow-catcher` / `--light-catcher`; `primvars:athenea:splat:catcher`, `lightCatcher` | oscurece (o ilumina) lo que tiene debajo, sin malla de suelo |
+
+**Por movimiento.**
+
+| Tipo | Qué se mueve | Lo marca |
+|---|---|---|
+| Estática | nada | -- |
+| Con skinning | las gaussianas siguen un esqueleto; lo que ocluye cada parte se hornea por parte | `skel:skeleton`, `primvars:athenea:splat:jointIndices` / `jointWeights`; `athenea visibility` (§2.9) |
+| Con muestras de tiempo | los puntos y atributos de la prim, frame a frame, como los autora USD | muestras de tiempo en la prim |
+| Secuencia | una página por frame: páginas SPZ en stream (`athenea stream`), o frames como vídeo HEVC (`.athv`, §2.7.2) | un `stream.txt`, un `.athv` |
+
+**Por tamaño: cuánto está en el dispositivo.**
+
+| Tipo | Qué es | Lo marca |
+|---|---|---|
+| Entera | todas las gaussianas subidas | -- |
+| Niveles de detalle | niveles fusionados sobre un orden Morton, cortados en cada frame por los píxeles que abarca una celda; los chunks entran y salen en stream (§3.3) | un `.athc`; `primvars:athenea:splat:lodTree`, `lodParent` de `decimate` |
 
 ### 8.3 Qué escribe cada comando
 

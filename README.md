@@ -118,6 +118,22 @@ Improvements are made in the master, and the web format is derived again. The
 [architecture page](https://jesusluque.github.io/athenea/architecture/) and the
 [paper](https://jesusluque.github.io/athenea/paper/) describe both processes.
 
+## Kinds of gaussians
+
+Every cloud is the same record on the GPU; what kind it is, is a flag on the
+prim, and the kinds combine (a skinned TX cloud of surfels in levels of detail
+is one cloud). The [operations manual](docs/operations.md), §8.2.1, has the
+primvars and the commands that make each.
+
+| By | Kinds |
+|---|---|
+| Shape | 3D gaussians (3DGS); surfels (2DGS: flat discs met by the ray, so they do not swell edge on); hard surfels (a falloff from gaussian to nearly a box); volumetric gaussians (a medium, from `vdb2splat`) |
+| Light | radiance (spherical harmonics as captured or baked); relit (a PBR material a gaussian, shaded by the stage's lights); **TX** (the light transport path traced once, relit by any sky in real time); emissive (lamps, in groups); shadow catchers |
+| Motion | still; skinned (a skeleton, occlusion baked by part); time-sampled; sequences (SPZ pages or `.athv` HEVC video) |
+| Size | whole; levels of detail streamed by chunks (`.athc`) |
+| Files read | `.ply`, `.splat`, `.spz`, `.sog`, `.asg`, `.athc`, USD `ParticleField3DGaussianSplat` |
+| Files written | USD, `.athc`, and through `flatten` 3DGS `.ply`, `.spz` and glTF `KHR_gaussian_splatting` |
+
 ## Integrations
 
 | Where | What | Folder |
@@ -133,7 +149,7 @@ Improvements are made in the master, and the web format is derived again. The
 
 | | macOS (Apple silicon) | Linux (x86_64) | Windows (x64) |
 |---|---|---|---|
-| Engine and CLI | Metal | CUDA, Vulkan | CUDA, Vulkan (native MSVC build) |
+| Engine and CLI | Metal | CUDA, Vulkan | CUDA, D3D12, Vulkan (native MSVC build) |
 | Blender add-on | yes | yes (no bake under WSL, [#42](https://github.com/jesusluque/athenea/issues/42)) | yes ([#40](https://github.com/jesusluque/athenea/issues/40), [#42](https://github.com/jesusluque/athenea/issues/42)) |
 | OpenFX node | yes | yes ([#43](https://github.com/jesusluque/athenea/issues/43)) | yes ([#43](https://github.com/jesusluque/athenea/issues/43)) |
 

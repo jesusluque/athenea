@@ -10,7 +10,9 @@ Una release de GitHub tiene un instalador y un archivo comprimido para cada sist
 |---|---|---|---|
 | macOS (Apple silicon) | `athenea-<v>-macos-arm64.pkg` | `/usr/local/athenea`, con los programas enlazados en `/usr/local/bin` | macOS 15 o posterior. No está firmado con un Developer ID: se abre con clic derecho, Abrir. |
 | Linux (x86_64) | `athenea_<v>_amd64.deb` | `/opt/athenea`, con los programas enlazados en `/usr/bin` | glibc 2.39 (Ubuntu 24.04 o posterior) y un driver de NVIDIA con OptiX para el bake (570 o posterior). |
-| Windows (x64) | `athenea-<v>-windows-x64-setup.exe` | `Program Files\athenea`, con `bin\` añadido al `PATH` de la máquina | un driver de NVIDIA con OptiX (570 o posterior). No está firmado: SmartScreen pregunta una vez. |
+| Windows (x64) | `athenea-<v>-windows-x64-setup.exe` | `Program Files\athenea`, con `bin\` añadido al `PATH` de la máquina | un driver de NVIDIA con OptiX (570 o posterior) para CUDA; si no, cualquier GPU con Direct3D 12 (lleva DXC). No está firmado: SmartScreen pregunta una vez. |
+
+**El add-on de Blender** es un zip por sistema, `athenea_hydra-<v>-macos-arm64.zip`, `-linux-x64.zip` o `-windows-x64.zip`, para Blender 5.3. Lo instala *Edit > Preferences > Get Extensions > Install from Disk* (o `blender --command extension install-file -r user_default -e <zip>`); después *Render Engine* ofrece **Athenea**. Lleva hdAthenea, sus shaders y los efectos de mesh2splat, y en Linux y Windows el runtime de CUDA, así que solo necesita el driver de la GPU.
 
 El resto de esta página compila desde el código fuente.
 
@@ -85,7 +87,7 @@ cmake --preset windows-x64-release          # o windows-x64-debug
 cmake --build --preset windows-x64-release
 ```
 
-Los scripts entran en el entorno MSVC x64 del Visual Studio más reciente con las herramientas de C++ (`scripts\msvc-env.ps1`, que lo encuentra con vswhere), salvo que `cl` ya esté en el path. Sus prefijos son `$env:ATHENEA_USD_ROOT`, `$env:ATHENEA_OIDN_ROOT` y `$env:ATHENEA_OCIO_ROOT`, o los predeterminados de `D:\tools` de arriba. Los presets compilan con `cl`. El dispositivo es CUDA, y OIDN se compila para CUDA, como en Linux. El plugin OpenFX no se compila en Windows.
+Los scripts entran en el entorno MSVC x64 del Visual Studio más reciente con las herramientas de C++ (`scripts\msvc-env.ps1`, que lo encuentra con vswhere), salvo que `cl` ya esté en el path. Sus prefijos son `$env:ATHENEA_USD_ROOT`, `$env:ATHENEA_OIDN_ROOT` y `$env:ATHENEA_OCIO_ROOT`, o los predeterminados de `D:\tools` de arriba. Los presets compilan con `cl`. El dispositivo es CUDA, después D3D12 (`ATHENEA_DXC` nombra DXC para el archivo), después Vulkan, y OIDN se compila para CUDA, como en Linux. El plugin OpenFX no se compila en Windows.
 
 ### Los presets
 
@@ -93,7 +95,7 @@ Los scripts entran en el entorno MSVC x64 del Visual Studio más reciente con la
 |---|---|
 | `macos-arm64-debug`, `macos-arm64-release` | macOS arm64 (Metal) |
 | `linux-x86_64-debug`, `linux-x86_64-release` | Linux x86_64 (CUDA/Vulkan) |
-| `windows-x64-debug`, `windows-x64-release` | Windows x64 (CUDA) |
+| `windows-x64-debug`, `windows-x64-release` | Windows x64 (CUDA, Vulkan, D3D12) |
 | `ios-arm64-debug`, `ios-arm64-release` | iOS arm64 (Metal): el motor y su delegate de Hydra como librerías estáticas, sin la CLI, el host AOFX, el servidor MCP ni las pruebas |
 | `macos-arm64-blender` | macOS arm64: hdAthenea para Blender (Metal) |
 | `linux-x86_64-blender` | Linux x86_64: hdAthenea para Blender (CUDA/Vulkan) |

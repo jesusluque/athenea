@@ -3079,8 +3079,10 @@ running it; they are listed in [development.md §3](development.md#3-working-in-
 ### 8.2 Formats
 
 **Clouds read.** `.ply` (3DGS), `.splat`, `.spz` (Niantic, needs zstd), `.sog`
-or a bare `meta.json` (PlayCanvas, needs libwebp), `.athc` (this engine's
-chunked container).
+or a bare `meta.json` (PlayCanvas, needs libwebp), `.asg` (anchored surfel
+gaussians, 3Dspace's bitstream v1, §2.4), `.athc` (this engine's chunked
+container), and USD's `ParticleField3DGaussianSplat` with the `athenea:splat:*`
+primvars (§4.3). §8.2.1 says what kinds of gaussian they hold.
 
 An `.spz` (versions 2 to 4) is the engine's input contract for splats:
 - **Axes.** The file's coordinate-system extension says what its data is
@@ -3102,14 +3104,12 @@ photometric profiles; and material textures through OpenUSD's image plugins,
 so whatever that build reads.
 
 **Clouds written.** `athenea flatten` writes 3DGS `.ply`, `.spz` (versions 3
-and 4; 4 needs zstd), glTF `.glb` with `KHR_gaussian_splatting`, and USD
-(§2.8.1). `athenea vdb2splat` writes USD (§2.8.3).
+and 4; 4 needs zstd; each carries the coordinate-system extension saying
+right-up-back), glTF `.glb` with `KHR_gaussian_splatting`, and USD
+(§2.8.1). `athenea vdb2splat` writes USD (§2.8.3). `athenea vdb2splat` writes USD (§2.8.3).
 
 **Volumes written.** `athenea vdb2splat --back` and `--make-fixture` write
 `.vdb` float grids, fog volumes, through OpenVDB.
-and 4; 4 needs zstd; each carries the coordinate-system extension saying
-right-up-back), glTF `.glb` with `KHR_gaussian_splatting`, and USD
-(§2.8.1).
 
 **Pages written.** `athenea flatten --range` writes a directory of SPZ pages
 and its `stream.txt` (§3.7), which `athenea stream` reads.
@@ -3179,6 +3179,49 @@ codec string and `hvcC` record built from that record's VPS, SPS and PPS
 engine and written top row first as the format wants. A frame is half by
 default with a `Z` channel; a render product's channels follow its vars, and a
 Cryptomatte layer is always float. PNG is written only as the MCP preview.
+
+### 8.2.1 Kinds of gaussians
+
+Every cloud is the same record on the device -- a position, three sizes, a
+rotation, an opacity and its harmonics (`GpuSplats`) -- and every renderer
+takes it. What makes one kind differ from another is a flag or a primvar on
+the prim (§4.3), and each is independent of the others: a skinned TX cloud of
+surfels in levels of detail is one cloud.
+
+**By shape: what a gaussian covers.**
+
+| Kind | What it is | Made by | Marked by | Drawn |
+|---|---|---|---|---|
+| 3D gaussian (3DGS) | an ellipsoid: three sizes and a rotation | a capture; `athenea mesh2splat` (`--flatness` above 0) | the default | projected and blended by tiles (raster), or met by a ray (path tracer, transfer bake) |
+| Surfel (2DGS) | a flat disc: one size exactly 0 | `mesh2splat --flatness 0`, `decimate`'s flat merges, `splat-transfer` on a capture's level set, an `.asg` | `primvars:athenea:splat:surfel` | the ray through each pixel meets its plane (2D gaussian splatting), so it does not swell edge on |
+| Hard surfel | a surfel whose falloff is exp(-(\|u\|^p + \|v\|^p)/2), p from 2 (a gaussian) to 32 (nearly a box) | `decimate --hardness` | `primvars:athenea:splat:hardness` | as a surfel; a reader that knows no p draws the gaussian its moments give |
+| Volumetric gaussian | a lump of density in a medium, not a surface | `athenea vdb2splat` (§2.8.3), the Vdb2Splat effect | `primvars:athenea:splat:volume` | as a participating medium: absorbed and scattered along a ray, shadowed through the cloud shadow map |
+
+**By light: what its colour means.**
+
+| Kind | What it holds | Marked by | Under a new light |
+|---|---|---|---|
+| Radiance | the light it was captured or baked in, as spherical harmonics (degree 0 to 3); sRGB unless `primvars:athenea:splat:linear` | the default (a capture, a 3DGS file, `flatten`'s output) | shows what it holds; the stage's lights do not change it |
+| Relit (PBR) | a material a gaussian: base colour, metallic, roughness, transmission and IOR, a normal, coat, sheen and specular (§4.3) | `primvars:athenea:splat:relight` | shaded each frame by the stage's lights and dome, as a mesh with that material |
+| TX (transfer) | how the asset answers light, path traced once: `transferDirect`, `transferIndirect`, `transferReflected`, `transferZonal`, with `shadowBits` for which ways out are open, `curvature` and `thinWalled` for glass | `mesh2splat --transfer`, `splat-transfer` | relit in real time by any sky, with the shadows and interreflections the bake traced; the product's mode |
+| Emissive | light it gives off, a colour a gaussian; lamp groups as layers (`lightLayer:<group>`) | `primvars:athenea:splat:emission`; `athenea lights merge` | adds its own light, scaled by its group |
+| Shadow catcher | a patch on the ground holding the shadow (or the lamps' light) an object throws | `mesh2splat --shadow-catcher` / `--light-catcher`; `primvars:athenea:splat:catcher`, `lightCatcher` | darkens (or lights) what is under it, with no ground mesh |
+
+**By motion.**
+
+| Kind | What moves | Marked by |
+|---|---|---|
+| Still | nothing | -- |
+| Skinned | the gaussians ride a skeleton; what each part occludes is baked by part | `skel:skeleton`, `primvars:athenea:splat:jointIndices` / `jointWeights`; `athenea visibility` (§2.9) |
+| Time-sampled | the prim's points and attributes, frame by frame, as USD authors them | time samples on the prim |
+| Sequence | a frame a page: SPZ pages streamed (`athenea stream`), or frames as HEVC video (`.athv`, §2.7.2) | a `stream.txt`, an `.athv` |
+
+**By size: how much of it is on the device.**
+
+| Kind | What it is | Marked by |
+|---|---|---|
+| Whole | every gaussian uploaded | -- |
+| Levels of detail | merged levels over a Morton order, cut each frame by the pixels a cell spans; chunks stream in and out (§3.3) | a `.athc`; `primvars:athenea:splat:lodTree`, `lodParent` from `decimate` |
 
 ### 8.3 What each command writes
 
