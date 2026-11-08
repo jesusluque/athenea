@@ -19272,6 +19272,35 @@ them to a relative L2 of 1–2·10⁻⁵ (the same density error to five digits:
 explosion 0.03674 / 0.03689, its temperature 0.2306). A dead slot is a record of zero words. Not done: the
 renderer reading the compact file itself (here it is the command's way in), entropy coding of the words.
 
+### Anchored surfel gaussians (`.asg`), decoded on the device (8 Nov)
+
+3Dspace's proposal 001 (accepted): a converted cloud is surfels, locally flat,
+with its slow attributes the patch's, so it is kept as anchors -- a frame, a
+centre, ranges, a material, a Cryptomatte id, a CPCA transfer mean and a
+shadow pattern each, 200 bytes on the pawn -- and leaves of a few bits a
+gaussian read against them (their bitstream v1, proposal 002). The pawn
+(326 265 gaussians, 5 193 anchors, transfer 9 + 27, open directions 64 bits)
+is 19.3 bytes a gaussian with everything, against 36 for the compact record.
+
+`scene/asg_decode.slang` decodes it a thread a gaussian: a binary search over
+the anchors' `first`, then the leaf's fields read from the bit stream (two
+words a field), into the float records the exporter takes and the transfer,
+shadow, Cryptomatte and thin-wall arrays. Against 3Dspace's own decoder
+(`asg_io.py unpack`), gaussian by gaussian: positions within 7.5e-9, rotations
+8e-6, transfer 1.5e-7, every Cryptomatte id and every open-direction bit the
+same. Rendered (raster, 1920x1080, the default dome and sun, framed), the two
+decodes differ by relMSE 2e-7 (57 pixels over two 8-bit levels, ties in the
+sort); against the original pawn both give relMSE 5.6e-5, p99 relative 3.7%,
+11 889 pixels over two levels of 2 073 600, PSNR 52.1 dB. The decode takes
+9.0 ms on the M5 Pro for the whole pawn, timed from the host (about 28 ns a
+gaussian, 1.8 ms for a chunk of 65 536), before any work on it.
+
+The file keeps no unit, no index and no Cryptomatte manifest, and two of them
+change the picture: without the pawn's centimetres and `ior` 1.5 the same
+decode rendered at relMSE 7.2e-4 against the reference. Asked of 3Dspace for
+the header. Not done: the builder on the device, `.athc` chunks of anchors,
+streaming, levels of detail, curvature, skinned clouds.
+
 ### bunny_cloud on the device (1 Nov)
 
 openvdb.org's bunny_cloud (density only, 85 525 leaves -- 43.8 M voxels of leaves, 19.2 M active --, voxel 0.08;

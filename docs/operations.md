@@ -222,7 +222,7 @@ emit, tile sort and blend times separately.
 
 | Option | Value | Default | Notes |
 |---|---|---|---|
-| `input` | path, required | — | `.ply`, `.splat`, `.spz`, `.sog`, `meta.json`; or a USD ParticleField (`.usd`, `.usda`, `.usdc`) into a `.athc` |
+| `input` | path, required | — | `.ply`, `.splat`, `.spz`, `.sog`, `meta.json`, `.asg`; or a USD ParticleField (`.usd`, `.usda`, `.usdc`) into a `.athc` |
 | `--prim` | prim path | the stage's first | a USD input: the ParticleField read |
 | `output` | path, required | — | `.usda`, `.usdc`, `.usd`, or `.athc` |
 | `--chunk-splats` | integer | `65536` | `.athc`: splats per streamed chunk |
@@ -245,6 +245,17 @@ levels of detail. One a skeleton carries is refused. What stays on the prim
 alone -- the gaussians whose `lodSize` is 1, compacted on the device -- the
 cloud the tree was built from; its merges would be drawn over them.
 
+An `.asg` (anchored surfel gaussians, 3Dspace's bitstream v1) is decoded on
+the device, a thread a gaussian, and written with everything it carries: the
+material from its anchor's table (metallic, transmission, thin wall), the
+roughness, the shading normal, the Cryptomatte ids, the transfer's direct and
+indirect blocks and the open directions; `relight` is set where it carries a
+transfer. The gaussians are written in the file's order, grouped by anchor.
+The file keeps no unit, no index and no Cryptomatte manifest: set them on the
+stage (`metersPerUnit`, `primvars:athenea:splat:ior`) where the cloud needs
+them. The log line `asg: N gaussians from A anchors decoded in X ms` is the
+decode alone, timed on its second run.
+
 A stage written here says `metersPerUnit = 1`: none of the input formats
 records a unit, and a capture's scale is taken to be metres. A cloud in
 another unit is scaled where it is referenced, or the stage's
@@ -254,6 +265,7 @@ another unit is scaled where it is referenced, or the stage's
 athenea convert capture.ply scene.usda
 athenea convert capture.ply capture.athc --chunk-splats 131072
 athenea convert car_tx.usdc car_tx.athc
+athenea convert pawn.asg pawn.usdc --no-camera
 ```
 
 ### 2.4.1 `athenea decimate` — fewer gaussians, kept where they matter
