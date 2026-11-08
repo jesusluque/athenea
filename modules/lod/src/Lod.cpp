@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 
 #include "athenea/core/Log.h"
 #include "athenea/gpu/CommandBatch.h"
