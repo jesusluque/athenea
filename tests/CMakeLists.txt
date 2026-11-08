@@ -598,6 +598,32 @@ set_tests_properties(tx_turned_transfer PROPERTIES
     ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
     FIXTURES_REQUIRED tx_clouds
     LABELS gpe)
+# A TRANSFER BAKED OVER THE GAUSSIANS (athenea splat-transfer) against the one
+# mesh2splat bakes over the meshes: the paint ball and its floor converted whole,
+# baked again over the cloud, both drawn and compared by the hidden case.
+add_test(NAME mesh2splat_whole_paint
+    COMMAND athenea mesh2splat ${CMAKE_CURRENT_SOURCE_DIR}/data/tx/paint.usda --transfer --bake-samples 256
+            --bake-extra 0 --no-camera --resolution 192 -o ${ATHENEA_TX_DIR}/paint_whole.usdc)
+set_tests_properties(mesh2splat_whole_paint PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_SETUP splat_transfer_clouds
+    LABELS gpe)
+add_test(NAME splat_transfer_paint
+    COMMAND athenea splat-transfer ${ATHENEA_TX_DIR}/paint_whole.usdc --prim /World/Splats
+            -o ${ATHENEA_TX_DIR}/paint_whole_st.usdc)
+set_tests_properties(splat_transfer_paint PROPERTIES
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    DEPENDS mesh2splat_whole_paint
+    FIXTURES_SETUP splat_transfer_clouds
+    LABELS gpe)
+add_test(NAME splat_transfer_renders_like_mesh2splat
+    COMMAND athenea_usd_tests "[splat_transfer]")
+set_tests_properties(splat_transfer_renders_like_mesh2splat PROPERTIES
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
+    FIXTURES_REQUIRED splat_transfer_clouds
+    LABELS gpe)
+
 add_test(NAME tx_conversions_render_like_the_mesh
     COMMAND athenea_usd_tests "[tx_conversion]")
 set_tests_properties(tx_conversions_render_like_the_mesh PROPERTIES

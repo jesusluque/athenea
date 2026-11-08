@@ -19866,6 +19866,10 @@ record dropped on loading keeps zeros and the arrays have the file's length.
   `displayColor`, else 0.18). On the ball's 2 490 gaussians facing down, the
   reflected field's first coefficient: mesh2splat 0.864, splat-transfer 1.675
   before and 0.734 after; the 15% left is the path tracer's further bounces.
+  Held by a test (`splat_transfer_renders_like_mesh2splat`): the paint scene
+  converted whole and baked again by splat-transfer, both rasterised with the
+  meshes off, under the stage's pale dome and sun relMSE 0.0026 and under a
+  tinted sky without a sun 0.0049, the means 1.9% apart; held at 0.01 and 3%.
 - With the rays started a quarter of a sigma off the surface, they grazed the
   ground's neighbouring gaussians, and its field read the bright ground at
   the horizon (0.28 median against mesh2splat's 0.08 from a sigma off). One

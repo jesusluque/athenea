@@ -14041,6 +14041,87 @@ TEST_CASE("a ball converted with a TX transfer rasterises as the mesh path trace
     }
 }
 
+// A TRANSFER BAKED OVER THE GAUSSIANS AGREES WITH ONE BAKED OVER THE MESHES
+// (athenea splat-transfer). The paint ball and its floor (tests/data/tx/paint)
+// converted whole with a transfer by mesh2splat, and the same cloud baked again
+// by splat-transfer, which traces the gaussians rather than the triangles
+// (ctest makes both beforehand: mesh2splat_whole_paint, splat_transfer_paint).
+// Both drawn rasterised, the stage's meshes switched off, under the pale dome
+// and sun the stage carries and under a sky neither bake saw; held: the two
+// frames within a relMSE and their means within a share. A floor converted
+// white while the path tracer shades its displayColor made the ball's lower
+// half reflect it twice as bright here (decisions, splat-transfer).
+//
+// Hidden: it reads what those runs wrote (splat_transfer_renders_like_mesh2splat).
+TEST_CASE("a transfer baked over the gaussians draws as the one baked over the meshes",
+          "[.][splat_transfer][usd][gpu][splat][transfer]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const fs::path source = fs::path(ATHENEA_TEST_DATA_DIR) / "tx" / "paint.usda";
+    const fs::path converted(ATHENEA_TX_DIR);
+    const fs::path clouds[2] = {converted / "paint_whole.usdc", converted / "paint_whole_st.usdc"};
+    for (const fs::path& cloud : clouds) {
+        if (!fs::exists(cloud)) {
+            SKIP("'" << cloud.string() << "' is not there: ctest makes it first (splat_transfer_renders_like_mesh2splat)");
+        }
+    }
+    const auto composed = [&](const std::string& name, const fs::path& cloud, bool other) {
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    subLayers = [@" << cloud.string() << "@, @" << source.string()
+            << "@]\n    upAxis = \"Y\"\n)\n";
+        out << "over \"World\"\n{\n"
+            << "    over \"Ball\" (\n        active = false\n    )\n    {\n    }\n"
+            << "    over \"Ground\" (\n        active = false\n    )\n    {\n    }\n";
+        if (other) {
+            // A sky neither bake saw: no sun, the dome tinted and brighter.
+            out << "    over \"Sun\" (\n        active = false\n    )\n    {\n    }\n"
+                << "    over \"Sky\"\n    {\n        color3f inputs:color = (0.6, 0.8, 1.2)\n"
+                << "        float inputs:intensity = 1.5\n    }\n";
+        }
+        out << "}\n";
+        out << "def Camera \"Camera\"\n{\n    float focalLength = 35\n"
+               "    float horizontalAperture = 24.576\n    float verticalAperture = 24.576\n"
+               "    float2 clippingRange = (0.1, 1000)\n"
+               "    double3 xformOp:translate = (0, 0.4, 4.2)\n    float3 xformOp:rotateXYZ = (-8, 0, 0)\n"
+               "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:rotateXYZ\"]\n}\n";
+        return path;
+    };
+    const uint32_t w = 192, h = 192;
+    const auto draw = [&](const fs::path& path, const std::string& keep) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        auto image = (*renderer)->render("/Camera", 0.0, w, h, "raster");
+        if (!image) FAIL(image.error().toString());
+        (void)io::writeExr(scratch(keep + ".exr"), w, h, image->rgba);
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        REQUIRE(made);
+        return std::move(*made);
+    };
+    const auto mean = [&](const gpu::Buffer& image) {
+        auto stats = render::imageStats(*gpu->library, image, w, h);
+        REQUIRE(stats);
+        return (stats->mean[0] + stats->mean[1] + stats->mean[2]) / 3.0;
+    };
+    for (const bool other : {false, true}) {
+        const std::string sky = other ? "tinted" : "pale";
+        const gpu::Buffer meshes = draw(composed("st_m2s_" + sky + ".usda", clouds[0], other), "st_m2s_" + sky);
+        const gpu::Buffer traced = draw(composed("st_st_" + sky + ".usda", clouds[1], other), "st_st_" + sky);
+        auto diff = render::compareHdr(*gpu->library, traced, meshes, w, h);
+        REQUIRE(diff);
+        const double a = mean(meshes), b = mean(traced);
+        std::printf("  splat-transfer against mesh2splat, %s sky: relMSE %.4f p99 %.3f, means %.4f and %.4f\n",
+                    sky.c_str(), diff->relMse, diff->p99Relative, b, a);
+        // Measured (8 Nov, M5 Pro): relMSE 0.0026 and 0.0049, the means 1.9% apart
+        // under both; held at about twice that.
+        INFO("under the " << sky << " sky");
+        CHECK(diff->relMse < 0.01);
+        CHECK(b == Catch::Approx(a).epsilon(0.03));
+    }
+}
+
 // A THIN SHEET OF GLASS IS DRAWN WHOLE (task TX, s62b). A pane at the
 // Corvette windshield's index, 1.16, converts to gaussians covering 0.0055 of
 // what is behind them; the faint cull dropped them before they were shaded,
