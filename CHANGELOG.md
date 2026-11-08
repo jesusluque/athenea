@@ -6,6 +6,19 @@ pass). The version lives in one place, the top-level `project()` line, and is
 what `athenea --version` and `athenea info` print. A minor version is a set of
 merged work; a patch version fixes what a minor one shipped.
 
+## 0.4.1 — 2026-11-08
+
+- **Windows without a CUDA toolkit**: the archive carries CUDA 12.9's runtime
+  and the headers NVRTC compiles against, and the engine points `CUDA_PATH` at
+  the package, so CUDA opens on a machine with only the driver. 0.4.0 carried
+  12.6's runtime, which a 12.9 NVRTC found through `CUDA_PATH` could not open
+  a device with, and the engine fell back to D3D12.
+- **OptiX's headers on such a machine**: NVIDIA's licence keeps them out of
+  the package; the engine finds them in the package's `include` once a machine
+  fetches them there (optix-dev, `v9.0.0`), or through `ATHENEA_OPTIX_INCLUDE`.
+- **OIDN on Vulkan on Windows**: Vulkan's memory reaches OIDN's CUDA device as
+  a Win32 handle, so a Vulkan frame is denoised there too, with no OptiX.
+
 ## 0.4.0 — 2026-11-07
 
 - **splat-transfer**: a TX transfer baked onto a cloud with no mesh, tracing
