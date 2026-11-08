@@ -231,6 +231,18 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
                 if (platform::env("CUDA_PATH") != root.string()) {
                     platform::setEnv("CUDA_PATH", root.string());
                 }
+#if defined(_WIN32)
+                // NVRTC loads its builtins by name, and Windows looks for a DLL
+                // beside the program and on PATH, not beside the DLL asking:
+                // athenea.exe has them in its own bin, but a host such as
+                // Blender does not, and there NVRTC failed every kernel and CUDA
+                // opened no device. The package's bin goes first on PATH.
+                const std::string bin = (root / "bin").string();
+                const std::string path = platform::env("PATH");
+                if (path.rfind(bin + ";", 0) != 0 && path != bin) {
+                    platform::setEnv("PATH", path.empty() ? bin : bin + ";" + path);
+                }
+#endif
                 packageRoot = root;
                 break;
             }

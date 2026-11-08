@@ -20128,3 +20128,10 @@ unless the cancel was looked at first -- so 1 or 4 by timing. The test shows the
 `test_module` passes whole; `tx_module` passes whole -- it was refused there before, since a bake wanted OptiX --
 the cloud against its reference relMSE 0.0528 and p99 9 (this build has OIDN), Esc ends 4; `viewport_readback.py`
 passes (half draws what float draws, p99 0).
+- **CUDA inside Blender on Windows.** The add-on carried NVRTC in
+  `plugin\usd\bin` and the engine pointed `CUDA_PATH` there, yet CUDA opened
+  no device in Blender, silently, while `athenea.exe` and a USD host opened
+  it. NVRTC loads `nvrtc-builtins64_129.dll` by name, and Windows looks beside
+  the program and on `PATH`, not beside NVRTC: `athenea.exe` has the builtins
+  in its own folder, Blender does not. The engine now puts the package's
+  `bin` first on `PATH` when it points `CUDA_PATH` at it.
