@@ -1876,9 +1876,12 @@ ATHENEA_HYDRA_PLUGIN_DIR=<build>/plugin/usd \
   -E ATHENEA_HYDRA -f 1
 ```
 
-**The package.** `scripts/package-blender-addon.sh [build] [out]` (defaults
-`build/macos-arm64-blender` and `build/blender-addon`) makes the extension
-directory and `athenea_hydra-<version>.zip`, which *Edit > Preferences > Get
+**The package.** `scripts/package-blender-addon.sh [build] [out]` on macOS
+and Linux, `scripts\package-blender-addon.ps1 [build] [out]` on Windows
+(defaults `build/<os>-blender` and `build/blender-addon`), makes the extension
+directory and `athenea_hydra-<version>-<platform>.zip`, one a system
+(`macos-arm64`, `linux-x64`, `windows-x64`: the manifest's `platforms` names
+only that one), which *Edit > Preferences > Get
 Extensions > Install from Disk* (or `blender --command extension
 install-file -r user_default -e <zip>`) installs. It holds the Python,
 `blender_manifest.toml`, `plugin/usd` (hdAthenea with libslang, libzstd,
@@ -1891,6 +1894,16 @@ with nothing set. Beside athenea's `LICENSE`, `NOTICE` and
 MaterialX 1.39.5, zstd, libwebp, OpenVDB when the shaders hold `PNanoVDB.h`)
 and of what it is compiled against but leaves to Blender (OpenUSD, oneTBB,
 OpenColorIO, OIDN). The script stops if one is missing.
+On Linux the libraries beside hdAthenea (Slang, zstd, libwebp, and CUDA's
+NVRTC, nvJitLink and cudart, from the build's toolkit or
+`ATHENEA_CUDA_ROOT`) are found through an `$ORIGIN` runpath; Blender's own
+are already in the process. On Windows the folder beside `hdAthenea.dll`
+holds every DLL it loads that is neither Blender's nor Windows' (found with
+`dumpbin`), Slang's GLSL modules and DXC (`ATHENEA_DXC`), and
+`plugin\usd\bin` and `plugin\usd\include` hold CUDA's runtime and headers
+(`ATHENEA_CUDA_RUNTIME`, as `package.ps1`), which the engine points
+`CUDA_PATH` at, so CUDA opens with the driver alone. The Windows script needs
+`dumpbin` (`scripts\msvc-env.ps1`) and `BLENDER_DIR` as the build had it.
 `blender --command extension validate <zip>` checks the manifest.
 
 **The render engine.** Blender's **Hydra** export method hands no point
@@ -3204,7 +3217,8 @@ the README shows.
 | `sketchfab-to-usd.sh <zip> [name]` | a Sketchfab archive into a USD asset |
 | `readme-images.sh [outdir]` | the images in the README, from the sparrow asset |
 | `remote-test.sh user@host [preset]` | builds and runs the suite on another machine and brings the log back |
-| `package-blender-addon.sh [build] [out]` | the Blender extension as a directory and a zip, with zstd and libwebp carried and every third party's licence files (4.1.1) |
+| `package-blender-addon.sh [build] [out]` | the Blender extension for macOS or Linux as a directory and a zip, with zstd and libwebp carried (and CUDA's runtime on Linux) and every third party's licence files (4.1.1) |
+| `package-blender-addon.ps1 [build] [out]` | the same for Windows, with the DLLs hdAthenea loads, DXC and CUDA's runtime (4.1.1) |
 | `scripts/film/` | the sparrow film: its frames, its camera and its shadow (`SPARROW` the stages' folder, `ATHENEA` the binary) |
 | `bmw-to-usd.py`, `sparrow-*.py` | authoring helpers for those assets |
 

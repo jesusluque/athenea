@@ -2,11 +2,14 @@
 # Copyright (c) 2026 jesus luque.
 #
 # The Blender add-on as one directory and a zip Blender installs from disk,
-# from a macos-arm64-blender build:
+# from a macos-arm64-blender or linux-x86_64-blender build (Windows has
+# package-blender-addon.ps1):
 #
-#   athenea_hydra/*.py, blender_manifest.toml
+#   athenea_hydra/*.py, blender_manifest.toml (its `platforms` this system's)
 #   athenea_hydra/plugin/usd/        hdAthenea (with libslang, libzstd and libwebp beside it,
-#                                    named @loader_path and signed ad hoc) and the schemas
+#                                    named @loader_path and signed ad hoc on macOS, found
+#                                    by an $ORIGIN runpath on Linux, where CUDA's NVRTC,
+#                                    nvJitLink and cudart go beside it too) and the schemas
 #   athenea_hydra/plugin/materialx/  MaterialX 1.39.5's libraries/
 #   athenea_hydra/plugin/aofx/       the Mesh2Splat, SplatBakeFilter, SplatTransferZonal and Measure bundles
 #   athenea_hydra/shaders/           found by hdAthenea three levels up
@@ -19,11 +22,16 @@
 # goes out without them.
 #
 # Usage: scripts/package-blender-addon.sh [build dir] [output dir]
-#   (defaults build/macos-arm64-blender and build/blender-addon)
+#   (defaults build/<os>-blender and build/blender-addon)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD="${1:-$REPO/build/macos-arm64-blender}"
+case "$(uname -s)" in
+    Darwin) OS=macos; PLATFORM=macos-arm64; DEFAULT_BUILD=macos-arm64-blender ;;
+    Linux)  OS=linux; PLATFORM=linux-x64;   DEFAULT_BUILD=linux-x86_64-blender ;;
+    *) echo "package-blender-addon: $(uname -s) is neither macOS nor Linux" >&2; exit 1 ;;
+esac
+BUILD="${1:-$REPO/build/$DEFAULT_BUILD}"
 OUT="${2:-$REPO/build/blender-addon}"
 mkdir -p "$OUT" && OUT="$(cd "$OUT" && pwd)"
 SLANG_ROOT="${SLANG_ROOT:-$HOME/tools/slang}"
@@ -38,7 +46,7 @@ OCIO_SRC="${ATHENEA_OCIO_SRC:-$SRC_ROOT/OpenColorIO-2.5.2}"
 fail() { echo "package-blender-addon: $*" >&2; exit 1; }
 
 PLUGIN="$BUILD/plugin/usd/hdAthenea/hdAthenea.so"
-[[ -f "$PLUGIN" ]] || fail "no $PLUGIN: cmake --build --preset macos-arm64-blender first"
+[[ -f "$PLUGIN" ]] || fail "no $PLUGIN: cmake --build --preset $DEFAULT_BUILD first"
 
 ADDON="$OUT/athenea_hydra"
 rm -rf "$ADDON"
@@ -46,6 +54,8 @@ mkdir -p "$ADDON/plugin" "$ADDON/licenses"
 
 # --- the add-on and what it loads -------------------------------------------------
 cp "$REPO"/integrations/blender/athenea_hydra/*.py "$REPO/integrations/blender/athenea_hydra/blender_manifest.toml" "$ADDON/"
+# One zip a system: Blender installs a zip only where its manifest says it runs.
+sed -i.bak -E "s/^platforms = .*/platforms = [\"$PLATFORM\"]/" "$ADDON/blender_manifest.toml" && rm "$ADDON/blender_manifest.toml.bak"
 cp -R "$BUILD/plugin/usd" "$ADDON/plugin/usd"
 cp -R "$BUILD/plugin/materialx" "$ADDON/plugin/materialx"
 cp -R "$BUILD/shaders" "$ADDON/shaders"
@@ -55,37 +65,72 @@ for bundle in Mesh2Splat SplatBakeFilter SplatTransferZonal Measure; do
     [[ -d "$BUILD/aofx/$bundle.aofx.bundle" ]] || fail "no $bundle bundle in $BUILD/aofx"
     cp -R "$BUILD/aofx/$bundle.aofx.bundle" "$ADDON/plugin/aofx/"
 done
-# hdAthenea's rpath starts at @loader_path: Slang beside it is the one it loads.
-cp "$SLANG_ROOT"/lib/libslang-compiler.0.*.dylib "$SLANG_ROOT"/lib/libslang-glsl-module-*.dylib \
-    "$ADDON/plugin/usd/hdAthenea/"
+if [[ "$OS" == macos ]]; then
+    # hdAthenea's rpath starts at @loader_path: Slang beside it is the one it loads.
+    cp "$SLANG_ROOT"/lib/libslang-compiler.0.*.dylib "$SLANG_ROOT"/lib/libslang-glsl-module-*.dylib \
+        "$ADDON/plugin/usd/hdAthenea/"
 
-# zstd and libwebp (SPZ and SOG) are Homebrew's on the build machine: copied
-# beside hdAthenea, renamed to @loader_path and signed ad hoc. Blender 5.3
-# carries com.apple.security.cs.disable-library-validation, so it loads
-# libraries signed by no team (proposal 084).
-HOMEBREW="${HOMEBREW_PREFIX:-/opt/homebrew}"
-HERE="$ADDON/plugin/usd/hdAthenea"
-carry() {   # carry <library path>: beside hdAthenea, its id @loader_path/<name>
-    local name; name="$(basename "$1")"
-    [[ -f "$1" ]] || fail "no $1 to carry (brew install zstd webp)"
-    cp "$1" "$HERE/$name"
-    chmod u+w "$HERE/$name"
-    install_name_tool -id "@loader_path/$name" "$HERE/$name" 2>/dev/null
-}
-carry "$HOMEBREW/opt/zstd/lib/libzstd.1.dylib"
-carry "$HOMEBREW/opt/webp/lib/libwebp.7.dylib"
-carry "$HOMEBREW/opt/webp/lib/libsharpyuv.0.dylib"
-install_name_tool -change "@rpath/libsharpyuv.0.dylib" "@loader_path/libsharpyuv.0.dylib" "$HERE/libwebp.7.dylib" 2>/dev/null
-for name in libzstd.1.dylib libwebp.7.dylib; do
-    old="$(otool -L "$HERE/hdAthenea.so" | awk -v n="$name" '$1 ~ n {print $1}')"
-    [[ -n "$old" ]] && install_name_tool -change "$old" "@loader_path/$name" "$HERE/hdAthenea.so" 2>/dev/null
-done
-if otool -L "$HERE/hdAthenea.so" | grep -q "$HOMEBREW"; then
-    fail "hdAthenea still names a library under $HOMEBREW"
+    # zstd and libwebp (SPZ and SOG) are Homebrew's on the build machine: copied
+    # beside hdAthenea, renamed to @loader_path and signed ad hoc. Blender 5.3
+    # carries com.apple.security.cs.disable-library-validation, so it loads
+    # libraries signed by no team (proposal 084).
+    HOMEBREW="${HOMEBREW_PREFIX:-/opt/homebrew}"
+    HERE="$ADDON/plugin/usd/hdAthenea"
+    carry() {   # carry <library path>: beside hdAthenea, its id @loader_path/<name>
+        local name; name="$(basename "$1")"
+        [[ -f "$1" ]] || fail "no $1 to carry (brew install zstd webp)"
+        cp "$1" "$HERE/$name"
+        chmod u+w "$HERE/$name"
+        install_name_tool -id "@loader_path/$name" "$HERE/$name" 2>/dev/null
+    }
+    carry "$HOMEBREW/opt/zstd/lib/libzstd.1.dylib"
+    carry "$HOMEBREW/opt/webp/lib/libwebp.7.dylib"
+    carry "$HOMEBREW/opt/webp/lib/libsharpyuv.0.dylib"
+    install_name_tool -change "@rpath/libsharpyuv.0.dylib" "@loader_path/libsharpyuv.0.dylib" "$HERE/libwebp.7.dylib" 2>/dev/null
+    for name in libzstd.1.dylib libwebp.7.dylib; do
+        old="$(otool -L "$HERE/hdAthenea.so" | awk -v n="$name" '$1 ~ n {print $1}')"
+        [[ -n "$old" ]] && install_name_tool -change "$old" "@loader_path/$name" "$HERE/hdAthenea.so" 2>/dev/null
+    done
+    if otool -L "$HERE/hdAthenea.so" | grep -q "$HOMEBREW"; then
+        fail "hdAthenea still names a library under $HOMEBREW"
+    fi
+    for library in "$HERE"/*.dylib "$HERE/hdAthenea.so"; do
+        codesign --force -s - "$library" 2>/dev/null || fail "could not sign $library"
+    done
+else
+    # Linux: Slang, and the system's zstd and libwebp (SPZ and SOG), which a
+    # machine may not have, beside hdAthenea; CUDA's runtime too, which
+    # slang-rhi loads by name when it compiles a kernel (NVRTC and its
+    # builtins, nvJitLink) and OIDN's CUDA device links (cudart). Blender's own
+    # libraries (OpenUSD, TBB, OIIO, MaterialX...) are already in the process
+    # by their sonames. Every runpath is $ORIGIN, the build machine's dropped.
+    HERE="$ADDON/plugin/usd/hdAthenea"
+    command -v patchelf >/dev/null || fail "patchelf is needed on Linux"
+    cp -P "$SLANG_ROOT"/lib/libslang-compiler.so* "$SLANG_ROOT"/lib/libslang-glsl-module-*.so \
+        "$SLANG_ROOT"/lib/libslang-glslang-*.so "$HERE/"
+    for name in libzstd.so.1 libwebp.so.7 libsharpyuv.so.0; do
+        found="$(ldd "$PLUGIN" | awk -v n="$name" '$1 == n {print $3}')"
+        [[ -n "$found" && -f "$found" ]] || fail "hdAthenea does not load $name from a file here"
+        cp -L "$found" "$HERE/$name"
+    done
+    CUDA_ROOT="${ATHENEA_CUDA_ROOT:-}"
+    if [[ -z "$CUDA_ROOT" ]]; then
+        nvcc="$(sed -n 's/^CMAKE_CUDA_COMPILER:[A-Z]*=//p' "$BUILD/CMakeCache.txt" | head -1)"
+        [[ -n "$nvcc" ]] && CUDA_ROOT="$(dirname "$(dirname "$nvcc")")"
+    fi
+    [[ -d "$CUDA_ROOT/lib64" ]] || fail "no CUDA toolkit to carry the runtime from (ATHENEA_CUDA_ROOT)"
+    for pattern in 'libnvrtc.so*' 'libnvrtc-builtins.so*' 'libnvJitLink.so*' 'libcudart.so*'; do
+        find "$CUDA_ROOT/lib64/" -maxdepth 1 -name "$pattern" -exec cp -P {} "$HERE/" \;
+    done
+    find "$HERE" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) | while read -r library; do
+        chmod u+w "$library"
+        patchelf --set-rpath '$ORIGIN' "$library" 2>/dev/null || true
+    done
+    patchelf --set-rpath '$ORIGIN' "$HERE/hdAthenea.so"
+    find "$ADDON/plugin/aofx" -type f -name '*.aofx' | while read -r bundle; do
+        patchelf --set-rpath '$ORIGIN/../../../../usd/hdAthenea' "$bundle"
+    done
 fi
-for library in "$HERE"/*.dylib "$HERE/hdAthenea.so"; do
-    codesign --force -s - "$library" 2>/dev/null || fail "could not sign $library"
-done
 
 # --- licences ---------------------------------------------------------------------
 # licence <component> <file>...: each file into licenses/<component>/, keeping
@@ -105,8 +150,14 @@ cp "$REPO/LICENSE" "$REPO/NOTICE" "$REPO/THIRD_PARTY_NOTICES.md" \
 # Carried by the package.
 licence slang "$SLANG_ROOT/LICENSE" "$SLANG_ROOT/LICENSES"
 licence materialx "$MATERIALX_SRC/LICENSE" "$MATERIALX_SRC/THIRD-PARTY.md"
-licence zstd "$HOMEBREW/opt/zstd/LICENSE" "$HOMEBREW/opt/zstd/COPYING"
-licence libwebp "$HOMEBREW/opt/webp/COPYING"
+if [[ "$OS" == macos ]]; then
+    licence zstd "$HOMEBREW/opt/zstd/LICENSE" "$HOMEBREW/opt/zstd/COPYING"
+    licence libwebp "$HOMEBREW/opt/webp/COPYING"
+else
+    licence zstd /usr/share/doc/libzstd1/copyright
+    licence libwebp /usr/share/doc/libwebp7/copyright
+    licence cuda "$CUDA_ROOT/EULA.txt"
+fi
 if [[ -d "$ADDON/shaders/nanovdb" ]]; then
     licence openvdb "$OPENVDB_SRC/LICENSE"
 fi
@@ -121,7 +172,7 @@ licence oidn "$OIDN_DOC/LICENSE.txt" "$OIDN_DOC/third-party-programs.txt" \
 
 # --- the zip ----------------------------------------------------------------------
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ADDON/blender_manifest.toml")"
-ZIP="$OUT/athenea_hydra-$VERSION.zip"
+ZIP="$OUT/athenea_hydra-$VERSION-$PLATFORM.zip"
 rm -f "$ZIP"
 (cd "$ADDON" && zip -qry "$ZIP" .)
 echo "$ADDON"

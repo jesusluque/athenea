@@ -7,7 +7,7 @@ cover what athenea's own binaries compile in: slang-rhi, metal-cpp, tinyexr,
 miniz, CLI11, JSON for Modern C++, aopenfx, spz, gpe, genlock, mesh2splat's
 port, the ACES and SOG ports). This file lists the libraries the add-on
 package carries or compiles against beyond those, and where each one's
-licence files are in `licenses/`. `scripts/package-blender-addon.sh` copies
+licence files are in `licenses/`. `scripts/package-blender-addon.sh` (`.ps1` on Windows) copies
 every file named here from the toolchain's source and install trees, and
 stops if one is missing.
 
@@ -15,10 +15,12 @@ stops if one is missing.
 
 | Component | Version | Licence | What the package holds of it | Licence files |
 |---|---|---|---|---|
-| [Slang](https://github.com/shader-slang/slang) | 2026.14.1 | Apache-2.0 WITH LLVM-exception; its third parties under the licences in `LICENSES/` | `libslang-compiler` and `libslang-glsl-module` beside `hdAthenea` | `licenses/slang/` (`LICENSE`, `LICENSES/*`) |
+| [Slang](https://github.com/shader-slang/slang) | 2026.14.1 | Apache-2.0 WITH LLVM-exception; its third parties under the licences in `LICENSES/` | `libslang-compiler` and `libslang-glsl-module` beside `hdAthenea` (and `libslang-glslang` on Linux; `slang.dll`, `slang-compiler.dll`, `slang-glsl-module.dll`, `slang-glslang.dll` on Windows) | `licenses/slang/` (`LICENSE`, `LICENSES/*`) |
 | [MaterialX](https://github.com/AcademySoftwareFoundation/MaterialX) | 1.39.5 | Apache-2.0 | `MaterialXGenSlang` and the hardware nodes compiled into `hdAthenea`; the `libraries/` data in `plugin/materialx` | `licenses/materialx/` (`LICENSE`, `THIRD-PARTY.md`) |
-| [zstd](https://github.com/facebook/zstd) | Homebrew's (1.5.7 at writing) | BSD 3-Clause (or GPL-2.0, at the user's choice) | `libzstd.1.dylib` beside `hdAthenea`, named `@loader_path`, signed ad hoc | `licenses/zstd/` (`LICENSE`, `COPYING`) |
-| [libwebp](https://chromium.googlesource.com/webm/libwebp) | Homebrew's | BSD 3-Clause | `libwebp.7.dylib` and its `libsharpyuv.0.dylib` beside `hdAthenea`, named `@loader_path`, signed ad hoc | `licenses/libwebp/COPYING` |
+| [zstd](https://github.com/facebook/zstd) | Homebrew's (1.5.7 at writing) on macOS, the distribution's on Linux | BSD 3-Clause (or GPL-2.0, at the user's choice) | `libzstd.1.dylib` beside `hdAthenea`, named `@loader_path`, signed ad hoc; `libzstd.so.1` on Linux | `licenses/zstd/` (`LICENSE`, `COPYING`; Debian's `copyright` on Linux) |
+| [libwebp](https://chromium.googlesource.com/webm/libwebp) | Homebrew's on macOS, the distribution's on Linux | BSD 3-Clause | `libwebp.7.dylib` and its `libsharpyuv.0.dylib` beside `hdAthenea`, named `@loader_path`, signed ad hoc; `libwebp.so.7` and `libsharpyuv.so.0` on Linux | `licenses/libwebp/COPYING` (Debian's `copyright` on Linux) |
+| [CUDA](https://developer.nvidia.com/cuda-toolkit) runtime (Linux and Windows) | 12.9 | NVIDIA's CUDA EULA, whose Attachment A lists these as redistributable | NVRTC and its builtins, nvJitLink and cudart beside `hdAthenea` on Linux; in `plugin/usd/bin`, with the headers NVRTC compiles against in `plugin/usd/include`, on Windows | `licenses/cuda/` (`EULA.txt` or `LICENSE`) |
+| [DirectX Shader Compiler](https://github.com/microsoft/DirectXShaderCompiler) (Windows) | the release the build used | University of Illinois/NCSA (LLVM) with Microsoft's licence for `dxil.dll` | `dxcompiler.dll` and `dxil.dll` beside `hdAthenea` | `licenses/dxc/` |
 | [OpenVDB / NanoVDB](https://github.com/AcademySoftwareFoundation/openvdb) | 10.1.0 | MPL-2.0 | `PNanoVDB.h` in `shaders/nanovdb` (header-only; the Blender build takes it from `ATHENEA_NANOVDB_INCLUDE`, the desktop prefix) | `licenses/openvdb/LICENSE` |
 
 ## Blender's own, not redistributed

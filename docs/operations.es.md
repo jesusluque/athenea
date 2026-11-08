@@ -1937,9 +1937,12 @@ ATHENEA_HYDRA_PLUGIN_DIR=<build>/plugin/usd \
   -E ATHENEA_HYDRA -f 1
 ```
 
-**El paquete.** `scripts/package-blender-addon.sh [build] [salida]` (por
-defecto `build/macos-arm64-blender` y `build/blender-addon`) hace el
-directorio de la extensión y `athenea_hydra-<versión>.zip`, que instala
+**El paquete.** `scripts/package-blender-addon.sh [build] [salida]` en macOS
+y Linux, `scripts\package-blender-addon.ps1 [build] [salida]` en Windows (por
+defecto `build/<so>-blender` y `build/blender-addon`), hace el directorio de
+la extensión y `athenea_hydra-<versión>-<plataforma>.zip`, uno por sistema
+(`macos-arm64`, `linux-x64`, `windows-x64`: el `platforms` del manifiesto
+nombra solo ese), que instala
 *Edit > Preferences > Get Extensions > Install from Disk* (o `blender
 --command extension install-file -r user_default -e <zip>`). Lleva el Python,
 `blender_manifest.toml`, `plugin/usd` (hdAthenea con libslang, libzstd,
@@ -1952,6 +1955,17 @@ directorio sin definir nada. Junto a `LICENSE`, `NOTICE` y
 MaterialX 1.39.5, zstd, libwebp, OpenVDB cuando los shaders contienen
 `PNanoVDB.h`) y de aquello contra lo que se compila pero deja a Blender
 (OpenUSD, oneTBB, OpenColorIO, OIDN). El script se para si falta alguno.
+En Linux las bibliotecas al lado de hdAthenea (Slang, zstd, libwebp, y
+NVRTC, nvJitLink y cudart de CUDA, del toolkit del build o de
+`ATHENEA_CUDA_ROOT`) se encuentran por un runpath `$ORIGIN`; las de Blender
+ya están en el proceso. En Windows la carpeta al lado de `hdAthenea.dll`
+tiene cada DLL que carga que no es de Blender ni de Windows (halladas con
+`dumpbin`), los módulos GLSL de Slang y DXC (`ATHENEA_DXC`), y
+`plugin\usd\bin` y `plugin\usd\include` tienen el runtime y las cabeceras
+de CUDA (`ATHENEA_CUDA_RUNTIME`, como `package.ps1`), a los que el motor
+apunta `CUDA_PATH`, así que CUDA abre solo con el driver. El script de
+Windows necesita `dumpbin` (`scripts\msvc-env.ps1`) y `BLENDER_DIR` como lo
+tenía el build.
 `blender --command extension validate <zip>` comprueba el manifiesto.
 
 **El motor de render.** El método de exportación **Hydra** de Blender no
@@ -3311,7 +3325,8 @@ assets que enseña el README.
 | `sketchfab-to-usd.sh <zip> [nombre]` | un archivo de Sketchfab a un asset USD |
 | `readme-images.sh [salida]` | las imágenes del README, desde el asset del gorrión |
 | `remote-test.sh user@host [preset]` | compila y corre la suite en otra máquina y trae el log |
-| `package-blender-addon.sh [build] [salida]` | la extensión de Blender como directorio y zip, con zstd y libwebp dentro y los ficheros de licencia de cada tercero (4.1.1) |
+| `package-blender-addon.sh [build] [salida]` | la extensión de Blender para macOS o Linux como directorio y zip, con zstd y libwebp dentro (y el runtime de CUDA en Linux) y los ficheros de licencia de cada tercero (4.1.1) |
+| `package-blender-addon.ps1 [build] [salida]` | lo mismo para Windows, con las DLL que carga hdAthenea, DXC y el runtime de CUDA (4.1.1) |
 | `scripts/film/` | la película del gorrión: sus frames, su cámara y su sombra (`SPARROW` la carpeta de las escenas, `ATHENEA` el binario) |
 | `bmw-to-usd.py`, `sparrow-*.py` | ayudas de autoría para esos assets |
 

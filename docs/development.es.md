@@ -409,6 +409,7 @@ compilación de un preset release:
 |---|---|---|---|
 | archivo | `scripts/package.sh <build> <out>` (`.zip`) | `scripts/package.sh <build> <out>` (`.tar.gz`, necesita `patchelf`) | `scripts\package.ps1 <build> <out>` (`.zip`) |
 | instalador | `scripts/installer-macos.sh <carpeta>` (`.pkg`) | `scripts/installer-linux.sh <carpeta>` (`.deb`) | `scripts\installer-windows.ps1 <carpeta>` (`.exe`, Inno Setup 6) |
+| add-on de Blender | `scripts/package-blender-addon.sh` desde `macos-arm64-blender` | `scripts/package-blender-addon.sh` desde `linux-x86_64-blender` (`BLENDER_LIB`) | `scripts\package-blender-addon.ps1` desde `windows-x64-blender` (`BLENDER_DIR`) |
 
 En Windows, `ATHENEA_CUDA_RUNTIME` nombra el runtime de CUDA que lleva el
 archivo: una carpeta con `bin\` e `include\`, como los archivos redistribuibles
@@ -420,7 +421,7 @@ el archivo los lleva de ahí. `package.*` copia las bibliotecas de los prefijos 
 (`CMakeCache.txt`) y hace sus rutas relativas a cada programa: `rpath`
 `@executable_path/../lib` en macOS (y firma ad hoc), `$ORIGIN/../lib` en
 Linux, cada DLL junto a los programas en Windows. La release se publica con
-`gh release create vX.Y.Z` y los seis ficheros.
+`gh release create vX.Y.Z` y los nueve ficheros.
 
 ### 3.5 Otra máquina
 
@@ -1776,7 +1777,7 @@ se enlaza con las bibliotecas de Blender:
    `viewport_readback.py` (gpu: el mapeo del color en float frente a media).
    Los de gpu usan el `athenea compare` de una compilación de escritorio
    (`ATHENEA_CLI`).
-5. El paquete es `scripts/package-blender-addon.sh` (manual de operaciones,
+5. El paquete es `scripts/package-blender-addon.sh` (`.ps1` en Windows; manual de operaciones,
    4.1.1). `integrations/blender/THIRD_PARTY_LICENSES.md` es su lista de
    terceros: lo que lleva el paquete y lo que deja a Blender. Una biblioteca
    añadida al paquete, o una dependencia de cabeceras nueva, añade su fila

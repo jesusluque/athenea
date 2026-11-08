@@ -391,6 +391,7 @@ commit on each system, from a release preset's build tree:
 |---|---|---|---|
 | archive | `scripts/package.sh <build> <out>` (`.zip`) | `scripts/package.sh <build> <out>` (`.tar.gz`, needs `patchelf`) | `scripts\package.ps1 <build> <out>` (`.zip`) |
 | installer | `scripts/installer-macos.sh <folder>` (`.pkg`) | `scripts/installer-linux.sh <folder>` (`.deb`) | `scripts\installer-windows.ps1 <folder>` (`.exe`, Inno Setup 6) |
+| Blender add-on | `scripts/package-blender-addon.sh` from `macos-arm64-blender` | `scripts/package-blender-addon.sh` from `linux-x86_64-blender` (`BLENDER_LIB`) | `scripts\package-blender-addon.ps1` from `windows-x64-blender` (`BLENDER_DIR`) |
 
 On Windows, `ATHENEA_CUDA_RUNTIME` names the CUDA runtime the archive carries:
 a folder with `bin\` and `include\`, such as NVIDIA's redistributable
@@ -402,7 +403,7 @@ archive carries them from there. `package.*` copies the libraries from the prefi
 (`CMakeCache.txt`) and makes their paths relative to each program: `rpath`
 `@executable_path/../lib` on macOS (then signs ad hoc), `$ORIGIN/../lib` on
 Linux, every DLL beside the programs on Windows. The release is published
-with `gh release create vX.Y.Z` and the six files.
+with `gh release create vX.Y.Z` and the nine files.
 
 ### 3.5 Another machine
 
@@ -1682,7 +1683,7 @@ libraries:
    exported, brought in as Blender splats, stopped) and
    `viewport_readback.py` (gpu: the colour's map float against half). The
    gpu ones use `athenea compare` from a desktop build (`ATHENEA_CLI`).
-5. The package is `scripts/package-blender-addon.sh` (operations manual,
+5. The package is `scripts/package-blender-addon.sh` (`.ps1` on Windows; operations manual,
    4.1.1). `integrations/blender/THIRD_PARTY_LICENSES.md` is its list of
    third parties: what the package carries and what it leaves to Blender. A
    library added to the package, or a new header dependency, adds its row
