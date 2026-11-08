@@ -153,6 +153,17 @@ FetchContent_Declare(slang_rhi
 FetchContent_MakeAvailable(slang_rhi)
 endif()
 
+# Slang's compiler is built with a static C runtime on Windows, so it reads
+# its own copy of the environment, taken when the DLL is loaded. A package
+# that carries CUDA's headers points CUDA_PATH at itself before the device
+# opens (gpu/Device.cpp), and Slang finds NVRTC's headers through CUDA_PATH:
+# loaded with the program, it would never see that. Delay-loaded, it is loaded
+# by the first call into it, which comes after.
+if(WIN32 AND TARGET slang)
+    set_property(TARGET slang APPEND PROPERTY INTERFACE_LINK_OPTIONS "/DELAYLOAD:slang-compiler.dll")
+    set_property(TARGET slang APPEND PROPERTY INTERFACE_LINK_LIBRARIES delayimp)
+endif()
+
 if(ATHENEA_IOS AND TARGET slang-rhi)
     # Xcode compiles every iOS target with -Wshorten-64-to-32, and slang-rhi
     # compiles its own sources with -Werror: `size()` into a uint32_t count is
