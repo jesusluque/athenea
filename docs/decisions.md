@@ -1122,6 +1122,22 @@ compiled from MaterialX into Slang and evaluated on the device.
   freedom for the diffuse lobes, 379.0 to 461.0 elsewhere), the pdf's
   integral against the fraction of samples drawn, and a white furnace where
   the albedo sampled and the albedo integrated uniformly agree to 3%.
+- **A smooth dielectric is picked by its exact Fresnel** (8 Nov). The stack
+  picks a lobe in proportion to its estimated albedo, and a smooth (delta)
+  lobe's weight is divided by that chance. The dielectric's reflected albedo
+  came from the GGX table, built from F0, which knows no total internal
+  reflection: inside a glass past the critical angle the mirror returns
+  everything while the table gave it a small chance, so the path that picked
+  it was multiplied by the inverse each time, and the path that picked the
+  transmission died. splat2mesh's glass pawn in front of an emissive checker
+  (64 paths, 1024 px) had 19 pixels over 5 and one at 1853 (the plane emits
+  about 1), the same at 0 and at 24 bounces since a smooth glass is crossed
+  whatever the bounce count. A smooth lobe now takes the exact F, one under
+  total internal reflection: the brightest pixel is 0.95, the mean 0.4%
+  higher (0.5482 against 0.5459: the paths that died gave light up), and the
+  frame 91 s against 68 s, since those paths now go on. A rough lobe is
+  weighed by the whole stack's eval over its pdf, not by the chance, and was
+  not affected.
 
 ### MaterialX into Slang
 

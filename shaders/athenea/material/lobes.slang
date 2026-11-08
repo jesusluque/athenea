@@ -627,8 +627,14 @@ public float3 lobeAlbedo(Lobe lobe, float3 wo) {
         const float R0 = iorToF0(relativeIor(lobe));
         const float F0 = thinWalled(lobe) ? 2.0 * R0 / (1.0 + R0) : R0;
         const float3 F = float3(dielectricF(lobe, NdotV));
-        const float3 reflected = ggxDirectionalAlbedo(NdotV, avg, float3(F0), float3(1.0)) *
-                                 ggxEnergyCompensation(NdotV, avg, F);
+        // A smooth interface reflects F exactly, and F is one past the
+        // critical angle inside a glass. The table is built from F0 and knows
+        // no total internal reflection: inside it gave a mirror held in by
+        // TIR a small chance to be picked, and the pick's weight, F over that
+        // chance, multiplied a path trapped in a glass pawn by thousands.
+        const float3 reflected = smooth(lobe.alpha) ? F
+                                 : ggxDirectionalAlbedo(NdotV, avg, float3(F0), float3(1.0)) *
+                                       ggxEnergyCompensation(NdotV, avg, F);
         const float3 tint = max(lobe.colour0, 0.0);
         if (lobe.scatter == kScatterReflect) {
             return tint * reflected;
