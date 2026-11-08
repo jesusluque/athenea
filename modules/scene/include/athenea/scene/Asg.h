@@ -12,6 +12,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
+#include <string>
 
 #include "athenea/core/Result.h"
 #include "athenea/gpu/Buffer.h"
@@ -36,6 +38,12 @@ struct AsgCloud {
     gpu::Buffer       indirect;        ///< float * indirectCount
     uint32_t          shadowWords = 0; ///< 0: none
     gpu::Buffer       shadowBits;      ///< int * shadowWords, bytes as shadowBits primvars hold them
+    // What the stage carried beside the gaussians (the header, revision 2).
+    double            metersPerUnit = 1.0;
+    float             ior = 0.0F;      ///< 0: none
+    bool              linear = true;
+    bool              relight = false;
+    std::map<std::string, uint32_t> cryptoManifest;   ///< prim path -> id
 };
 
 /// Whether `path` names an .asg file (by its extension).

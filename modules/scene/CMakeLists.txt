@@ -7,4 +7,6 @@ athenea_add_module(scene
     PUBLIC_LIBS
         athenea::core
         athenea::gpu
-        athenea::io)
+        athenea::io
+    PRIVATE_LIBS
+        nlohmann_json::nlohmann_json)

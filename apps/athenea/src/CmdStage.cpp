@@ -122,12 +122,15 @@ void addConvert(CLI::App& app) {
             records.count = asg->count;
             records.encoding = asg->encoding;
             records.records = asg->records;
-            records.linear = true;
+            records.linear = asg->linear;
             usd::ExportOptions options;
             options.addCamera = !o->noCamera;
             options.rotateXDegrees = o->rotateX;
-            options.linear = true;
-            options.relight = asg->directCount != 0;
+            options.linear = asg->linear;
+            options.relight = asg->relight;
+            options.metersPerUnit = asg->metersPerUnit;
+            options.ior = asg->ior;
+            options.cryptoManifest = asg->cryptoManifest;
             options.cryptoObject = *ids;
             options.thinWalled = *thin;
             if (asg->directCount != 0) {

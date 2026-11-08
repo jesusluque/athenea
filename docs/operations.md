@@ -251,9 +251,10 @@ material from its anchor's table (metallic, transmission, thin wall), the
 roughness, the shading normal, the Cryptomatte ids, the transfer's direct and
 indirect blocks and the open directions; `relight` is set where it carries a
 transfer. The gaussians are written in the file's order, grouped by anchor.
-The file keeps no unit, no index and no Cryptomatte manifest: set them on the
-stage (`metersPerUnit`, `primvars:athenea:splat:ior`) where the cloud needs
-them. The log line `asg: N gaussians from A anchors decoded in X ms` is the
+What the stage carried beside them comes from the header (revision 2): its
+`metersPerUnit`, the `ior`, whether it is linear and relit, and the
+Cryptomatte manifest; a file without them is written in metres, linear, relit
+where it carries a transfer, with no index and no manifest. The log line `asg: N gaussians from A anchors decoded in X ms` is the
 decode alone, timed on its second run.
 
 A stage written here says `metersPerUnit = 1`: none of the input formats

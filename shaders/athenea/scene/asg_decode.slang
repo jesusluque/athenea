@@ -12,9 +12,11 @@
 // roughness, transmission, the shading normal), the anchor's Cryptomatte id,
 // the material's thin-walled flag, the transfer's direct and indirect blocks
 // (an anchor's mean plus the leaf's residual over its basis) and the open
-// directions (the anchor's majority pattern XOR a dictionary entry, written
-// with each byte's bits most significant first, as shadowBits primvars hold
-// them).
+// directions (the anchor's majority pattern XOR a dictionary entry, byte by
+// byte: the file keeps the primvar's own bytes).
+//
+// The header's unit, index, flags and Cryptomatte manifest are the host's
+// (scene/Asg.cpp).
 module asg_decode;
 
 struct AsgParams {
@@ -137,13 +139,6 @@ float3 octDecode(float2 xy) {
         n.xy = (1.0 - abs(xy.yx)) * float2(xy.x >= 0.0 ? 1.0 : -1.0, xy.y >= 0.0 ? 1.0 : -1.0);
     }
     return normalize(n);
-}
-
-uint reverseByte(uint b) {
-    b = ((b & 0xF0u) >> 4u) | ((b & 0x0Fu) << 4u);
-    b = ((b & 0xCCu) >> 2u) | ((b & 0x33u) << 2u);
-    b = ((b & 0xAAu) >> 1u) | ((b & 0x55u) << 1u);
-    return b;
 }
 
 [shader("compute")]
@@ -327,7 +322,7 @@ void asgDecode(uint3 tid: SV_DispatchThreadID) {
             uint word = 0u;
             for (uint k = 0u; k < 4u; ++k) {
                 const uint j = w * 4u + k;
-                word |= reverseByte(byteAt(a + params.majorityAt + j) ^ byteAt(entry + j)) << (8u * k);
+                word |= (byteAt(a + params.majorityAt + j) ^ byteAt(entry + j)) << (8u * k);
             }
             shadowBits[g * (bytesPer / 4u) + w] = word;
         }

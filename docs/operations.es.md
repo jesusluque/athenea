@@ -256,9 +256,11 @@ que lleva: el material de la tabla de su anchor (metallic, transmisión, pared
 fina), la rugosidad, la normal de sombreado, los ids de Cryptomatte, los
 bloques directo e indirecto del transfer y las direcciones abiertas; `relight`
 se pone donde lleva transfer. Las gaussianas se escriben en el orden del
-fichero, agrupadas por anchor. El fichero no guarda unidad, ni índice, ni
-manifiesto de Cryptomatte: se ponen en la escena (`metersPerUnit`,
-`primvars:athenea:splat:ior`) donde la nube los necesite. La línea del log
+fichero, agrupadas por anchor. Lo que la escena llevaba junto a ellas sale de
+la cabecera (revisión 2): su `metersPerUnit`, el `ior`, si es lineal y
+reiluminada, y el manifiesto de Cryptomatte; un fichero sin ellos se escribe en
+metros, lineal, reiluminado donde lleva transfer, sin índice y sin
+manifiesto. La línea del log
 `asg: N gaussians from A anchors decoded in X ms` es solo la decodificación,
 medida en su segunda ejecución.
 

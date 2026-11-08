@@ -7,6 +7,8 @@
 #include <fstream>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "athenea/core/Log.h"
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/ComputeKernel.h"
@@ -17,7 +19,8 @@ namespace athenea::scene {
 namespace {
 
 // The header's flags and an anchor's format word (proposal 002).
-constexpr uint32_t kTransfer = 1, kShadowBits = 2, kOpacityLog = 4, kMeansCpca = 16, kShadowGlobal = 32;
+constexpr uint32_t kTransfer = 1, kShadowBits = 2, kMeansCpca = 16, kShadowGlobal = 32, kLinear = 128,
+                   kRelight = 256;
 constexpr uint32_t kFloatsPerRecord = 20;
 
 template <typename T>
@@ -115,6 +118,35 @@ Result<AsgCloud> decodeAsg(gpu::ShaderLibrary& library, const std::filesystem::p
 
     gpu::Device& device = library.device();
     AsgCloud cloud;
+    // Revision 2: what the stage carried beside the gaussians -- its unit, the
+    // index, whether the colours are linear and the cloud relit, and the
+    // Cryptomatte manifest (the primvar's JSON as it was). A file without them
+    // reads as a metre a unit, linear, no index and no manifest.
+    if (const float mpu = at<float>(bytes, 128); mpu > 0.0F) {
+        cloud.metersPerUnit = mpu;
+    }
+    cloud.ior = std::max(at<float>(bytes, 132), 0.0F);
+    if ((flags & (kLinear | kRelight)) != 0) {
+        cloud.linear = (flags & kLinear) != 0;
+        cloud.relight = (flags & kRelight) != 0;
+    } else {
+        cloud.relight = transfer;
+    }
+    const uint32_t manifestBytes = at<uint32_t>(bytes, 136);
+    const uint64_t offManifest = at<uint64_t>(bytes, 144);
+    if (manifestBytes != 0 && offManifest + manifestBytes <= size) {
+        const auto json = nlohmann::json::parse(bytes.begin() + static_cast<std::ptrdiff_t>(offManifest),
+                                                bytes.begin() + static_cast<std::ptrdiff_t>(offManifest + manifestBytes),
+                                                nullptr, false);
+        if (json.is_discarded() || !json.is_object()) {
+            return bad(path, "Cryptomatte manifest");
+        }
+        for (const auto& [prim, id] : json.items()) {
+            if (id.is_string()) {
+                cloud.cryptoManifest[prim] = static_cast<uint32_t>(std::stoul(id.get<std::string>(), nullptr, 16));
+            }
+        }
+    }
     cloud.count = count;
     cloud.anchors = anchors;
     cloud.directCount = transfer && blocks > 0 ? D[0] : 0;
