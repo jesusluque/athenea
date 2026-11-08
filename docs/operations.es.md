@@ -1955,10 +1955,14 @@ directorio sin definir nada. Junto a `LICENSE`, `NOTICE` y
 MaterialX 1.39.5, zstd, libwebp, OpenVDB cuando los shaders contienen
 `PNanoVDB.h`) y de aquello contra lo que se compila pero deja a Blender
 (OpenUSD, oneTBB, OpenColorIO, OIDN). El script se para si falta alguno.
-En Linux las bibliotecas al lado de hdAthenea (Slang, zstd, libwebp, y
-NVRTC, nvJitLink y cudart de CUDA, del toolkit del build o de
-`ATHENEA_CUDA_ROOT`) se encuentran por un runpath `$ORIGIN`; las de Blender
-ya están en el proceso. En Windows la carpeta al lado de `hdAthenea.dll`
+En Linux las bibliotecas al lado de hdAthenea (Slang, zstd, libwebp) se
+encuentran por un runpath `$ORIGIN`, y las de Blender ya están en el proceso;
+`plugin/usd/lib` y `plugin/usd/include` tienen NVRTC de CUDA (como
+`libnvrtc.so`, el nombre que pide slang-rhi), sus builtins, nvJitLink y las
+cabeceras con las que compila NVRTC, de `ATHENEA_CUDA_RUNTIME` (una carpeta
+con `lib/` e `include/`). Cada fichero es una copia, ninguno un enlace
+simbólico: Blender descomprime una extensión con el `zipfile` de Python, que
+no conserva ninguno. En Windows la carpeta al lado de `hdAthenea.dll`
 tiene cada DLL que carga que no es de Blender ni de Windows (halladas con
 `dumpbin`), los módulos GLSL de Slang y DXC (`ATHENEA_DXC`), y
 `plugin\usd\bin` y `plugin\usd\include` tienen el runtime y las cabeceras

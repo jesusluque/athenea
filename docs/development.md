@@ -393,8 +393,12 @@ commit on each system, from a release preset's build tree:
 | installer | `scripts/installer-macos.sh <folder>` (`.pkg`) | `scripts/installer-linux.sh <folder>` (`.deb`) | `scripts\installer-windows.ps1 <folder>` (`.exe`, Inno Setup 6) |
 | Blender add-on | `scripts/package-blender-addon.sh` from `macos-arm64-blender` | `scripts/package-blender-addon.sh` from `linux-x86_64-blender` (`BLENDER_LIB`) | `scripts\package-blender-addon.ps1` from `windows-x64-blender` (`BLENDER_DIR`) |
 
-On Windows, `ATHENEA_CUDA_RUNTIME` names the CUDA runtime the archive carries:
-a folder with `bin\` and `include\`, such as NVIDIA's redistributable
+`ATHENEA_CUDA_RUNTIME` names the CUDA runtime the archive carries. On Linux it
+is a folder with `lib/` (`libnvrtc.so` among its libraries, the name
+slang-rhi asks for) and `include/`; the package carries both and the engine
+points `CUDA_PATH` at it, as on Windows, and without it the libraries come
+from the build's toolkit with no headers. On Windows it is a folder with
+`bin\` and `include\`, such as NVIDIA's redistributable
 archives of NVRTC, nvJitLink and cudart unpacked together; without it the
 runtime DLLs come from the toolkit the build used, with no headers, and a
 machine without a toolkit cannot open CUDA. `ATHENEA_DXC` names a folder with

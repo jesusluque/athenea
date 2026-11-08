@@ -411,8 +411,12 @@ compilación de un preset release:
 | instalador | `scripts/installer-macos.sh <carpeta>` (`.pkg`) | `scripts/installer-linux.sh <carpeta>` (`.deb`) | `scripts\installer-windows.ps1 <carpeta>` (`.exe`, Inno Setup 6) |
 | add-on de Blender | `scripts/package-blender-addon.sh` desde `macos-arm64-blender` | `scripts/package-blender-addon.sh` desde `linux-x86_64-blender` (`BLENDER_LIB`) | `scripts\package-blender-addon.ps1` desde `windows-x64-blender` (`BLENDER_DIR`) |
 
-En Windows, `ATHENEA_CUDA_RUNTIME` nombra el runtime de CUDA que lleva el
-archivo: una carpeta con `bin\` e `include\`, como los archivos redistribuibles
+`ATHENEA_CUDA_RUNTIME` nombra el runtime de CUDA que lleva el archivo. En
+Linux es una carpeta con `lib/` (`libnvrtc.so` entre sus bibliotecas, el
+nombre que pide slang-rhi) e `include/`; el paquete lleva las dos y el motor
+apunta `CUDA_PATH` a él, como en Windows, y sin ella las bibliotecas salen del
+toolkit del build sin cabeceras. En Windows es una carpeta con `bin\` e
+`include\`, como los archivos redistribuibles
 de NVIDIA de NVRTC, nvJitLink y cudart descomprimidos juntos; sin ella las DLL
 del runtime salen del toolkit que usó la compilación, sin cabeceras, y una
 máquina sin toolkit no puede abrir CUDA. `ATHENEA_DXC` nombra una carpeta con

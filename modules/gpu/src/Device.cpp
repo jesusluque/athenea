@@ -206,7 +206,8 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
     }
 
     // A package that carries CUDA's runtime (NVRTC and its builtins, nvJitLink,
-    // cudart in bin, the headers NVRTC compiles against in include) is where
+    // cudart in bin on Windows and lib on Linux, the headers NVRTC compiles
+    // against in include) is where
     // slang-rhi looks for it: it searches CUDA_PATH and the toolkit's install
     // folder only, so on a machine without the toolkit the package's own copy
     // would not be found, and on one with another toolkit that one's NVRTC
@@ -218,8 +219,15 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
             if (start.empty()) continue;
             const std::filesystem::path root = start.parent_path();
             std::error_code ec;
+            // slang-rhi wants NVRTC by one name: nvrtc64_*.dll in CUDA_PATH's
+            // bin on Windows, a file called libnvrtc.so in its lib on Linux.
+#if defined(_WIN32)
+            const std::filesystem::path nvrtc = root / "bin" / "nvrtc64_120_0.dll";
+#else
+            const std::filesystem::path nvrtc = root / "lib" / "libnvrtc.so";
+#endif
             if (std::filesystem::exists(root / "include" / "cuda_runtime.h", ec) &&
-                std::filesystem::exists(root / "bin" / "nvrtc64_120_0.dll", ec)) {
+                std::filesystem::exists(nvrtc, ec)) {
                 if (platform::env("CUDA_PATH") != root.string()) {
                     platform::setEnv("CUDA_PATH", root.string());
                 }

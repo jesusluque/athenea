@@ -8,8 +8,10 @@
 #   athenea_hydra/*.py, blender_manifest.toml (its `platforms` this system's)
 #   athenea_hydra/plugin/usd/        hdAthenea (with libslang, libzstd and libwebp beside it,
 #                                    named @loader_path and signed ad hoc on macOS, found
-#                                    by an $ORIGIN runpath on Linux, where CUDA's NVRTC,
-#                                    nvJitLink and cudart go beside it too) and the schemas
+#                                    by an $ORIGIN runpath on Linux) and the schemas
+#   athenea_hydra/plugin/usd/lib, include   on Linux, CUDA's NVRTC and the headers it compiles
+#                                    against (ATHENEA_CUDA_RUNTIME), where the engine points
+#                                    CUDA_PATH
 #   athenea_hydra/plugin/materialx/  MaterialX 1.39.5's libraries/
 #   athenea_hydra/plugin/aofx/       the Mesh2Splat, SplatBakeFilter, SplatTransferZonal and Measure bundles
 #   athenea_hydra/shaders/           found by hdAthenea three levels up
@@ -98,31 +100,44 @@ if [[ "$OS" == macos ]]; then
         codesign --force -s - "$library" 2>/dev/null || fail "could not sign $library"
     done
 else
-    # Linux: Slang, and the system's zstd and libwebp (SPZ and SOG), which a
-    # machine may not have, beside hdAthenea; CUDA's runtime too, which
-    # slang-rhi loads by name when it compiles a kernel (NVRTC and its
-    # builtins, nvJitLink) and OIDN's CUDA device links (cudart). Blender's own
-    # libraries (OpenUSD, TBB, OIIO, MaterialX...) are already in the process
-    # by their sonames. Every runpath is $ORIGIN, the build machine's dropped.
+    # Linux: Slang and the system's zstd and libwebp (SPZ and SOG), which a
+    # machine may not have, beside hdAthenea, each under the name it is loaded
+    # by and dereferenced: Blender unpacks an extension with Python's zipfile,
+    # which keeps no symbolic link. Blender's own libraries (OpenUSD, TBB,
+    # OIIO, MaterialX...) are already in the process by their sonames. Every
+    # runpath is $ORIGIN, the build machine's dropped.
     HERE="$ADDON/plugin/usd/hdAthenea"
     command -v patchelf >/dev/null || fail "patchelf is needed on Linux"
-    cp -P "$SLANG_ROOT"/lib/libslang-compiler.so* "$SLANG_ROOT"/lib/libslang-glsl-module-*.so \
-        "$SLANG_ROOT"/lib/libslang-glslang-*.so "$HERE/"
+    carry_so() {   # carry_so <file> [name]: copied whole under its soname, or the name given
+        local name="${2:-$(patchelf --print-soname "$1" 2>/dev/null)}"
+        [[ -n "$name" ]] || name="$(basename "$1")"
+        cp -L "$1" "$3/$name"
+    }
+    for library in "$SLANG_ROOT"/lib/libslang-compiler.so.0.* "$SLANG_ROOT"/lib/libslang-glsl-module-*.so \
+                   "$SLANG_ROOT"/lib/libslang-glslang-*.so; do
+        [[ -f "$library" ]] && carry_so "$library" "" "$HERE"
+    done
     for name in libzstd.so.1 libwebp.so.7 libsharpyuv.so.0; do
         found="$(ldd "$PLUGIN" | awk -v n="$name" '$1 == n {print $3}')"
         [[ -n "$found" && -f "$found" ]] || fail "hdAthenea does not load $name from a file here"
-        cp -L "$found" "$HERE/$name"
+        carry_so "$found" "$name" "$HERE"
     done
-    CUDA_ROOT="${ATHENEA_CUDA_ROOT:-}"
-    if [[ -z "$CUDA_ROOT" ]]; then
-        nvcc="$(sed -n 's/^CMAKE_CUDA_COMPILER:[A-Z]*=//p' "$BUILD/CMakeCache.txt" | head -1)"
-        [[ -n "$nvcc" ]] && CUDA_ROOT="$(dirname "$(dirname "$nvcc")")"
-    fi
-    [[ -d "$CUDA_ROOT/lib64" ]] || fail "no CUDA toolkit to carry the runtime from (ATHENEA_CUDA_ROOT)"
-    for pattern in 'libnvrtc.so*' 'libnvrtc-builtins.so*' 'libnvJitLink.so*' 'libcudart.so*'; do
-        find "$CUDA_ROOT/lib64/" -maxdepth 1 -name "$pattern" -exec cp -P {} "$HERE/" \;
+    # CUDA's runtime where the engine looks for a package's own (plugin/usd/lib
+    # and plugin/usd/include, beside hdAthenea's folder), as on Windows:
+    # ATHENEA_CUDA_RUNTIME names a folder with lib/ and include/. NVRTC goes in
+    # as libnvrtc.so, the one name slang-rhi asks for; its builtins and
+    # nvJitLink under the sonames NVRTC loads them by.
+    CUDA_RT="${ATHENEA_CUDA_RUNTIME:-}"
+    [[ -e "$CUDA_RT/lib/libnvrtc.so" && -f "$CUDA_RT/include/cuda_runtime.h" ]] ||
+        fail "ATHENEA_CUDA_RUNTIME must name a folder with lib/libnvrtc.so and include/cuda_runtime.h"
+    CUDA_LIB="$ADDON/plugin/usd/lib"
+    mkdir -p "$CUDA_LIB" "$ADDON/plugin/usd/include"
+    carry_so "$CUDA_RT/lib/libnvrtc.so" libnvrtc.so "$CUDA_LIB"
+    for library in "$CUDA_RT"/lib/libnvrtc-builtins.so.*.*.* "$CUDA_RT"/lib/libnvJitLink.so.*.*.*; do
+        [[ -f "$library" ]] && carry_so "$library" "" "$CUDA_LIB"
     done
-    find "$HERE" -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) | while read -r library; do
+    cp -RL "$CUDA_RT/include/." "$ADDON/plugin/usd/include/"
+    find "$HERE" "$CUDA_LIB" -maxdepth 1 -type f -name '*.so*' | while read -r library; do
         chmod u+w "$library"
         patchelf --set-rpath '$ORIGIN' "$library" 2>/dev/null || true
     done
@@ -130,6 +145,7 @@ else
     find "$ADDON/plugin/aofx" -type f -name '*.aofx' | while read -r bundle; do
         patchelf --set-rpath '$ORIGIN/../../../../usd/hdAthenea' "$bundle"
     done
+    if find "$ADDON" -type l | grep -q .; then fail "a symbolic link in the add-on: $(find "$ADDON" -type l | head -1)"; fi
 fi
 
 # --- licences ---------------------------------------------------------------------
@@ -156,7 +172,7 @@ if [[ "$OS" == macos ]]; then
 else
     licence zstd /usr/share/doc/libzstd1/copyright
     licence libwebp /usr/share/doc/libwebp7/copyright
-    licence cuda "$CUDA_ROOT/EULA.txt"
+    licence cuda "$(ls "$CUDA_RT"/LICENSE "$CUDA_RT"/EULA.txt 2>/dev/null | head -1)"
 fi
 if [[ -d "$ADDON/shaders/nanovdb" ]]; then
     licence openvdb "$OPENVDB_SRC/LICENSE"
@@ -174,6 +190,22 @@ licence oidn "$OIDN_DOC/LICENSE.txt" "$OIDN_DOC/third-party-programs.txt" \
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ADDON/blender_manifest.toml")"
 ZIP="$OUT/athenea_hydra-$VERSION-$PLATFORM.zip"
 rm -f "$ZIP"
-(cd "$ADDON" && zip -qry "$ZIP" .)
+if command -v zip >/dev/null; then
+    (cd "$ADDON" && zip -qry "$ZIP" .)
+else
+    python3 - "$ADDON" "$ZIP" <<'PY'
+import os, sys, zipfile
+root, out = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for here, dirs, files in os.walk(root):
+        dirs.sort()
+        for name in sorted(files):
+            path = os.path.join(here, name)
+            info = zipfile.ZipInfo.from_file(path, os.path.relpath(path, root))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            with open(path, "rb") as f:
+                z.writestr(info, f.read())
+PY
+fi
 echo "$ADDON"
 echo "$ZIP"

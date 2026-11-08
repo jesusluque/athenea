@@ -20029,3 +20029,25 @@ parallel); more than one reflection inside the glass; a bounce off a met coat or
 prim a run; a test in the suite (the checks above were run by hand); a
 ComputeBvh route for devices with no ray queries.
 
+
+## The release on three systems, and CUDA from the package on Linux (8 Nov)
+
+0.5.0 is the first release whose Blender add-on is packaged for macOS, Linux
+and Windows, one zip a system whose manifest names that platform alone
+(`package-blender-addon.sh` on macOS and Linux, `.ps1` on Windows).
+
+- **CUDA on Linux without a toolkit.** slang-rhi looks for NVRTC under
+  `CUDA_PATH`, `/usr/local/cuda*` and `/usr/lib/x86_64-linux-gnu` only, as a
+  file called `libnvrtc.so`. The Linux archive carried NVRTC in its `lib/` but
+  nothing pointed there, so a machine with the driver alone could not open
+  CUDA (0.3.0 had the same gap). The engine now points `CUDA_PATH` at a
+  package root whose `lib/libnvrtc.so` and `include/cuda_runtime.h` exist, as
+  it did on Windows for `bin\nvrtc64_120_0.dll`; `ATHENEA_CUDA_RUNTIME` gives
+  `package.sh` that `lib/` and `include/`.
+- **No symbolic links in the add-on.** Blender unpacks an extension with
+  Python's `zipfile`, which writes a link as a small file holding its target.
+  On Linux every library goes in as a copy under the name it is loaded by
+  (its soname, or `libnvrtc.so`), and the script stops on a link.
+- **The Windows add-on** carries what `dumpbin /dependents` finds hdAthenea
+  loading that is neither in Blender's `blender.shared` nor in `System32`,
+  Slang's GLSL modules, DXC, and CUDA's runtime and headers in `plugin\usd`.

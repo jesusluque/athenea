@@ -1894,10 +1894,13 @@ with nothing set. Beside athenea's `LICENSE`, `NOTICE` and
 MaterialX 1.39.5, zstd, libwebp, OpenVDB when the shaders hold `PNanoVDB.h`)
 and of what it is compiled against but leaves to Blender (OpenUSD, oneTBB,
 OpenColorIO, OIDN). The script stops if one is missing.
-On Linux the libraries beside hdAthenea (Slang, zstd, libwebp, and CUDA's
-NVRTC, nvJitLink and cudart, from the build's toolkit or
-`ATHENEA_CUDA_ROOT`) are found through an `$ORIGIN` runpath; Blender's own
-are already in the process. On Windows the folder beside `hdAthenea.dll`
+On Linux the libraries beside hdAthenea (Slang, zstd, libwebp) are found
+through an `$ORIGIN` runpath, and Blender's own are already in the process;
+`plugin/usd/lib` and `plugin/usd/include` hold CUDA's NVRTC (as
+`libnvrtc.so`, the name slang-rhi asks for), its builtins, nvJitLink and the
+headers NVRTC compiles against, from `ATHENEA_CUDA_RUNTIME` (a folder with
+`lib/` and `include/`). Every file is a copy, none a symbolic link: Blender
+unpacks an extension with Python's `zipfile`, which keeps none. On Windows the folder beside `hdAthenea.dll`
 holds every DLL it loads that is neither Blender's nor Windows' (found with
 `dumpbin`), Slang's GLSL modules and DXC (`ATHENEA_DXC`), and
 `plugin\usd\bin` and `plugin\usd\include` hold CUDA's runtime and headers

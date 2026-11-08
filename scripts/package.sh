@@ -61,8 +61,19 @@ copy_libs "$slang/lib"
 # CUDA's redistributable runtime on Linux, which slang-rhi loads by name when it
 # compiles a kernel (NVRTC and its builtins, nvJitLink) and OIDN's CUDA device
 # links (cudart): from the toolkit the build used. The driver is the machine's.
+# ATHENEA_CUDA_RUNTIME, as on Windows, names a folder with lib/ (those
+# libraries, libnvrtc.so among them: slang-rhi asks for it by that name) and
+# include/ (the headers NVRTC compiles against): with it the package carries
+# both, and the engine points CUDA_PATH at the package, so CUDA opens on a
+# machine with the driver alone.
 cuda=""
-if [ "$os" = linux ]; then
+if [ "$os" = linux ] && [ -n "${ATHENEA_CUDA_RUNTIME:-}" ]; then
+    cuda="$ATHENEA_CUDA_RUNTIME"
+    [ -e "$cuda/lib/libnvrtc.so" ] && [ -f "$cuda/include/cuda_runtime.h" ] ||
+        { echo "package.sh: ATHENEA_CUDA_RUNTIME needs lib/libnvrtc.so and include/cuda_runtime.h" >&2; exit 1; }
+    cp -P "$cuda"/lib/*.so* "$pkg/lib/"
+    mkdir -p "$pkg/include" && cp -R "$cuda/include/." "$pkg/include/"
+elif [ "$os" = linux ]; then
     nvcc=$(value CMAKE_CUDA_COMPILER)
     if [ -n "$nvcc" ]; then
         cuda=$(dirname "$(dirname "$nvcc")")
@@ -80,7 +91,7 @@ lic OpenUSD.txt "$usd/LICENSE.txt"
 for f in "$slang/LICENSE" "$slang/LICENSE.txt" "$slang/LICENSES/"*; do lic "Slang-$(basename "$f")" "$f"; done
 lic OpenColorIO.txt "$ocio/share/doc/OpenColorIO/LICENSE"
 lic OIDN.txt "$oidn/share/doc/OpenImageDenoise/LICENSE.txt"
-[ -n "$cuda" ] && lic CUDA-EULA.txt "$cuda/EULA.txt"
+[ -n "$cuda" ] && { lic CUDA-EULA.txt "$cuda/EULA.txt"; lic CUDA-LICENSE.txt "$cuda/LICENSE"; }
 
 # Library paths relative to each binary.
 if [ "$os" = macos ]; then

@@ -29,6 +29,9 @@ merged work; a patch version fixes what a minor one shipped.
   the disc's short axis is not the surface's (no more dark freckles).
 - **Levels of detail**: a merged level's f16 transfer is held within the
   range it averages.
+- **Packages**: the Blender add-on for macOS, Linux and Windows, one zip a
+  system. On Linux the archive and the add-on open CUDA with the driver alone:
+  they carry NVRTC and its headers and the engine points `CUDA_PATH` at them.
 
 ## 0.4.1 — 2026-11-08
 
