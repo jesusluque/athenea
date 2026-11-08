@@ -61,6 +61,12 @@ its `CUDA_PATH` is set aside for the process: the package's runtime is the one
 it was tested with, and NVRTC from one version with the builtins of another
 does not open a device.
 
+A path traced frame or a bake on CUDA also compiles against OptiX's headers,
+which NVIDIA's licence does not let the package carry. A machine fetches them
+itself (`include\` of github.com/NVIDIA/optix-dev, tag `v9.0.0`) into the
+package's `include\`, or names them with `ATHENEA_OPTIX_INCLUDE`. Without them
+a ray tracing pipeline fails with `Failed to locate OptiX headers (optix.h)`.
+
 ### 1.2 The runtime environment
 
 | Variable | What it does |

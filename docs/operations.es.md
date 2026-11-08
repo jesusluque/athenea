@@ -61,6 +61,13 @@ uno instalado, su `CUDA_PATH` se deja de lado para el proceso: el runtime del
 paquete es con el que se probó, y NVRTC de una versión con los builtins de
 otra no abre un dispositivo.
 
+Un frame trazado por caminos o un horneado en CUDA compila además contra las
+cabeceras de OptiX, que la licencia de NVIDIA no deja llevar al paquete. Una
+máquina las descarga ella misma (`include\` de github.com/NVIDIA/optix-dev, tag
+`v9.0.0`) en el `include\` del paquete, o las nombra con
+`ATHENEA_OPTIX_INCLUDE`. Sin ellas un pipeline de trazado de rayos falla con
+`Failed to locate OptiX headers (optix.h)`.
+
 ### 1.2 El entorno de ejecución
 
 | Variable | Qué hace |

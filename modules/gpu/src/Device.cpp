@@ -212,6 +212,7 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
     // would not be found, and on one with another toolkit that one's NVRTC
     // would be paired with this package's builtins. The package's runtime is
     // the one it was tested with, so it wins.
+    std::filesystem::path packageRoot;
     if (std::find(order.begin(), order.end(), Backend::CUDA) != order.end()) {
         for (const std::filesystem::path& start : {platform::moduleDir(), platform::executableDir()}) {
             if (start.empty()) continue;
@@ -222,6 +223,7 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
                 if (platform::env("CUDA_PATH") != root.string()) {
                     platform::setEnv("CUDA_PATH", root.string());
                 }
+                packageRoot = root;
                 break;
             }
         }
@@ -285,12 +287,20 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
         // includes <optix.h>. Slang looks for an installed OptiX SDK and
         // there is none here, so nvrtc is handed the headers slang-rhi
         // fetched at build time (ATHENEA_OPTIX_INCLUDE_DIR), or whatever
-        // ATHENEA_OPTIX_INCLUDE says. Without it every ray tracing pipeline on
-        // CUDA fails with "Failed to locate OptiX headers".
+        // ATHENEA_OPTIX_INCLUDE says, or those an installer put in the
+        // package's include folder (NVIDIA's licence does not let a package
+        // carry them, so a machine fetches them itself). Without them every
+        // ray tracing pipeline on CUDA fails with "Failed to locate OptiX
+        // headers".
         std::vector<std::string> cudaArgs;
         std::vector<slang::CompilerOptionEntry> cudaEntries;
         if (backend == Backend::CUDA) {
             std::string include = platform::env("ATHENEA_OPTIX_INCLUDE");
+            std::error_code ec;
+            if (include.empty() && !packageRoot.empty() &&
+                std::filesystem::exists(packageRoot / "include" / "optix.h", ec)) {
+                include = (packageRoot / "include").string();
+            }
 #if defined(ATHENEA_OPTIX_INCLUDE_DIR)
             if (include.empty()) {
                 include = ATHENEA_OPTIX_INCLUDE_DIR;
