@@ -19858,6 +19858,14 @@ record dropped on loading keeps zeros and the arrays have the file's length.
   scene. Rendered by the raster from the test camera under the studio dome,
   the two clouds differ by relMSE 0.025, SSIM 0.974, the mean within 1 %;
   what differs is the ball's lower half and its rim.
+  Settled (8 Nov): the floor (`tests/data/tx/ground.usda`) has no material,
+  only `displayColor` 0.45 0.40 0.35, which the path tracer shades and
+  mesh2splat's bake bounces off; mesh2splat converted it white, the albedo of
+  no material, so the field traced over the gaussians read a white floor.
+  An unbound mesh now converts as the renderer draws it (its one
+  `displayColor`, else 0.18). On the ball's 2 490 gaussians facing down, the
+  reflected field's first coefficient: mesh2splat 0.864, splat-transfer 1.675
+  before and 0.734 after; the 15% left is the path tracer's further bounces.
 - With the rays started a quarter of a sigma off the surface, they grazed the
   ground's neighbouring gaussians, and its field read the bright ground at
   the horizon (0.28 median against mesh2splat's 0.08 from a sigma off). One

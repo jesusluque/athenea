@@ -1413,6 +1413,11 @@ no hace es iluminar nada: los triángulos emisivos de la malla son una luz para
 el path tracer, las gaussianas de la nube no. Una capa de coat de OpenPBR sobre
 la emisión, que en la malla la tiñe y la atenúa, no se lleva.
 
+**Una malla sin material** se convierte como la dibuja el render: su
+`displayColor` donde tiene un solo color, si no el gris de Hydra (0,18), con
+los valores por defecto del dieléctrico simple (roughness 0,5, sin metal). Un
+color por vértice no se lee; se queda el gris.
+
 **Lo que pone sobre su base.** Lo que un material pone sobre su color, su
 metalness y su roughness se lleva como constantes del material: el peso y el
 tinte del reflejo dieléctrico (`specular_weight` y `specular_color` de

@@ -322,6 +322,18 @@ void warnOnce(const std::string& material, const std::string& topic, std::format
     const UsdShadeMaterialBindingAPI binding(prim);
     const UsdShadeMaterial material = binding.ComputeBoundMaterial();
     if (!material) {
+        // NO MATERIAL: the mesh is what the renderer draws it as -- its
+        // displayColor where it has one colour, else Hydra's grey (PrimData's
+        // displayColor). White, as this once returned, made a converted
+        // floor of displayColor 0.4 reflect as 1 in a TX bake traced over the
+        // gaussians, against 0.4 in the path tracer's bake of the mesh. A
+        // colour a vertex is not averaged here; the grey stands.
+        out.baseColour = {0.18F, 0.18F, 0.18F};
+        const UsdGeomPrimvar display = UsdGeomPrimvarsAPI(prim).GetPrimvar(UsdGeomTokens->primvarsDisplayColor);
+        VtVec3fArray colours;
+        if (display && display.ComputeFlattened(&colours) && colours.size() == 1) {
+            out.baseColour = {colours[0][0], colours[0][1], colours[0][2]};
+        }
         return out;
     }
     out.path = material.GetPath().GetString();

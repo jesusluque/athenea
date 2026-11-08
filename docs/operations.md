@@ -1373,6 +1373,11 @@ does not do is light anything: the mesh's emissive triangles are a light for
 the path tracer, the cloud's gaussians are not. An OpenPBR coat over the
 emission, which tints and dims it on the mesh, is not carried.
 
+**A mesh with no material** is converted as the renderer draws it: its
+`displayColor` where it has one colour, else Hydra's grey (0.18), with the
+plain dielectric's defaults (roughness 0.5, no metal). A colour a vertex is
+not read; the grey stands.
+
 **What it layers over its base.** What a material puts over its colour,
 metalness and roughness is carried as constants of the material: the
 dielectric reflection's weight and tint (OpenPBR `specular_weight` and
