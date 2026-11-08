@@ -45,7 +45,17 @@ Result<Buffer> Buffer::create(Device& device, const BufferDesc& desc, const void
     }
     ATHENEA_TRY(device.admit(desc.bytes, std::format("buffer '{}'", desc.label)));
     Buffer buffer;
-    const rhi::BufferDesc rhiDesc = toRhi(desc);
+    rhi::BufferDesc rhiDesc = toRhi(desc);
+    // A DEVICE BUFFER HOLDS AT LEAST 256 BYTES. A view is the buffer's size
+    // over the stride its binding declares, and a four-byte placeholder bound
+    // where a kernel reads 160-byte records is a view of none: D3D12 refuses
+    // it and removes the device. What the engine sees (`bytes`) is still what
+    // it asked for.
+    constexpr uint64_t kLeastDeviceBytes = 256;
+    const bool padded = desc.memory == Memory::Device && rhiDesc.size < kLeastDeviceBytes;
+    if (padded) {
+        rhiDesc.size = kLeastDeviceBytes;
+    }
     // DATA FOR A DEVICE BUFFER GOES ON THE QUEUE where the backend's own
     // copy would wait for it: slang-rhi's CUDA device copies with a
     // synchronous cuMemcpy, which waits for everything the queue's stream
@@ -56,8 +66,10 @@ Result<Buffer> Buffer::create(Device& device, const BufferDesc& desc, const void
     // load uploads -- a mesh's pools, a cloud, tens of megabytes -- keeps the
     // direct copy rather than a staging copy as large.
     constexpr uint64_t kQueuedBytes = uint64_t{16} << 20;
-    const bool queued = initial != nullptr && device.backend() != Backend::Metal && desc.memory == Memory::Device &&
-                        desc.bytes <= kQueuedBytes;
+    // A padded buffer takes its data this way too: made with it, it would be
+    // read past what the caller handed over.
+    const bool queued = initial != nullptr && desc.memory == Memory::Device &&
+                        (padded || (device.backend() != Backend::Metal && desc.bytes <= kQueuedBytes));
     if (initial != nullptr && !queued && device.backend() != Backend::Metal) {
         device.noteSync("buffer data", where);
     }

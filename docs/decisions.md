@@ -4402,7 +4402,14 @@ one at a time when one look at the emitted kernel would have said why.
   was right by not looking. `traceShadows` now walks such a sample past the
   pixel's own instance, anything else still blocking: the glass ball
   rasterised is CUDA's on Metal and on D3D12 (mean error 8.6e-5, against
-  0.14). No denoiser on D3D12 (OIDN has no D3D12 device). Vulkan (RTX 3070,
+  0.14). The splat rasteriser removed the D3D12 device: a placeholder of 4
+  bytes bound where a kernel reads records of 160 is a view of no element,
+  which D3D12 refuses. A device buffer is now allocated at least 256 bytes
+  (the engine still sees the size it asked for, and data handed to a padded
+  buffer is uploaded at that size), and the flatten's placeholder for the
+  records it writes is kept apart from the one it reads; the tile rasteriser
+  then matches the GPU reference on D3D12, debug layer on.
+  No denoiser on D3D12 (OIDN has no D3D12 device). Vulkan (RTX 3070,
   native Windows) compiled it in 94 s, passed every `technique` test and the
   bakes. It cannot run `mesh2splat`, though: gpe, which runs its AOFX kernels,
   has no Vulkan backend.

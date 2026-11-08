@@ -138,6 +138,11 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     auto emptyFlat = buffer(*r.device_, 1, 4, "splat.flatten.empty");
     if (!emptyFlat) return std::move(emptyFlat).error();
     r.emptyFlat_ = *emptyFlat;
+    // The records are written: D3D12 will not bind one buffer as both a
+    // read view and a write view in a dispatch, so they take their own.
+    auto emptyFlatOut = buffer(*r.device_, 1, 4, "splat.flatten.noRecords");
+    if (!emptyFlatOut) return std::move(emptyFlatOut).error();
+    r.emptyFlatOut_ = *emptyFlatOut;
     // A relit splat's shadow ray is traced inline, which not every device can.
     r.shadowsSupported_ = r.device_->caps().rayQuery && r.device_->caps().accelerationStructure;
     if (r.shadowsSupported_) {
@@ -710,7 +715,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             rhi::ShaderCursor flatten = cursor["flatten"];
             flatten["basisRows"].setBinding(flattening ? settings.flatten->basis->rhi() : emptyFlat_.rhi());
             flatten["floorCandidate"].setBinding(flattening ? settings.flatten->floor->rhi() : emptyFlat_.rhi());
-            flatten["records"].setBinding(flattening ? flatOut->rhi() : emptyFlat_.rhi());
+            flatten["records"].setBinding(flattening ? flatOut->rhi() : emptyFlatOut_.rhi());
             if (flattening) {
                 const FlattenSettings& f = settings.flatten->settings;
                 rhi::ShaderCursor p = flatten["params"];

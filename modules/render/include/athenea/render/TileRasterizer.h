@@ -416,6 +416,7 @@ private:
     gpu::ComputeKernel flatten_;
     gpu::ComputeKernel flattenCatcher_;
     gpu::Buffer        emptyFlat_;   ///< bound where a frame flattens nothing
+    gpu::Buffer        emptyFlatOut_; ///< the records slot where a frame flattens nothing
     bool               flattenMade_ = false;
     struct TxCache {
         gpu::Buffer buffer;
