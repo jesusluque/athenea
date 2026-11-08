@@ -33,6 +33,7 @@ struct ViewOptions {
     uint32_t              frames = 0;               ///< stop after this many; 0, when the window closes
     uint32_t              lightSamples = 1;         ///< samples per light per pixel
     bool                  chooseLights = false;     ///< one light a sample, by power
+    uint32_t              meshAntialias = 4;        ///< athenea:meshAntialias: 0, 4, 8 or 16
     /// The path traced technique. A window keeps gathering paths while the
     /// camera is still and starts again when it moves; `pathTotal` is when
     /// the frame counts as converged, which is when a denoise runs.

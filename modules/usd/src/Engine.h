@@ -934,7 +934,7 @@ private:
     std::atomic<bool>                         glassShadows_{true};
     std::atomic<bool>                         domeVisible_{true};
     std::atomic<bool>                         screenSpaceReflections_{false};
-    std::atomic<uint32_t>                     meshAntialias_{4};
+    std::atomic<uint32_t>                     meshAntialias_{0};
     std::atomic<bool>                         transferIndirect_{true};
     std::atomic<bool>                         displayBlend_{false};
     render::SplatFlatten*                     flattenRequest_ = nullptr;

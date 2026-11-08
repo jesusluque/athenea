@@ -572,6 +572,7 @@ Result<ViewStats> runViewer(const ViewOptions& options) {
     ATHENEA_TRY(stage.setMeshVisibility(kVisibility[static_cast<size_t>(visibility)].value));
     stage.setLightSamples(options.lightSamples);
     stage.setChooseLights(options.chooseLights);
+    stage.setMeshAntialias(options.meshAntialias);
     int pathSamples = static_cast<int>(std::max(options.pathSamples, 1u));
     int pathBounces = static_cast<int>(options.pathBounces);
     int pathTotal = static_cast<int>(std::max(options.pathTotal, 1u));

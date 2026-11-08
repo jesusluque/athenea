@@ -22,6 +22,10 @@ void addView(CLI::App& app) {
     cmd->add_option("--frames", options->frames, "close after this many frames and print their timings");
     cmd->add_option("--light-samples", options->lightSamples, "samples per light per pixel (1 is interactive)");
     cmd->add_flag("--choose-lights", options->chooseLights, "one light a sample, chosen by power");
+    cmd->add_option("--mesh-antialias", options->meshAntialias,
+                    "raster: the meshes' edges resolved from this many samples a pixel, 4, 8 or 16; 0 draws "
+                    "one sample a pixel (athenea:meshAntialias)")
+        ->check(CLI::IsMember(std::vector<uint32_t>{0, 4, 8, 16}));
     cmd->add_option("--path-samples", options->pathSamples, "rt: paths a pixel each frame");
     cmd->add_option("--path-bounces", options->pathBounces, "rt: bounces after the first hit");
     cmd->add_option("--path-total", options->pathTotal, "rt: paths a pixel at which the frame counts as converged (and is denoised)");

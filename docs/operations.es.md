@@ -462,6 +462,7 @@ están en §5.
 | `--frames` | entero | `0` | cierra tras tantos frames e imprime sus tiempos; 0 corre hasta que se cierre la ventana |
 | `--light-samples` | entero | `1` | 1 es interactivo |
 | `--choose-lights` | flag | apagado | una luz por muestra, elegida por potencia |
+| `--mesh-antialias` | `0`, `4`, `8`, `16` | `4` | raster: `athenea:meshAntialias`, muestras por píxel de las que se resuelven los bordes de las mallas; 0 es una muestra por píxel |
 | `--path-samples` | entero | `1` | rt: caminos por píxel y frame |
 | `--path-bounces` | entero | `4` | atravesar un vidrio no es un rebote, hasta 8 por camino |
 | `--path-total` | entero | `64` | dónde el frame cuenta como convergido, y se denoisea |
@@ -2095,7 +2096,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:meshLightSamples` | int | `0` | raster: 0 ilumina las mallas por las luces de malla en forma cerrada; de 1 a 64, por tantas muestras por píxel a través de su árbol, cada una con un rayo de sombra (§4.3, *Luces de malla*) |
 | `athenea:domeVisible` | bool | `true` | toda técnica: se dibuja un dome detrás del frame; apagado, los píxeles que nada cubre quedan transparentes (alfa 0), como pide la película transparente de un host, y el dome sigue iluminando el frame |
 | `athenea:screenSpaceReflections` | bool | `false` | raster: las mallas que reflejan muestran lo que tienen las mallas del frame a lo largo de su reflejo (§4.3, *Reflejos en espacio de pantalla*) |
-| `athenea:meshAntialias` | int | `4` | raster: los bordes de las mallas se resuelven de 4, 8 o 16 muestras por píxel, un número intermedio redondeado hacia arriba; 0 y 1 dibujan una muestra por píxel (§4.3, *Bordes de malla antialiasados*) |
+| `athenea:meshAntialias` | int | `0` | raster: los bordes de las mallas se resuelven de 4, 8 o 16 muestras por píxel, un número intermedio redondeado hacia arriba; 0 y 1 dibujan una muestra por píxel (§4.3, *Bordes de malla antialiasados*) |
 | `athenea:splatView` | int | `0` | el raster: un parámetro de las gaussianas dibujado en lugar de su luz, mezclado por su opacidad -- 1 albedo, 2 roughness (la que lee el especular), 3 metallic, 4 transmission, 5 ior (`ior - 1`, un gris), 6 normal (del mundo, `n / 2 + 1/2`), 7 opacidad, 8 tamaño (el eje mayor, una rampa de azul a 10 µm a rojo a 10 cm, una década cada cuarto), 9 visibilidad del cielo (el cielo visto por el transfer ponderado por el coseno, 1 sin nada delante), 10 rebote (la mitad indirecta bajo un cielo blanco), 11 celdas abiertas (la fracción de direcciones de un transfer TX que salen de la escena), 12 emisión, 13 campo reflejado (su media bajo un cielo blanco), 14 la luz que lleva la nube, 15 la roughness propia del material (0 donde no la lleva); una nube que no se reilumina muestra su luz, su opacidad y su tamaño y nada más. 0 dibuja la luz |
 | `athenea:glassShadows` | bool | `true` | rt y sus bakes: el rayo de sombra de una luz sigue a través de hasta 4 caras de vidrio cuya transmisión es una delta (una pared fina; un sólido de rugosidad especular constante por debajo de 0.03), teñido por cada una; apagado, el vidrio lo detiene |
 | `athenea:denoise` | bool | `false` | denoise al terminar de reunir |
@@ -2637,7 +2638,9 @@ pasado el borde del frame se desvanece, y los splats no se reflejan. Sólo en
 la ruta de raster.
 
 **Bordes de malla antialiasados** (`athenea:meshAntialias`, un render
-setting, 4 por defecto, 0 apagado; `StageRenderer::setMeshAntialias`;
+setting, 0 -- apagado -- salvo que lo ponga un host; `athenea stage`, `athenea
+view` y el add-on de Blender ponen 4, porque los AOV y los grupos de luz siguen
+con una muestra por píxel y solo así suman la beauty en un borde; `StageRenderer::setMeshAntialias`;
 `athenea stage --mesh-antialias`): la capa de mallas se sigue viendo y
 sombreando con una muestra por píxel, y después un píxel junto al que se vio
 otro triángulo se resuelve de 4, 8 o 16 submuestras (las posiciones

@@ -29,8 +29,10 @@ merged work; a patch version fixes what a minor one shipped.
   the disc's short axis is not the surface's (no more dark freckles).
 - **Levels of detail**: a merged level's f16 transfer is held within the
   range it averages.
-- **Mesh edges antialiased by default**: `athenea:meshAntialias` and
-  `athenea stage --mesh-antialias` are 4 unless set (0 draws one sample).
+- **Mesh edges antialiased by default** where a person looks: `athenea stage`
+  and `athenea view` (`--mesh-antialias`, 4) and the Blender add-on. The render
+  setting `athenea:meshAntialias` stays 0 unless a host sets it, since the AOVs
+  and light groups stay one sample a pixel and only then sum to the beauty.
 - **Blender**: the render panel holds every setting the delegate declares,
   in subpanels (Raster, Path Tracing, Gaussians, Cloud Shadows, Volumes,
   Advanced); the viewport takes the raster's, *Mesh antialias* among them; a path traced F12 gathers the paths it is asked
