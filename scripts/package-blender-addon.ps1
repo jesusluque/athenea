@@ -80,19 +80,26 @@ foreach ($bundle in "Mesh2Splat", "SplatBakeFilter", "SplatTransferZonal", "Meas
 $here = Join-Path $addon "plugin\usd\hdAthenea"
 $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
 if (-not $dumpbin) { Fail "dumpbin is needed (run scripts\msvc-env.ps1 first)" }
-$searched = @("$slang\bin", (Split-Path $plugin -Parent), (CacheValue "ATHENEA_USD_ROOT") + "\bin",
-              "D:\tools\usd-26.08-mx\bin", (CacheValue "ATHENEA_OCIO_ROOT") + "\bin") | Where-Object { $_ -and (Test-Path $_) }
+# (Each path built on its own line: in an array, a comma binds before a +.)
+$usdBin = (CacheValue "ATHENEA_USD_ROOT") + "\bin"
+$ocioBin = (CacheValue "ATHENEA_OCIO_ROOT") + "\bin"
+$searched = @("$slang\bin", (Split-Path $plugin -Parent), $usdBin, "D:\tools\usd-26.08-mx\bin", $ocioBin) |
+    Where-Object { $_ -and (Test-Path $_) }
 $queue = New-Object System.Collections.Generic.Queue[string]
 $queue.Enqueue($plugin)
 $seen = @{}
 while ($queue.Count -gt 0) {
     $file = $queue.Dequeue()
-    $names = & dumpbin /nologo /dependents $file | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '\.dll$' }
+    # dumpbin lists each dependency alone on its line; its header names the file
+    # dumped, with spaces, and is not one.
+    $names = & dumpbin /nologo /dependents $file | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^[^\s]+\.dll$' }
     foreach ($name in $names) {
         $key = $name.ToLower()
         if ($seen.ContainsKey($key)) { continue }
         $seen[$key] = $true
+        # Blender's: in blender.shared, or beside blender.exe (python313.dll).
         if (Test-Path (Join-Path $blenderShared $name)) { continue }
+        if (Test-Path (Join-Path (Split-Path $blenderShared -Parent) $name)) { continue }
         if (Test-Path (Join-Path $env:SystemRoot "System32\$name")) { continue }
         if ($key -match '^(api-ms-|ext-ms-|vcruntime|msvcp|ucrtbase|nvcuda)') { continue }
         $found = $searched | ForEach-Object { Join-Path $_ $name } | Where-Object { Test-Path $_ } | Select-Object -First 1
@@ -139,6 +146,10 @@ Licence dxc $dxcLicence
 $cudaLicence = @("$cudaRuntime\LICENSE", "$cudaRuntime\EULA.txt") | Where-Object { Test-Path $_ }
 if (-not $cudaLicence) { Fail "no CUDA licence (LICENSE or EULA.txt) in $cudaRuntime" }
 Licence cuda $cudaLicence
+if (Test-Path (Join-Path $here "z.dll")) {
+    $zlib = Get-ChildItem "D:\tools\usd-26.08-mx\src" -Directory -Filter "zlib-*" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($zlib) { Licence zlib @("$($zlib.FullName)\LICENSE") } else { Fail "z.dll is carried and no zlib source gives its licence" }
+}
 if (Test-Path (Join-Path $addon "shaders\nanovdb")) {
     $vdb = Get-ChildItem "D:\tools\usd-26.08-mx\src" -Directory -Filter "openvdb-*" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($vdb) { Licence openvdb @("$($vdb.FullName)\LICENSE") } else { Fail "no OpenVDB source for its licence" }
