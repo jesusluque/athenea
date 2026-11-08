@@ -1864,7 +1864,18 @@ public float3 splatShadingNormal(float3x3 rotation, float3 scale, float3 positio
         return disc;
     }
     const float3 n = unpackNormal(stored);
-    return dot(n, disc) < 0.0 ? -n : n;
+    // The disc says which side only where it is the surface's: a gaussian
+    // that is not flat has no short axis to speak of, and one picked across
+    // the surface put the stored normal on a side by chance -- the relief
+    // faced into the skin on one splat in twenty-five of a head splat2mesh
+    // made (`shortest/middle` 0.98 at the median), each a bright freckle in
+    // raster and traced alike, smoothed normals or not. Where the two
+    // disagree by more than sixty degrees the eye decides.
+    const float along = dot(n, disc);
+    if (abs(along) >= 0.5) {
+        return along < 0.0 ? -n : n;
+    }
+    return dot(n, eye - position) < 0.0 ? -n : n;
 }
 
 /// A point of the cloud in the world, by the rows a caller passes.

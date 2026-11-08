@@ -10367,6 +10367,20 @@ Not done: a capture has no normal and keeps its axis. `CloudLoader::records`
 (a cloud on the device back into records) does not unpack normals, so a
 splat file decimated without a stage keeps none -- a splat file never has
 them. The merged levels carry the normal but still no PBR channels.
+**Which side the stored normal is on (8 Nov).** A splat is two-sided, and
+`splatShadingNormal` put the stored normal on the side of the disc's short axis
+that faces the eye. A gaussian that is not flat has no short axis to speak of:
+on a head splat2mesh made from a capture (1 027 752 gaussians, shortest over
+middle scale 0.98 at the median) the axis picked lay across the surface for 8%
+of them, and the sign of `dot(n, disc)` put about half of those facing into the
+skin -- bright freckles fixed in place, the same in raster and traced at any
+sample count, with the normals smoothed (128 neighbours) or not, and more with
+none stored. The disc now decides only where it agrees with the stored normal
+within sixty degrees; elsewhere the eye does (the stored normal turned towards
+it). Under the photo-studio dome the freckles are gone from the face in both
+routes but for a few at the cheek's silhouette, the frame's mean 0.4% lower;
+the 26 relit tests pass unchanged.
+
 ## A ray that went into a glass meets its far face
 
 The converted pawn's glass head was measured against the mesh path traced
