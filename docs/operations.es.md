@@ -226,7 +226,7 @@ sort por profundidad, las cuentas, el emit, el sort por tile y el blend.
 
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
-| `input` | ruta, obligatoria | — | `.ply`, `.splat`, `.spz`, `.sog`, `meta.json`; o un ParticleField de USD (`.usd`, `.usda`, `.usdc`) a un `.athc` |
+| `input` | ruta, obligatoria | — | `.ply`, `.splat`, `.spz`, `.sog`, `meta.json`, `.asg`; o un ParticleField de USD (`.usd`, `.usda`, `.usdc`) a un `.athc` |
 | `--prim` | ruta de prim | el primero de la escena | una entrada USD: el ParticleField que se lee |
 | `output` | ruta, obligatoria | — | `.usda`, `.usdc`, `.usd` o `.athc` |
 | `--chunk-splats` | entero | `65536` | `.athc`: splats por chunk |
@@ -250,6 +250,20 @@ decimate --tree`) da solo sus hojas -- las gaussianas cuyo `lodSize` es 1,
 compactadas en el dispositivo --, la nube de la que se construyó el árbol; sus
 fusiones se dibujarían encima de ellas.
 
+Un `.asg` (gaussianas surfel ancladas, el bitstream v1 de 3Dspace) se
+decodifica en el dispositivo, un hilo por gaussiana, y se escribe con todo lo
+que lleva: el material de la tabla de su anchor (metallic, transmisión, pared
+fina), la rugosidad, la normal de sombreado, los ids de Cryptomatte, los
+bloques directo e indirecto del transfer y las direcciones abiertas; `relight`
+se pone donde lleva transfer. Las gaussianas se escriben en el orden del
+fichero, agrupadas por anchor. Lo que la escena llevaba junto a ellas sale de
+la cabecera (revisión 2): su `metersPerUnit`, el `ior`, si es lineal y
+reiluminada, y el manifiesto de Cryptomatte; un fichero sin ellos se escribe en
+metros, lineal, reiluminado donde lleva transfer, sin índice y sin
+manifiesto. La línea del log
+`asg: N gaussians from A anchors decoded in X ms` es solo la decodificación,
+medida en su segunda ejecución.
+
 Una escena escrita aquí dice `metersPerUnit = 1`: ninguno de los formatos de
 entrada registra una unidad, y la escala de una captura se toma como metros.
 Una nube en otra unidad se escala donde se referencia, o se edita el
@@ -259,6 +273,7 @@ Una nube en otra unidad se escala donde se referencia, o se edita el
 athenea convert capture.ply scene.usda
 athenea convert capture.ply capture.athc --chunk-splats 131072
 athenea convert car_tx.usdc car_tx.athc
+athenea convert pawn.asg pawn.usdc --no-camera
 ```
 
 ### 2.4.1 `athenea decimate` — menos gaussianas, conservadas donde importan

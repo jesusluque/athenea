@@ -22,6 +22,7 @@
 #include "athenea/io/Exr.h"
 #include "athenea/io/Readers.h"
 #include "athenea/lod/Athc.h"
+#include "athenea/scene/Asg.h"
 #include "athenea/scene/GpuClouds.h"
 #include "athenea/usd/Export.h"
 #include "athenea/usd/StageRenderer.h"
@@ -42,7 +43,7 @@ void addConvert(CLI::App& app) {
     auto* cmd = app.add_subcommand("convert",
                                    "a splat file into a USD ParticleField stage, or into a .athc with levels of detail");
     cmd->add_option("input", o->input,
-                    ".ply / .splat / .spz / .sog / meta.json, or a USD ParticleField (.usd / .usda / .usdc) "
+                    ".ply / .splat / .spz / .sog / meta.json / .asg, or a USD ParticleField (.usd / .usda / .usdc) "
                     "into a .athc")
         ->required();
     cmd->add_option("--prim", o->prim, "a USD input: the ParticleField (the stage's first by default)");
@@ -96,6 +97,57 @@ void addConvert(CLI::App& app) {
                 cli::fail(written.error());
             }
             std::printf("wrote %s\n", o->output.c_str());
+            return;
+        }
+        if (scene::isAsg(o->input)) {
+            // ANCHORED SURFEL GAUSSIANS: decoded on the device, everything they
+            // carry written with them.
+            auto asg = scene::decodeAsg(library, o->input);
+            if (!asg) {
+                cli::fail(asg.error());
+            }
+            gpu::Device& dev = **device;
+            auto ids = asg->crypto.readAll<uint32_t>(dev);
+            auto thin = asg->thinWalled.readAll<int32_t>(dev);
+            auto direct = asg->direct.readAll<float>(dev);
+            auto indirect = asg->indirect.readAll<float>(dev);
+            auto bits = asg->shadowBits.readAll<int32_t>(dev);
+            for (auto* failed : {ids ? nullptr : &ids.error(), thin ? nullptr : &thin.error(),
+                                 direct ? nullptr : &direct.error(), indirect ? nullptr : &indirect.error(),
+                                 bits ? nullptr : &bits.error()}) {
+                if (failed != nullptr) cli::fail(*failed);
+            }
+            usd::DeviceSplatRecords records;
+            records.source = o->input;
+            records.count = asg->count;
+            records.encoding = asg->encoding;
+            records.records = asg->records;
+            records.linear = asg->linear;
+            usd::ExportOptions options;
+            options.addCamera = !o->noCamera;
+            options.rotateXDegrees = o->rotateX;
+            options.linear = asg->linear;
+            options.relight = asg->relight;
+            options.metersPerUnit = asg->metersPerUnit;
+            options.ior = asg->ior;
+            options.cryptoManifest = asg->cryptoManifest;
+            options.cryptoObject = *ids;
+            options.thinWalled = *thin;
+            if (asg->directCount != 0) {
+                options.transferDirect = *direct;
+                options.transferCoefficients = asg->directCount;
+            }
+            if (asg->indirectCount != 0) {
+                options.transferIndirect = *indirect;
+            }
+            if (asg->shadowWords != 0) {
+                options.shadowBits = *bits;
+                options.shadowWords = asg->shadowWords;
+            }
+            if (auto written = usd::writeParticleFieldStage(library, records, o->output, options); !written) {
+                cli::fail(written.error());
+            }
+            std::printf("wrote %s: %u gaussians from %u anchors\n", o->output.c_str(), asg->count, asg->anchors);
             return;
         }
         auto raw = scene::readSplatRecords(*loader, o->input, o->degree);
