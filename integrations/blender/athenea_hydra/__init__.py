@@ -119,9 +119,25 @@ class AtheneaPreferences(bpy.types.AddonPreferences):
         self.layout.prop(self, "plugin_dir")
 
 
+_SPLAT_VIEWS = (
+    ('0', "Light", "The light the gaussians give: the render itself"),
+    ('1', "Albedo", ""), ('2', "Roughness", "As the specular reads it"), ('3', "Metallic", ""),
+    ('4', "Transmission", ""), ('5', "IOR", "ior - 1, a grey"), ('6', "Normal", "World, n / 2 + 1/2"),
+    ('7', "Opacity", ""), ('8', "Size", "The largest axis: blue at 10 um to red at 10 cm"),
+    ('9', "Sky visibility", "The transfer's cosine-weighted sky seen, 1 unoccluded"),
+    ('10', "Bounce", "The indirect half under a white sky"),
+    ('11', "Open cells", "The share of a TX transfer's directions that leave the scene"),
+    ('12', "Emission", ""), ('13', "Reflected field", "Its mean under a white sky"),
+    ('14', "Carried light", "The light the cloud carries"),
+    ('15', "Material roughness", "The material's own roughness (0 where not carried)"),
+)
+
+
 class AtheneaRenderSettings(bpy.types.PropertyGroup):
-    """What the render panel offers: little, since the frame's look is the
-    cloud's and the world's. The viewport always draws the raster."""
+    """Every render setting hdAthenea declares, grouped as the panels show
+    them. The viewport always draws the raster, with the raster settings;
+    F12 draws what *Final render* says. Each property names the setting it
+    hands over (docs/operations.md, 4.2)."""
     technique: bpy.props.EnumProperty(
         name="Final render",
         items=(('RASTER', "Raster", "The gaussians rasterised, relit by the world and the lights: what the "
@@ -129,23 +145,167 @@ class AtheneaRenderSettings(bpy.types.PropertyGroup):
                ('PATH', "Path traced", "The ground truth: the scene path traced (slow), what the raster is "
                 "measured against")),
         default='RASTER')
-    paths: bpy.props.IntProperty(
-        name="Paths", description="Paths a pixel a path traced render gathers (athenea:pathTotal)",
-        default=256, min=1, max=65536)
-    denoise: bpy.props.BoolProperty(
-        name="Denoise", description="Open Image Denoise over the path traced frame", default=True)
+
+    # Raster (viewport and F12).
     mesh_antialias: bpy.props.EnumProperty(
         name="Mesh antialias",
-        description="Raster final render: samples a pixel the meshes' edges are resolved from "
-        "(athenea:meshAntialias). The gaussians are antialiased anyway, and the path tracer by its passes",
-        items=(('0', "Off", "One sample a pixel"),
-               ('4', "4", "Four samples on an edge"),
-               ('8', "8", "Eight samples on an edge"),
-               ('16', "16", "Sixteen samples on an edge")),
+        description="The meshes' edges resolved from this many samples a pixel (athenea:meshAntialias). "
+        "The gaussians are antialiased anyway, and the path tracer by its passes",
+        items=(('0', "Off", "One sample a pixel"), ('4', "4", "Four samples on an edge"),
+               ('8', "8", "Eight samples on an edge"), ('16', "16", "Sixteen samples on an edge")),
         default='4')
+    light_samples: bpy.props.IntProperty(
+        name="Light samples", description="Samples each light gets at a pixel (athenea:lightSamples)",
+        default=1, min=1, max=64)
+    choose_lights: bpy.props.BoolProperty(
+        name="One light a sample", description="Each sample takes one light, chosen by its power, "
+        "rather than every light (athenea:chooseLights)", default=False)
+    screen_space_reflections: bpy.props.BoolProperty(
+        name="Screen-space reflections", description="The meshes that reflect show the frame's meshes "
+        "along their reflection (athenea:screenSpaceReflections)", default=False)
+    dome_prefiltered: bpy.props.BoolProperty(
+        name="Prefiltered world", description="The world lights a mesh prefiltered: no sample and no ray "
+        "(athenea:domePrefiltered)", default=True)
+    mesh_lights: bpy.props.BoolProperty(
+        name="Mesh lights", description="Emitting meshes light the scene as lights (athenea:meshLights)",
+        default=True)
+    mesh_light_samples: bpy.props.IntProperty(
+        name="Mesh light samples", description="Raster: 0 lights by the mesh lights in closed form; "
+        "1 to 64 samples a pixel through their tree, each with a shadow ray (athenea:meshLightSamples)",
+        default=0, min=0, max=64)
+
+    # Path tracing (F12 with Final render Path traced).
+    paths: bpy.props.IntProperty(
+        name="Paths", description="Paths a pixel to converge to (athenea:pathTotal)",
+        default=256, min=1, max=65536)
+    path_samples: bpy.props.IntProperty(
+        name="Paths a pass", description="Paths a pixel each pass gathers (athenea:pathSamples)",
+        default=16, min=1, max=1024)
+    bounces: bpy.props.IntProperty(
+        name="Bounces", description="Bounces after the first hit (athenea:pathBounces)",
+        default=6, min=0, max=64)
+    denoise: bpy.props.BoolProperty(
+        name="Denoise", description="Open Image Denoise over the path traced frame (athenea:denoise)",
+        default=True)
+    adaptive: bpy.props.BoolProperty(
+        name="Adaptive", description="A pixel stops once its error is below the target (athenea:pathAdaptive)",
+        default=False)
+    path_error: bpy.props.FloatProperty(
+        name="Error", description="Relative standard error a pixel stops at (athenea:pathError)",
+        default=0.02, min=0.001, max=0.5, precision=3)
+    mis: bpy.props.BoolProperty(
+        name="Multiple importance", description="Weigh light sampling and material sampling "
+        "(athenea:pathMis)", default=True)
+    glass_shadows: bpy.props.BoolProperty(
+        name="Shadows through glass", description="Shadow rays pass clear glass, tinted "
+        "(athenea:glassShadows)", default=True)
+    pixel_antialias: bpy.props.BoolProperty(
+        name="Antialias", description="A sub-pixel offset each pass (athenea:antialias)", default=True)
+    motion_buckets: bpy.props.IntProperty(
+        name="Motion slices", description="Shutter slices for motion blur (athenea:motionBuckets)",
+        default=4, min=1, max=8)
+    splat_shadows: bpy.props.BoolProperty(
+        name="Clouds shadow themselves", description="A relit cloud shadows itself, one ray a gaussian "
+        "(athenea:splatShadows)", default=False)
+    splat_reflections: bpy.props.BoolProperty(
+        name="Clouds reflect themselves", description="A gaussian reflects the cloud it belongs to, "
+        "one ray each (athenea:splatReflections)", default=False)
+
+    # Gaussians.
     indirect: bpy.props.BoolProperty(
         name="Bounced light", description="A converted cloud adds the light it bounced "
         "(athenea:splatTransferIndirect)", default=True)
+    display_blend: bpy.props.BoolProperty(
+        name="Viewer blending", description="Each gaussian blended sRGB-encoded, as Spark, SuperSplat and "
+        "the 3DGS rasteriser draw (athenea:splatDisplayBlend)", default=False)
+    splat_view: bpy.props.EnumProperty(
+        name="Show", description="A parameter of the gaussians drawn in place of their light "
+        "(athenea:splatView)", items=_SPLAT_VIEWS, default='0')
+    settle_streams: bpy.props.BoolProperty(
+        name="Wait for streamed data", description="A frame waits for the levels of detail it streams "
+        "(athenea:settleStreams); F12 always waits", default=False)
+
+    # Cloud shadows.
+    cloud_shadows: bpy.props.BoolProperty(
+        name="Cloud shadows", description="A cloud's transmittance map at each light, no ray "
+        "(athenea:cloudShadows)", default=True)
+    cloud_shadow_resolution: bpy.props.IntProperty(
+        name="Resolution", description="Texels a side of each light's map (athenea:cloudShadowResolution)",
+        default=1024, min=64, max=8192)
+    cloud_shadow_terms: bpy.props.EnumProperty(
+        name="Terms", description="1 the total; 3, 5, 7 add Fourier pairs (athenea:cloudShadowTerms)",
+        items=(('0', "By receiver", "What receives decides"), ('1', "1", ""), ('3', "3", ""),
+               ('5', "5", ""), ('7', "7", "")), default='0')
+    cloud_shadow_density: bpy.props.FloatProperty(
+        name="Density", description="Multiplier on the cloud's optical depth (athenea:cloudShadowDensity)",
+        default=1.0, min=0.0, max=16.0)
+
+    # Volumes (path tracer).
+    volume_filter: bpy.props.EnumProperty(
+        name="Lookup", description="How a medium looks its density up between voxels (athenea:volumeFilter)",
+        items=(('trilinear', "Trilinear", ""), ('nearest', "Nearest", ""),
+               ('stochastic', "Stochastic", "One voxel drawn with the trilinear weights")),
+        default='trilinear')
+    volume_cache_mb: bpy.props.IntProperty(
+        name="Grid cache (MB)", description="Volume grids kept read, least recently drawn out first "
+        "(athenea:volumeCacheMB)", default=2048, min=0, max=262144)
+
+    # Advanced.
+    visibility: bpy.props.EnumProperty(
+        name="Mesh visibility", description="How the meshes are seen (athenea:visibility)",
+        items=(('automatic', "Automatic", "The best route the device has"),
+               ('raster', "Raster", "Hardware rasterisation"), ('rays', "Rays", "Hardware ray tracing"),
+               ('bvh', "Compute BVH", "Rays through a compute BVH")),
+        default='automatic')
+
+
+def _settings_for(settings, viewport):
+    """What the panels say, as hdAthenea's render settings."""
+    out = {
+        'athenea:splatTransferIndirect': bool(settings.indirect),
+        'athenea:splatDisplayBlend': bool(settings.display_blend),
+        'athenea:splatView': int(settings.splat_view),
+        'athenea:lightSamples': int(settings.light_samples),
+        'athenea:chooseLights': bool(settings.choose_lights),
+        'athenea:meshLights': bool(settings.mesh_lights),
+        'athenea:cloudShadows': bool(settings.cloud_shadows),
+        'athenea:cloudShadowResolution': int(settings.cloud_shadow_resolution),
+        'athenea:cloudShadowTerms': int(settings.cloud_shadow_terms),
+        'athenea:cloudShadowDensity': float(settings.cloud_shadow_density),
+        'athenea:visibility': str(settings.visibility),
+        'athenea:volumeFilter': str(settings.volume_filter),
+        'athenea:volumeCacheMB': int(settings.volume_cache_mb),
+    }
+    raster = {
+        'athenea:technique': "raster",
+        'athenea:meshAntialias': int(settings.mesh_antialias),
+        'athenea:screenSpaceReflections': bool(settings.screen_space_reflections),
+        'athenea:domePrefiltered': bool(settings.dome_prefiltered),
+        'athenea:meshLightSamples': int(settings.mesh_light_samples),
+        'athenea:settleStreams': bool(settings.settle_streams),
+    }
+    if viewport or settings.technique == 'RASTER':
+        out.update(raster)
+        if not viewport:
+            out['athenea:settleStreams'] = True
+        return out
+    out.update({
+        'athenea:technique': "rt",
+        'athenea:pathTotal': int(settings.paths),
+        'athenea:pathSamples': int(settings.path_samples),
+        'athenea:pathBounces': int(settings.bounces),
+        'athenea:denoise': bool(settings.denoise),
+        'athenea:pathAdaptive': bool(settings.adaptive),
+        'athenea:pathError': float(settings.path_error),
+        'athenea:pathMis': bool(settings.mis),
+        'athenea:glassShadows': bool(settings.glass_shadows),
+        'athenea:antialias': bool(settings.pixel_antialias),
+        'athenea:motionBuckets': int(settings.motion_buckets),
+        'athenea:splatShadows': bool(settings.splat_shadows),
+        'athenea:splatReflections': bool(settings.splat_reflections),
+        'athenea:settleStreams': True,
+    })
+    return out
 
 
 class AtheneaHydraRenderEngine(bpy.types.HydraRenderEngine):
@@ -162,29 +322,23 @@ class AtheneaHydraRenderEngine(bpy.types.HydraRenderEngine):
     def get_render_settings(self, engine_type):
         _warn_hidden_splats()
         settings = getattr(bpy.context.scene, "athenea", None)
-        common = {'athenea:splatTransferIndirect': bool(settings.indirect) if settings else True,
-                  # Film > Transparent: the world lights the frame and is not drawn behind it.
-                  'athenea:domeVisible': not bpy.context.scene.render.film_transparent}
-        if engine_type == 'VIEWPORT':
+        viewport = engine_type == 'VIEWPORT'
+        common = _settings_for(settings, viewport) if settings is not None else {
+            'athenea:technique': "raster", 'athenea:meshAntialias': 4}
+        # Film > Transparent: the world lights the frame and is not drawn behind it.
+        common['athenea:domeVisible'] = not bpy.context.scene.render.film_transparent
+        if viewport:
             # Blender draws a non-Storm delegate's viewport by mapping its
             # colour buffer and uploading it to a texture (DrawTexture::
             # create_from_buffer, every frame): half floats are half the
             # bytes read back and uploaded, and Blender takes them as such.
-            return dict(common, **{'athenea:colourHalf': True, 'athenea:technique': "raster"})
-        final = dict(common, **{
+            return dict(common, **{'athenea:colourHalf': True})
+        return dict(common, **{
             'aovToken:Combined': "color",
             'aovToken:Depth': "depth",
             'aovToken:Normal': "normal",
             'aovToken:DiffCol': "albedo",
         })
-        if settings is not None and settings.technique == 'PATH':
-            final.update({'athenea:technique': "rt", 'athenea:pathTotal': int(settings.paths),
-                          'athenea:pathSamples': 16, 'athenea:pathBounces': 6,
-                          'athenea:denoise': bool(settings.denoise)})
-        else:
-            final['athenea:technique'] = "raster"
-            final['athenea:meshAntialias'] = int(settings.mesh_antialias) if settings is not None else 4
-        return final
 
     def update_render_passes(self, scene, render_layer):
         if render_layer.use_pass_combined:
@@ -197,8 +351,7 @@ class AtheneaHydraRenderEngine(bpy.types.HydraRenderEngine):
             self.register_pass(scene, render_layer, 'DiffCol', 3, 'RGB', 'COLOR')
 
 
-class RENDER_PT_athenea(bpy.types.Panel):
-    bl_label = "Athenea"
+class _AtheneaPanel:
     bl_space_type = 'PROPERTIES'
     bl_region_type = 'WINDOW'
     bl_context = "render"
@@ -208,20 +361,21 @@ class RENDER_PT_athenea(bpy.types.Panel):
     def poll(cls, context):
         return context.engine in cls.COMPAT_ENGINES
 
-    def draw(self, context):
-        settings = context.scene.athenea
+    def _layout(self):
         layout = self.layout
         layout.use_property_split = True
         layout.use_property_decorate = False
+        return layout
+
+
+class RENDER_PT_athenea(_AtheneaPanel, bpy.types.Panel):
+    bl_label = "Athenea"
+
+    def draw(self, context):
+        settings = context.scene.athenea
+        layout = self._layout()
         layout.prop(settings, "technique")
-        column = layout.column()
-        column.active = settings.technique == 'PATH'
-        column.prop(settings, "paths")
-        column.prop(settings, "denoise")
-        column = layout.column()
-        column.active = settings.technique == 'RASTER'
-        column.prop(settings, "mesh_antialias")
-        layout.prop(settings, "indirect")
+        layout.prop(settings, "mesh_antialias")
         hydra = getattr(context.scene, "hydra", None)
         if hydra is not None and hydra.export_method != 'USD':
             box = layout.box()
@@ -235,6 +389,104 @@ class RENDER_PT_athenea(bpy.types.Panel):
         result = context.scene.athenea_look
         if result.rel_mse >= 0.0:
             box.label(text=f"against Cycles: relMSE {result.rel_mse:.4g}, 8-bit p99 {result.p99}")
+
+
+
+
+class RENDER_PT_athenea_raster(_AtheneaPanel, bpy.types.Panel):
+    bl_label = "Raster"
+    bl_parent_id = "RENDER_PT_athenea"
+
+    def draw(self, context):
+        settings = context.scene.athenea
+        layout = self._layout()
+        layout.label(text="The viewport, and F12 when Final render is Raster")
+        layout.prop(settings, "light_samples")
+        layout.prop(settings, "choose_lights")
+        layout.prop(settings, "screen_space_reflections")
+        layout.prop(settings, "dome_prefiltered")
+        layout.prop(settings, "mesh_lights")
+        column = layout.column()
+        column.active = settings.mesh_lights
+        column.prop(settings, "mesh_light_samples")
+
+
+class RENDER_PT_athenea_path(_AtheneaPanel, bpy.types.Panel):
+    bl_label = "Path Tracing"
+    bl_parent_id = "RENDER_PT_athenea"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        settings = context.scene.athenea
+        layout = self._layout()
+        layout.active = settings.technique == 'PATH'
+        layout.prop(settings, "paths")
+        layout.prop(settings, "path_samples")
+        layout.prop(settings, "bounces")
+        layout.prop(settings, "denoise")
+        layout.prop(settings, "adaptive")
+        column = layout.column()
+        column.active = settings.adaptive
+        column.prop(settings, "path_error")
+        layout.prop(settings, "mis")
+        layout.prop(settings, "pixel_antialias")
+        layout.prop(settings, "glass_shadows")
+        layout.prop(settings, "motion_buckets")
+        layout.prop(settings, "splat_shadows")
+        layout.prop(settings, "splat_reflections")
+
+
+class RENDER_PT_athenea_gaussians(_AtheneaPanel, bpy.types.Panel):
+    bl_label = "Gaussians"
+    bl_parent_id = "RENDER_PT_athenea"
+
+    def draw(self, context):
+        settings = context.scene.athenea
+        layout = self._layout()
+        layout.prop(settings, "indirect")
+        layout.prop(settings, "display_blend")
+        layout.prop(settings, "splat_view")
+        layout.prop(settings, "settle_streams")
+
+
+class RENDER_PT_athenea_shadows(_AtheneaPanel, bpy.types.Panel):
+    bl_label = "Cloud Shadows"
+    bl_parent_id = "RENDER_PT_athenea"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw_header(self, context):
+        self.layout.prop(context.scene.athenea, "cloud_shadows", text="")
+
+    def draw(self, context):
+        settings = context.scene.athenea
+        layout = self._layout()
+        layout.active = settings.cloud_shadows
+        layout.prop(settings, "cloud_shadow_resolution")
+        layout.prop(settings, "cloud_shadow_terms")
+        layout.prop(settings, "cloud_shadow_density")
+
+
+class RENDER_PT_athenea_volumes(_AtheneaPanel, bpy.types.Panel):
+    bl_label = "Volumes"
+    bl_parent_id = "RENDER_PT_athenea"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        settings = context.scene.athenea
+        layout = self._layout()
+        layout.prop(settings, "volume_filter")
+        layout.prop(settings, "volume_cache_mb")
+
+
+class RENDER_PT_athenea_advanced(_AtheneaPanel, bpy.types.Panel):
+    bl_label = "Advanced"
+    bl_parent_id = "RENDER_PT_athenea"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        settings = context.scene.athenea
+        layout = self._layout()
+        layout.prop(settings, "visibility")
 
 
 class AtheneaSplatExportHook(bpy.types.USDHook):
@@ -355,6 +607,8 @@ def _panels():
 
 
 _classes = (AtheneaPreferences, AtheneaRenderSettings, AtheneaHydraRenderEngine, RENDER_PT_athenea,
+            RENDER_PT_athenea_raster, RENDER_PT_athenea_path, RENDER_PT_athenea_gaussians,
+            RENDER_PT_athenea_shadows, RENDER_PT_athenea_volumes, RENDER_PT_athenea_advanced,
             AtheneaSplatExportHook)
 
 

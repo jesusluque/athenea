@@ -420,7 +420,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--no-cloud-shadows` | flag | sombras de nube encendidas | |
 | `--no-dome-prefilter` | flag | prefiltrado | raster: un domo ilumina una malla con una muestra por píxel y un rayo de sombra |
 | `--screen-space-reflections` | flag | apagado | raster: `athenea:screenSpaceReflections` |
-| `--mesh-antialias` | `0`, `4`, `8`, `16` | `0` | raster: `athenea:meshAntialias`, muestras por píxel de las que se resuelven los bordes de las mallas; 0 es una muestra por píxel |
+| `--mesh-antialias` | `0`, `4`, `8`, `16` | `4` | raster: `athenea:meshAntialias`, muestras por píxel de las que se resuelven los bordes de las mallas; 0 es una muestra por píxel |
 | `--cloud-shadow-texels` | entero | `1024` | por lado, por luz |
 | `--cloud-shadow-density` | número | `1.0` | multiplicador de la profundidad óptica de la nube |
 | `--cloud-shadow-terms` | `0`, `1`, `3`, `5`, `7` | `0` | 1 es solo el total, el resto añaden pares de Fourier; 0 deja decidir a quien recibe |
@@ -1982,17 +1982,34 @@ delegate como una `DomeLight` (la conversión propia de Blender: un world de
 *Environment Texture* es su imagen; uno procedural no se traduce), las luces
 como luces UsdLux. Los ajustes que el motor entrega al delegate:
 
-| Dónde | Ajustes |
-|---|---|
-| Viewport | `athenea:technique` `raster`, `athenea:colourHalf` (Blender copia el frame por memoria del host para mostrarlo; en media son la mitad de bytes) |
-| F12 | `raster` con `athenea:meshAntialias` (*Mesh antialias*: Off, 4, 8 o 16; 4) o, con *Final render* en Path traced, `rt` con `athenea:pathTotal` (*Paths*, 256), 16 por pasada, 6 rebotes y `athenea:denoise` (*Denoise*, activado) |
-| Ambos | `athenea:splatTransferIndirect` (*Bounced light*, activado); `athenea:domeVisible` apagado con *Film > Transparent* (el world ilumina el frame y no se dibuja detrás) |
+| Panel | Propiedad | Ajuste | Por defecto | Se aplica a |
+|---|---|---|---|---|
+| Athenea | *Final render* | `athenea:technique` | Raster | F12 (el viewport es siempre el raster) |
+| Athenea | *Mesh antialias* | `athenea:meshAntialias` | 4 | viewport, F12 raster |
+| Raster | *Light samples*, *One light a sample* | `athenea:lightSamples`, `athenea:chooseLights` | 1, apagado | todo frame |
+| Raster | *Screen-space reflections* | `athenea:screenSpaceReflections` | apagado | viewport, F12 raster |
+| Raster | *Prefiltered world* | `athenea:domePrefiltered` | activado | viewport, F12 raster |
+| Raster | *Mesh lights*, *Mesh light samples* | `athenea:meshLights`, `athenea:meshLightSamples` | activado, 0 | todo frame; las muestras solo en raster |
+| Path Tracing | *Paths*, *Paths a pass*, *Bounces* | `athenea:pathTotal`, `athenea:pathSamples`, `athenea:pathBounces` | 256, 16, 6 | F12 path traced |
+| Path Tracing | *Denoise*, *Adaptive*, *Error* | `athenea:denoise`, `athenea:pathAdaptive`, `athenea:pathError` | activado, apagado, 0.02 | F12 path traced |
+| Path Tracing | *Multiple importance*, *Antialias*, *Shadows through glass* | `athenea:pathMis`, `athenea:antialias`, `athenea:glassShadows` | activado, activado, activado | F12 path traced |
+| Path Tracing | *Motion slices* | `athenea:motionBuckets` | 4 | F12 path traced |
+| Path Tracing | *Clouds shadow themselves*, *Clouds reflect themselves* | `athenea:splatShadows`, `athenea:splatReflections` | apagado, apagado | F12 path traced |
+| Gaussians | *Bounced light* | `athenea:splatTransferIndirect` | activado | todo frame |
+| Gaussians | *Viewer blending* | `athenea:splatDisplayBlend` | apagado | raster |
+| Gaussians | *Show* | `athenea:splatView` (Light, Albedo, ... Material roughness) | Light | raster |
+| Gaussians | *Wait for streamed data* | `athenea:settleStreams` | apagado (F12 siempre espera) | viewport |
+| Cloud Shadows | (cabecera), *Resolution*, *Terms*, *Density* | `athenea:cloudShadows`, `athenea:cloudShadowResolution`, `athenea:cloudShadowTerms`, `athenea:cloudShadowDensity` | activado, 1024, por receptor, 1 | todo frame |
+| Volumes | *Lookup*, *Grid cache (MB)* | `athenea:volumeFilter`, `athenea:volumeCacheMB` | trilinear, 2048 | F12 path traced |
+| Advanced | *Mesh visibility* | `athenea:visibility` | Automatic | todo frame |
+| -- | *Film > Transparent* | `athenea:domeVisible` apagado | -- | todo frame (el world ilumina el frame y no se dibuja detrás) |
+| -- | -- | `athenea:colourHalf` | -- | viewport (Blender copia el frame por memoria del host para mostrarlo; en media son la mitad de bytes) |
 
 Los pases de F12: Combined (`color`), Depth (`depth`), Normal (`normal`) y
 DiffCol (`albedo`), cada uno donde la view layer lo pide. Los volúmenes
 (`.vdb`) están desactivados en esta compilación. El panel de render
-(*Render Properties > Athenea*) tiene esos cuatro ajustes y **Compare with
-Cycles**: el frame de la cámara renderizado con Cycles -- las mallas de las
+(*Render Properties > Athenea*) tiene esos ajustes, en los subpaneles que
+nombra la tabla, y **Compare with Cycles**: el frame de la cámara renderizado con Cycles -- las mallas de las
 que se hizo una nube, mostradas otra vez; el suelo al que sustituye un
 catcher, hecho shadow catcher de Cycles; film transparente -- y con Athenea
 tal como está la escena, medido por `athenea compare` dentro de Blender
@@ -2078,7 +2095,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:meshLightSamples` | int | `0` | raster: 0 ilumina las mallas por las luces de malla en forma cerrada; de 1 a 64, por tantas muestras por píxel a través de su árbol, cada una con un rayo de sombra (§4.3, *Luces de malla*) |
 | `athenea:domeVisible` | bool | `true` | toda técnica: se dibuja un dome detrás del frame; apagado, los píxeles que nada cubre quedan transparentes (alfa 0), como pide la película transparente de un host, y el dome sigue iluminando el frame |
 | `athenea:screenSpaceReflections` | bool | `false` | raster: las mallas que reflejan muestran lo que tienen las mallas del frame a lo largo de su reflejo (§4.3, *Reflejos en espacio de pantalla*) |
-| `athenea:meshAntialias` | int | `0` | raster: los bordes de las mallas se resuelven de 4, 8 o 16 muestras por píxel, un número intermedio redondeado hacia arriba; 0 y 1 dibujan una muestra por píxel (§4.3, *Bordes de malla antialiasados*) |
+| `athenea:meshAntialias` | int | `4` | raster: los bordes de las mallas se resuelven de 4, 8 o 16 muestras por píxel, un número intermedio redondeado hacia arriba; 0 y 1 dibujan una muestra por píxel (§4.3, *Bordes de malla antialiasados*) |
 | `athenea:splatView` | int | `0` | el raster: un parámetro de las gaussianas dibujado en lugar de su luz, mezclado por su opacidad -- 1 albedo, 2 roughness (la que lee el especular), 3 metallic, 4 transmission, 5 ior (`ior - 1`, un gris), 6 normal (del mundo, `n / 2 + 1/2`), 7 opacidad, 8 tamaño (el eje mayor, una rampa de azul a 10 µm a rojo a 10 cm, una década cada cuarto), 9 visibilidad del cielo (el cielo visto por el transfer ponderado por el coseno, 1 sin nada delante), 10 rebote (la mitad indirecta bajo un cielo blanco), 11 celdas abiertas (la fracción de direcciones de un transfer TX que salen de la escena), 12 emisión, 13 campo reflejado (su media bajo un cielo blanco), 14 la luz que lleva la nube, 15 la roughness propia del material (0 donde no la lleva); una nube que no se reilumina muestra su luz, su opacidad y su tamaño y nada más. 0 dibuja la luz |
 | `athenea:glassShadows` | bool | `true` | rt y sus bakes: el rayo de sombra de una luz sigue a través de hasta 4 caras de vidrio cuya transmisión es una delta (una pared fina; un sólido de rugosidad especular constante por debajo de 0.03), teñido por cada una; apagado, el vidrio lo detiene |
 | `athenea:denoise` | bool | `false` | denoise al terminar de reunir |
@@ -2620,7 +2637,7 @@ pasado el borde del frame se desvanece, y los splats no se reflejan. Sólo en
 la ruta de raster.
 
 **Bordes de malla antialiasados** (`athenea:meshAntialias`, un render
-setting, 0 -- apagado -- por defecto; `StageRenderer::setMeshAntialias`;
+setting, 4 por defecto, 0 apagado; `StageRenderer::setMeshAntialias`;
 `athenea stage --mesh-antialias`): la capa de mallas se sigue viendo y
 sombreando con una muestra por píxel, y después un píxel junto al que se vio
 otro triángulo se resuelve de 4, 8 o 16 submuestras (las posiciones

@@ -378,7 +378,7 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     HdRenderSettingDescriptor meshAntialias;
     meshAntialias.name = "Raster: mesh edges resolved from 4, 8 or 16 samples a pixel (0: one sample)";
     meshAntialias.key = TfToken("athenea:meshAntialias");
-    meshAntialias.defaultValue = VtValue(0);
+    meshAntialias.defaultValue = VtValue(4);
     HdRenderSettingDescriptor domeVisible;
     domeVisible.name = "The dome drawn behind the frame (off: a transparent background)";
     domeVisible.key = TfToken("athenea:domeVisible");
@@ -640,9 +640,10 @@ bool HdAtheneaRenderDelegate::GetScreenSpaceReflections() const {
 
 uint32_t HdAtheneaRenderDelegate::GetMeshAntialias() const {
     int64_t whole = 0;
+    // Unset, the edges are resolved from 4 samples, as the declared default.
     return _WholeSetting(GetRenderSetting(TfToken("athenea:meshAntialias")), whole)
                ? static_cast<uint32_t>(std::clamp<int64_t>(whole, 0, UINT32_MAX))
-               : 0u;
+               : 4u;
 }
 
 uint32_t HdAtheneaRenderDelegate::GetSplatView() const {

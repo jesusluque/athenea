@@ -194,7 +194,7 @@ void addStage(CLI::App& app) {
         bool cloudShadows = true;
         bool domePrefiltered = true;
         bool screenSpaceReflections = false;
-        uint32_t meshAntialias = 0;
+        uint32_t meshAntialias = 4;
         bool antialias = true;
         uint32_t cloudShadowTexels = 1024;
         uint32_t cloudShadowTerms = 0;

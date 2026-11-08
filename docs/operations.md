@@ -409,7 +409,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--no-cloud-shadows` | flag | cloud shadows on | |
 | `--no-dome-prefilter` | flag | prefiltered | raster: a dome lights a mesh by one sample a pixel and a shadow ray |
 | `--screen-space-reflections` | flag | off | raster: `athenea:screenSpaceReflections` |
-| `--mesh-antialias` | `0`, `4`, `8`, `16` | `0` | raster: `athenea:meshAntialias`, samples a pixel the meshes' edges are resolved from; 0 is one sample a pixel |
+| `--mesh-antialias` | `0`, `4`, `8`, `16` | `4` | raster: `athenea:meshAntialias`, samples a pixel the meshes' edges are resolved from; 0 is one sample a pixel |
 | `--cloud-shadow-texels` | integer | `1024` | a side, per light |
 | `--cloud-shadow-density` | number | `1.0` | multiplier on the cloud's optical depth |
 | `--cloud-shadow-terms` | `0`, `1`, `3`, `5`, `7` | `0` | 1 is the total alone, the rest add Fourier pairs; 0 lets what receives decide |
@@ -1919,16 +1919,33 @@ reaches the delegate as a `DomeLight` (Blender's own conversion: an
 translated), the lights as UsdLux lights. The settings the engine hands the
 delegate:
 
-| Where | Settings |
-|---|---|
-| Viewport | `athenea:technique` `raster`, `athenea:colourHalf` (Blender copies the frame through host memory to show it; halves are half the bytes) |
-| F12 | `raster` with `athenea:meshAntialias` (*Mesh antialias*: Off, 4, 8 or 16; 4) or, with *Final render* Path traced, `rt` with `athenea:pathTotal` (*Paths*, 256), 16 a pass, 6 bounces and `athenea:denoise` (*Denoise*, on) |
-| Both | `athenea:splatTransferIndirect` (*Bounced light*, on); `athenea:domeVisible` off under *Film > Transparent* (the world lights the frame and is not drawn behind it) |
+| Panel | Property | Setting | Default | Applies to |
+|---|---|---|---|---|
+| Athenea | *Final render* | `athenea:technique` | Raster | F12 (the viewport is always the raster) |
+| Athenea | *Mesh antialias* | `athenea:meshAntialias` | 4 | viewport, raster F12 |
+| Raster | *Light samples*, *One light a sample* | `athenea:lightSamples`, `athenea:chooseLights` | 1, off | every frame |
+| Raster | *Screen-space reflections* | `athenea:screenSpaceReflections` | off | viewport, raster F12 |
+| Raster | *Prefiltered world* | `athenea:domePrefiltered` | on | viewport, raster F12 |
+| Raster | *Mesh lights*, *Mesh light samples* | `athenea:meshLights`, `athenea:meshLightSamples` | on, 0 | every frame; the samples raster only |
+| Path Tracing | *Paths*, *Paths a pass*, *Bounces* | `athenea:pathTotal`, `athenea:pathSamples`, `athenea:pathBounces` | 256, 16, 6 | path traced F12 |
+| Path Tracing | *Denoise*, *Adaptive*, *Error* | `athenea:denoise`, `athenea:pathAdaptive`, `athenea:pathError` | on, off, 0.02 | path traced F12 |
+| Path Tracing | *Multiple importance*, *Antialias*, *Shadows through glass* | `athenea:pathMis`, `athenea:antialias`, `athenea:glassShadows` | on, on, on | path traced F12 |
+| Path Tracing | *Motion slices* | `athenea:motionBuckets` | 4 | path traced F12 |
+| Path Tracing | *Clouds shadow themselves*, *Clouds reflect themselves* | `athenea:splatShadows`, `athenea:splatReflections` | off, off | path traced F12 |
+| Gaussians | *Bounced light* | `athenea:splatTransferIndirect` | on | every frame |
+| Gaussians | *Viewer blending* | `athenea:splatDisplayBlend` | off | raster |
+| Gaussians | *Show* | `athenea:splatView` (Light, Albedo, ... Material roughness) | Light | raster |
+| Gaussians | *Wait for streamed data* | `athenea:settleStreams` | off (F12 always waits) | viewport |
+| Cloud Shadows | (header), *Resolution*, *Terms*, *Density* | `athenea:cloudShadows`, `athenea:cloudShadowResolution`, `athenea:cloudShadowTerms`, `athenea:cloudShadowDensity` | on, 1024, by receiver, 1 | every frame |
+| Volumes | *Lookup*, *Grid cache (MB)* | `athenea:volumeFilter`, `athenea:volumeCacheMB` | trilinear, 2048 | path traced F12 |
+| Advanced | *Mesh visibility* | `athenea:visibility` | Automatic | every frame |
+| -- | *Film > Transparent* | `athenea:domeVisible` off | -- | every frame (the world lights the frame and is not drawn behind it) |
+| -- | -- | `athenea:colourHalf` | -- | viewport (Blender copies the frame through host memory to show it; halves are half the bytes) |
 
 F12's passes: Combined (`color`), Depth (`depth`), Normal (`normal`) and
 DiffCol (`albedo`), each where the view layer asks for it. Volumes (`.vdb`)
 are off in this build. The render panel (*Render Properties > Athenea*)
-holds those four settings and **Compare with Cycles**: the camera's frame
+holds those settings, in the subpanels the table names, and **Compare with Cycles**: the camera's frame
 rendered with Cycles -- the meshes a cloud was made from shown again, the
 ground a catcher stands for made Cycles' shadow catcher, a transparent film
 -- and with Athenea as the scene is, measured by `athenea compare` inside
@@ -2012,7 +2029,7 @@ found and does not.
 | `athenea:meshLightSamples` | int | `0` | raster: 0 lights meshes by the mesh lights in closed form; 1 to 64, by that many samples a pixel through their tree, each with a shadow ray (§4.3, *Mesh lights*) |
 | `athenea:domeVisible` | bool | `true` | every technique: a dome is drawn behind the frame; off, the pixels nothing covers stay transparent (alpha 0), as a host's transparent film asks, and the dome still lights the frame |
 | `athenea:screenSpaceReflections` | bool | `false` | raster: the meshes that reflect show what the frame's meshes hold along their reflection (§4.3, *Screen-space reflections*) |
-| `athenea:meshAntialias` | int | `0` | raster: the meshes' edges resolved from 4, 8 or 16 samples a pixel, a count in between rounded up; 0 and 1 draw one sample a pixel (§4.3, *Mesh edges antialiased*) |
+| `athenea:meshAntialias` | int | `4` | raster: the meshes' edges resolved from 4, 8 or 16 samples a pixel, a count in between rounded up; 0 and 1 draw one sample a pixel (§4.3, *Mesh edges antialiased*) |
 | `athenea:splatView` | int | `0` | the raster: a parameter of the gaussians drawn in place of their light, blended by their opacity -- 1 albedo, 2 roughness (as the specular reads it), 3 metallic, 4 transmission, 5 ior (`ior - 1`, a grey), 6 normal (world, `n / 2 + 1/2`), 7 opacity, 8 size (the largest axis, a ramp from blue at 10 µm to red at 10 cm, a decade a quarter), 9 sky visibility (the transfer's cosine-weighted sky seen, 1 unoccluded), 10 bounce (the indirect half under a white sky), 11 open cells (the share of a TX transfer's directions that leave the scene), 12 emission, 13 reflected field (its mean under a white sky), 14 the light the cloud carries, 15 the material's own roughness (0 where not carried); a cloud that is not relit shows its light, opacity and size and nothing else. 0 draws the light |
 | `athenea:glassShadows` | bool | `true` | rt and its bakes: a light's shadow ray goes on through up to 4 faces of glass whose transmission is a delta (a thin wall; a solid of constant specular roughness under 0.03), tinted by each; off, glass stops it |
 | `athenea:denoise` | bool | `false` | denoise once gathered |
@@ -2530,8 +2547,8 @@ What the screen does not hold is not reflected: what is behind the camera or
 past the frame's edge fades out, and splats are not reflected. The raster
 route only.
 
-**Mesh edges antialiased** (`athenea:meshAntialias`, a render setting, 0 --
-off -- by default; `StageRenderer::setMeshAntialias`;
+**Mesh edges antialiased** (`athenea:meshAntialias`, a render setting, 4 by
+default, 0 off; `StageRenderer::setMeshAntialias`;
 `athenea stage --mesh-antialias`): the mesh layer is still seen and shaded at
 one sample a pixel, and then a pixel beside which another triangle was seen
 is resolved from 4, 8 or 16 sub-samples (the standard multisample
