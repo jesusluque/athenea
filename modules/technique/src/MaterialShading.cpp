@@ -422,6 +422,25 @@ ShadowHit nearestShadowHit(RayDesc ray) {
     return hit;
 }
 
+/// A shadow ray off the surface at p, as `occluded` starts one.
+RayDesc shadowRayFrom(float3 p, float3 n, float3 wi, float distance) {
+    const float scale = max(1.0, length(p));
+    const float3 away = dot(n, wi) < 0.0 ? -n : n;
+    RayDesc ray;
+    ray.Origin = p + (away + wi) * (1.0e-3 * scale);
+    ray.Direction = wi;
+    ray.TMin = 1.0e-3 * scale;
+    ray.TMax = max(distance - ray.TMin, 0.0);
+    return ray;
+}
+
+/// A lobe sample that went into the surface (a glass): its own instance is
+/// walked past, anything else still blocks.
+bool occludedThrough(float3 p, float3 n, float3 wi, uint self) {
+    const RayDesc ray = shadowRayFrom(p, n, wi, 1.0e30);
+    return ray.TMax > ray.TMin && occludedWalk(ray, wi, kLightUnlinked, self);
+}
+
 bool occluded(float3 p, float3 n, float3 wi, float distance, uint shadowCategory) {
     // Off the surface it sits on, by a distance that grows with the scene, so
     // a grazing ray does not find the triangle it started from. Along the ray
@@ -446,6 +465,14 @@ bool occluded(float3 p, float3 n, float3 wi, float distance, uint shadowCategory
         query.Proceed();
         return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
     }
+    return occludedWalk(ray, wi, shadowCategory, 0xFFFFFFFFu);
+}
+
+/// The walk past what does not block: what does not cast this light's
+/// shadow, what a cut-out's opacity removed, and the instance `self` -- the
+/// surface a lobe sample went into (a glass), which the raster cannot follow
+/// to its far face and which is not what stands between it and the sky.
+bool occludedWalk(RayDesc ray, float3 wi, uint shadowCategory, uint self) {
     // Linked, or with cut-outs about: walk on past whatever does not cast
     // this light's shadow, and past what a cut-out's opacity removed.
     for (uint step = 0; step < 64; ++step) {
@@ -453,7 +480,8 @@ bool occluded(float3 p, float3 n, float3 wi, float distance, uint shadowCategory
         if (!hit.found) {
             return false;
         }
-        const bool casts = shadowCategory == kLightUnlinked || castsShadow(shadowCategory, hit.instance);
+        const bool casts = hit.instance != self &&
+                           (shadowCategory == kLightUnlinked || castsShadow(shadowCategory, hit.instance));
         if (casts && (lighting.shadowCutouts == 0 ||
                       !shadowPassesThrough(hit.instance, hit.primitive, hit.barycentrics, wi))) {
             return true;
@@ -1195,10 +1223,20 @@ void traceShadows(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
     }
     // Then each lobe sample's, toward whatever lies at infinity along it.
     const uint lobes = closed && !anyDistantLight() ? 0u : lobesHere;
+    // A sample that went into the surface (through a glass, as shading's
+    // `through` says) passes the glass itself: the raster cannot follow it to
+    // the far face, and stopped there every way through a glass ball was
+    // blocked -- the ball drawn black where inline rays exist (Metal, D3D12)
+    // and right only where the raster traced none (CUDA).
+    const float eyeSide = dot(normalize(inputs.viewPosition - p), n);
     for (uint j = 0; j < lobes; ++j) {
         const uint packed = lobeDirs[at * lobes + j];
-        const bool blocked =
-            packed != kNoLobe && occluded(p, n, unpackLobe(packed), 1.0e30, kLightUnlinked);
+        bool blocked = false;
+        if (packed != kNoLobe) {
+            const float3 wi = unpackLobe(packed);
+            blocked = dot(wi, n) * eyeSide < 0.0 ? occludedThrough(p, n, wi, seen.x - 1u)
+                                                  : occluded(p, n, wi, 1.0e30, kLightUnlinked);
+        }
         putShadowBit(at, word, bit, blocked);
     }
     // THE CLOSED FORM'S SHADOW, as a ratio: a few samples through the tree,

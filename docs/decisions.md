@@ -4395,8 +4395,14 @@ one at a time when one look at the emitted kernel would have said why.
   dispatch), the frame validates clean on an RTX 3070: the plastic and chrome
   balls rasterise as on CUDA (mean error 2e-6 and 9e-7), and the glass ball
   path traced is CUDA's mean to 0.1% (0.894 against 0.893). The glass ball
-  rasterised draws black: the transmitting surface's raster route is not
-  ported. No denoiser on D3D12 (OIDN has no D3D12 device). Vulkan (RTX 3070,
+  rasterised drew black, and Metal drew it the same to the last digit: a
+  lobe sample that went into the glass was shadow-tested against the glass
+  itself, whose far face stopped every way through it -- the raster cannot
+  follow a ray to the far face, and CUDA, whose raster traces no shadow ray,
+  was right by not looking. `traceShadows` now walks such a sample past the
+  pixel's own instance, anything else still blocking: the glass ball
+  rasterised is CUDA's on Metal and on D3D12 (mean error 8.6e-5, against
+  0.14). No denoiser on D3D12 (OIDN has no D3D12 device). Vulkan (RTX 3070,
   native Windows) compiled it in 94 s, passed every `technique` test and the
   bakes. It cannot run `mesh2splat`, though: gpe, which runs its AOFX kernels,
   has no Vulkan backend.

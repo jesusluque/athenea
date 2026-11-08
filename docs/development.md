@@ -1746,10 +1746,9 @@ pushed to the private repository together.
 ## 9. Known debts
 
 - **Windows.** The engine, the tests and the plugins build natively with MSVC
-  (`windows-x64-*`, `scripts/*.ps1`). What is left: D3D12's raster of a
-  transmitting surface (a glass ball draws black; opaque materials and the
-  path tracer match CUDA), a denoiser on D3D12, the Blender add-on and the
-  OpenFX bundle verified there.
+  (`windows-x64-*`, `scripts/*.ps1`), on CUDA, Vulkan and D3D12. What is
+  left: a denoiser on D3D12 (OIDN has no D3D12 device), the Blender add-on
+  and the OpenFX bundle verified there.
 - **The ABI in a comment.** The header comment of the top-level
   `CMakeLists.txt` still says aofx is at ABI 23; the code has been at 25 for
   some time. The rule cannot catch a number written in prose.

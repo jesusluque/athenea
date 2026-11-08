@@ -1842,10 +1842,9 @@ repositorio privado.
 ## 9. Deudas conocidas
 
 - **Windows.** El motor, los tests y los plugins compilan de forma nativa con
-  MSVC (`windows-x64-*`, `scripts/*.ps1`). Falta: en D3D12, el raster de una
-  superficie que transmite (una bola de vidrio sale negra; los materiales
-  opacos y el path tracer coinciden con CUDA), un denoiser en D3D12, y el
-  add-on de Blender y el bundle OpenFX verificados allí.
+  MSVC (`windows-x64-*`, `scripts/*.ps1`), en CUDA, Vulkan y D3D12. Falta:
+  un denoiser en D3D12 (OIDN no tiene dispositivo D3D12), y el add-on de
+  Blender y el bundle OpenFX verificados allí.
 - **El ABI en un comentario.** El comentario de cabecera del `CMakeLists.txt`
   raíz todavía dice que aofx está en el ABI 23; el código va por el 25 desde
   hace tiempo. La regla no puede atrapar un número escrito en prosa.
