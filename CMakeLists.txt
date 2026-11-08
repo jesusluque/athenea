@@ -1,6 +1,6 @@
 # Copyright (c) 2026 jesus luque.
 cmake_minimum_required(VERSION 3.24)
-project(athenea VERSION 0.4.1 LANGUAGES C CXX)
+project(athenea VERSION 0.5.0 LANGUAGES C CXX)
 if(APPLE)
     # gpe's Metal backend is one .mm. A language enabled only inside a
     # subdirectory leaves CMake without its compile rule at generate time, so

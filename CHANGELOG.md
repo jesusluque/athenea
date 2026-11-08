@@ -6,6 +6,30 @@ pass). The version lives in one place, the top-level `project()` line, and is
 what `athenea --version` and `athenea info` print. A minor version is a set of
 merged work; a patch version fixes what a minor one shipped.
 
+## 0.5.0 — 2026-11-08
+
+- **D3D12**: the engine runs on Direct3D 12 with DXC (carried in the Windows
+  archive). Nested constant buffers are bound (a patch to slang-rhi), render
+  targets are cleared as they are made, a buffer is never both read and
+  written in one dispatch, and a device buffer holds at least 2048 bytes so
+  no placeholder is a view of no element. 8-bit sRGB textures go through the
+  decode kernel there. Every `gpu`, `render`, `technique`, `lights`,
+  `material` and LOD test passes on D3D12 but `mesh2splat`'s, whose gpe has no
+  D3D12 backend. No denoiser on D3D12 (OIDN has none).
+- **.asg**: anchored surfel gaussians (3Dspace's bitstream v1, revision 2)
+  are decoded on the device by `athenea convert`, with the header's unit,
+  index of refraction, linear and relit flags and Cryptomatte manifest.
+- **Glass**: a smooth dielectric is picked by its exact Fresnel, so a path
+  held in a glass by total internal reflection is no longer multiplied into a
+  firefly; a raster lobe sample that went into a glass passes that glass on
+  its way to the sky, so a glass ball no longer rasterises black.
+- **mesh2splat**: a mesh with no material converts with its displayColor,
+  else Hydra's grey, as the renderer draws it.
+- **Relit clouds**: a stored shading normal is put on the eye's side where
+  the disc's short axis is not the surface's (no more dark freckles).
+- **Levels of detail**: a merged level's f16 transfer is held within the
+  range it averages.
+
 ## 0.4.1 — 2026-11-08
 
 - **Windows without a CUDA toolkit**: the archive carries CUDA 12.9's runtime
