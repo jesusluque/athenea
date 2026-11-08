@@ -46,12 +46,13 @@ Result<Buffer> Buffer::create(Device& device, const BufferDesc& desc, const void
     ATHENEA_TRY(device.admit(desc.bytes, std::format("buffer '{}'", desc.label)));
     Buffer buffer;
     rhi::BufferDesc rhiDesc = toRhi(desc);
-    // A DEVICE BUFFER HOLDS AT LEAST 256 BYTES. A view is the buffer's size
-    // over the stride its binding declares, and a four-byte placeholder bound
-    // where a kernel reads 160-byte records is a view of none: D3D12 refuses
-    // it and removes the device. What the engine sees (`bytes`) is still what
-    // it asked for.
-    constexpr uint64_t kLeastDeviceBytes = 256;
+    // A DEVICE BUFFER HOLDS AT LEAST 2048 BYTES, the largest stride D3D12
+    // allows a structured view. A view is the buffer's size over the stride
+    // its binding declares, and a four-byte placeholder bound where a kernel
+    // reads records of 160 or 620 bytes is a view of none: D3D12 refuses it
+    // and removes the device. What the engine sees (`bytes`) is still what it
+    // asked for.
+    constexpr uint64_t kLeastDeviceBytes = 2048;
     const bool padded = desc.memory == Memory::Device && rhiDesc.size < kLeastDeviceBytes;
     if (padded) {
         rhiDesc.size = kLeastDeviceBytes;

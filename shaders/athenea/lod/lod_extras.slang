@@ -81,13 +81,23 @@ void lodExtrasMerge(uint3 tid: SV_DispatchThreadID) {
         if (params.mode == 1) {
             float lo = 0.0;
             float hi = 0.0;
+            float2 least = float2(65504.0);
+            float2 most = float2(-65504.0);
             for (uint s = first; s < end; ++s) {
                 const float weight = total > 0.0 ? max(positions[s].w, 0.0) : 1.0;
                 const uint word = source[s * params.words + w];
-                lo += weight * f16tof32(word & 0xFFFFu);
-                hi += weight * f16tof32(word >> 16);
+                const float2 v = float2(f16tof32(word & 0xFFFFu), f16tof32(word >> 16));
+                lo += weight * v.x;
+                hi += weight * v.y;
+                least = min(least, v);
+                most = max(most, v);
             }
-            target[out + w] = (f32tof16(hi * scale) << 16) | (f32tof16(lo * scale) & 0xFFFFu);
+            // A mean lies within what it averages. Held there, members that
+            // agree give their value to the bit: D3D12 divides and narrows to
+            // f16 without rounding to nearest, and a run of ones came back
+            // one step under.
+            const float2 mean = clamp(float2(lo, hi) * scale, least, most);
+            target[out + w] = (f32tof16(mean.y) << 16) | (f32tof16(mean.x) & 0xFFFFu);
         } else {
             uint bits = 0u;
             for (uint b = 0; b < 32u; ++b) {

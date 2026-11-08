@@ -299,7 +299,11 @@ Result<uint32_t> TextureStore::loadFile(const std::string& path, const std::stri
         info.error = "colour space '" + space + "' is not known; read as the file says";
         resolved = colour_->names().resolve({}, encoding);
     }
-    const bool srgbView = resolved.kind == colour::SpaceKind::Srgb && eightBit && srgbFastPath_;
+    // D3D12 reads a view in another format only of a texture made typeless,
+    // which a texture written by kernels is not: an sRGB view there reads
+    // the bytes as they are. There, sRGB goes through the decode kernel.
+    const bool srgbView = resolved.kind == colour::SpaceKind::Srgb && eightBit && srgbFastPath_ &&
+                          device_->backend() != gpu::Backend::D3D12;
     const bool convert = resolved.kind == colour::SpaceKind::Other ||
                          (resolved.kind == colour::SpaceKind::Srgb && !srgbView);
     const Decoder* decoder = nullptr;

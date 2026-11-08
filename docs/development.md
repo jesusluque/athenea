@@ -1747,8 +1747,9 @@ pushed to the private repository together.
 
 - **Windows.** The engine, the tests and the plugins build natively with MSVC
   (`windows-x64-*`, `scripts/*.ps1`), on CUDA, Vulkan and D3D12. What is
-  left: a denoiser on D3D12 (OIDN has no D3D12 device), the Blender add-on
-  and the OpenFX bundle verified there.
+  left: a denoiser on D3D12 (OIDN has no D3D12 device), `mesh2splat` on
+  D3D12 and Vulkan (gpe, which runs its AOFX kernels, has neither backend),
+  the Blender add-on and the OpenFX bundle verified there.
 - **The ABI in a comment.** The header comment of the top-level
   `CMakeLists.txt` still says aofx is at ABI 23; the code has been at 25 for
   some time. The rule cannot catch a number written in prose.
