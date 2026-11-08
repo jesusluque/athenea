@@ -19300,7 +19300,10 @@ the `ior` (1.5) the same decode rendered at relMSE 7.2e-4 against the
 reference. Revision 2 keeps them in the header (and the manifest as a
 section), and the shadow patterns as the primvar's own bytes. Read from it,
 the decode against the original `pawn_gs.usdc`, both in metres, is the figure
-above: relMSE 5.6e-5, PSNR 52.1 dB; the decode, 8.1 ms. (3Dspace's own
+above: relMSE 5.6e-5, PSNR 52.1 dB; the decode, 8.1 ms on the M5 Pro (Metal),
+2.37 ms on an RTX 3070 laptop through CUDA and 2.32 ms through Vulkan (about
+7 ns a gaussian; 0.5 ms a chunk of 65 536), the CUDA decode the same as the
+reference's value for value. (3Dspace's own
 `.usdc` files author no `metersPerUnit`, which USD then takes as 0.01; the
 original authors 1.) Not done: the builder on the device, `.athc` chunks of anchors,
 streaming, levels of detail, curvature, skinned clouds.
