@@ -6,6 +6,7 @@
 #endif
 #include <algorithm>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <utility>
 #include <vector>
@@ -201,6 +202,28 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
         }
         if (!named.empty()) {
             order = named;
+        }
+    }
+
+    // A package that carries CUDA's runtime (NVRTC and its builtins, nvJitLink,
+    // cudart in bin, the headers NVRTC compiles against in include) is where
+    // slang-rhi looks for it: it searches CUDA_PATH and the toolkit's install
+    // folder only, so on a machine without the toolkit the package's own copy
+    // would not be found, and on one with another toolkit that one's NVRTC
+    // would be paired with this package's builtins. The package's runtime is
+    // the one it was tested with, so it wins.
+    if (std::find(order.begin(), order.end(), Backend::CUDA) != order.end()) {
+        for (const std::filesystem::path& start : {platform::moduleDir(), platform::executableDir()}) {
+            if (start.empty()) continue;
+            const std::filesystem::path root = start.parent_path();
+            std::error_code ec;
+            if (std::filesystem::exists(root / "include" / "cuda_runtime.h", ec) &&
+                std::filesystem::exists(root / "bin" / "nvrtc64_120_0.dll", ec)) {
+                if (platform::env("CUDA_PATH") != root.string()) {
+                    platform::setEnv("CUDA_PATH", root.string());
+                }
+                break;
+            }
         }
     }
 

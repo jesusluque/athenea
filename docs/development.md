@@ -392,7 +392,11 @@ commit on each system, from a release preset's build tree:
 | archive | `scripts/package.sh <build> <out>` (`.zip`) | `scripts/package.sh <build> <out>` (`.tar.gz`, needs `patchelf`) | `scripts\package.ps1 <build> <out>` (`.zip`) |
 | installer | `scripts/installer-macos.sh <folder>` (`.pkg`) | `scripts/installer-linux.sh <folder>` (`.deb`) | `scripts\installer-windows.ps1 <folder>` (`.exe`, Inno Setup 6) |
 
-`package.*` copies the libraries from the prefixes the build found
+On Windows, `ATHENEA_CUDA_RUNTIME` names the CUDA runtime the archive carries:
+a folder with `bin\` and `include\`, such as NVIDIA's redistributable
+archives of NVRTC, nvJitLink and cudart unpacked together; without it the
+runtime DLLs come from the toolkit the build used, with no headers, and a
+machine without a toolkit cannot open CUDA. `package.*` copies the libraries from the prefixes the build found
 (`CMakeCache.txt`) and makes their paths relative to each program: `rpath`
 `@executable_path/../lib` on macOS (then signs ad hoc), `$ORIGIN/../lib` on
 Linux, every DLL beside the programs on Windows. The release is published

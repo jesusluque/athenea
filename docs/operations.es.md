@@ -54,6 +54,13 @@ donde se descompriman: los programas encuentran los shaders, los bundles AOFX
 y el plugin de Hydra con rutas relativas a ellos. Bajo WSL2 un horneado se
 rechaza: WSL2 no carga OptiX.
 
+En Windows el paquete lleva además las cabeceras con las que compila NVRTC
+(`include\`), y el motor apunta `CUDA_PATH` al paquete antes de abrir un
+dispositivo CUDA, así que la máquina no necesita el toolkit de CUDA. Donde hay
+uno instalado, su `CUDA_PATH` se deja de lado para el proceso: el runtime del
+paquete es con el que se probó, y NVRTC de una versión con los builtins de
+otra no abre un dispositivo.
+
 ### 1.2 El entorno de ejecución
 
 | Variable | Qué hace |

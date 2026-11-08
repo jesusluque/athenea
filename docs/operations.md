@@ -54,6 +54,13 @@ The archives (`.zip`, `.tar.gz`) hold the same folder, run from wherever it is
 unpacked: the programs find the shaders, the AOFX bundles and the Hydra plugin
 relative to themselves. Under WSL2 a bake is refused: WSL2 does not load OptiX.
 
+On Windows the package also holds the headers NVRTC compiles against
+(`include\`), and the engine points `CUDA_PATH` at the package before it opens
+a CUDA device, so the machine needs no CUDA toolkit. Where one is installed,
+its `CUDA_PATH` is set aside for the process: the package's runtime is the one
+it was tested with, and NVRTC from one version with the builtins of another
+does not open a device.
+
 ### 1.2 The runtime environment
 
 | Variable | What it does |

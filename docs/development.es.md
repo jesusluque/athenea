@@ -410,7 +410,11 @@ compilación de un preset release:
 | archivo | `scripts/package.sh <build> <out>` (`.zip`) | `scripts/package.sh <build> <out>` (`.tar.gz`, necesita `patchelf`) | `scripts\package.ps1 <build> <out>` (`.zip`) |
 | instalador | `scripts/installer-macos.sh <carpeta>` (`.pkg`) | `scripts/installer-linux.sh <carpeta>` (`.deb`) | `scripts\installer-windows.ps1 <carpeta>` (`.exe`, Inno Setup 6) |
 
-`package.*` copia las bibliotecas de los prefijos que encontró la compilación
+En Windows, `ATHENEA_CUDA_RUNTIME` nombra el runtime de CUDA que lleva el
+archivo: una carpeta con `bin\` e `include\`, como los archivos redistribuibles
+de NVIDIA de NVRTC, nvJitLink y cudart descomprimidos juntos; sin ella las DLL
+del runtime salen del toolkit que usó la compilación, sin cabeceras, y una
+máquina sin toolkit no puede abrir CUDA. `package.*` copia las bibliotecas de los prefijos que encontró la compilación
 (`CMakeCache.txt`) y hace sus rutas relativas a cada programa: `rpath`
 `@executable_path/../lib` en macOS (y firma ad hoc), `$ORIGIN/../lib` en
 Linux, cada DLL junto a los programas en Windows. La release se publica con

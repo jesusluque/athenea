@@ -54,18 +54,26 @@ foreach ($root in $ocio, $slang, $oidn) {
     if ($root -and (Test-Path "$root\bin")) { Copy-Item "$root\bin\*.dll" "$pkg\bin\" }
 }
 
-# CUDA's redistributable runtime, which slang-rhi loads by name when it compiles
-# a kernel (NVRTC and its builtins, nvJitLink) and OIDN's CUDA device links
-# (cudart): from the toolkit the build used. The driver (nvcuda.dll, OptiX) is
-# the machine's own.
+# CUDA's redistributable runtime, which slang-rhi loads when it compiles a
+# kernel (NVRTC and its builtins, nvJitLink, cudart) and the headers NVRTC
+# compiles against (include\): from $env:ATHENEA_CUDA_RUNTIME, a folder with
+# bin\ and include\ such as NVIDIA's redistributable archives unpacked
+# together, or else from the toolkit the build used (its runtime DLLs only).
+# With include\ in the package the engine points CUDA_PATH at the package
+# (gpu/Device.cpp), so a machine needs no toolkit. The driver (nvcuda.dll,
+# OptiX) is the machine's own.
+$runtime = $env:ATHENEA_CUDA_RUNTIME
 $nvcc = Value "CMAKE_CUDA_COMPILER"
-if ($nvcc) {
-    $cudaBin = Split-Path $nvcc -Parent
+if (-not $runtime -and $nvcc) { $runtime = Split-Path (Split-Path $nvcc -Parent) -Parent }
+if ($runtime) {
     foreach ($pattern in "nvrtc64_*.dll", "nvrtc-builtins64_*.dll", "nvJitLink_*.dll", "cudart64_*.dll") {
-        Copy-Item "$cudaBin\$pattern" "$pkg\bin\" -ErrorAction SilentlyContinue
+        Copy-Item "$runtime\bin\$pattern" "$pkg\bin\" -ErrorAction SilentlyContinue
     }
-    $eula = Join-Path (Split-Path $cudaBin -Parent) "EULA.txt"
-    if (Test-Path $eula) { Copy-Item $eula "$pkg\share\doc\athenea\third-party\CUDA-EULA.txt" }
+    if ($env:ATHENEA_CUDA_RUNTIME -and (Test-Path "$runtime\include\cuda_runtime.h")) {
+        Copy-Item -Recurse "$runtime\include" "$pkg\include"
+    }
+    $eula = @("$runtime\EULA.txt", "$runtime\LICENSE") | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($eula) { Copy-Item $eula "$pkg\share\doc\athenea\third-party\CUDA-EULA.txt" }
 }
 
 # The MSVC runtime the programs were linked against, from the Build Tools.
