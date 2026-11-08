@@ -396,7 +396,9 @@ On Windows, `ATHENEA_CUDA_RUNTIME` names the CUDA runtime the archive carries:
 a folder with `bin\` and `include\`, such as NVIDIA's redistributable
 archives of NVRTC, nvJitLink and cudart unpacked together; without it the
 runtime DLLs come from the toolkit the build used, with no headers, and a
-machine without a toolkit cannot open CUDA. `package.*` copies the libraries from the prefixes the build found
+machine without a toolkit cannot open CUDA. `ATHENEA_DXC` names a folder with
+DXC's `dxcompiler.dll` and `dxil.dll`, which D3D12 compiles kernels with; the
+archive carries them from there. `package.*` copies the libraries from the prefixes the build found
 (`CMakeCache.txt`) and makes their paths relative to each program: `rpath`
 `@executable_path/../lib` on macOS (then signs ad hoc), `$ORIGIN/../lib` on
 Linux, every DLL beside the programs on Windows. The release is published
@@ -1744,9 +1746,10 @@ pushed to the private repository together.
 ## 9. Known debts
 
 - **Windows.** The engine, the tests and the plugins build natively with MSVC
-  (`windows-x64-*`, `scripts/*.ps1`). What is left: D3D12 (constant buffers
-  past `b0`, a zero-length buffer), the Blender add-on and the OpenFX bundle
-  verified there.
+  (`windows-x64-*`, `scripts/*.ps1`). What is left: D3D12's raster of a
+  transmitting surface (a glass ball draws black; opaque materials and the
+  path tracer match CUDA), a denoiser on D3D12, the Blender add-on and the
+  OpenFX bundle verified there.
 - **The ABI in a comment.** The header comment of the top-level
   `CMakeLists.txt` still says aofx is at ABI 23; the code has been at 25 for
   some time. The rule cannot catch a number written in prose.

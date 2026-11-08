@@ -453,6 +453,10 @@ private:
     gpu::Buffer ranges_buffer_;
     uint32_t    rangesEmpty_ = 0;   ///< tiles whose ranges a frame of no pairs left cleared
     gpu::Buffer placeholderColour_, placeholderDepth_;
+    /// What the blend writes its matte into where none is asked for: apart
+    /// from `placeholderColour_`, which it reads (the under colour, the final
+    /// colour), since D3D12 holds one buffer in one state through a dispatch.
+    gpu::Buffer placeholderOut_;
     /// One word and one record of nothing, for a frame with no sky prepared:
     /// a name a shader declares must be bound whether it is read or not.
     gpu::Buffer emptyEnvWords_, emptyEnvSh_;

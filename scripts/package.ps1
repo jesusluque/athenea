@@ -76,6 +76,16 @@ if ($runtime) {
     if ($eula) { Copy-Item $eula "$pkg\share\doc\athenea\third-party\CUDA-EULA.txt" }
 }
 
+# DXC (dxcompiler.dll, dxil.dll), which slang-rhi compiles D3D12's kernels
+# with: from $env:ATHENEA_DXC, a folder holding them (bin\x64 of a DirectX
+# Shader Compiler release); without it the package runs on CUDA and Vulkan and
+# D3D12 makes no pipeline.
+if ($env:ATHENEA_DXC) {
+    foreach ($dll in "dxcompiler.dll", "dxil.dll") {
+        Copy-Item (Join-Path $env:ATHENEA_DXC $dll) "$pkg\bin\" -ErrorAction SilentlyContinue
+    }
+}
+
 # The MSVC runtime the programs were linked against, from the Build Tools.
 $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
 $vs = & $vswhere -latest -products * -property installationPath

@@ -52,6 +52,32 @@ Result<Texture> Texture::create(Device& device, const TextureDesc& desc) {
         return Error::make(ErrorCode::DeviceFailure, "cannot create texture '{}' ({}x{}x{}, {} mips)", desc.label,
                            desc.width, desc.height, desc.depth, texture.desc_.mipCount);
     }
+    // A RENDER TARGET STARTS CLEARED. D3D12 places one in memory it does not
+    // zero and refuses any use of it -- a kernel's write included -- before a
+    // clear or a copy; Metal and Vulkan handed it over zeroed, so a visibility
+    // target written only where a ray hit read as nothing elsewhere there and
+    // as garbage here. Cleared once, as it is made, on every backend.
+    if ((desc.usage & (rhi::TextureUsage::RenderTarget | rhi::TextureUsage::DepthStencil)) != rhi::TextureUsage::None) {
+        rhi::ComPtr<rhi::ICommandQueue> queue;
+        if (SLANG_SUCCEEDED(device.rhi()->getQueue(rhi::QueueType::Graphics, queue.writeRef()))) {
+            rhi::ComPtr<rhi::ICommandEncoder> encoder = queue->createCommandEncoder();
+            const rhi::FormatInfo& info = rhi::getFormatInfo(desc.format);
+            if (info.kind == rhi::FormatKind::DepthStencil) {
+                encoder->clearTextureDepthStencil(texture.texture_, rhi::kEntireTexture, info.hasDepth, 1.0F,
+                                                  info.hasStencil, 0);
+            } else if (info.kind == rhi::FormatKind::Integer) {
+                uint32_t zero[4] = {0, 0, 0, 0};
+                encoder->clearTextureUint(texture.texture_, rhi::kEntireTexture, zero);
+            } else {
+                float zero[4] = {0.0F, 0.0F, 0.0F, 0.0F};
+                encoder->clearTextureFloat(texture.texture_, rhi::kEntireTexture, zero);
+            }
+            rhi::ComPtr<rhi::ICommandBuffer> commands;
+            if (SLANG_SUCCEEDED(encoder->finish(commands.writeRef()))) {
+                queue->submit(commands);
+            }
+        }
+    }
     return texture;
 }
 

@@ -1,0 +1,32 @@
+diff --git a/src/d3d12/d3d12-shader-object-layout.cpp b/src/d3d12/d3d12-shader-object-layout.cpp
+index 8cac096a..5a89b054 100644
+--- a/src/d3d12/d3d12-shader-object-layout.cpp
++++ b/src/d3d12/d3d12-shader-object-layout.cpp
+@@ -739,7 +739,26 @@ void RootShaderObjectLayoutImpl::RootSignatureDescBuilder::addAsValue(
+             BindingRegisterOffset elementOffset = subObjectRangeElementOffset;
+             elementOffset += BindingRegisterOffset(elementVarLayout);
+ 
+-            addAsConstantBuffer(elementTypeLayout, physicalDescriptorSetIndex, containerOffset, elementOffset);
++            // A constant buffer's own CBV is at the register its container
++            // gives it. Taken from the element's offset instead, a buffer
++            // nested in the implicit one that holds a module's loose global
++            // uniforms (b0) landed on a register already taken, and the one
++            // the shader uses (b1, b2, ...) was left out of the root
++            // signature: "Shader CBV descriptor range ... is not fully bound".
++            if (elementTypeLayout->getSize(SLANG_PARAMETER_CATEGORY_UNIFORM) != 0)
++            {
++                addDescriptorRange(
++                    physicalDescriptorSetIndex,
++                    D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
++                    containerOffset.offsetForRangeType[D3D12_DESCRIPTOR_RANGE_TYPE_CBV],
++                    containerOffset.spaceOffset,
++                    1,
++                    false
++                );
++                elementOffset.offsetForRangeType[D3D12_DESCRIPTOR_RANGE_TYPE_CBV] =
++                    containerOffset.offsetForRangeType[D3D12_DESCRIPTOR_RANGE_TYPE_CBV] + 1;
++            }
++            addAsValue(elementTypeLayout, physicalDescriptorSetIndex, containerOffset, elementOffset);
+             break;
+         }
+         case slang::BindingType::ParameterBlock:

@@ -126,6 +126,11 @@ endif()
 #     was a metallib, which Xcode's `metal` compiler makes -- a downstream
 #     tool no phone carries; on iOS the target is Metal source and Metal
 #     compiles it itself.
+#   - slang-rhi-d3d12-nested-cbv.patch: a constant buffer nested in the
+#     implicit one that holds a module's loose global uniforms got the CBV
+#     register of the element rather than its own, so D3D12's root signature
+#     left out b1 and up and every kernel with loose uniforms and constant
+#     buffers failed to make a pipeline.
 set(ATHENEA_RHI_PATCHES
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-render-target-array-length.patch"
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-acceleration-structures.patch"
@@ -133,7 +138,8 @@ set(ATHENEA_RHI_PATCHES
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-texture-view-format.patch"
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-cuda-driver-symbols.patch"
     "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-metal-command-buffer-errors.patch"
-    "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-cuda-async-copy.patch")
+    "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-cuda-async-copy.patch"
+    "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-d3d12-nested-cbv.patch")
 if(ATHENEA_IOS)
     list(APPEND ATHENEA_RHI_PATCHES "${CMAKE_CURRENT_LIST_DIR}/patches/slang-rhi-ios.patch")
 endif()

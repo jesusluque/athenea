@@ -91,6 +91,9 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     if (!placeholderDepth) return std::move(placeholderDepth).error();
     r.placeholderColour_ = *placeholderColour;
     r.placeholderDepth_ = *placeholderDepth;
+    auto placeholderOut = buffer(*r.device_, 1, 16, "blend.noOutput");
+    if (!placeholderOut) return std::move(placeholderOut).error();
+    r.placeholderOut_ = *placeholderOut;
     auto placeholderCrypto = buffer(*r.device_, 1, 4, "blend.noCrypto");
     if (!placeholderCrypto) return std::move(placeholderCrypto).error();
     r.placeholderCrypto_ = *placeholderCrypto;
@@ -931,7 +934,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         cursor["cryptoIds"].setBinding(cryptoIds_.rhi());
         cursor["underCrypto"].setBinding(underCrypto ? under->cryptoIds.rhi()
                                                      : placeholderCrypto_.rhi());
-        cursor["crypto"].setBinding(matte ? targets.crypto.rhi() : placeholderColour_.rhi());
+        cursor["crypto"].setBinding(matte ? targets.crypto.rhi() : placeholderOut_.rhi());
         cursor["contribution"].setBinding(settings.contribution != nullptr ? settings.contribution->rhi()
                                                                            : visible_.rhi());
         setFrame(cursor, common);

@@ -4383,7 +4383,20 @@ one at a time when one look at the emitted kernel would have said why.
   from 2026.19) took it to 19.5 minutes; OptiX's optimisation level 0 failed
   as 3 does. D3D12 compiled the same bake in 30 s but is not ported: its root
   signature leaves out constant buffers past `b0`, and a zero-length
-  structured buffer bound as a view removes the device. Vulkan (RTX 3070,
+  structured buffer bound as a view removes the device.
+  (8 Nov) Found and fixed: the root signature left them out only where a
+  module has loose global uniforms, which Slang puts in an implicit constant
+  buffer at `b0`; slang-rhi then gave each constant buffer nested in it the
+  register of its element instead of its own, so `b1` and up were never
+  bound (`slang-rhi-d3d12-nested-cbv.patch`). With it, and render targets
+  cleared as they are made (D3D12 does not zero them, and the debug layer
+  refuses their use before a clear), and the blend's placeholder for what it
+  writes kept apart from the one it reads (a buffer holds one state through a
+  dispatch), the frame validates clean on an RTX 3070: the plastic and chrome
+  balls rasterise as on CUDA (mean error 2e-6 and 9e-7), and the glass ball
+  path traced is CUDA's mean to 0.1% (0.894 against 0.893). The glass ball
+  rasterised draws black: the transmitting surface's raster route is not
+  ported. No denoiser on D3D12 (OIDN has no D3D12 device). Vulkan (RTX 3070,
   native Windows) compiled it in 94 s, passed every `technique` test and the
   bakes. It cannot run `mesh2splat`, though: gpe, which runs its AOFX kernels,
   has no Vulkan backend.
