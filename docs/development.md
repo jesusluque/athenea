@@ -402,8 +402,10 @@ from the build's toolkit with no headers. On Windows it is a folder with
 archives of NVRTC, nvJitLink and cudart unpacked together; without it the
 runtime DLLs come from the toolkit the build used, with no headers, and a
 machine without a toolkit cannot open CUDA. `ATHENEA_DXC` names a folder with
-DXC's `dxcompiler.dll` and `dxil.dll`, which D3D12 compiles kernels with; the
-archive carries them from there. `package.*` copies the libraries from the prefixes the build found
+DXC's `dxcompiler.dll` and `dxil.dll`, which D3D12 compiles kernels with, and
+the licences of that DXC release (`LICENSE-MS.txt`, which lets `dxil.dll` be
+distributed, `LICENSE-LLVM.txt`, `LICENCE-MIT.txt`); the archive carries them
+from there, and stops if one is missing. `package.*` copies the libraries from the prefixes the build found
 (`CMakeCache.txt`) and makes their paths relative to each program: `rpath`
 `@executable_path/../lib` on macOS (then signs ad hoc), `$ORIGIN/../lib` on
 Linux, every DLL beside the programs on Windows. The release is published

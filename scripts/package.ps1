@@ -77,13 +77,20 @@ if ($runtime) {
 }
 
 # DXC (dxcompiler.dll, dxil.dll), which slang-rhi compiles D3D12's kernels
-# with: from $env:ATHENEA_DXC, a folder holding them (bin\x64 of a DirectX
-# Shader Compiler release); without it the package runs on CUDA and Vulkan and
-# D3D12 makes no pipeline.
+# with: from $env:ATHENEA_DXC, a folder holding them and the release's
+# licences (bin\x64 of a DirectX Shader Compiler release, with its
+# LICENSE-MS.txt, LICENSE-LLVM.txt and LICENCE-MIT.txt); without it the package
+# runs on CUDA and Vulkan and D3D12 makes no pipeline. Named and missing, it
+# stops the package rather than leave D3D12 out unsaid.
 if ($env:ATHENEA_DXC) {
     foreach ($dll in "dxcompiler.dll", "dxil.dll") {
-        Copy-Item (Join-Path $env:ATHENEA_DXC $dll) "$pkg\bin\" -ErrorAction SilentlyContinue
+        $from = Join-Path $env:ATHENEA_DXC $dll
+        if (-not (Test-Path $from)) { throw "package.ps1: ATHENEA_DXC has no $dll ($from)" }
+        Copy-Item $from "$pkg\bin\"
     }
+    $dxcLicences = Get-ChildItem $env:ATHENEA_DXC -File | Where-Object { $_.Name -match '^LICEN[CS]E' }
+    if (-not $dxcLicences) { throw "package.ps1: no licence file beside DXC in $env:ATHENEA_DXC" }
+    $dxcLicences | ForEach-Object { Copy-Item $_.FullName "$pkg\share\doc\athenea\third-party\DXC-$($_.Name)" }
 }
 
 # The MSVC runtime the programs were linked against, from the Build Tools.

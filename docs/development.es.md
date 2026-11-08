@@ -420,8 +420,10 @@ toolkit del build sin cabeceras. En Windows es una carpeta con `bin\` e
 de NVIDIA de NVRTC, nvJitLink y cudart descomprimidos juntos; sin ella las DLL
 del runtime salen del toolkit que usó la compilación, sin cabeceras, y una
 máquina sin toolkit no puede abrir CUDA. `ATHENEA_DXC` nombra una carpeta con
-`dxcompiler.dll` y `dxil.dll` de DXC, con los que D3D12 compila los kernels;
-el archivo los lleva de ahí. `package.*` copia las bibliotecas de los prefijos que encontró la compilación
+`dxcompiler.dll` y `dxil.dll` de DXC, con los que D3D12 compila los kernels,
+y las licencias de esa release de DXC (`LICENSE-MS.txt`, que permite
+distribuir `dxil.dll`, `LICENSE-LLVM.txt`, `LICENCE-MIT.txt`); el archivo los
+lleva de ahí, y se para si falta alguno. `package.*` copia las bibliotecas de los prefijos que encontró la compilación
 (`CMakeCache.txt`) y hace sus rutas relativas a cada programa: `rpath`
 `@executable_path/../lib` en macOS (y firma ad hoc), `$ORIGIN/../lib` en
 Linux, cada DLL junto a los programas en Windows. La release se publica con

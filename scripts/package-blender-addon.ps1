@@ -41,7 +41,7 @@ function CacheValue($name) {
 }
 
 $plugin = Join-Path $Build "plugin\usd\hdAthenea\hdAthenea.dll"
-if (-not (Test-Path $plugin)) { Fail "no $plugin: cmake --build --preset windows-x64-blender first" }
+if (-not (Test-Path $plugin)) { Fail "no ${plugin}: cmake --build --preset windows-x64-blender first" }
 $slang = CacheValue "SLANG_ROOT"
 $blenderShared = CacheValue "ATHENEA_BLENDER_LIB"
 if (-not $blenderShared -or -not (Test-Path $blenderShared)) { Fail "the build's ATHENEA_BLENDER_LIB ($blenderShared) is not there" }
@@ -131,8 +131,10 @@ Copy-Item (Join-Path $Repo "LICENSE"), (Join-Path $Repo "NOTICE"), (Join-Path $R
 # Carried by the package.
 Licence slang @("$slang\LICENSE", "$slang\LICENSES")
 Licence materialx @("$src\MaterialX-1.39.5\LICENSE", "$src\MaterialX-1.39.5\THIRD-PARTY.md")
-$dxcLicence = @("$dxc\LICENSE.TXT", "$dxc\..\..\LICENSE.TXT", "$dxc\..\..\LICENSE-MIT.txt", "$dxc\..\..\LICENSE-MS.txt") | Where-Object { Test-Path $_ }
-if (-not $dxcLicence) { Fail "no DXC licence beside $dxc" }
+# A DXC release's own licences, kept beside its DLLs (LICENSE-MS.txt for
+# dxil.dll's distribution, LICENSE-LLVM.txt, LICENCE-MIT.txt).
+$dxcLicence = @(Get-ChildItem $dxc -File | Where-Object { $_.Name -match '^LICEN[CS]E' } | ForEach-Object FullName)
+if (-not $dxcLicence) { Fail "no DXC licence beside $dxc (LICENSE-MS.txt and the rest of its release)" }
 Licence dxc $dxcLicence
 $cudaLicence = @("$cudaRuntime\LICENSE", "$cudaRuntime\EULA.txt") | Where-Object { Test-Path $_ }
 if (-not $cudaLicence) { Fail "no CUDA licence (LICENSE or EULA.txt) in $cudaRuntime" }
