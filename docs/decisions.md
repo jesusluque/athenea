@@ -20051,3 +20051,80 @@ and Windows, one zip a system whose manifest names that platform alone
 - **The Windows add-on** carries what `dumpbin /dependents` finds hdAthenea
   loading that is neither in Blender's `blender.shared` nor in `System32`,
   Slang's GLSL modules, DXC, and CUDA's runtime and headers in `plugin\usd`.
+## Blender on Windows: the exit, the flatten, what F12 gathered, the OpenFX bundle (25 Oct)
+
+The issues the Windows run of 19 Oct left (#40 to #43), on the same laptop (RTX 3070 Laptop GPU, CUDA, Blender 5.3
+beta), with the path tracer on the compute BVH (*Path tracing on CUDA through the compute BVH*, 24 Oct). Each was
+reproduced with `tests/blender` scripts run headless against the build tree's plugin.
+
+**#41, Blender's 0xC0000409 on its way out.** 0xC0000409 is how Windows ends a process that calls `abort()`, and two
+different faults reached it through the same door: slang-rhi asserting on a failed CUDA call.
+
+- *The process context outlived the driver.* A command run inside the host (`athenea_mesh2splat`,
+  `athenea_flatten`, `athenea_compare`) makes the process's `gpu_host::Context` once, in a static. It was destroyed
+  with the statics at exit, after CUDA had shut itself down: gpe's last sync and slang-rhi's context push answered
+  `CUDA_ERROR_DEINITIALIZED` (4) and slang-rhi's assertion aborted. A flatten alone in a fresh Blender reproduced it
+  every time (exit 0xC0000409 after the command had returned 0). The context is now made once and never destroyed
+  (`installProcessContext`): it lives as long as the process, and the system takes back its memory. With it, the
+  same run exits 0.
+- *A flatten read the sky at an index nobody set.* `relitToward`, the surface a flatten shades from each of its
+  directions (`splat_project.slang`), never set `skyCloud`, the offset of the sky turned into a turned cloud's frame
+  that the projection's own surface does set. Uninitialised, it held whatever the thread's memory held: zero in a
+  fresh process -- every flatten from the CLI -- and, in a Blender that had converted a cloud and its shadow catcher
+  (two transfer bakes) before exporting, an index past every buffer: `CUDA_ERROR_ILLEGAL_ADDRESS` in the export, then
+  the same assertion. compute-sanitizer named the read (`relitByDome` inside `splatFlatten`, a garbage address far
+  from any allocation); the light records and the dome table read back right; a mesh2splat alone, or a catcher
+  alone, before the flatten did not do it, the two together did. The surface now starts zeroed and takes
+  `params.skyCloud` as the projection's does; `tx_module` then runs through the export, the points and the cancel
+  without a crash. A turned cloud's flatten read the world's sky where its frame wanted the turned one.
+
+**#40, the cloud against a path traced reference: relMSE 0.72, p99 193.** The reference was one pass of one path a
+pixel. A Python int Blender hands to the delegate arrives as a wider integer than `int`, and every whole-number
+setting was read as `int` or `unsigned` alone, so `athenea:pathTotal` (the add-on's Paths, 256 here) and `athenea:pathSamples`
+(16) fell back to 1: F12 gathered one pass and called it converged. On macOS the denoiser hid it; this build has no
+OIDN and showed it. Measured in a 60 x 60 patch of the cube, F12 at 1, 16 and 256 paths drew the same picture
+(standard deviation 1.28 about a mean of 0.955) before; after, 16 paths read 0.33 and 256 read 0.082, a quarter of it
+for sixteen times the paths, the mean 0.962. A whole-number setting is now read whatever integer type, or whole
+`double`, the host put in it (`_WholeSetting`): the path counts, the bounces, the motion buckets, the light samples,
+the cloud shadow's size and terms, `meshAntialias`, `splatView`, and an int `colourHalf`. `tx_module`'s cloud
+against its reference: relMSE 0.0533 and 8-bit p99 18, under the 0.25 and 40 it asks.
+
+**#43, the OpenFX server found its shaders only in the build tree.** `athenea-mcp` in
+`Athenea.ofx.bundle/Contents/Resources/bin` looks for a `shaders` folder up to three levels above itself and then at
+the build tree it was compiled in; the bundle carried none, so a copy anywhere else rendered only while that build
+tree stood. The bundle now carries them in `Contents/Resources/shaders` (the check kernels under `athenea/test` left
+out), copied after the build of `athenea_ofx`. Checked with the build tree's shaders moved aside: the bundle as it was,
+copied out of the tree, failed in `athenea_ofx_host` (`cannot open file 'athenea/algo/prefix_chunk_totals.slang'`);
+the new one rendered the frame (320 x 180, alpha mean 0.84).
+
+**#42, "the viewport's readback costs seconds a frame on CUDA".** It does not; what costs seconds is what
+`viewport_readback.py` times. Each F12 is a render of its own: Blender makes a new render delegate, and with it a new
+engine, its environment (the sky analysed again every render) and its kernels from the shader cache, before the frame
+is drawn and mapped. That fixed cost does not change with the size: 2.7 to 3.1 s an F12 at 1280 x 720 and 1920 x 1080,
+float or half (a run that overlapped another job's GPU test, so approximate). What the map itself costs was measured
+with `athenea stage` on the same scene and device (two_balls, 1920 x 1080, raster, `--frames 40`): the first frame
+1.85 to 2.5 s, then 67.4 ms a frame with `--no-readback` and 78.9 to 92.6 ms reading the frame back, 11 to 25 ms for
+the readback of a float frame. A viewport keeps its delegate and pays the frame and that copy, not the first frame.
+
+What is Windows' own among these: #41's first cause showed on Windows (the order in which a process's statics and
+the CUDA driver end), and its fix holds everywhere. The rest are not: the flatten's unset index is any CUDA device's
+(Metal's thread memory happened to hold zero), the integer settings are any platform's under Blender (macOS's
+denoiser hid them), the bundle's shaders any platform's, and the F12's first-frame cost any CUDA device's.
+
+### Not done
+
+- The F12's first frame on CUDA (about two seconds) is not taken apart: the environment's preparation, the kernels'
+  loading and the device's own start are each a share of it, and a Blender that kept one engine between renders would
+  pay it once.
+- `viewport_readback.py` still times whole F12 renders; the map alone is not timed from inside Blender.
+- The F12's first frame is the same on Linux: `viewport_readback.py` under WSL2 (CUDA) gave 2.34 to 2.45 s an F12
+  at both sizes, float or half.
+
+**`tx_module`'s Esc step.** It ended with code 1 on some runs: the points' conversion before it hides the cube again,
+a hidden object is not exported, and the step's job then failed on a stage with no mesh (`no meshes to convert`)
+unless the cancel was looked at first -- so 1 or 4 by timing. The test shows the cube again before the step.
+
+**On Linux (WSL2, CUDA 12.9, no OptiX)**, the add-on built from these with the path tracer on the compute BVH:
+`test_module` passes whole; `tx_module` passes whole -- it was refused there before, since a bake wanted OptiX --
+the cloud against its reference relMSE 0.0528 and p99 9 (this build has OIDN), Esc ends 4; `viewport_readback.py`
+passes (half draws what float draws, p99 0).

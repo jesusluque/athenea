@@ -157,6 +157,11 @@ def main():
     # -- Esc -----------------------------------------------------------------
     for o in points:
         bpy.data.objects.remove(o, do_unlink=True)
+    # The points' conversion hid the cube again; hidden, it is not exported,
+    # and the job then fails on a stage with no mesh (code 1) before the
+    # cancel is looked at.
+    cube.hide_set(False)
+    cube.hide_render = False
     cube.select_set(True)
     settings.bring_in = 'REFERENCE'
     conversion = convert.Conversion(bpy.context, settings)

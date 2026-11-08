@@ -233,16 +233,23 @@ void Context::flushCompute() {
 }
 
 Context* installProcessContext(const ContextDesc& desc) {
-    static std::unique_ptr<Context> process = [&desc]() -> std::unique_ptr<Context> {
+    // Made once and never destroyed: the process's context lives as long as
+    // the process, and the system takes its memory back. Destroyed with the
+    // statics, it reached the device after the driver had shut down -- in a
+    // host that ran a command in its own process (Blender, through the
+    // embedded entries), CUDA answered "deinitialized" to the worker's last
+    // sync and to slang-rhi's context push, and slang-rhi's assertion
+    // aborted the host on its way out (0xC0000409 on Windows).
+    static Context* const process = [&desc]() -> Context* {
         auto made = Context::create(desc);
         if (!made) {
             log::warn("no GPU context: {}", made.error().toString());
             return nullptr;
         }
         (*made)->install();
-        return std::move(*made);
+        return made->release();
     }();
-    return process.get();
+    return process;
 }
 
 }   // namespace athenea::gpu_host

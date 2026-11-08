@@ -106,7 +106,8 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-/// Makes the process context once, installs it and returns it (or null).
+/// Makes the process context once, installs it and returns it (or null). It
+/// is never destroyed: it lives until the process ends.
 Context* installProcessContext(const ContextDesc& desc = {});
 
 }   // namespace athenea::gpu_host
