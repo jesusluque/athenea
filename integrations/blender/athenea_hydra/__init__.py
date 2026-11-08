@@ -134,6 +134,15 @@ class AtheneaRenderSettings(bpy.types.PropertyGroup):
         default=256, min=1, max=65536)
     denoise: bpy.props.BoolProperty(
         name="Denoise", description="Open Image Denoise over the path traced frame", default=True)
+    mesh_antialias: bpy.props.EnumProperty(
+        name="Mesh antialias",
+        description="Raster final render: samples a pixel the meshes' edges are resolved from "
+        "(athenea:meshAntialias). The gaussians are antialiased anyway, and the path tracer by its passes",
+        items=(('0', "Off", "One sample a pixel"),
+               ('4', "4", "Four samples on an edge"),
+               ('8', "8", "Eight samples on an edge"),
+               ('16', "16", "Sixteen samples on an edge")),
+        default='4')
     indirect: bpy.props.BoolProperty(
         name="Bounced light", description="A converted cloud adds the light it bounced "
         "(athenea:splatTransferIndirect)", default=True)
@@ -174,6 +183,7 @@ class AtheneaHydraRenderEngine(bpy.types.HydraRenderEngine):
                           'athenea:denoise': bool(settings.denoise)})
         else:
             final['athenea:technique'] = "raster"
+            final['athenea:meshAntialias'] = int(settings.mesh_antialias) if settings is not None else 4
         return final
 
     def update_render_passes(self, scene, render_layer):
@@ -208,6 +218,9 @@ class RENDER_PT_athenea(bpy.types.Panel):
         column.active = settings.technique == 'PATH'
         column.prop(settings, "paths")
         column.prop(settings, "denoise")
+        column = layout.column()
+        column.active = settings.technique == 'RASTER'
+        column.prop(settings, "mesh_antialias")
         layout.prop(settings, "indirect")
         hydra = getattr(context.scene, "hydra", None)
         if hydra is not None and hydra.export_method != 'USD':

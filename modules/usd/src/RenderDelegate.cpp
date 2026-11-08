@@ -617,10 +617,10 @@ std::map<std::string, float> HdAtheneaRenderDelegate::GetLightLevels() const {
 }
 
 uint32_t HdAtheneaRenderDelegate::GetMeshLightSamples() const {
-    const VtValue value = GetRenderSetting(TfToken("athenea:meshLightSamples"));
-    if (value.IsHolding<int>()) return static_cast<uint32_t>(std::max(value.UncheckedGet<int>(), 0));
-    if (value.IsHolding<unsigned int>()) return value.UncheckedGet<unsigned int>();
-    return 0u;
+    int64_t whole = 0;
+    return _WholeSetting(GetRenderSetting(TfToken("athenea:meshLightSamples")), whole)
+               ? static_cast<uint32_t>(std::clamp<int64_t>(whole, 0, UINT32_MAX))
+               : 0u;
 }
 
 bool HdAtheneaRenderDelegate::GetMeshLights() const {

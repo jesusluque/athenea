@@ -29,6 +29,11 @@ merged work; a patch version fixes what a minor one shipped.
   the disc's short axis is not the surface's (no more dark freckles).
 - **Levels of detail**: a merged level's f16 transfer is held within the
   range it averages.
+- **Blender**: a raster F12 resolves the meshes' edges from 4 samples by
+  default (*Mesh antialias*); a path traced F12 gathers the paths it is asked
+  for (whole-number settings were read as `int` only, and Blender's arrive
+  wider), and Blender no longer ends with 0xC0000409 on Windows on its way
+  out (the process GPU context is never destroyed).
 - **Packages**: the Blender add-on for macOS, Linux and Windows, one zip a
   system. On Linux the archive and the add-on open CUDA with the driver alone:
   they carry NVRTC and its headers and the engine points `CUDA_PATH` at them.
