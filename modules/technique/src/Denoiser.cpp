@@ -68,17 +68,24 @@ struct Denoiser::Impl {
             s.wrapped = std::move(*made);
             rhi::NativeHandle handle;
             if (SLANG_FAILED(s.wrapped.rhi()->getSharedHandle(&handle)) ||
-                handle.type != rhi::NativeHandleType::FileDescriptor) {
+                (handle.type != rhi::NativeHandleType::FileDescriptor && handle.type != rhi::NativeHandleType::Win32)) {
                 drop(s);
                 return Error(ErrorCode::DeviceFailure, std::string("no exported memory for ") + label);
             }
-            // OIDN takes the descriptor it is given; slang-rhi keeps its own.
-            const int descriptor = platform::duplicateDescriptor(static_cast<int>(handle.value));
-            if (descriptor < 0) {
-                drop(s);
-                return Error(ErrorCode::DeviceFailure, std::string("no descriptor to hand OIDN for ") + label);
+            if (handle.type == rhi::NativeHandleType::Win32) {
+                // Windows exports a handle, which CUDA's import does not
+                // take over: slang-rhi's stays open while the buffer lives.
+                s.shared = oidnNewSharedBufferFromWin32Handle(device, OIDN_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_WIN32,
+                                                              reinterpret_cast<void*>(handle.value), nullptr, bytes);
+            } else {
+                // OIDN takes the descriptor it is given; slang-rhi keeps its own.
+                const int descriptor = platform::duplicateDescriptor(static_cast<int>(handle.value));
+                if (descriptor < 0) {
+                    drop(s);
+                    return Error(ErrorCode::DeviceFailure, std::string("no descriptor to hand OIDN for ") + label);
+                }
+                s.shared = oidnNewSharedBufferFromFD(device, OIDN_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_FD, descriptor, bytes);
             }
-            s.shared = oidnNewSharedBufferFromFD(device, OIDN_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_FD, descriptor, bytes);
             if (s.shared == nullptr) {
                 const char* message = nullptr;
                 oidnGetDeviceError(device, &message);
@@ -197,8 +204,10 @@ Result<Denoiser> Denoiser::create(gpu::Device& device) {
     if (oidnGetDeviceError(impl->device, &message) != OIDN_ERROR_NONE) {
         return Error(ErrorCode::DeviceFailure, std::string("OIDN: ") + (message != nullptr ? message : "unknown"));
     }
+    // Vulkan's memory reaches CUDA as a descriptor on Linux and as a handle on
+    // Windows.
     if (impl->vulkan && (oidnGetDeviceInt(impl->device, "externalMemoryTypes") &
-                         OIDN_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_FD) == 0) {
+                         (OIDN_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_FD | OIDN_EXTERNAL_MEMORY_TYPE_FLAG_OPAQUE_WIN32)) == 0) {
         return Error(ErrorCode::Unsupported, "no denoiser on this backend: OIDN's CUDA device imports no Vulkan memory here");
     }
     impl->description = std::string("OIDN ") + OIDN_VERSION_STRING + " on " + on;

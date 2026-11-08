@@ -4611,6 +4611,13 @@ backends, fixed where it lives rather than excused.
   and normal, 6.29e-5 without -- the same shape as on Metal -- and the
   `athenea:denoise` render setting changes 8748 of 27648 words at the total and
   none before it.
+  On Windows the memory is exported as a Win32 handle instead, imported with
+  `oidnNewSharedBufferFromWin32Handle` (CUDA does not take it over, so
+  slang-rhi's stays open while the buffer lives); until 0.4.1 only the
+  descriptor was accepted and a Windows machine on Vulkan had no denoiser.
+  Measured on an RTX 3070 laptop, `glass.usda` at 16 paths: the denoised
+  frame's mean on Vulkan is CUDA's to six figures (0.889003 against
+  0.889002).
 
 ### The engine as an MCP server
 
