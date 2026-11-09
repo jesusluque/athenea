@@ -152,6 +152,10 @@ struct LodInstance {
     /// The cut staggered (lod_common's LodParams::dissolve): each cell at
     /// `threshold * dissolve^(h - 1/2)`, h hashed from it; 1 is one threshold.
     float                dissolve = 1.0F;
+    /// The cut morphed (lod_common's LodParams::morph): a gaussian drawn
+    /// toward its parent as the parent's cell nears its threshold, all the
+    /// way where it reaches it; up to 1 is no morph.
+    float                morph = 0.0F;
 };
 
 struct CutStats {

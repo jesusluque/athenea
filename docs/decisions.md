@@ -649,6 +649,33 @@ equal to 1e-4.
   (60,000 and 22,429); dissolve 1 is the plain cut to the gaussian.
 - **Not done.** A version 3 file's paged tree is cut with one threshold.
 
+### The cut morphed (`--lod-morph`, `athenea:lod:morph`)
+- **Why.** A staggered cut spreads the switches over a band, but each is
+  still one gaussian for many between two frames.
+- **How.** In the gather (`lod_gather.slang`), the one kernel that already
+  touches every drawn gaussian: a gaussian is written a fraction t of the way
+  to its parent, t from the parent's cell against the parent's own threshold
+  (`lodMorph`, with the cut's own `lodProjectedEdge` and `lodThresholdOf`,
+  now in `lod_common`). A group's parent is found by its cell code in the
+  level above, whose groups are in code order; a splat's is its finest-level
+  group. The opacity keeps opacity × two-axis area, the weight the merge
+  summed, so the children's opacities at t = 1 sum to their parent's. A glass
+  or sheet parent, never drawn merged, is not morphed to.
+- **What it costs.** The cut's selection does not change, so the cut is
+  gathered again only because its gaussians move: every frame the eye moves.
+- **Checked.** A random cloud of 60,000 splats, threshold 4 px, dissolve 2,
+  the eye backing away half a percent a frame for 48 frames: the pixels
+  stepping more than 2/255 between consecutive frames sum to 90,673 plain and
+  61,615 with morph 2, the gaussians drawn the same in both.
+- **Measured on a capture.** In the UE plugin, which morphs the same way, a
+  town of 106 M gaussians seen whole from afar flickered as much with the
+  morph as without (2.2 to 2.4 % of pixels past 4/255 while the threshold was
+  swept, 1.7 % with it still: most of that view's flicker is sub-pixel
+  gaussians aliasing, not levels switching), and a band of 1.5 took 15 % of
+  the edge detail off a frame over the cliff. Off by default.
+- **Not done.** The paged tree; the transfer and the other payloads a cloud
+  carries beside its gaussians stay the child's.
+
 ### Not done yet
 - **The cut still waits twice a frame:** once for its counts, which come back
   in one read (reading them level by level had cost 3.9 against 2.3 ms), and

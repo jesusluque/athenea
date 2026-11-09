@@ -3048,7 +3048,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             // Short of memory, each level given up doubles the pixels a merged
             // cell may span: a coarser cut, fewer splats.
             cuts.push_back({cloud, entry.objectToWorld, entry.edit,
-                            entry.asset.threshold * static_cast<float>(1u << lodBias_), entry.asset.dissolve});
+                            entry.asset.threshold * static_cast<float>(1u << lodBias_), entry.asset.dissolve,
+                            entry.asset.morph});
             // A live pool is updated before the cut (commit), not by what it wants.
             poolOf.push_back(entry.asset.live.empty() ? entry.pool.get() : nullptr);
             cutPrims.push_back(id.GetString());

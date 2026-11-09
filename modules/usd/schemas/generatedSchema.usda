@@ -90,6 +90,10 @@ ParticleField itself."""
         doc = "The cut staggered: each merged cell switches to its children at its own threshold, lod:threshold times this to the power h - 1/2 with h hashed from the cell, so the edge between two levels is spread over a band of distances (1: one threshold)."
         interpolation = "constant"
     )
+    float primvars:athenea:lod:morph = 0 (
+        doc = "The cut morphed: a gaussian is drawn toward its parent as the parent's cell nears its threshold -- a fraction (morph - r) / (morph - 1) of the way, r the parent's pixels over its threshold -- so it is the parent when the cut switches (up to 1: no morph)."
+        interpolation = "constant"
+    )
 }
 
 class "AtheneaLiveSourceAPI" (

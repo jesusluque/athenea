@@ -10,32 +10,12 @@ StructuredBuffer<uint>    pbr;        // per group, where params.pbrs: its mater
 RWStructuredBuffer<uint>  selected;
 ConstantBuffer<LodParams> params;     // count; level (of `cells`); threshold; eye; coarsest
 
-/// The pixels a level-`level` cell `cell` spans at its nearest point to the eye.
 float projectedEdge(uint cell, uint level) {
-    const float edge = params.extent / float(1u << level);
-    if (params.orthographic != 0) {
-        return edge * params.pixelsPerUnit;
-    }
-    const float3 lo = float3(params.boundsLoX, params.boundsLoY, params.boundsLoZ) + float3(cellIndex(cell)) * edge;
-    const float3 eye = float3(params.eyeX, params.eyeY, params.eyeZ);
-    const float3 nearest = clamp(eye, lo, lo + edge);
-    // Inside the cell: as near as it gets, so as big as it gets.
-    const float distance = max(length(nearest - eye), 1e-6);
-    return edge * params.pixelsPerUnit / distance;
-}
-
-/// A cell's own threshold (LodParams::dissolve). A group asks its parent with
-/// the parent's own, so the cut stays a cut: nothing drawn twice or missed.
-float cellHash(uint cell, uint level) {
-    uint v = cell * 747796405u + level * 2891336453u + 1u;
-    v = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
-    v = (v >> 22u) ^ v;
-    return float(v) * (1.0 / 4294967296.0);
+    return lodProjectedEdge(params, cell, level);
 }
 
 float thresholdOf(uint cell, uint level) {
-    const float k = max(params.dissolve, 1.0);
-    return k <= 1.0 ? params.threshold : params.threshold * exp2(log2(k) * (cellHash(cell, level) - 0.5));
+    return lodThresholdOf(params, cell, level);
 }
 
 bool small(uint cell, uint level) {

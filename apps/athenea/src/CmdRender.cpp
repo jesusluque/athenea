@@ -33,6 +33,7 @@ struct RenderOptions {
     std::vector<std::string> points;
     float                    lod = 0.0F;   ///< px a merged cell may span; 0 draws the splats
     float                    lodDissolve = 1.0F;   ///< the cut staggered: each cell at lod * this^(h - 1/2)
+    float                    lodMorph = 0.0F;      ///< the cut morphed: toward the parent within this many thresholds
     uint64_t                 streamBudget = 0;   ///< .athc: splats on the device at once; 0 reads it whole
     std::string              technique = "raster";    ///< raster | rt | rt-hw | rt-bvh | reference | reference-rt
     std::string              pointRoute = "raster";   ///< raster | discs
@@ -289,14 +290,14 @@ int run(const RenderOptions& options, bool bench) {
         std::printf("levels of detail built in %.1f ms\n",
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
         for (size_t k = 0; k < lodClouds.size(); ++k) {
-            lodInstances.push_back({&lodClouds[k], model, {}, std::nullopt, options.lodDissolve});
+            lodInstances.push_back({&lodClouds[k], model, {}, std::nullopt, options.lodDissolve, options.lodMorph});
         }
         for (const auto& cloud : athcClouds) {
-            lodInstances.push_back({cloud.get(), model, {}, std::nullopt, options.lodDissolve});
+            lodInstances.push_back({cloud.get(), model, {}, std::nullopt, options.lodDissolve, options.lodMorph});
         }
         poolOf.assign(lodInstances.size(), nullptr);
         for (const auto& pool : pools) {
-            lodInstances.push_back({&pool->cloud(), model, {}, std::nullopt, options.lodDissolve});
+            lodInstances.push_back({&pool->cloud(), model, {}, std::nullopt, options.lodDissolve, options.lodMorph});
             poolOf.push_back(pool.get());
         }
     }
@@ -445,6 +446,9 @@ void addOptions(CLI::App* cmd, RenderOptions& o) {
     cmd->add_option("--lod-dissolve", o.lodDissolve,
                     "levels of detail: each merged cell switches at --lod times this to the power h - 1/2, h hashed from the cell, spreading the cut's edge over a band (1: one threshold)")
         ->check(CLI::Range(1.0F, 16.0F));
+    cmd->add_option("--lod-morph", o.lodMorph,
+                    "levels of detail: a gaussian drawn toward its parent as the parent's cell nears its threshold, fully at it, from this many thresholds (0: no morph)")
+        ->check(CLI::Range(0.0F, 16.0F));
     cmd->add_option("--stream-budget", o.streamBudget,
                     ".athc: splats kept on the device, loaded as the view wants them (0: read whole)");
     cmd->add_flag("--no-antialias", o.noAntialias, "no Mip-Splatting 2D filter compensation");

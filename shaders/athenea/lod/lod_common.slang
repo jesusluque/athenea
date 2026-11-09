@@ -40,6 +40,7 @@
 // is drawn merged instead (its own Gaussian: the nearest resident ancestor of
 // those splats), and those chunks are asked for.
 module lod_common;
+import athenea.common.morton;
 
 public static const uint kLevels = 10;   // 30-bit codes
 
@@ -102,7 +103,58 @@ public struct LodParams {
     /// rather than sliding over the scene as one ring. 1 (or unset) is the
     /// cut as it was.
     public float dissolve;
+    /// gather: the cut morphed (lod_gather). A gaussian whose parent's cell
+    /// spans r times the parent's threshold (r > 1, or the parent would be
+    /// drawn) is drawn a fraction t = (morph - r) / (morph - 1) of the way to
+    /// its parent: at the switch it is the parent, so nothing pops. 0 (or
+    /// anything up to 1) draws the gaussians as they are.
+    public float morph;
+    /// gather: where a gaussian's parent is. 0: none (the coarsest level, or
+    /// the morph off); 1: a group, whose parent is the one of `parentGroups`
+    /// at `level - 1` holding cell >> 3; 2: a splat, whose parent is its
+    /// finest-level group (`groups`).
+    public uint  morphParent;
+    public uint  parentGroups;
 };
+
+/// The pixels a level-`level` cell spans at its nearest point to the eye.
+public float lodProjectedEdge(LodParams p, uint cell, uint level) {
+    const float edge = p.extent / float(1u << level);
+    if (p.orthographic != 0) {
+        return edge * p.pixelsPerUnit;
+    }
+    const float3 lo = float3(p.boundsLoX, p.boundsLoY, p.boundsLoZ) + float3(cellIndex(cell)) * edge;
+    const float3 eye = float3(p.eyeX, p.eyeY, p.eyeZ);
+    const float3 nearest = clamp(eye, lo, lo + edge);
+    // Inside the cell: as near as it gets, so as big as it gets.
+    const float distance = max(length(nearest - eye), 1e-6);
+    return edge * p.pixelsPerUnit / distance;
+}
+
+/// A cell's own threshold (LodParams::dissolve). A group asks its parent with
+/// the parent's own, so the cut stays a cut: nothing drawn twice or missed.
+public float lodCellHash(uint cell, uint level) {
+    uint v = cell * 747796405u + level * 2891336453u + 1u;
+    v = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
+    v = (v >> 22u) ^ v;
+    return float(v) * (1.0 / 4294967296.0);
+}
+
+public float lodThresholdOf(LodParams p, uint cell, uint level) {
+    const float k = max(p.dissolve, 1.0);
+    return k <= 1.0 ? p.threshold : p.threshold * exp2(log2(k) * (lodCellHash(cell, level) - 0.5));
+}
+
+/// How far a gaussian is drawn toward its parent (LodParams::morph): 0 where
+/// the parent's cell spans `morph` times its threshold or more, 1 at the
+/// threshold, where the cut switches to the parent.
+public float lodMorph(LodParams p, uint parentCell, uint parentLevel) {
+    if (p.morph <= 1.0 || p.threshold <= 0.0) {
+        return 0.0;
+    }
+    const float r = lodProjectedEdge(p, parentCell, parentLevel) / lodThresholdOf(p, parentCell, parentLevel);
+    return saturate((p.morph - r) / (p.morph - 1.0));
+}
 
 /// A GLASS OR A SHEET, by its material word (splat_encoding's pbr): what
 /// transmits more than it reflects, or a thin wall that transmits at all.

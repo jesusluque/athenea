@@ -231,6 +231,58 @@ TEST_CASE("a staggered cut draws between the cuts at its band's ends, and 1 is t
     CHECK(drawn(t, 1.0F) == plain);
 }
 
+TEST_CASE("a morphed cut draws the same gaussians and steps less from frame to frame", "[lod][gpu]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    CloudBuilder built = randomCloud(60000, 43, 0.003F, 0.05F);
+    auto cloud = h->loader.upload(built.raw, 3);
+    REQUIRE(cloud);
+    auto lod = h->builder.build(*cloud);
+    if (!lod) FAIL(lod.error().toString());
+    render::RenderSettings settings;
+    settings.width = 240;
+    settings.height = 180;
+    // The eye backing away half a percent a frame: the cut switches groups
+    // all the way, and each switch is a step between two frames that the
+    // eye's own motion is not. The steps summed, plain and morphed.
+    const auto walk = [&](float morph, uint32_t& drawn) {
+        uint64_t stepped = 0;
+        render::RenderTargets last, now;
+        drawn = 0;
+        for (int frame = 0; frame < 48; ++frame) {
+            const double away = 30.0 * std::pow(1.005, frame);
+            const render::Camera camera = render::Camera::lookingAt({0.2 * away, 0.13 * away, away}, {0.0, 0.0, 0.0});
+            const render::Projection projection = render::projectionFor(camera, settings.width, settings.height);
+            std::vector<lod::CutStats> stats;
+            lod::LodInstance instance{&*lod, render::Mat4::identity()};
+            instance.dissolve = 2.0F;
+            instance.morph = morph;
+            auto selected = h->cut.select(projection, std::vector<lod::LodInstance>{instance}, 4.0F, &stats);
+            if (!selected) FAIL(selected.error().toString());
+            REQUIRE(stats.size() == 1);
+            drawn += stats.front().splats + stats.front().merged;
+            REQUIRE(h->raster.render(projection, *selected, settings, now));
+            if (frame > 0) {
+                auto diff = render::compareImages(*gpu->library, last.colour, now.colour, settings.width,
+                                                  settings.height);
+                REQUIRE(diff);
+                stepped += diff->over2;
+            }
+            std::swap(last, now);
+        }
+        return stepped;
+    };
+    uint32_t plainDrawn = 0;
+    uint32_t morphedDrawn = 0;
+    const uint64_t plain = walk(0.0F, plainDrawn);
+    const uint64_t morphed = walk(2.0F, morphedDrawn);
+    std::printf("  pixels stepping over 2/255 between frames, 47 steps: %llu plain, %llu morphed\n",
+                static_cast<unsigned long long>(plain), static_cast<unsigned long long>(morphed));
+    // The morph moves gaussians, it does not choose them.
+    CHECK(morphedDrawn == plainDrawn);
+    CHECK(morphed < plain);
+}
+
 namespace {
 
 /// The cloud as a stream would hold it: chunk c in slot chunks-1-c (copied on

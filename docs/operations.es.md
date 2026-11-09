@@ -196,6 +196,7 @@ athenea info
 | `--degree` | 0..3 | `3` | tope de armónicos evaluados |
 | `--lod` | número | `0` | píxeles que puede abarcar una celda fundida; 0 dibuja todos los splats |
 | `--lod-dissolve` | 1..16 | `1` | el corte escalonado: cada celda fundida cambia a `--lod` × esto^(h − ½), h un hash de la celda; 1 es un solo umbral |
+| `--lod-morph` | 0..16 | `0` | el corte con morph: una gaussiana se dibuja hacia su padre desde este número de umbrales del padre, del todo en uno; hasta 1 no hay morph |
 | `--stream-budget` | entero | `0` | `.athc`: splats que se quedan en el dispositivo; 0 lee el fichero entero |
 | `--no-antialias` | flag | apagado | quita la compensación de filtro 2D de Mip-Splatting a todas las nubes, por encima de lo que diga un `.spz` |
 | `-o`, `--output` | ruta | `out.exr` | RGBA en media más un canal `Z` |
@@ -1729,6 +1730,22 @@ detalle medio es el del umbral, pero el borde se reparte en la banda de
 distancias que abarca el dissolve. 2 lo reparte en una octava. El árbol
 paginado de un fichero de versión 3 se corta con un solo umbral.
 
+**El corte con morph.** El corte cambia un padre por sus hijos en un umbral,
+una gaussiana por muchas. `--lod-morph` (`primvars:athenea:lod:morph` en una
+escena) dibuja cada gaussiana una fracción t del camino hacia su padre,
+t = (morph − r) / (morph − 1), con r los píxeles que abarca la celda del padre
+entre el umbral propio del padre: 0 donde al padre le faltan `morph` umbrales
+o más para dibujarse, 1 donde el corte cambia a él. La posición, los
+log-escalas, la rotación, el color y los armónicos, la normal y la emisión van
+hacia los del padre; la opacidad conserva la masa de la gaussiana (opacidad ×
+el área de sus dos ejes más largos), que es con lo que se fundió su padre. El
+corte es el mismo: se dibujan las mismas gaussianas. Una gaussiana a medio
+camino de su padre es más ancha y más tenue que antes, así que una banda
+ancha suaviza la imagen: 1.15 solo mueve lo que está a menos de un 15 % de su
+cambio. Un corte con morph se reúne (gather) en cada frame en que el ojo se
+mueve. Se aplica a los niveles de un fichero de versión 1 o 2; el árbol
+paginado de uno de versión 3, no.
+
 Una gaussiana fundida conserva la masa de sus miembros: donde cubrían su celda
 más de una vez, su opacidad pasa de 1 y se dibuja con el núcleo más duro, tan
 sólida como ellos hasta el borde de la celda. Una región cuyos chunks aún no
@@ -2392,6 +2409,7 @@ captura graduada aquí no coincide con los mismos números aplicados a su sRGB.
 | `primvars:athenea:asset` | asset | — |
 | `primvars:athenea:lod:threshold` | float | `1` |
 | `primvars:athenea:lod:dissolve` | float | `1`, un solo umbral |
+| `primvars:athenea:lod:morph` | float | `0`, sin morph |
 | `primvars:athenea:stream:budget` | int64 | `0`, lee entero |
 
 **`AtheneaLiveSourceAPI`** — una nube dibujada desde un stream en vivo de

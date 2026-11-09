@@ -730,6 +730,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         mix(instance.cloud != nullptr ? instance.cloud->count : 0u);
         mixDouble(instance.threshold.value_or(-1.0F));
         mixDouble(instance.dissolve);
+        mixDouble(instance.morph);
         for (float v : instance.objectToWorld.rows3x4()) {
             uint32_t bits = 0;
             std::memcpy(&bits, &v, 4);
@@ -773,6 +774,9 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         uint32_t           chunks = 0, finestGroups = 0;
         float              cutThreshold = 0.0F;
         float              cutDissolve = 1.0F;
+        float              cutMorph = 0.0F;
+        float              eye[3] = {0.0F, 0.0F, 0.0F};   ///< in the cloud's space (the gather's morph)
+        float              pixelsPerUnit = 0.0F;
         uint64_t           countsAt = 0;   ///< its counts, then its needs, in counts_
         std::vector<uint32_t> read;
         uint32_t           drawn = 0, splatsDrawn = 0;
@@ -807,6 +811,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         w.finestGroups = lod.levels.back().gaussians.count;
         w.cutThreshold = instance.threshold.value_or(threshold);
         w.cutDissolve = std::max(instance.dissolve, 1.0F);
+        w.cutMorph = instance.morph > 1.0F ? instance.morph : 0.0F;
         w.joined = lod.payloadCount > 0;
         w.countsAt = countWords;
         countWords += w.parts + (lod.streamed ? w.chunks : 0);
@@ -840,6 +845,10 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                                            aofx::xform::length(instance.objectToWorld.column(2))});
             const float pixelsPerUnit = static_cast<float>(projection.orthographic ? projection.focalX * scale
                                                                                    : projection.focalX);
+            w.eye[0] = static_cast<float>(eye.x);
+            w.eye[1] = static_cast<float>(eye.y);
+            w.eye[2] = static_cast<float>(eye.z);
+            w.pixelsPerUnit = pixelsPerUnit;
             const auto setCut = [&](rhi::ShaderCursor p, uint32_t count, uint32_t level, bool coarsest) {
                 p["count"].setData(count);
                 p["level"].setData(level);
@@ -929,7 +938,10 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
             w.drawn += w.read[part];
             w.splatsDrawn += part < w.levels ? 0 : w.read[part];
         }
-        w.changed = !frame.gathered || frame.gatheredFrom != &lod || frame.gatheredResidency != lod.residency ||
+        // A morphed cut moves its gaussians with the eye: gathered every
+        // frame the eye moves (a still eye is the last call's, above).
+        w.changed = w.cutMorph > 0.0F || !frame.gathered || frame.gatheredFrom != &lod ||
+                    frame.gatheredResidency != lod.residency ||
                     frame.lastCounts.size() != w.parts ||
                     frame.joined != w.joined;
         for (size_t part = 0; !w.changed && part < w.parts; ++part) {
@@ -1041,10 +1053,40 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                     cursor["sh"].setBinding(frame.cloud.sh.rhi());
                     bindNormals(cursor, source, frame.cloud);
                     bindEmission(cursor, source, frame.cloud);
+                    // The morph's parent: the level above a merged level's
+                    // groups, the finest level a splat's (lod_gather).
+                    const uint32_t morphParent = w.cutMorph <= 0.0F ? 0u : merged ? (part > 0 ? 1u : 0u) : 2u;
+                    const LodLevel& parent = lod.levels[merged ? (part > 0 ? part - 1 : 0) : w.levels - 1];
+                    const bool pbrs = parent.gaussians.hasPbr();
+                    cursor["cells"].setBinding(merged ? lod.levels[part].cells.rhi() : parent.cells.rhi());
+                    cursor["parentCells"].setBinding(parent.cells.rhi());
+                    cursor["parentPositions"].setBinding(parent.gaussians.positions.rhi());
+                    cursor["parentShape"].setBinding(parent.gaussians.shape.rhi());
+                    cursor["parentSh"].setBinding(parent.gaussians.sh.valid() ? parent.gaussians.sh.rhi()
+                                                                               : parent.gaussians.shape.rhi());
+                    cursor["parentNormals"].setBinding(parent.gaussians.hasNormals() ? parent.gaussians.normals.rhi()
+                                                                                      : parent.cells.rhi());
+                    cursor["parentEmission"].setBinding(parent.gaussians.hasEmission() ? parent.gaussians.emission.rhi()
+                                                                                        : parent.cells.rhi());
+                    cursor["parentPbr"].setBinding(pbrs ? parent.gaussians.pbr.rhi() : parent.cells.rhi());
+                    cursor["groups"].setBinding(lod.groups.valid() ? lod.groups.rhi() : parent.cells.rhi());
                     cursor["params"]["count"].setData(w.countOf(part));
                     cursor["params"]["base"].setData(base);
                     cursor["params"]["offset"].setData(offset);
                     cursor["params"]["shWords"].setData(lod.splats.shWords);
+                    setBounds(cursor["params"], lod);
+                    cursor["params"]["level"].setData(merged ? lod.levels[part].level : parent.level);
+                    cursor["params"]["eyeX"].setData(w.eye[0]);
+                    cursor["params"]["eyeY"].setData(w.eye[1]);
+                    cursor["params"]["eyeZ"].setData(w.eye[2]);
+                    cursor["params"]["pixelsPerUnit"].setData(w.pixelsPerUnit);
+                    cursor["params"]["threshold"].setData(w.cutThreshold);
+                    cursor["params"]["dissolve"].setData(w.cutDissolve);
+                    cursor["params"]["morph"].setData(w.cutMorph);
+                    cursor["params"]["orthographic"].setData(uint32_t{projection.orthographic ? 1u : 0u});
+                    cursor["params"]["morphParent"].setData(morphParent);
+                    cursor["params"]["parentGroups"].setData(parent.gaussians.count);
+                    cursor["params"]["pbrs"].setData(uint32_t{pbrs ? 1u : 0u});
                 });
                 if (w.joined) {
                     // Where each one's payload is.

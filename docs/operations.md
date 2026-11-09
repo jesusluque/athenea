@@ -192,6 +192,7 @@ athenea info
 | `--degree` | 0..3 | `3` | cap on the harmonics evaluated |
 | `--lod` | number | `0` | pixels a merged cell may span; 0 draws every splat |
 | `--lod-dissolve` | 1..16 | `1` | the cut staggered: each merged cell switches at `--lod` × this^(h − ½), h hashed from the cell; 1 is one threshold |
+| `--lod-morph` | 0..16 | `0` | the cut morphed: a gaussian is drawn toward its parent from this many of the parent's thresholds, fully at one; up to 1 is no morph |
 | `--stream-budget` | integer | `0` | `.athc`: splats kept on the device; 0 reads the file whole |
 | `--no-antialias` | flag | off | drop the Mip-Splatting 2D filter compensation for every cloud, over what an `.spz` says |
 | `-o`, `--output` | path | `out.exr` | half RGBA plus a `Z` channel |
@@ -1676,6 +1677,21 @@ missing) and the mean detail is the threshold's, but the edge is spread over
 the band of distances the dissolve spans. 2 spreads it over an octave. The
 paged tree of a version 3 file is cut with one threshold.
 
+**The cut morphed.** The cut swaps a parent for its children at one
+threshold, one gaussian for many. `--lod-morph` (`primvars:athenea:lod:morph`
+on a stage) draws each gaussian a fraction t of the way to its parent
+instead, t = (morph − r) / (morph − 1) with r the pixels the parent's cell
+spans over the parent's own threshold: 0 where the parent is `morph`
+thresholds or more from being drawn, 1 where the cut switches to it. Position,
+log-scales, rotation, colour and harmonics, normal and emission go toward the
+parent's; the opacity keeps the gaussian's mass (opacity × the area of its two
+longest axes), which is what its parent was merged with. The cut itself is
+the same: the same gaussians are drawn. A gaussian part of the way to its
+parent is wider and fainter than it was, so a wide band softens the image:
+1.15 morphs only what is within 15 % of its switch. A morphed cut is gathered
+every frame the eye moves. The levels of a version 1 or 2 file are morphed; a
+version 3 file's paged tree is not.
+
 A merged gaussian keeps its members' mass: where they covered their cell more
 than once, its opacity passes 1 and it draws as the harder kernel, as solid as
 they were to the cell's edge. A region whose chunks are not on the device yet
@@ -2312,6 +2328,7 @@ capture graded here does not match the same numbers applied to its sRGB.
 | `primvars:athenea:asset` | asset | — |
 | `primvars:athenea:lod:threshold` | float | `1` |
 | `primvars:athenea:lod:dissolve` | float | `1`, one threshold |
+| `primvars:athenea:lod:morph` | float | `0`, no morph |
 | `primvars:athenea:stream:budget` | int64 | `0`, read whole |
 
 **`AtheneaLiveSourceAPI`** — a cloud drawn from a live stream of SPZ pages that
