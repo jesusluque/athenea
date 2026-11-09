@@ -149,6 +149,9 @@ struct LodInstance {
     render::Mat4         objectToWorld = render::Mat4::identity();
     render::SplatEdit    edit;
     std::optional<float> threshold;   ///< its own, over the call's
+    /// The cut staggered (lod_common's LodParams::dissolve): each cell at
+    /// `threshold * dissolve^(h - 1/2)`, h hashed from it; 1 is one threshold.
+    float                dissolve = 1.0F;
 };
 
 struct CutStats {

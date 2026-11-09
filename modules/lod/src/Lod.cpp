@@ -699,7 +699,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                                                                float threshold, std::vector<CutStats>* stats) {
     gpu::Device& device = *device_;
     // THE SAME VIEW OVER THE SAME CLOUDS IS THE LAST CUT. A cut reads the eye,
-    // the focal length, the thresholds, the clouds' places and which of their
+    // the focal length, the thresholds (and how each is staggered), the clouds' places and which of their
     // chunks are on the device (LodCloud::residency); where none changed, the
     // last call's clouds and counts stand, and the frame does no work and does
     // not wait for the device.
@@ -729,6 +729,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         }
         mix(instance.cloud != nullptr ? instance.cloud->count : 0u);
         mixDouble(instance.threshold.value_or(-1.0F));
+        mixDouble(instance.dissolve);
         for (float v : instance.objectToWorld.rows3x4()) {
             uint32_t bits = 0;
             std::memcpy(&bits, &v, 4);
@@ -771,6 +772,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         size_t             levels = 0, parts = 0;
         uint32_t           chunks = 0, finestGroups = 0;
         float              cutThreshold = 0.0F;
+        float              cutDissolve = 1.0F;
         uint64_t           countsAt = 0;   ///< its counts, then its needs, in counts_
         std::vector<uint32_t> read;
         uint32_t           drawn = 0, splatsDrawn = 0;
@@ -804,6 +806,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         w.chunks = lod.chunks();
         w.finestGroups = lod.levels.back().gaussians.count;
         w.cutThreshold = instance.threshold.value_or(threshold);
+        w.cutDissolve = std::max(instance.dissolve, 1.0F);
         w.joined = lod.payloadCount > 0;
         w.countsAt = countWords;
         countWords += w.parts + (lod.streamed ? w.chunks : 0);
@@ -846,6 +849,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                 p["eyeZ"].setData(static_cast<float>(eye.z));
                 p["pixelsPerUnit"].setData(pixelsPerUnit);
                 p["threshold"].setData(w.cutThreshold);
+                p["dissolve"].setData(w.cutDissolve);
                 p["orthographic"].setData(uint32_t{projection.orthographic ? 1u : 0u});
                 p["coarsest"].setData(uint32_t{coarsest ? 1u : 0u});
                 p["chunkSplats"].setData(lod.chunkSplats);

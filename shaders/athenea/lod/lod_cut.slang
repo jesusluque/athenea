@@ -24,8 +24,22 @@ float projectedEdge(uint cell, uint level) {
     return edge * params.pixelsPerUnit / distance;
 }
 
+/// A cell's own threshold (LodParams::dissolve). A group asks its parent with
+/// the parent's own, so the cut stays a cut: nothing drawn twice or missed.
+float cellHash(uint cell, uint level) {
+    uint v = cell * 747796405u + level * 2891336453u + 1u;
+    v = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
+    v = (v >> 22u) ^ v;
+    return float(v) * (1.0 / 4294967296.0);
+}
+
+float thresholdOf(uint cell, uint level) {
+    const float k = max(params.dissolve, 1.0);
+    return k <= 1.0 ? params.threshold : params.threshold * exp2(log2(k) * (cellHash(cell, level) - 0.5));
+}
+
 bool small(uint cell, uint level) {
-    return params.threshold > 0.0 && projectedEdge(cell, level) <= params.threshold;
+    return params.threshold > 0.0 && projectedEdge(cell, level) <= thresholdOf(cell, level);
 }
 
 [shader("compute")]

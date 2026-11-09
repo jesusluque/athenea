@@ -194,6 +194,43 @@ TEST_CASE("far away, a dense cloud draws a fraction of its splats and looks the 
 }
 
 
+TEST_CASE("a staggered cut draws between the cuts at its band's ends, and 1 is the plain cut", "[lod][gpu]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    CloudBuilder built = randomCloud(60000, 43, 0.003F, 0.05F);
+    auto cloud = h->loader.upload(built.raw, 3);
+    REQUIRE(cloud);
+    auto lod = h->builder.build(*cloud);
+    if (!lod) FAIL(lod.error().toString());
+    render::RenderSettings settings;
+    settings.width = 240;
+    settings.height = 180;
+    const render::Camera camera = render::Camera::lookingAt({6.0, 4.0, 30.0}, {0.0, 0.0, 0.0});
+    const render::Projection projection = render::projectionFor(camera, settings.width, settings.height);
+    const auto drawn = [&](float threshold, float dissolve) {
+        std::vector<lod::CutStats> stats;
+        lod::LodInstance instance{&*lod, render::Mat4::identity()};
+        instance.dissolve = dissolve;
+        auto selected = h->cut.select(projection, std::vector<lod::LodInstance>{instance}, threshold, &stats);
+        if (!selected) FAIL(selected.error().toString());
+        REQUIRE(stats.size() == 1);
+        return stats.front().splats + stats.front().merged;
+    };
+    // Each cell switches somewhere in [T / sqrt 2, T sqrt 2]: the cut holds
+    // no more than the finest end's and no fewer than the coarsest's.
+    const float t = 2.0F;
+    const uint32_t fine = drawn(t / std::sqrt(2.0F), 1.0F);
+    const uint32_t plain = drawn(t, 1.0F);
+    const uint32_t staggered = drawn(t, 2.0F);
+    const uint32_t coarse = drawn(t * std::sqrt(2.0F), 1.0F);
+    std::printf("  %.0f px: %u at T/sqrt2, %u plain, %u staggered, %u at T*sqrt2\n", t, fine, plain, staggered, coarse);
+    CHECK(staggered <= fine);
+    CHECK(staggered >= coarse);
+    CHECK(staggered != plain);
+    // 1 is the plain cut, to the gaussian.
+    CHECK(drawn(t, 1.0F) == plain);
+}
+
 namespace {
 
 /// The cloud as a stream would hold it: chunk c in slot chunks-1-c (copied on

@@ -628,6 +628,27 @@ equal to 1e-4.
   8 of 20 slots, renders through Hydra with max 0 against the same cut and
   stream done directly.
 
+### The cut staggered (`--lod-dissolve`, `athenea:lod:dissolve`)
+- **Why.** With one threshold every cell at a distance switches level
+  together, so the edge between two levels is a ring that slides over the
+  scene as the eye moves. Where a coarse level shows differently from its
+  splats it is seen: flying over a town of 106 M gaussians (four `.athc`
+  parts), the edge between a part's finest merges and its splats ran across
+  a forest. The UE plugin cut the same way, and a staggered cut there was
+  judged smoother side by side on the same GPU.
+- **How.** Each cell's threshold is the threshold times the dissolve to the
+  power h − ½, h a hash of its code and level. A group asks its parent with
+  the parent's own (the parent's code is the child's shifted by three, at
+  the level above), so the cut is still a cut. The mean detail is the
+  threshold's; the edge is spread over the band the dissolve spans.
+- **The cut's cache.** The last cut is reused when the view, the thresholds
+  and the clouds are the same; the dissolve is part of that key, or a
+  staggered cut asked right after the plain one would be the plain one.
+- **Checked.** A random cloud of 60,000 splats at 2 px draws 38,529 plain
+  and 40,740 staggered (dissolve 2), between the plain cuts at 2/√2 and 2·√2
+  (60,000 and 22,429); dissolve 1 is the plain cut to the gaussian.
+- **Not done.** A version 3 file's paged tree is cut with one threshold.
+
 ### Not done yet
 - **The cut still waits twice a frame:** once for its counts, which come back
   in one read (reading them level by level had cost 3.9 against 2.3 ms), and

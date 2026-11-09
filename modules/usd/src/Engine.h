@@ -77,6 +77,7 @@ namespace athenea::usd {
 struct StreamedAsset {
     std::string path;              ///< resolved; empty when the prim has none
     float       threshold = 1.0F;  ///< px a merged cell may span
+    float       dissolve = 1.0F;   ///< the cut staggered (athenea:lod:dissolve)
     uint64_t    budget = 0;        ///< splats on the device; 0 reads the file whole (a stream: two epochs' room)
     std::string live;              ///< the stream's name; empty when the prim names none
     uint32_t    liveChunks = 64;   ///< chunk ids 0 .. liveChunks - 1

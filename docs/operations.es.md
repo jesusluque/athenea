@@ -195,6 +195,7 @@ athenea info
 | `--near` | número | `0.01` | unidades de escena |
 | `--degree` | 0..3 | `3` | tope de armónicos evaluados |
 | `--lod` | número | `0` | píxeles que puede abarcar una celda fundida; 0 dibuja todos los splats |
+| `--lod-dissolve` | 1..16 | `1` | el corte escalonado: cada celda fundida cambia a `--lod` × esto^(h − ½), h un hash de la celda; 1 es un solo umbral |
 | `--stream-budget` | entero | `0` | `.athc`: splats que se quedan en el dispositivo; 0 lee el fichero entero |
 | `--no-antialias` | flag | apagado | quita la compensación de filtro 2D de Mip-Splatting a todas las nubes, por encima de lo que diga un `.spz` |
 | `-o`, `--output` | ruta | `out.exr` | RGBA en media más un canal `Z` |
@@ -1715,6 +1716,19 @@ En una escena, esos dos son `primvars:athenea:lod:threshold` y
 `primvars:athenea:stream:budget` en el prim que nombra el asset con
 `primvars:athenea:asset`.
 
+**El corte escalonado.** Con un solo umbral, todas las celdas a la misma
+distancia cambian de nivel a la vez, y el borde entre dos niveles se desliza
+por la escena como un anillo al moverse el ojo; donde un nivel grueso es más
+oscuro que sus splats (una fusión promedia el interior en sombra de una copa
+con su parte alta iluminada), el anillo se ve. `--lod-dissolve`
+(`primvars:athenea:lod:dissolve` en una escena) da a cada celda un umbral
+propio, el umbral por el dissolve elevado a h − ½, con h un hash del código y
+el nivel de la celda: un grupo pregunta a su padre con el umbral del padre,
+así que el corte sigue siendo un corte (nada dos veces, nada falta) y el
+detalle medio es el del umbral, pero el borde se reparte en la banda de
+distancias que abarca el dissolve. 2 lo reparte en una octava. El árbol
+paginado de un fichero de versión 3 se corta con un solo umbral.
+
 Una gaussiana fundida conserva la masa de sus miembros: donde cubrían su celda
 más de una vez, su opacidad pasa de 1 y se dibuja con el núcleo más duro, tan
 sólida como ellos hasta el borde de la celda. Una región cuyos chunks aún no
@@ -2377,6 +2391,7 @@ captura graduada aquí no coincide con los mismos números aplicados a su sRGB.
 |---|---|---|
 | `primvars:athenea:asset` | asset | — |
 | `primvars:athenea:lod:threshold` | float | `1` |
+| `primvars:athenea:lod:dissolve` | float | `1`, un solo umbral |
 | `primvars:athenea:stream:budget` | int64 | `0`, lee entero |
 
 **`AtheneaLiveSourceAPI`** — una nube dibujada desde un stream en vivo de

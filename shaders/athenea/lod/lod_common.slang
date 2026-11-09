@@ -96,6 +96,12 @@ public struct LodParams {
     /// the harder kernel (splat/frame.slang's falloffAlpha), which keeps the
     /// mass of members that covered their cell more than once.
     public float mostOpacity;
+    /// cut: the cut staggered. Each cell switches at its own threshold,
+    /// `threshold * dissolve^(h - 1/2)` with h hashed from its code and level,
+    /// so the edge between two levels is spread over a band of distances
+    /// rather than sliding over the scene as one ring. 1 (or unset) is the
+    /// cut as it was.
+    public float dissolve;
 };
 
 /// A GLASS OR A SHEET, by its material word (splat_encoding's pbr): what

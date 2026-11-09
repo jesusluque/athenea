@@ -86,6 +86,10 @@ ParticleField itself."""
         doc = "Splats kept on the device, loaded from the file as views want them, most wanted first (0: the file is read whole)."
         interpolation = "constant"
     )
+    float primvars:athenea:lod:dissolve = 1 (
+        doc = "The cut staggered: each merged cell switches to its children at its own threshold, lod:threshold times this to the power h - 1/2 with h hashed from the cell, so the edge between two levels is spread over a band of distances (1: one threshold)."
+        interpolation = "constant"
+    )
 }
 
 class "AtheneaLiveSourceAPI" (

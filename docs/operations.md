@@ -191,6 +191,7 @@ athenea info
 | `--near` | number | `0.01` | scene units |
 | `--degree` | 0..3 | `3` | cap on the harmonics evaluated |
 | `--lod` | number | `0` | pixels a merged cell may span; 0 draws every splat |
+| `--lod-dissolve` | 1..16 | `1` | the cut staggered: each merged cell switches at `--lod` × this^(h − ½), h hashed from the cell; 1 is one threshold |
 | `--stream-budget` | integer | `0` | `.athc`: splats kept on the device; 0 reads the file whole |
 | `--no-antialias` | flag | off | drop the Mip-Splatting 2D filter compensation for every cloud, over what an `.spz` says |
 | `-o`, `--output` | path | `out.exr` | half RGBA plus a `Z` channel |
@@ -1663,6 +1664,18 @@ On a stage, the same two are `primvars:athenea:lod:threshold` and
 `primvars:athenea:stream:budget` on the prim that names the asset with
 `primvars:athenea:asset`.
 
+**The cut staggered.** With one threshold, every cell at the same distance
+switches level at once, and the edge between two levels slides over the scene
+as a ring as the eye moves; where a coarse level is darker than its splats (a
+merge averages a canopy's shaded inside with its lit top), the ring shows.
+`--lod-dissolve` (`primvars:athenea:lod:dissolve` on a stage) gives each cell
+a threshold of its own, the threshold times the dissolve to the power h − ½,
+h hashed from the cell's code and level: a group asks its parent with the
+parent's own, so the cut is still a cut (nothing drawn twice, nothing
+missing) and the mean detail is the threshold's, but the edge is spread over
+the band of distances the dissolve spans. 2 spreads it over an octave. The
+paged tree of a version 3 file is cut with one threshold.
+
 A merged gaussian keeps its members' mass: where they covered their cell more
 than once, its opacity passes 1 and it draws as the harder kernel, as solid as
 they were to the cell's edge. A region whose chunks are not on the device yet
@@ -2298,6 +2311,7 @@ capture graded here does not match the same numbers applied to its sRGB.
 |---|---|---|
 | `primvars:athenea:asset` | asset | — |
 | `primvars:athenea:lod:threshold` | float | `1` |
+| `primvars:athenea:lod:dissolve` | float | `1`, one threshold |
 | `primvars:athenea:stream:budget` | int64 | `0`, read whole |
 
 **`AtheneaLiveSourceAPI`** — a cloud drawn from a live stream of SPZ pages that
