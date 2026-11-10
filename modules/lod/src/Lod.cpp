@@ -1047,16 +1047,24 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         for (const Work& w : works) {
             wanted += w.drawn;
         }
-        const double ratio = static_cast<double>(wanted) / (0.85 * static_cast<double>(budget_));
+        const double fill = static_cast<double>(wanted) / static_cast<double>(budget_);
         if (wanted > budget_ && budgetTries_ < 6 && budgetScale_ < 1024.0F) {
-            budgetScale_ = std::min(budgetScale_ * static_cast<float>(std::sqrt(ratio)) * 1.02F, 1024.0F);
+            budgetScale_ = std::min(budgetScale_ * static_cast<float>(std::sqrt(fill / 0.85)) * 1.02F, 1024.0F);
             ++budgetTries_;
             auto again = select(projection, instances, threshold, stats);
             --budgetTries_;
             return again;
         }
-        if (budgetTries_ == 0 && ratio < 0.6 && budgetScale_ > 1.0F) {
-            budgetScale_ = std::max(budgetScale_ * 0.97F, 1.0F);
+        // Short of that, in small steps: the next call's cut 1 % coarser over
+        // nine tenths of the budget, 1 % finer under three quarters. A factor
+        // stepped by several percent moved every thinned cell's fraction in
+        // one frame.
+        if (budgetTries_ == 0) {
+            if (fill > 0.9 && budgetScale_ < 1024.0F) {
+                budgetScale_ = std::min(budgetScale_ * 1.01F, 1024.0F);
+            } else if (fill < 0.75 && budgetScale_ > 1.0F) {
+                budgetScale_ = std::max(budgetScale_ * 0.99F, 1.0F);
+            }
         }
     }
 

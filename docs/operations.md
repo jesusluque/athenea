@@ -1685,7 +1685,8 @@ paged tree of a version 3 file is cut with one threshold.
 cuts to N gaussians between them. A cut that would draw more is made again
 with every threshold raised, by the root of the excess over 85 % of the
 budget (a cut's gaussians go as the inverse square of its threshold), until
-it fits; a cut under 60 % of it eases the factor back 3 % a frame. Far detail
+it fits; short of that the factor moves 1 % a frame, up over nine tenths of
+the budget and down under three quarters. Far detail
 goes coarser and nothing is dropped. A budgeted cut also leaves out the cells
 the view does not show (its four side planes, a tenth wider than the image),
 so the budget is spent on the picture; and where the cloud carries nothing

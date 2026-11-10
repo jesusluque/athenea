@@ -1738,8 +1738,9 @@ paginado de un fichero de versión 3 se corta con un solo umbral.
 los cortes de un frame a N gaussianas entre todos. Un corte que dibujaría más
 se repite con todos los umbrales subidos, por la raíz del exceso sobre el 85 %
 del presupuesto (las gaussianas de un corte van como el inverso del cuadrado
-de su umbral), hasta que cabe; un corte por debajo del 60 % relaja el factor
-un 3 % por frame. El detalle lejano se hace más grueso y no se descarta nada.
+de su umbral), hasta que cabe; sin llegar a eso el factor se mueve un 1 % por
+frame, hacia arriba por encima de nueve décimas del presupuesto y hacia abajo
+por debajo de tres cuartos. El detalle lejano se hace más grueso y no se descarta nada.
 Un corte con presupuesto además deja fuera las celdas que la vista no muestra
 (sus cuatro planos laterales, una décima más anchos que la imagen), así que
 el presupuesto se gasta en la imagen; y donde la nube no lleva nada además de

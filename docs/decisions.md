@@ -657,8 +657,11 @@ equal to 1e-4.
 - **How.** `CutSelector::setBudget`. The counts a cut already reads say what
   it would draw; over the budget the cut is made again, in the same call and
   before anything is gathered, with the thresholds raised by the root of the
-  excess over 85 %, up to six times; under 60 % the factor eases back 3 % a
-  call. The factor is part of the cut's key.
+  excess over 85 %, up to six times. Short of that the factor moves 1 % a
+  call: up over nine tenths of the budget, down under three quarters (it
+  eased back 3 % a call and rose by whole steps, and with the splats thinned
+  each step moved every cell's fraction in one frame: a pulse across the
+  transition). The factor is part of the cut's key.
 - **What the view shows.** Counted whole, the town spent its budget off
   screen and the picture came out as coarse merges. A budgeted cut tests each
   cell's box, grown by an edge and a half (one edge lost near splats at the
