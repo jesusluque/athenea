@@ -146,7 +146,10 @@ void emit(uint j, uint k, float thinMore = 1.0, float thinToward = 0.0, float th
     // Its mass kept: at t = 1 the children's opacities sum to the parent's.
     const float mass = own.w * thinMore * discArea(exp(ownLog));
     const float plain = thinMore > 1.0 ? min(own.w * thinMore / (wider * wider), max(own.w, 1.0)) : own.w;
-    const float opacity = min(mass / max(discArea(exp(logScale)), 1e-30), max(plain, parent.w));
+    // A thinned splat never past opacity 1 (unless it was): over 1 is the
+    // harder kernel, and crossing it as the fraction moves is a jump.
+    const float massed = min(mass / max(discArea(exp(logScale)), 1e-30), max(plain, parent.w));
+    const float opacity = thinMore > 1.0 ? min(massed, max(own.w, 1.0)) : massed;
 
     positions[j] = float4(lerp(own.xyz, parent.xyz, t), opacity * thinFade);
     shape[j * 4] = encodeQuaternion(rotation);
@@ -200,15 +203,16 @@ void lodGatherAppend(uint3 tid: SV_DispatchThreadID) {
     // and one it keeps stands after the kept ones before it in its group.
     const uint morton = params.mortonBase + i;
     const bool whole = params.pbrs != 0 && lodKeptApart(parentPbr[g]);
+    const uint first = starts[g];
     const float fraction = whole ? 1.0 : lodThinFraction(params, parentCells[g], params.level);
-    uint rank = morton - starts[g];
+    uint rank = morton - first;
     if (fraction < 1.0) {
-        if (!lodThinKeeps(morton, fraction)) {
+        if (!lodThinKeeps(morton, first, fraction)) {
             return;
         }
         rank = 0u;
-        for (uint m = starts[g]; m < morton; ++m) {
-            rank += lodThinKeeps(m, fraction) ? 1u : 0u;
+        for (uint m = first; m < morton; ++m) {
+            rank += lodThinKeeps(m, first, fraction) ? 1u : 0u;
         }
     }
     const uint at = splatBases[g] + rank;
@@ -217,9 +221,8 @@ void lodGatherAppend(uint3 tid: SV_DispatchThreadID) {
     }
     // Toward its group over the band's last half: what is left of a group at
     // the switch is the merged gaussian that takes its place.
-    const float left = fraction < 1.0 ? 1.0 - log2(fraction) / log2(kLodThinLeast) : 1.0;
     emit(params.base + at, k, fraction < 1.0 ? kLodThinFadeMass / fraction : 1.0,
-         fraction < 1.0 ? saturate(1.0 - 2.0 * left) : 0.0, lodThinFade(morton, fraction));
+         lodThinToward(fraction), lodThinFade(morton, first, fraction));
 }
 
 /// THE SPLATS BY THEIR GROUPS. Where the store is the cloud's Morton order
@@ -237,18 +240,18 @@ void lodGatherRuns(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const bool whole = params.pbrs != 0 && lodKeptApart(parentPbr[g]);
-    const float fraction = whole ? 1.0 : lodThinFraction(params, parentCells[g], params.level);
-    const float left = fraction < 1.0 ? 1.0 - log2(fraction) / log2(kLodThinLeast) : 1.0;
-    const float more = fraction < 1.0 ? kLodThinFadeMass / fraction : 1.0;
-    const float toward = fraction < 1.0 ? saturate(1.0 - 2.0 * left) : 0.0;
+    const uint first = starts[g];
     const uint last = g + 1 < params.count ? starts[g + 1] : params.splats;
+    const float fraction = whole ? 1.0 : lodThinFraction(params, parentCells[g], params.level);
+    const float more = fraction < 1.0 ? kLodThinFadeMass / fraction : 1.0;
+    const float toward = lodThinToward(fraction);
     uint at = splatBases[g];
-    for (uint m = starts[g]; m < last; ++m) {
-        if (!lodThinKeeps(m, fraction)) {
+    for (uint m = first; m < last; ++m) {
+        if (!lodThinKeeps(m, first, fraction)) {
             continue;
         }
         if (at < params.appendLimit) {
-            emit(params.base + at, m, more, toward, lodThinFade(m, fraction));
+            emit(params.base + at, m, more, toward, lodThinFade(m, first, fraction));
         }
         ++at;
     }

@@ -95,7 +95,7 @@ ParticleField itself."""
         interpolation = "constant"
     )
     float primvars:athenea:lod:thin = 0 (
-        doc = "The splats thinned: while a finest merged cell spans under this many thresholds a fraction of its splats is drawn (a hash of each, the same every frame), halving with each equal step of the logarithm down to a thirty-second where the cell is drawn merged; those drawn carry the rest's mass. A budgeted cut's (athenea:lodBudget). Up to 1: every splat."
+        doc = "The splats thinned: while a finest merged cell spans under this many thresholds a fraction of its splats is drawn (by a splat's place in its cell's run, the same every frame), halving with each equal step of the logarithm down to a thirty-second where the cell is drawn merged; those drawn carry the rest's mass. A budgeted cut's (athenea:lodBudget). Up to 1: every splat."
         interpolation = "constant"
     )
 }

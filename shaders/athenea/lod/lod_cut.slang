@@ -107,7 +107,7 @@ void lodCutFinest(uint3 tid: SV_DispatchThreadID) {
             if (fraction < 1.0) {
                 drawn = 0u;
                 for (uint m = starts[g]; m < last; ++m) {
-                    drawn += lodThinKeeps(m, fraction) ? 1u : 0u;
+                    drawn += lodThinKeeps(m, starts[g], fraction) ? 1u : 0u;
                 }
             }
         }

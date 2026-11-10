@@ -713,7 +713,7 @@ equal to 1e-4.
 - **How.** `lodThinFraction` (lod_common): the fraction of a finest cell's
   splats drawn, from the cell's pixels over its own threshold, a
   thirty-second at the switch. The finest level's cut counts what each cell
-  keeps (a hash a splat, `lodThinKeeps`); the appended gather places a kept
+  keeps (`lodThinKeeps`, by a splat's turn); the appended gather places a kept
   splat after the kept ones before it in its cell, and writes it carrying
   the rest's mass: a little by width (the fourth root of the inverse
   fraction, at most one and a half), the rest by opacity up to 1, and over
@@ -723,8 +723,8 @@ equal to 1e-4.
   kernel): a stray splat larger than its cell, kept by the hash at a
   thirty-second, stood as a shard over the far meadows. Toward the merged
   gaussian such a splat shrinks.
-- **Checked.** The UE plugin thins the same splats (the same hash of the
-  same index). A frame of the flight's descent at a band of 4: houses where
+- **Checked.** The UE plugin thins the same splats (the same turn of the
+  same place in the run). A frame of the flight's descent at a band of 4: houses where
   merges stood across the town, no shard; two renders of it the same to the
   bit. With the eye moving, a frame with it: 45 ms high up, 66 over the cliff,
   28 at street level, against 30, 56 and 28 without (it draws gaussians where
@@ -733,6 +733,24 @@ equal to 1e-4.
   the band flicker as the fraction moved with the eye and the budget. Over
   the last 30 % of the fraction before its turn a kept splat's opacity falls
   to nothing (`lodThinFade`), and the rest make up the mass it lacks.
+- **Never past opacity 1.** What flicker was left in the band was measured
+  in the UE plugin with the view held still and the threshold swept, so a
+  frame differs from the next only by what the cut switches: pixels popping
+  (half the second difference in time past 4/255) 0.78 % thinned, 0.10 %
+  with no thinning. It was not the switch itself (the merged gaussian's
+  opacity split among a cell's survivors measured the same; a cell ending
+  with exactly one splat thinned the band into blobs and measured worse). It
+  was the opacity: on its way to a merged gaussian of opacity over 1 a
+  thinned splat crossed 1 as the fraction moved, and over 1 is the harder
+  kernel, drawn without what a small gaussian pays back -- a jump at each
+  crossing. A thinned splat now stays at 1 at most (its own, if that was
+  over): 0.13 % there.
+- **A turn by place.** Which splats go first was a hash of the splat's place
+  in the cloud's order, and a cell kept what chance said: none, or three, at
+  a thirty-second. A splat's turn is now its place in its cell's run by the
+  golden ratio (`lodThinTurn`): a cell keeps its fraction to one splat more
+  or less, spread along the run, and its first splat is never dropped, so no
+  cell stands empty before the switch.
 - **By the groups.** Thinned, the appended gather's pass over every splat
   cost 19 to 38 ms (each splat asked the fraction and counted the kept ones
   before it): frames of 90, 96 and 40 ms. Where every chunk is in its own

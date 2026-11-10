@@ -215,11 +215,18 @@ public uint levelShift(uint level) {
 /// group's turn as a pop. Before it a group's splats are thinned: while its
 /// cell spans r thresholds, r under `thin`, a fraction of them is drawn,
 /// halving with each equal step of log r down to a thirty-second at the
-/// switch (one or two of a group's tens). Which ones is a hash of the splat's
-/// place in the Morton order -- the same every frame, and a splat once dropped
-/// stays dropped farther away -- and those drawn take the mass of those
-/// dropped: half by width (scales by the fourth root of the inverse fraction),
-/// half by opacity (its root; past 1 the harder kernel, as a merge's).
+/// switch (one or two of a group's tens). Those drawn take the mass of those
+/// dropped: a little by width (the fourth root of the inverse fraction, at
+/// most one and a half), the rest by opacity, up to 1 and never past it
+/// (lod_gather): over 1 a gaussian is the harder kernel, drawn without what
+/// a small one pays back, so a thinned splat whose opacity crossed 1 as the
+/// fraction moved jumped, and those jumps were the flicker of the band.
+///
+/// Which go first is a splat's place in its group's run of the Morton order,
+/// by the golden ratio (`lodThinTurn`): the fraction f of a group of n keeps
+/// f n of them, one more or less, spread along the run -- the same every
+/// frame, and a splat once dropped stays dropped farther away -- and the
+/// run's first splat is never dropped, so no group is left with none.
 public static const float kLodThinLeast = 1.0 / 32.0;
 
 public float lodThinFraction(LodParams p, uint cell, uint level) {
@@ -228,12 +235,23 @@ public float lodThinFraction(LodParams p, uint cell, uint level) {
     }
     const float r = lodProjectedEdge(p, cell, level) / lodThresholdOf(p, cell, level);
     const float t = saturate(log(max(r, 1.0)) / log(p.thin));
-    return exp2(log2(kLodThinLeast) * (1.0 - t));
+    return t >= 1.0 ? 1.0 : exp2(log2(kLodThinLeast) * (1.0 - t));
 }
 
-/// Whether the splat at `morton` in the cloud's order is one of the fraction drawn.
-public bool lodThinKeeps(uint morton, float fraction) {
-    return fraction >= 1.0 || lodCellHash(morton, 0x9E3779B9u) < fraction;
+/// How far toward its group's merged gaussian a thinned splat is drawn: the
+/// band's last half, all the way at the switch.
+public float lodThinToward(float fraction) {
+    return fraction < 1.0 ? saturate(2.0 * log2(fraction) / log2(kLodThinLeast) - 1.0) : 0.0;
+}
+
+/// The turn of the splat at `morton` in the cloud's order, its group's run
+/// beginning at `first`: under the fraction, it is drawn.
+public float lodThinTurn(uint morton, uint first) {
+    return float((morton - first) * 0x9E3779B9u) * (1.0 / 4294967296.0);
+}
+
+public bool lodThinKeeps(uint morton, uint first, float fraction) {
+    return fraction >= 1.0 || lodThinTurn(morton, first) < fraction;
 }
 
 /// A kept splat does not go out at once: over the last `kLodThinFadeBand` of
@@ -243,6 +261,6 @@ public bool lodThinKeeps(uint morton, float fraction) {
 public static const float kLodThinFadeBand = 0.3;
 public static const float kLodThinFadeMass = 1.0 / (1.0 - 0.5 * kLodThinFadeBand);
 
-public float lodThinFade(uint morton, float fraction) {
-    return fraction >= 1.0 ? 1.0 : saturate((fraction - lodCellHash(morton, 0x9E3779B9u)) / (kLodThinFadeBand * fraction));
+public float lodThinFade(uint morton, uint first, float fraction) {
+    return fraction >= 1.0 ? 1.0 : saturate((fraction - lodThinTurn(morton, first)) / (kLodThinFadeBand * fraction));
 }

@@ -1702,9 +1702,10 @@ where it happens and a pop at each cell's turn. `--lod-thin`
 (`primvars:athenea:lod:thin`) thins a cell's splats before it: while the cell
 spans under that many thresholds a fraction of them is drawn, halving with
 each equal step of the logarithm down to a thirty-second. Which ones is a
-hash of the splat's place in the cloud's order, the same every frame, and a
-splat once dropped stays dropped farther away. Those drawn carry the mass of
-those dropped (a little wider, more opaque up to 1), and over the band's last
+splat's place in its cell's run of the cloud's order, the same every frame: a
+splat once dropped stays dropped farther away, and a cell's first splat is
+never dropped. Those drawn carry the mass of
+those dropped (a little wider, more opaque up to 1 and never past it), and over the band's last
 half they are drawn toward the cell's merged gaussian, which they are when it
 takes their place. A splat does not go out at once: it fades over the last
 30 % of the fraction before its turn. It is a budgeted cut's (`--lod-budget`), whose splats are

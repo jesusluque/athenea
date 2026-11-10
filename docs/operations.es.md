@@ -1756,10 +1756,11 @@ sobre el suelo donde ocurre y un pop en el turno de cada celda. `--lod-thin`
 (`primvars:athenea:lod:thin`) aclara antes los splats de la celda: mientras
 abarca menos de ese número de umbrales se dibuja una fracción de ellos, que se
 reduce a la mitad con cada paso igual del logaritmo hasta un treintaidosavo.
-Cuáles, lo decide un hash del lugar del splat en el orden de la nube, el mismo
-en cada frame, y un splat que deja de dibujarse sigue sin dibujarse más lejos.
+Cuáles, lo decide el lugar del splat en el run de su celda en el orden de la
+nube, el mismo en cada frame: un splat que deja de dibujarse sigue sin
+dibujarse más lejos, y el primer splat de una celda nunca se quita.
 Los que se dibujan llevan la masa de los que no (algo más anchos, más opacos
-hasta 1), y en la última mitad de la banda se dibujan hacia la gaussiana
+hasta 1 y nunca por encima), y en la última mitad de la banda se dibujan hacia la gaussiana
 fusionada de la celda, que es lo que son cuando esta ocupa su lugar. Un splat
 no se apaga de golpe: se desvanece en el último 30 % de la fracción antes de
 su turno. Es de un
