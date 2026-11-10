@@ -438,6 +438,9 @@ public:
     void setLight(const pxr::SdfPath& id, const light::Light& lamp,
                   std::vector<InstancerLink> instancing = {});
     void removeLight(const pxr::SdfPath& id);
+    /// The most gaussians a frame's cuts draw between them (CutSelector's
+    /// budget): over it the thresholds rise until the cuts fit. 0: no limit.
+    void setLodBudget(uint32_t gaussians) noexcept { lodBudget_.store(gaussians); }
     /// Samples per light per pixel. One is what an interactive frame takes;
     /// a render that wants an area light without noise asks for more.
     void setLightSamples(uint32_t samples);
@@ -908,6 +911,7 @@ private:
     std::set<std::string>                     iesFailed_;
     std::optional<light::LightTable>          lightTable_;
     std::atomic<uint32_t>                     lightSamples_{1};
+    std::atomic<uint32_t>                     lodBudget_{0};
     std::atomic<bool>                         chooseLights_{false};
     std::atomic<bool>                         splatShadows_{false};
     std::atomic<bool>                         cloudShadows_{true};

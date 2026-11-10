@@ -1278,6 +1278,10 @@ Result<void> StageRenderer::setDefaultLights(bool on) {
     return ok();
 }
 
+void StageRenderer::setLodBudget(uint32_t gaussians) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:lodBudget"), VtValue(static_cast<int>(std::min(gaussians, 0x7FFFFFFFu))));
+}
+
 void StageRenderer::setLightSamples(uint32_t samples) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:lightSamples"),
                                       VtValue(static_cast<int>(std::max(samples, 1u))));

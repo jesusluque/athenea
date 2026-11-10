@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
 
 #include "athenea/core/Log.h"
@@ -529,6 +531,9 @@ struct CutSelector::Frame {
     /// Per part -- the levels, then the runs of the store the splats are
     /// drawn from -- which elements are drawn, where they go, how many.
     std::vector<gpu::Buffer> selected, dest, totals;
+    /// The splats appended (lodGatherAppend): how many the finest level's
+    /// groups draw, and how many have been written.
+    gpu::Buffer      splatTotal, appendCounter;
     gpu::Buffer      state;       ///< the finest level's per-group state
     gpu::Buffer      needs;       ///< per chunk
     gpu::Buffer      readback;    ///< every part's count, then the needs: one read
@@ -559,6 +564,7 @@ Result<CutSelector> CutSelector::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(c.cutSplats_, "athenea/lod/lod_cut", "lodCutSplats"));
     ATHENEA_TRY(make(c.chunkNeeds_, "athenea/lod/lod_cut", "lodChunkNeeds"));
     ATHENEA_TRY(make(c.gather_, "athenea/lod/lod_gather", "lodGather"));
+    ATHENEA_TRY(make(c.gatherAppend_, "athenea/lod/lod_gather", "lodGatherAppend"));
     ATHENEA_TRY(make(c.extrasGather_, "athenea/lod/lod_extras", "lodExtrasGather"));
     ATHENEA_TRY(make(c.payloadIndex_, "athenea/lod/lod_extras", "lodPayloadIndex"));
     ATHENEA_TRY(make(c.selectionChanged_, "athenea/lod/lod_extras", "lodSelectionChanged"));
@@ -698,6 +704,26 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                                                                std::span<const LodInstance> instances,
                                                                float threshold, std::vector<CutStats>* stats) {
     gpu::Device& device = *device_;
+    // ATHENEA_LOD_TIMES=1: the milliseconds a cut spends choosing (cut, prefix
+    // sums and the counts read), comparing with the last cut, and gathering
+    // (waited for, which a frame otherwise does not), a line every 30 cuts.
+    static const bool lodTimes = std::getenv("ATHENEA_LOD_TIMES") != nullptr;
+    static double lodMs[3] = {0.0, 0.0, 0.0};
+    static uint32_t lodCuts = 0;
+    auto lodClock = std::chrono::steady_clock::now();
+    const auto timed = [&](int stage) {
+        if (!lodTimes) {
+            return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        lodMs[stage] += std::chrono::duration<double, std::milli>(now - lodClock).count();
+        lodClock = now;
+        if (stage == 2 && ++lodCuts % 30 == 0) {
+            std::fprintf(stderr, "athenea: cut %.2f ms choosing, %.2f comparing, %.2f gathering (mean of 30)\n",
+                         lodMs[0] / 30.0, lodMs[1] / 30.0, lodMs[2] / 30.0);
+            lodMs[0] = lodMs[1] = lodMs[2] = 0.0;
+        }
+    };
     // THE SAME VIEW OVER THE SAME CLOUDS IS THE LAST CUT. A cut reads the eye,
     // the focal length, the thresholds (and how each is staggered), the clouds' places and which of their
     // chunks are on the device (LodCloud::residency); where none changed, the
@@ -716,6 +742,19 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
     mixDouble(projection.focalX);
     mix(projection.orthographic ? 1u : 0u);
     mixDouble(threshold);
+    mix(budget_);
+    if (budget_ > 0) {
+        // A budgeted cut leaves out what the view does not show: where it looks counts.
+        for (float v : projection.worldToView.rows3x4()) {
+            uint32_t bits = 0;
+            std::memcpy(&bits, &v, 4);
+            mix(bits);
+        }
+        mixDouble(projection.centreX);
+        mixDouble(projection.centreY);
+        mixDouble(projection.focalY);
+    }
+    mixDouble(budget_ > 0 ? budgetScale_ : 1.0F);
     mix(instances.size());
     for (const LodInstance& instance : instances) {
         mix(reinterpret_cast<uintptr_t>(instance.cloud));
@@ -781,6 +820,10 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         std::vector<uint32_t> read;
         uint32_t           drawn = 0, splatsDrawn = 0;
         bool               joined = false, changed = false;
+        /// Its splats appended in one pass rather than selected, summed and
+        /// compared (lod_gather): a budgeted cut of a cloud that carries
+        /// nothing beside its gaussians.
+        bool               fast = false;
         uint32_t           countOf(size_t part) const {
             return part < levels ? instance->cloud->levels[part].gaussians.count : runs[part - levels].count;
         }
@@ -809,7 +852,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         w.parts = w.levels + w.runs.size();
         w.chunks = lod.chunks();
         w.finestGroups = lod.levels.back().gaussians.count;
-        w.cutThreshold = instance.threshold.value_or(threshold);
+        w.cutThreshold = instance.threshold.value_or(threshold) * (budget_ > 0 ? budgetScale_ : 1.0F);
         w.cutDissolve = std::max(instance.dissolve, 1.0F);
         w.cutMorph = instance.morph > 1.0F ? instance.morph : 0.0F;
         w.joined = lod.payloadCount > 0;
@@ -819,11 +862,16 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         frame.selected.resize(w.parts);
         frame.dest.resize(w.parts);
         frame.totals.resize(w.parts);
+        w.fast = budget_ > 0 && !w.joined && extrasOf(lod.splats).empty();
         for (size_t part = 0; part < w.parts; ++part) {
-            ATHENEA_TRY(ensure(frame.selected[part], w.countOf(part), "cut.selected"));
-            ATHENEA_TRY(ensure(frame.dest[part], w.countOf(part), "cut.dest"));
+            if (!w.fast || part < w.levels) {
+                ATHENEA_TRY(ensure(frame.selected[part], w.countOf(part), "cut.selected"));
+                ATHENEA_TRY(ensure(frame.dest[part], w.countOf(part), "cut.dest"));
+            }
             ATHENEA_TRY(ensure(frame.totals[part], 1, "cut.total"));
         }
+        ATHENEA_TRY(ensure(frame.splatTotal, 1, "cut.splatTotal"));
+        ATHENEA_TRY(ensure(frame.appendCounter, 1, "cut.appendCounter"));
         ATHENEA_TRY(ensure(frame.state, w.finestGroups, "cut.state"));
         ATHENEA_TRY(ensure(frame.needs, w.chunks, "cut.needs"));
         works.push_back(std::move(w));
@@ -836,6 +884,11 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
             const LodInstance& instance = *w.instance;
             const LodCloud& lod = *instance.cloud;
             Frame& frame = *w.frame;
+            {
+                const uint32_t zero = 0;
+                batch.encoder()->uploadBufferData(frame.splatTotal.rhi(), 0, 4, &zero);
+                batch.encoder()->uploadBufferData(frame.appendCounter.rhi(), 0, 4, &zero);
+            }
             // The eye in the cloud's space. Perspective size is edge over
             // distance, which a uniform scale leaves alone; orthographic size is not.
             const render::Mat4 toCloud = aofx::xform::inverseAffine(instance.objectToWorld);
@@ -864,6 +917,28 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                 p["chunkSplats"].setData(lod.chunkSplats);
                 p["chunks"].setData(w.chunks);
                 p["splats"].setData(lod.count);
+                // A budgeted cut draws what the view shows: its four side
+                // planes in the cloud's space, a tenth wider than the image.
+                const bool frustum = budget_ > 0 && !projection.orthographic && projection.focalX > 0.0 &&
+                                     projection.focalY > 0.0;
+                p["frustumOn"].setData(uint32_t{frustum ? 1u : 0u});
+                if (frustum) {
+                    const render::Mat4 toView = projection.worldToView * instance.objectToWorld;
+                    const double tx = 1.1 * std::max(projection.centreX, 1.0) / projection.focalX;
+                    const double ty = 1.1 * std::max(projection.centreY, 1.0) / projection.focalY;
+                    const double normals[4][3] = {{-1.0, 0.0, tx}, {1.0, 0.0, tx}, {0.0, -1.0, ty}, {0.0, 1.0, ty}};
+                    const char* names[4] = {"frustumA", "frustumB", "frustumC", "frustumD"};
+                    for (int k = 0; k < 4; ++k) {
+                        const double* n = normals[k];
+                        // n . (R x + t): the normal through the transpose, the offset from the translation.
+                        const std::array<float, 4> plane = {
+                            static_cast<float>(n[0] * toView.at(0, 0) + n[1] * toView.at(1, 0) + n[2] * toView.at(2, 0)),
+                            static_cast<float>(n[0] * toView.at(0, 1) + n[1] * toView.at(1, 1) + n[2] * toView.at(2, 1)),
+                            static_cast<float>(n[0] * toView.at(0, 2) + n[1] * toView.at(1, 2) + n[2] * toView.at(2, 2)),
+                            static_cast<float>(n[0] * toView.at(0, 3) + n[1] * toView.at(1, 3) + n[2] * toView.at(2, 3))};
+                        p[names[k]].setData(plane);
+                    }
+                }
             };
             for (size_t part = 0; part < w.levels; ++part) {
                 const LodLevel& level = lod.levels[part];
@@ -879,12 +954,14 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                         cursor["starts"].setBinding(lod.starts.rhi());
                         cursor["residentChunks"].setBinding(lod.resident.rhi());
                         cursor["state"].setBinding(frame.state.rhi());
+                        cursor["splatTotal"].setBinding(frame.splatTotal.rhi());
                     }
                     setCut(cursor["params"], count, level.level, part == 0);
+                    cursor["params"]["countSplats"].setData(uint32_t{finest && w.fast ? 1u : 0u});
                     cursor["params"]["pbrs"].setData(uint32_t{pbrs ? 1u : 0u});
                 });
             }
-            for (size_t part = w.levels; part < w.parts; ++part) {
+            for (size_t part = w.levels; part < w.parts && !w.fast; ++part) {
                 const Run& run = w.runs[part - w.levels];
                 cutSplats_.dispatch(batch, {run.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
                     cursor["groups"].setBinding(lod.groups.rhi());
@@ -903,14 +980,16 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                     setCut(cursor["params"], w.finestGroups, lod.levels.back().level, false);
                 });
             }
-            for (size_t part = 0; part < w.parts; ++part) {
+            for (size_t part = 0; part < (w.fast ? w.levels : w.parts); ++part) {
                 ATHENEA_TRY(prefix_.apply(batch, frame.selected[part], frame.dest[part], frame.totals[part],
                                       w.countOf(part)));
             }
             // Every count of every cut into one buffer: one read for them all.
+            // Appended splats are counted whole, by the finest level's groups.
             for (size_t part = 0; part < w.parts; ++part) {
+                const bool appended = w.fast && part >= w.levels;
                 batch.encoder()->copyBuffer(counts_.rhi(), (w.countsAt + part) * sizeof(uint32_t),
-                                            frame.totals[part].rhi(), 0, sizeof(uint32_t));
+                                            (appended ? frame.splatTotal : frame.totals[part]).rhi(), 0, sizeof(uint32_t));
             }
             if (lod.streamed) {
                 batch.encoder()->copyBuffer(counts_.rhi(), (w.countsAt + w.parts) * sizeof(uint32_t),
@@ -919,6 +998,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         }
         batch.markDirty();
         ATHENEA_TRY(batch.submit(true));
+        timed(0);
     }
     std::vector<uint32_t> counts(countWords, 0);
     if (countWords > 0) {
@@ -934,13 +1014,16 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         Frame& frame = *w.frame;
         w.read.assign(counts.begin() + static_cast<std::ptrdiff_t>(w.countsAt),
                       counts.begin() + static_cast<std::ptrdiff_t>(w.countsAt + w.parts + (lod.streamed ? w.chunks : 0)));
+        for (size_t part = w.levels + 1; w.fast && part < w.parts; ++part) {
+            w.read[part] = 0;   // the whole count stands at the first run
+        }
         for (size_t part = 0; part < w.parts; ++part) {
             w.drawn += w.read[part];
             w.splatsDrawn += part < w.levels ? 0 : w.read[part];
         }
         // A morphed cut moves its gaussians with the eye: gathered every
         // frame the eye moves (a still eye is the last call's, above).
-        w.changed = w.cutMorph > 0.0F || !frame.gathered || frame.gatheredFrom != &lod ||
+        w.changed = w.fast || w.cutMorph > 0.0F || !frame.gathered || frame.gatheredFrom != &lod ||
                     frame.gatheredResidency != lod.residency ||
                     frame.lastCounts.size() != w.parts ||
                     frame.joined != w.joined;
@@ -951,6 +1034,26 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
             compared.push_back(i);
         }
     }
+    // THE BUDGET (setBudget). Over it, the cut is made again coarser before
+    // anything is gathered; well under it, the next call's is a little finer.
+    if (budget_ > 0) {
+        uint64_t wanted = 0;
+        for (const Work& w : works) {
+            wanted += w.drawn;
+        }
+        const double ratio = static_cast<double>(wanted) / (0.85 * static_cast<double>(budget_));
+        if (wanted > budget_ && budgetTries_ < 6 && budgetScale_ < 1024.0F) {
+            budgetScale_ = std::min(budgetScale_ * static_cast<float>(std::sqrt(ratio)) * 1.02F, 1024.0F);
+            ++budgetTries_;
+            auto again = select(projection, instances, threshold, stats);
+            --budgetTries_;
+            return again;
+        }
+        if (budgetTries_ == 0 && ratio < 0.6 && budgetScale_ > 1.0F) {
+            budgetScale_ = std::max(budgetScale_ * 0.97F, 1.0F);
+        }
+    }
+
     if (!compared.empty()) {
         ATHENEA_TRY(ensure(changes_, compared.size(), "cut.changes"));
         gpu::CommandBatch batch(device);
@@ -975,6 +1078,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         }
         batch.markDirty();
         ATHENEA_TRY(batch.submit(true));
+        timed(1);
         std::vector<uint32_t> differing(compared.size(), 0);
         ATHENEA_TRY(changes_.read(device, 0, differing.size() * 4, differing.data()));
         for (size_t c = 0; c < compared.size(); ++c) {
@@ -1035,16 +1139,27 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
             frame.cloud.declared = lod.count;
             frame.cloud.bounds = lod.splats.bounds;
             uint32_t base = 0;
+            uint32_t splatBase = 0;
             for (size_t part = 0; part < w.parts; ++part) {
-                if (w.read[part] == 0) {
+                // Appended splats: every run of the store, from one place.
+                const bool appended = w.fast && part >= w.levels;
+                if (part == w.levels) {
+                    splatBase = base;
+                }
+                if (appended ? w.splatsDrawn == 0 : w.read[part] == 0) {
                     continue;
                 }
                 const bool merged = part < w.levels;
                 const scene::GpuSplats& source = merged ? lod.levels[part].gaussians : lod.splats;
                 const uint32_t offset = merged ? 0u : w.runs[part - w.levels].offset;
-                gather_.dispatch(batch, {w.countOf(part), 1, 1}, [&](rhi::ShaderCursor cursor) {
-                    cursor["selected"].setBinding(frame.selected[part].rhi());
-                    cursor["dest"].setBinding(frame.dest[part].rhi());
+                (appended ? gatherAppend_ : gather_).dispatch(batch, {w.countOf(part), 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    if (appended) {
+                        cursor["state"].setBinding(frame.state.rhi());
+                        cursor["counter"].setBinding(frame.appendCounter.rhi());
+                    } else {
+                        cursor["selected"].setBinding(frame.selected[part].rhi());
+                        cursor["dest"].setBinding(frame.dest[part].rhi());
+                    }
                     cursor["srcPositions"].setBinding(source.positions.rhi());
                     cursor["srcShape"].setBinding(source.shape.rhi());
                     cursor["srcSh"].setBinding(source.sh.rhi());
@@ -1071,7 +1186,8 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                     cursor["parentPbr"].setBinding(pbrs ? parent.gaussians.pbr.rhi() : parent.cells.rhi());
                     cursor["groups"].setBinding(lod.groups.valid() ? lod.groups.rhi() : parent.cells.rhi());
                     cursor["params"]["count"].setData(w.countOf(part));
-                    cursor["params"]["base"].setData(base);
+                    cursor["params"]["base"].setData(appended ? splatBase : base);
+                    cursor["params"]["appendLimit"].setData(w.splatsDrawn);
                     cursor["params"]["offset"].setData(offset);
                     cursor["params"]["shWords"].setData(lod.splats.shWords);
                     setBounds(cursor["params"], lod);
@@ -1128,7 +1244,8 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
             }
             // The selection, kept to tell the next cut whether it changed.
             frame.lastSelected.resize(w.parts);
-            for (size_t part = 0; part < w.parts; ++part) {
+            // (An appended cut is gathered every time: nothing to compare it by.)
+            for (size_t part = 0; part < w.parts && !w.fast; ++part) {
                 ATHENEA_TRY(ensure(frame.lastSelected[part], w.countOf(part), "cut.lastSelected"));
                 batch.encoder()->copyBuffer(frame.lastSelected[part].rhi(), 0, frame.selected[part].rhi(), 0,
                                             uint64_t{w.countOf(part)} * 4);
@@ -1142,7 +1259,8 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         }
         if (recorded) {
             batch.markDirty();
-            ATHENEA_TRY(batch.submit());
+            ATHENEA_TRY(batch.submit(lodTimes));
+            timed(2);
         }
     }
 

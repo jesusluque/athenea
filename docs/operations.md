@@ -78,6 +78,7 @@ a ray tracing pipeline fails with `Failed to locate OptiX headers (optix.h)`.
 | `ATHENEA_MCP` | the server the OpenFX plugin starts (§6.1), in place of the `athenea-mcp` its bundle carries in `Contents/Resources/bin`, and of one on the `PATH`. |
 | `ATHENEA_OFX_DEBUG` | set to anything: the OpenFX plugin prints each frame's request and the server's answer (its time) on standard error. |
 | `ATHENEA_STREAM_TRACE` | set to anything: each live pool logs, at every update, the epoch shown, the pages placed, the epochs waiting and being built (pages left), the loads queued and in flight, the free staging and its source's counters. |
+| `ATHENEA_LOD_TIMES` | set to anything: a line every 30 cuts with the milliseconds a cut spends choosing, comparing with the last cut and gathering (the gather waited for, which a frame otherwise does not). |
 | `ATHENEA_BACKEND` | which device to open, as a comma-separated order: `metal,cuda,vulkan,d3d12`. Unknown words warn and are skipped. |
 | `ATHENEA_GPU_VALIDATION` | any value: the graphics API's validation and debug layers (D3D12's needs Windows' Graphics Tools), for a failure the driver otherwise gives no reason for, such as a pipeline it cannot make. Slow. |
 | `ATHENEA_GPU_BUDGET` | the device memory this run may hold, in MiB. Without it the budget is Metal's recommended working set (`recommendedMaxWorkingSetSize`); on CUDA and Vulkan there is none unless this sets one. The device prints the one in use (`GPU memory budget: N MiB`). An allocation past it fails as `OutOfMemory` before it is made, streaming budgets and splat shadows are sized against what it leaves (§3.3, §9), and it is how a run is held below what other jobs on the same GPU leave. On Apple silicon an allocation must also fit the physical memory the system has free less 1.5 GiB kept for the rest of the machine -- free counting what it hands back on demand (inactive, purgeable and speculative pages, and the file cache) -- whatever the budget says: past it the machine swaps the GPU's memory and stops drawing its windows. |
@@ -192,6 +193,7 @@ athenea info
 | `--degree` | 0..3 | `3` | cap on the harmonics evaluated |
 | `--lod` | number | `0` | pixels a merged cell may span; 0 draws every splat |
 | `--lod-dissolve` | 1..16 | `1` | the cut staggered: each merged cell switches at `--lod` × this^(h − ½), h hashed from the cell; 1 is one threshold |
+| `--lod-budget` | integer | `0` | the most gaussians a frame's cut draws; over it the cut goes coarser until it fits, and what the view does not show is left out. 0 is no limit |
 | `--lod-morph` | 0..16 | `0` | the cut morphed: a gaussian is drawn toward its parent from this many of the parent's thresholds, fully at one; up to 1 is no morph |
 | `--stream-budget` | integer | `0` | `.athc`: splats kept on the device; 0 reads the file whole |
 | `--no-antialias` | flag | off | drop the Mip-Splatting 2D filter compensation for every cloud, over what an `.spz` says |
@@ -400,6 +402,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--light-level` | `GROUP=LEVEL` ‹repeatable› | none | a lamp group's level over the state's (`athenea:lightLevel:GROUP`): 0 off, 1 its radiance, more for a lamp two functions share (a brake lamp at 4 its tail lamp). Fails on a group the stage does not carry |
 | `--refine` | integer | `0` | subdivision levels; 0 draws the control mesh |
 | `--light-samples` | integer | `1` | samples per light per pixel |
+| `--lod-budget` | integer | `0` | the most gaussians a frame's levels of detail draw (`athenea:lodBudget`); 0 is no limit |
 | `--mesh-light-samples` | 0..64 | `0` | raster: samples a pixel from the mesh lights; 0 lights by them in closed form (`athenea:meshLightSamples`) |
 | `--volume-filter` | `trilinear`, `nearest`, `stochastic` | `trilinear` | rt: a volume's density between voxels (`athenea:volumeFilter`) |
 | `--no-mesh-lights` | flag | mesh lights on | emitting meshes are not clustered into lights (`athenea:meshLights` off) |
@@ -1677,6 +1680,20 @@ missing) and the mean detail is the threshold's, but the edge is spread over
 the band of distances the dissolve spans. 2 spreads it over an octave. The
 paged tree of a version 3 file is cut with one threshold.
 
+**The cut's budget.** `--lod-budget N` (`athenea:lodBudget`) holds a frame's
+cuts to N gaussians between them. A cut that would draw more is made again
+with every threshold raised, by the root of the excess over 85 % of the
+budget (a cut's gaussians go as the inverse square of its threshold), until
+it fits; a cut under 60 % of it eases the factor back 3 % a frame. Far detail
+goes coarser and nothing is dropped. A budgeted cut also leaves out the cells
+the view does not show (its four side planes, a tenth wider than the image),
+so the budget is spent on the picture; and where the cloud carries nothing
+beside its gaussians its splats are appended in one pass, which is what a cut
+made every frame of a moving eye costs least by. Use it with a staggered cut:
+with one threshold a whole level switches at once, and the count falls by a
+level's worth. A cloud read whole and cut without a budget can ask for more
+gaussians than a device holds.
+
 **The cut morphed.** The cut swaps a parent for its children at one
 threshold, one gaussian for many. `--lod-morph` (`primvars:athenea:lod:morph`
 on a stage) draws each gaussian a fraction t of the way to its parent
@@ -2048,6 +2065,7 @@ found and does not.
 | `athenea:visibility` | token | `automatic` | how meshes are seen: `automatic`, `raster`, `rays`, `bvh` |
 | `athenea:settleStreams` | bool | `false` | wait for streamed assets before drawing; a still sets it |
 | `athenea:lightSamples` | int | `1` | samples per light |
+| `athenea:lodBudget` | int | `0` | the most gaussians a frame's levels of detail draw; 0 is no limit |
 | `athenea:chooseLights` | bool | `false` | one light a sample, chosen by power |
 | `athenea:pathSamples` | int | `1` | rt: paths a pixel each pass |
 | `athenea:pathBounces` | int | `1` | rt: bounces after the first hit; up to 8 crossings of a glass a path are not counted |

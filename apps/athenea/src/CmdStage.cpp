@@ -184,6 +184,7 @@ void addStage(CLI::App& app) {
         std::vector<std::string> variants;
         std::vector<std::string> splatOverrides;
         uint32_t lightSamples = 1;
+        uint32_t lodBudget = 0;   ///< the most gaussians a frame's levels of detail draw (0: no limit)
         std::string volumeFilter;
         uint32_t meshLightSamples = 0;
         bool     noMeshLights = false;
@@ -239,6 +240,8 @@ void addStage(CLI::App& app) {
                     "rt: shutter slices for motion blur, 1 to 8 (the shutter is the camera's)");
     cmd->add_option("--refine", o->refine, "subdivision surfaces refined this many levels (0: the control mesh)");
     cmd->add_option("--light-samples", o->lightSamples, "samples per light per pixel");
+    cmd->add_option("--lod-budget", o->lodBudget,
+                    "levels of detail: the most gaussians a frame draws; over it the cut goes coarser until it fits (0: no limit)");
     cmd->add_option("--volume-filter", o->volumeFilter,
                     "rt: how a volume's density is looked up between voxels (athenea:volumeFilter)")
         ->check(CLI::IsMember({"trilinear", "nearest", "stochastic"}));
@@ -346,6 +349,7 @@ void addStage(CLI::App& app) {
         }
         (*renderer)->setRefineLevel(o->refine);
         (*renderer)->setLightSamples(o->lightSamples);
+        (*renderer)->setLodBudget(o->lodBudget);
         if (!o->volumeFilter.empty()) {
             (*renderer)->setVolumeFilter(o->volumeFilter);
         }

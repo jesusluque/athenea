@@ -74,16 +74,11 @@ uint lerpHalves(uint a, uint b, float t) {
     return packHalves(lerp(lowHalf(a), lowHalf(b), t), lerp(highHalf(a), highHalf(b), t));
 }
 
-[shader("compute")]
-[numthreads(256, 1, 1)]
-void lodGather(uint3 tid: SV_DispatchThreadID) {
-    const uint i = tid.x;
-    if (i >= params.count || selected[i] == 0) {
-        return;
-    }
-    const uint j = params.base + dest[i];
-    const uint k = params.offset + i;   // chunks share their cloud's buffers from `offset`
+StructuredBuffer<uint>     state;     // the finest level's per-group state (lod_cut): bit 1, its splats are drawn
+RWStructuredBuffer<uint>   counter;   // [0]: the gaussians appended so far
 
+/// Gaussian k of the source written as gaussian j of the frame's cloud.
+void emit(uint j, uint k) {
     // The parent and how far toward it.
     float t = 0.0;
     uint q = 0;
@@ -146,5 +141,39 @@ void lodGather(uint3 tid: SV_DispatchThreadID) {
     }
     if (params.emission != 0) {
         emission[j] = packRgb9e5(lerp(unpackRgb9e5(srcEmission[k]), unpackRgb9e5(parentEmission[q]), t));
+    }
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void lodGather(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count || selected[i] == 0) {
+        return;
+    }
+    emit(params.base + dest[i], params.offset + i);   // chunks share their cloud's buffers from `offset`
+}
+
+/// THE SPLATS APPENDED. A cut made every frame (a budgeted one, for a moving
+/// eye) spent most of its time on its splats: a selection, a prefix sum over
+/// every splat in the store and a copy of the selection to tell the next cut
+/// by. Here a splat asks its group's state itself and takes the next free
+/// place past `base`: one pass, no selection and no sum. The order the splats
+/// land in is not the store's, which a rasteriser that sorts does not see.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void lodGatherAppend(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    const uint k = params.offset + i;
+    if ((state[groups[k]] & 2u) == 0u) {
+        return;
+    }
+    uint at;
+    InterlockedAdd(counter[0], 1u, at);
+    if (at < params.appendLimit) {
+        emit(params.base + at, k);
     }
 }

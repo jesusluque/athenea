@@ -35,7 +35,7 @@ void lodCutGroups(uint3 tid: SV_DispatchThreadID) {
     const bool kept = params.pbrs != 0 && lodKeptApart(pbr[g]);
     const bool here = !kept && small(cell, params.level);
     const bool above = !kept && params.coarsest == 0 && small(cell >> 3, params.level - 1);
-    selected[g] = (here && !above) ? 1u : 0u;
+    selected[g] = (here && !above && lodVisible(params, cell, params.level)) ? 1u : 0u;
 }
 
 // The finest merged level decides for the splats under it. Its per-group
@@ -44,6 +44,7 @@ void lodCutGroups(uint3 tid: SV_DispatchThreadID) {
 StructuredBuffer<uint>   starts;           // finest level: each group's first splat
 StructuredBuffer<uint>   residentChunks;   // per chunk: 1 when on the device
 RWStructuredBuffer<uint> state;            // finest level, per group
+RWStructuredBuffer<uint> splatTotal;       // [0]: the splats the finest level's groups draw (params.countSplats)
 StructuredBuffer<uint>   groups;           // per splat in the store: its finest-level group
 
 static const uint kWanted = 1;
@@ -74,8 +75,15 @@ void lodCutFinest(uint3 tid: SV_DispatchThreadID) {
     // Glass and sheets not on the device yet draw nothing, not their merge:
     // a merge of a glass's splats is no glass (lodKeptApart), and the Corvette's
     // windscreen drew black blocks over the cabin until its chunks came.
-    selected[g] = ((here && !above) || (!here && !resident && !kept)) ? 1u : 0u;
-    state[g] = (here ? 0u : kWanted) | ((!here && resident) ? kDrawn : 0u) | (kept ? kKept : 0u);
+    // Out of the view (a budgeted cut): neither it nor its splats, which are
+    // not asked for either.
+    const bool seen = lodVisible(params, cell, params.level);
+    selected[g] = (seen && ((here && !above) || (!here && !resident && !kept))) ? 1u : 0u;
+    state[g] = ((here || !seen) ? 0u : kWanted) | ((!here && resident && seen) ? kDrawn : 0u) | (kept ? kKept : 0u);
+    if (params.countSplats != 0 && !here && resident && seen) {
+        const uint last = g + 1 < params.count ? starts[g + 1] : params.splats;
+        InterlockedAdd(splatTotal[0], last - starts[g]);
+    }
 }
 
 /// Splats of a run of the store, from `offset`: drawn when their group says.

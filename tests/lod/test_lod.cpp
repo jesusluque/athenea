@@ -231,6 +231,52 @@ TEST_CASE("a staggered cut draws between the cuts at its band's ends, and 1 is t
     CHECK(drawn(t, 1.0F) == plain);
 }
 
+TEST_CASE("a cut over its budget goes coarser until it fits, and eases back when the view asks less", "[lod][gpu]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    CloudBuilder built = randomCloud(60000, 43, 0.003F, 0.05F);
+    auto cloud = h->loader.upload(built.raw, 3);
+    REQUIRE(cloud);
+    auto lod = h->builder.build(*cloud);
+    if (!lod) FAIL(lod.error().toString());
+    const auto drawn = [&](double away) {
+        const render::Camera camera = render::Camera::lookingAt({0.0, 0.0, away}, {0.0, 0.0, 0.0});
+        const render::Projection projection = render::projectionFor(camera, 240, 180);
+        std::vector<lod::CutStats> stats;
+        // Staggered, as a budget is meant to be used: with one threshold a
+        // whole level switches at once, and the count falls by a level's worth.
+        lod::LodInstance instance{&*lod, render::Mat4::identity()};
+        instance.dissolve = 2.0F;
+        auto selected = h->cut.select(projection, std::vector<lod::LodInstance>{instance}, 2.0F, &stats);
+        if (!selected) FAIL(selected.error().toString());
+        REQUIRE(stats.size() == 1);
+        return stats.front().splats + stats.front().merged;
+    };
+    const uint32_t free = drawn(30.0);
+    REQUIRE(free > 20000);
+    // A budget under what the view asks: the same call fits it, coarser.
+    h->cut.setBudget(15000);
+    const uint32_t held = drawn(30.0);
+    std::printf("  2 px: %u asked, %u under a budget of 15000 (thresholds x%.2f)\n", free, held,
+                static_cast<double>(h->cut.budgetScale()));
+    CHECK(held <= 15000);
+    CHECK(held > 15000 / 3);
+    CHECK(h->cut.budgetScale() > 1.0F);
+    // From far away the view asks for less than the budget: the factor eases
+    // back to 1 over calls, and the cut is the plain one again.
+    h->cut.setBudget(0);
+    const uint32_t farFree = drawn(240.0);
+    h->cut.setBudget(15000);
+    uint32_t farHeld = 0;
+    for (int call = 0; call < 200 && h->cut.budgetScale() > 1.0F; ++call) {
+        farHeld = drawn(240.0 + 0.001 * call);
+    }
+    farHeld = drawn(240.0);
+    CHECK(h->cut.budgetScale() == 1.0F);
+    CHECK(farHeld == farFree);
+    h->cut.setBudget(0);
+}
+
 TEST_CASE("a morphed cut draws the same gaussians and steps less from frame to frame", "[lod][gpu]") {
     ATHENEA_REQUIRE_GPU(gpu);
     auto h = harness(gpu);

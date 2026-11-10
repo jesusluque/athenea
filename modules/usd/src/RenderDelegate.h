@@ -75,6 +75,8 @@ public:
     /// assets fill in over frames; true for an image that must be complete.
     [[nodiscard]] bool GetSettleStreams() const;
 
+    /// The most gaussians a frame's cuts draw ("athenea:lodBudget"), 0 for no limit.
+    [[nodiscard]] uint32_t GetLodBudget() const;
     /// Samples per light per pixel ("athenea:lightSamples"), at least one.
     [[nodiscard]] uint32_t GetLightSamples() const;
     /// Whether to choose one light a sample ("athenea:chooseLights").

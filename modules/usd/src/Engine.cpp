@@ -3208,6 +3208,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             }
         };
         for (int round = 0;; ++round) {
+            cutter_->setBudget(lodBudget_.load());
             auto selected = cutter_->select(projection, cuts, 0.0F, streamed ? &stats : nullptr);
             if (!selected) return std::move(selected).error();
             if (!streamed) {

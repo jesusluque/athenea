@@ -426,6 +426,10 @@ public:
     /// pass was 2.6 GB.
     static constexpr uint32_t kBakeBatch = 1u << 19;
 
+    /// The most gaussians a frame's levels of detail draw (athenea:lodBudget):
+    /// over it the cut goes coarser until it fits. 0: no limit.
+    void setLodBudget(uint32_t gaussians);
+
     /// Samples per light per pixel: one for an interactive frame, more where
     /// an area light's noise would be read as error.
     void setLightSamples(uint32_t samples);

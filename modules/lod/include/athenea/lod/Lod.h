@@ -187,6 +187,17 @@ public:
                                                                    float threshold,
                                                                    std::vector<CutStats>* stats = nullptr);
 
+    /// THE CUT'S BUDGET. The most gaussians a call's cuts may draw between
+    /// them (0: no limit). A cut that would draw more is cut again with every
+    /// threshold raised -- by the root of the excess over 85 % of the budget,
+    /// a cut's gaussians going as the inverse square of its threshold -- until
+    /// it fits; a cut under 60 % of it eases the factor back 3 % a call, down
+    /// to 1. Far detail goes coarser, nothing is dropped. A threshold of 0
+    /// (every splat) stays 0.
+    void setBudget(uint32_t gaussians) noexcept { budget_ = gaussians; }
+    /// What the thresholds are multiplied by, 1 where the cuts fit.
+    [[nodiscard]] float budgetScale() const noexcept { return budgetScale_; }
+
 private:
     CutSelector();
     struct Frame;
@@ -198,6 +209,7 @@ private:
                                               std::vector<const scene::GpuSplats*>& clouds);
     gpu::Device*                        device_ = nullptr;
     gpu::PrefixSum                      prefix_;
+    gpu::ComputeKernel                  gatherAppend_;   ///< the splats of a budgeted cut, appended (lod_gather)
     gpu::ComputeKernel                  cutGroups_, cutFinest_, cutSplats_, chunkNeeds_, gather_, extrasGather_,
                                         payloadIndex_, selectionChanged_;
     std::vector<std::unique_ptr<Frame>> frames_;
@@ -208,6 +220,9 @@ private:
     /// the same residency (LodCloud::residency) returns it with no work and
     /// no wait.
     uint64_t                            lastKey_ = 0;
+    uint32_t                            budget_ = 0;
+    float                               budgetScale_ = 1.0F;
+    uint32_t                            budgetTries_ = 0;   ///< cuts made again within this call
     bool                                haveLast_ = false;
     std::vector<render::SplatInstance>  lastOut_;
     std::vector<size_t>                 lastFrom_;   ///< each of lastOut_'s instance

@@ -310,7 +310,7 @@ HdRenderPassSharedPtr HdAtheneaRenderDelegate::CreateRenderPass(HdRenderIndex* i
 }
 
 TF_DEFINE_PRIVATE_TOKENS(_atheneaSettings, ((technique, "athenea:technique"))((settleStreams, "athenea:settleStreams"))
-                                           ((visibility, "athenea:visibility"))((lightSamples, "athenea:lightSamples"))((chooseLights, "athenea:chooseLights"))
+                                           ((visibility, "athenea:visibility"))((lightSamples, "athenea:lightSamples"))((lodBudget, "athenea:lodBudget"))((chooseLights, "athenea:chooseLights"))
                                            ((pathSamples, "athenea:pathSamples"))((pathBounces, "athenea:pathBounces"))((pathTotal, "athenea:pathTotal"))((denoise, "athenea:denoise"))((pathAdaptive, "athenea:pathAdaptive"))((pathMis, "athenea:pathMis"))((pathError, "athenea:pathError"))((motionBuckets, "athenea:motionBuckets"))((shutter, "athenea:shutter"))((disableMotionBlur, "athenea:disableMotionBlur"))((disableDepthOfField, "athenea:disableDepthOfField"))
                                            (raster)(rt)(automatic)(rays)(bvh));
 
@@ -446,7 +446,11 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     cloudDensity.name = "Cloud shadow density (1 is what the cloud's opacity says)";
     cloudDensity.key = TfToken("athenea:cloudShadowDensity");
     cloudDensity.defaultValue = VtValue(1.0f);
-    return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
+    HdRenderSettingDescriptor lodBudget;
+    lodBudget.name = "Levels of detail: the most gaussians a frame's cuts draw (0: no limit)";
+    lodBudget.key = _atheneaSettings->lodBudget;
+    lodBudget.defaultValue = VtValue(0);
+    return {technique, settle,      visibility,  samples,     choose,     paths,       bounces, lodBudget,
             total,     denoise,     adaptive,    error,       mis,        glassShadows, motion,     transferIndirect, displayBlend, reflectCloud, splatShadows,
             cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, domePrefiltered, domeVisible, splatView,
             screenSpaceReflections, meshAntialias, meshLights, meshLightSamples, volumeCache, volumeFilter};
@@ -547,6 +551,14 @@ bool HdAtheneaRenderDelegate::GetAntialias() const {
 bool HdAtheneaRenderDelegate::GetChooseLights() const {
     const VtValue value = GetRenderSetting(_atheneaSettings->chooseLights);
     return value.IsHolding<bool>() && value.UncheckedGet<bool>();
+}
+
+uint32_t HdAtheneaRenderDelegate::GetLodBudget() const {
+    int64_t whole = 0;
+    if (_WholeSetting(GetRenderSetting(_atheneaSettings->lodBudget), whole)) {
+        return static_cast<uint32_t>(std::clamp<int64_t>(whole, 0, UINT32_MAX));
+    }
+    return 0;
 }
 
 uint32_t HdAtheneaRenderDelegate::GetLightSamples() const {

@@ -79,6 +79,7 @@ máquina las descarga ella misma (`include\` de github.com/NVIDIA/optix-dev, tag
 | `ATHENEA_MCP` | el servidor que arranca el plugin OpenFX (§6.1), en lugar del `athenea-mcp` que lleva su bundle en `Contents/Resources/bin` y del que haya en el `PATH`. |
 | `ATHENEA_OFX_DEBUG` | con cualquier valor: el plugin OpenFX escribe en la salida de error la petición de cada frame y la respuesta del servidor (su tiempo). |
 | `ATHENEA_STREAM_TRACE` | con cualquier valor: cada pool en vivo registra, en cada actualización, la época mostrada, las páginas colocadas, las épocas que esperan y las que se construyen (páginas que faltan), las cargas en cola y en curso, el staging libre y los contadores de su fuente. |
+| `ATHENEA_LOD_TIMES` | con cualquier valor: una línea cada 30 cortes con los milisegundos que un corte gasta en elegir, en comparar con el corte anterior y en reunir (gather; esperando a que acabe, cosa que un frame no hace). |
 | `ATHENEA_BACKEND` | qué dispositivo abrir, como un orden separado por comas: `metal,cuda,vulkan,d3d12`. Las palabras desconocidas avisan y se saltan. |
 | `ATHENEA_GPU_VALIDATION` | cualquier valor: las capas de validación y depuración de la API gráfica (la de D3D12 necesita las Graphics Tools de Windows), para un fallo del que el driver no da motivo, como un pipeline que no puede crear. Lento. |
 | `ATHENEA_GPU_BUDGET` | la memoria del dispositivo que puede ocupar esta ejecución, en MiB. Sin ella el presupuesto es el working set recomendado de Metal (`recommendedMaxWorkingSetSize`); en CUDA y Vulkan no hay ninguno salvo que esta lo ponga. El dispositivo imprime el que usa (`GPU memory budget: N MiB`). Una reserva que lo pase falla como `OutOfMemory` antes de hacerse, los presupuestos de streaming y las sombras de splats se dimensionan con lo que deja (§3.3, §9), y es como se mantiene una ejecución por debajo de lo que dejan otros trabajos en la misma GPU. En Apple silicon una reserva además debe caber en la memoria física que el sistema tiene libre menos 1,5 GiB guardados para el resto de la máquina -- contando como libre lo que devuelve cuando se le pide (páginas inactivas, purgables y especulativas, y la caché de ficheros) -- diga lo que diga el presupuesto: pasado eso la máquina manda a swap la memoria de la GPU y deja de dibujar sus ventanas. |
@@ -196,6 +197,7 @@ athenea info
 | `--degree` | 0..3 | `3` | tope de armónicos evaluados |
 | `--lod` | número | `0` | píxeles que puede abarcar una celda fundida; 0 dibuja todos los splats |
 | `--lod-dissolve` | 1..16 | `1` | el corte escalonado: cada celda fundida cambia a `--lod` × esto^(h − ½), h un hash de la celda; 1 es un solo umbral |
+| `--lod-budget` | entero | `0` | el máximo de gaussianas que dibuja el corte de un frame; por encima, el corte se hace más grueso hasta caber, y lo que la vista no muestra se deja fuera. 0 es sin límite |
 | `--lod-morph` | 0..16 | `0` | el corte con morph: una gaussiana se dibuja hacia su padre desde este número de umbrales del padre, del todo en uno; hasta 1 no hay morph |
 | `--stream-budget` | entero | `0` | `.athc`: splats que se quedan en el dispositivo; 0 lee el fichero entero |
 | `--no-antialias` | flag | apagado | quita la compensación de filtro 2D de Mip-Splatting a todas las nubes, por encima de lo que diga un `.spz` |
@@ -411,6 +413,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--light-level` | `GRUPO=NIVEL` ‹repetible› | ninguno | el nivel de un grupo de lámparas sobre el del estado (`athenea:lightLevel:GRUPO`): 0 apagado, 1 su radiancia, más para una lámpara que comparten dos funciones (un freno a 4 veces su piloto). Falla con un grupo que la escena no lleva |
 | `--refine` | entero | `0` | niveles de subdivisión; 0 dibuja la malla de control |
 | `--light-samples` | entero | `1` | muestras por luz y píxel |
+| `--lod-budget` | entero | `0` | el máximo de gaussianas que dibujan los niveles de detalle de un frame (`athenea:lodBudget`); 0 es sin límite |
 | `--mesh-light-samples` | 0..64 | `0` | raster: muestras por píxel de las luces de malla; 0 ilumina por ellas en forma cerrada (`athenea:meshLightSamples`) |
 | `--volume-filter` | `trilinear`, `nearest`, `stochastic` | `trilinear` | rt: la densidad de un volumen entre vóxeles (`athenea:volumeFilter`) |
 | `--no-mesh-lights` | flag | luces de malla encendidas | las mallas emisoras no se agrupan en luces (`athenea:meshLights` apagado) |
@@ -1730,6 +1733,21 @@ detalle medio es el del umbral, pero el borde se reparte en la banda de
 distancias que abarca el dissolve. 2 lo reparte en una octava. El árbol
 paginado de un fichero de versión 3 se corta con un solo umbral.
 
+**El presupuesto del corte.** `--lod-budget N` (`athenea:lodBudget`) limita
+los cortes de un frame a N gaussianas entre todos. Un corte que dibujaría más
+se repite con todos los umbrales subidos, por la raíz del exceso sobre el 85 %
+del presupuesto (las gaussianas de un corte van como el inverso del cuadrado
+de su umbral), hasta que cabe; un corte por debajo del 60 % relaja el factor
+un 3 % por frame. El detalle lejano se hace más grueso y no se descarta nada.
+Un corte con presupuesto además deja fuera las celdas que la vista no muestra
+(sus cuatro planos laterales, una décima más anchos que la imagen), así que
+el presupuesto se gasta en la imagen; y donde la nube no lleva nada además de
+sus gaussianas, sus splats se añaden (append) en una sola pasada, que es como
+menos cuesta un corte hecho en cada frame de un ojo en movimiento. Se usa con
+el corte escalonado: con un solo umbral un nivel entero cambia a la vez y la
+cuenta cae lo que vale un nivel. Una nube leída entera y cortada sin
+presupuesto puede pedir más gaussianas de las que caben en un dispositivo.
+
 **El corte con morph.** El corte cambia un padre por sus hijos en un umbral,
 una gaussiana por muchas. `--lod-morph` (`primvars:athenea:lod:morph` en una
 escena) dibuja cada gaussiana una fracción t del camino hacia su padre,
@@ -2116,6 +2134,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:visibility` | token | `automatic` | cómo se ven las mallas: `automatic`, `raster`, `rays`, `bvh` |
 | `athenea:settleStreams` | bool | `false` | esperar a los assets en streaming antes de dibujar; una imagen fija lo pone |
 | `athenea:lightSamples` | int | `1` | muestras por luz |
+| `athenea:lodBudget` | int | `0` | el máximo de gaussianas que dibujan los niveles de detalle de un frame; 0 es sin límite |
 | `athenea:chooseLights` | bool | `false` | una luz por muestra, elegida por potencia |
 | `athenea:pathSamples` | int | `1` | rt: caminos por píxel y pasada |
 | `athenea:pathBounces` | int | `1` | rt: rebotes tras el primer impacto; hasta 8 cruces de un vidrio por camino no cuentan |

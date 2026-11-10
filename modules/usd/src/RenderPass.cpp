@@ -211,6 +211,7 @@ void HdAtheneaRenderPass::_Execute(HdRenderPassStateSharedPtr const& state, TfTo
         _delegate != nullptr ? _delegate->GetMeshVisibility() : athenea::usd::MeshVisibility::Automatic;
     if (_delegate != nullptr) {
         _engine->setLightSamples(_delegate->GetLightSamples());
+        _engine->setLodBudget(_delegate->GetLodBudget());
         _engine->setChooseLights(_delegate->GetChooseLights());
         _engine->setSplatShadows(_delegate->GetSplatShadows());
         _engine->setSplatTransferIndirect(_delegate->GetSplatTransferIndirect());

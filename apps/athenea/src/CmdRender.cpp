@@ -34,6 +34,7 @@ struct RenderOptions {
     float                    lod = 0.0F;   ///< px a merged cell may span; 0 draws the splats
     float                    lodDissolve = 1.0F;   ///< the cut staggered: each cell at lod * this^(h - 1/2)
     float                    lodMorph = 0.0F;      ///< the cut morphed: toward the parent within this many thresholds
+    uint32_t                 lodBudget = 0;        ///< the most gaussians a frame's cut draws (0: no limit)
     uint64_t                 streamBudget = 0;   ///< .athc: splats on the device at once; 0 reads it whole
     std::string              technique = "raster";    ///< raster | rt | rt-hw | rt-bvh | reference | reference-rt
     std::string              pointRoute = "raster";   ///< raster | discs
@@ -321,6 +322,7 @@ int run(const RenderOptions& options, bool bench) {
         const auto start = std::chrono::steady_clock::now();
         for (int round = 0;; ++round) {
             std::vector<lod::CutStats> cutStats;
+            cutter->setBudget(options.lodBudget);
             auto selected = cutter->select(render::projectionFor(camera, width, height), lodInstances, options.lod,
                                            &cutStats);
             auto placed = selected ? feed(cutStats, true) : Result<uint32_t>(selected.error());
@@ -351,6 +353,7 @@ int run(const RenderOptions& options, bool bench) {
         std::vector<lod::CutStats> cutStats;
         if (cutter) {
             const auto start = std::chrono::steady_clock::now();
+            cutter->setBudget(options.lodBudget);
             auto selected = cutter->select(render::projectionFor(camera, width, height), lodInstances, options.lod,
                                            &cutStats);
             if (!selected) {
@@ -449,6 +452,8 @@ void addOptions(CLI::App* cmd, RenderOptions& o) {
     cmd->add_option("--lod-morph", o.lodMorph,
                     "levels of detail: a gaussian drawn toward its parent as the parent's cell nears its threshold, fully at it, from this many thresholds (0: no morph)")
         ->check(CLI::Range(0.0F, 16.0F));
+    cmd->add_option("--lod-budget", o.lodBudget,
+                    "levels of detail: the most gaussians a frame draws; over it the cut goes coarser until it fits (0: no limit)");
     cmd->add_option("--stream-budget", o.streamBudget,
                     ".athc: splats kept on the device, loaded as the view wants them (0: read whole)");
     cmd->add_flag("--no-antialias", o.noAntialias, "no Mip-Splatting 2D filter compensation");

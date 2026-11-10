@@ -649,6 +649,41 @@ equal to 1e-4.
   (60,000 and 22,429); dissolve 1 is the plain cut to the gaussian.
 - **Not done.** A version 3 file's paged tree is cut with one threshold.
 
+### The cut's budget (`--lod-budget`, `athenea:lodBudget`)
+- **Why.** Side by side with the UE plugin on a town of 106 M gaussians (RTX
+  3070 Laptop, D3D12, 1920 × 1080), athenea drew what its threshold asked
+  for, the plugin what fit 8 M: 134 to 167 ms a frame from high up against
+  the plugin's 10, and the files read whole ran the device out of memory.
+- **How.** `CutSelector::setBudget`. The counts a cut already reads say what
+  it would draw; over the budget the cut is made again, in the same call and
+  before anything is gathered, with the thresholds raised by the root of the
+  excess over 85 %, up to six times; under 60 % the factor eases back 3 % a
+  call. The factor is part of the cut's key.
+- **What the view shows.** Counted whole, the town spent its budget off
+  screen and the picture came out as coarse merges. A budgeted cut tests each
+  cell's box, grown by an edge, against the view's four side planes (a tenth
+  wider than the image): a cell outside is not drawn, and its splats are not
+  asked for. Where the eye looks is then part of the key.
+- **The splats appended.** With the eye moving, a cut cost 20 ms choosing and
+  9 to 10 gathering whatever the view (`ATHENEA_LOD_TIMES`): a selection, a
+  prefix sum and a copy of the selection over all 106 M splats, every frame.
+  A budgeted cut of a cloud with no payload counts its splats from the finest
+  level's groups (each adds its run's length where its splats are drawn) and
+  gathers them by `lodGatherAppend`: a splat asks its group's state and takes
+  the next free place. Choosing: 4.6 ms. A frame with the eye moving, before
+  and after: 51 and 34 ms high up, 72 and 55 over the cliff, 45 and 27 at
+  street level. The image is the selected cut's (PSNR 73 dB; the order the
+  splats land in differs, and with it which of two at one depth is drawn
+  first).
+- **Measured.** The flight's poses with the budget at 8 M, the files whole,
+  the eye still (the cut and the projection kept): 8.5 ms high up, 40 to 55
+  over the cliff, 18 at street level; the same frame as the plugin's at the
+  cliff. A random cloud of 60,000 at 2 px, staggered: 42,282 asked, 12,126
+  drawn under a budget of 15,000.
+- **Not done.** One factor for every view a selector cuts for. With one
+  threshold (no dissolve) the count falls a level at a time and the factor
+  can hunt. A cloud with a transfer or a payload takes the selected path.
+
 ### The cut morphed (`--lod-morph`, `athenea:lod:morph`)
 - **Why.** A staggered cut spreads the switches over a band, but each is
   still one gaussian for many between two frames.

@@ -115,7 +115,40 @@ public struct LodParams {
     /// finest-level group (`groups`).
     public uint  morphParent;
     public uint  parentGroups;
+    /// cut: 1 where a cell outside the view is not drawn (a budgeted cut,
+    /// which counts what a frame shows): the view's four side planes in the
+    /// cloud's space, n . x + d >= 0 inside, already widened by a margin.
+    /// cut, the finest level: 1 to sum the splats its groups draw into
+    /// `splatTotal` (an appended gather needs no selection to count them).
+    public uint   countSplats;
+    /// gather, appended: the most gaussians it may write past `base`.
+    public uint   appendLimit;
+    public uint   frustumOn;
+    public float4 frustumA;
+    public float4 frustumB;
+    public float4 frustumC;
+    public float4 frustumD;
 };
+
+/// Whether a cell reaches into the view (LodParams::frustumOn): its box,
+/// grown by half its edge for the gaussians that reach past it, against the
+/// four side planes.
+public bool lodVisible(LodParams p, uint cell, uint level) {
+    if (p.frustumOn == 0) {
+        return true;
+    }
+    const float edge = p.extent / float(1u << level);
+    const float3 centre = float3(p.boundsLoX, p.boundsLoY, p.boundsLoZ) + (float3(cellIndex(cell)) + 0.5) * edge;
+    const float reach = edge;   // half the edge, and half an edge more
+    const float4 planes[4] = {p.frustumA, p.frustumB, p.frustumC, p.frustumD};
+    for (uint k = 0; k < 4; ++k) {
+        const float3 n = planes[k].xyz;
+        if (dot(n, centre) + planes[k].w + (abs(n.x) + abs(n.y) + abs(n.z)) * reach < 0.0) {
+            return false;
+        }
+    }
+    return true;
+}
 
 /// The pixels a level-`level` cell spans at its nearest point to the eye.
 public float lodProjectedEdge(LodParams p, uint cell, uint level) {
