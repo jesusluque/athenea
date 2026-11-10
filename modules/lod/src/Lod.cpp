@@ -857,7 +857,9 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         w.cutMorph = instance.morph > 1.0F ? instance.morph : 0.0F;
         w.joined = lod.payloadCount > 0;
         w.countsAt = countWords;
-        countWords += w.parts + (lod.streamed ? w.chunks : 0);
+        // (w.fast is set just below; the same test, here for the counts' room.)
+        const bool needsRead = lod.streamed || (budget_ > 0 && !w.joined && extrasOf(lod.splats).empty());
+        countWords += w.parts + (needsRead ? w.chunks : 0);
         Frame& frame = *w.frame;
         frame.selected.resize(w.parts);
         frame.dest.resize(w.parts);
@@ -888,6 +890,9 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                 const uint32_t zero = 0;
                 batch.encoder()->uploadBufferData(frame.splatTotal.rhi(), 0, 4, &zero);
                 batch.encoder()->uploadBufferData(frame.appendCounter.rhi(), 0, 4, &zero);
+                // The chunks' needs, which the finest level's groups raise.
+                const std::vector<uint32_t> none(std::max<uint32_t>(w.chunks, 1), 0u);
+                batch.encoder()->uploadBufferData(frame.needs.rhi(), 0, none.size() * 4, none.data());
             }
             // The eye in the cloud's space. Perspective size is edge over
             // distance, which a uniform scale leaves alone; orthographic size is not.
@@ -955,6 +960,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                         cursor["residentChunks"].setBinding(lod.resident.rhi());
                         cursor["state"].setBinding(frame.state.rhi());
                         cursor["splatTotal"].setBinding(frame.splatTotal.rhi());
+                        cursor["needs"].setBinding(frame.needs.rhi());
                     }
                     setCut(cursor["params"], count, level.level, part == 0);
                     cursor["params"]["countSplats"].setData(uint32_t{finest && w.fast ? 1u : 0u});
@@ -971,15 +977,6 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                     cursor["params"]["offset"].setData(run.offset);
                 });
             }
-            if (lod.streamed) {
-                chunkNeeds_.dispatch(batch, {w.chunks, 1, 1}, [&](rhi::ShaderCursor cursor) {
-                    cursor["cells"].setBinding(lod.levels.back().cells.rhi());
-                    cursor["starts"].setBinding(lod.starts.rhi());
-                    cursor["state"].setBinding(frame.state.rhi());
-                    cursor["selected"].setBinding(frame.needs.rhi());
-                    setCut(cursor["params"], w.finestGroups, lod.levels.back().level, false);
-                });
-            }
             for (size_t part = 0; part < (w.fast ? w.levels : w.parts); ++part) {
                 ATHENEA_TRY(prefix_.apply(batch, frame.selected[part], frame.dest[part], frame.totals[part],
                                       w.countOf(part)));
@@ -991,7 +988,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                 batch.encoder()->copyBuffer(counts_.rhi(), (w.countsAt + part) * sizeof(uint32_t),
                                             (appended ? frame.splatTotal : frame.totals[part]).rhi(), 0, sizeof(uint32_t));
             }
-            if (lod.streamed) {
+            if (lod.streamed || w.fast) {
                 batch.encoder()->copyBuffer(counts_.rhi(), (w.countsAt + w.parts) * sizeof(uint32_t),
                                             frame.needs.rhi(), 0, w.chunks * sizeof(uint32_t));
             }
@@ -1013,7 +1010,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         const LodCloud& lod = *w.instance->cloud;
         Frame& frame = *w.frame;
         w.read.assign(counts.begin() + static_cast<std::ptrdiff_t>(w.countsAt),
-                      counts.begin() + static_cast<std::ptrdiff_t>(w.countsAt + w.parts + (lod.streamed ? w.chunks : 0)));
+                      counts.begin() + static_cast<std::ptrdiff_t>(w.countsAt + w.parts + ((lod.streamed || w.fast) ? w.chunks : 0)));
         for (size_t part = w.levels + 1; w.fast && part < w.parts; ++part) {
             w.read[part] = 0;   // the whole count stands at the first run
         }
@@ -1146,13 +1143,38 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                 if (part == w.levels) {
                     splatBase = base;
                 }
-                if (appended ? w.splatsDrawn == 0 : w.read[part] == 0) {
+                if (appended ? (w.splatsDrawn == 0 || part != w.levels) : w.read[part] == 0) {
                     continue;
+                }
+                // What the gather walks: the part whole, or -- appended -- only
+                // the runs of the store whose chunks hold splats the cut wants
+                // (the chunks' needs, read with the counts): a view that draws
+                // merges walks none of the splats.
+                std::vector<Run> pieces;
+                if (appended) {
+                    int32_t previous = -2;
+                    for (uint32_t c = 0; c < w.chunks; ++c) {
+                        const int32_t slot = lod.slots[c];
+                        if (slot < 0 || w.read[w.parts + c] == 0) {
+                            previous = -2;
+                            continue;
+                        }
+                        if (slot == previous + 1 && !pieces.empty()) {
+                            pieces.back().count += lod.chunkCount(c);
+                        } else {
+                            pieces.push_back({static_cast<uint32_t>(slot) * lod.chunkSplats, lod.chunkCount(c)});
+                        }
+                        previous = lod.chunkCount(c) == lod.chunkSplats ? slot : -2;
+                    }
                 }
                 const bool merged = part < w.levels;
                 const scene::GpuSplats& source = merged ? lod.levels[part].gaussians : lod.splats;
                 const uint32_t offset = merged ? 0u : w.runs[part - w.levels].offset;
-                (appended ? gatherAppend_ : gather_).dispatch(batch, {w.countOf(part), 1, 1}, [&](rhi::ShaderCursor cursor) {
+                if (!appended) {
+                    pieces.push_back({offset, w.countOf(part)});
+                }
+                for (const Run& piece : pieces)
+                (appended ? gatherAppend_ : gather_).dispatch(batch, {piece.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
                     if (appended) {
                         cursor["state"].setBinding(frame.state.rhi());
                         cursor["counter"].setBinding(frame.appendCounter.rhi());
@@ -1185,10 +1207,10 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                                                                                         : parent.cells.rhi());
                     cursor["parentPbr"].setBinding(pbrs ? parent.gaussians.pbr.rhi() : parent.cells.rhi());
                     cursor["groups"].setBinding(lod.groups.valid() ? lod.groups.rhi() : parent.cells.rhi());
-                    cursor["params"]["count"].setData(w.countOf(part));
+                    cursor["params"]["count"].setData(piece.count);
                     cursor["params"]["base"].setData(appended ? splatBase : base);
                     cursor["params"]["appendLimit"].setData(w.splatsDrawn);
-                    cursor["params"]["offset"].setData(offset);
+                    cursor["params"]["offset"].setData(piece.offset);
                     cursor["params"]["shWords"].setData(lod.splats.shWords);
                     setBounds(cursor["params"], lod);
                     cursor["params"]["level"].setData(merged ? lod.levels[part].level : parent.level);

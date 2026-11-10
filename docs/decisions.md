@@ -670,9 +670,17 @@ equal to 1e-4.
   A budgeted cut of a cloud with no payload counts its splats from the finest
   level's groups (each adds its run's length where its splats are drawn) and
   gathers them by `lodGatherAppend`: a splat asks its group's state and takes
-  the next free place. Choosing: 4.6 ms. A frame with the eye moving, before
-  and after: 51 and 34 ms high up, 72 and 55 over the cliff, 45 and 27 at
-  street level. The image is the selected cut's (PSNR 73 dB; the order the
+  the next free place, and only the runs of the store whose chunks the cut
+  wants splats from are walked (a view drawn in merges walks none). Choosing:
+  4.7 ms; gathering: 2.3 to 4.4. A frame with the eye moving, before and
+  after: 51 and 31 ms high up, 72 and 50 over the cliff, 45 and 25 at street
+  level.
+- **The chunks' needs.** They were one thread a chunk walking every group
+  with splats in it, 35 ms for 408 chunks of this town, paid by every cut of a
+  streamed cloud. The finest level's cut now raises them itself: each group
+  wanting its splats takes the larger of its need and the one there, for the
+  chunks its run lies in (`InterlockedMax`), and the buffer is zeroed before
+  the cut. `lodChunkNeeds` is no longer run. The image is the selected cut's (PSNR 73 dB; the order the
   splats land in differs, and with it which of two at one depth is drawn
   first).
 - **Measured.** The flight's poses with the budget at 8 M, the files whole,

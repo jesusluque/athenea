@@ -45,6 +45,10 @@ StructuredBuffer<uint>   starts;           // finest level: each group's first s
 StructuredBuffer<uint>   residentChunks;   // per chunk: 1 when on the device
 RWStructuredBuffer<uint> state;            // finest level, per group
 RWStructuredBuffer<uint> splatTotal;       // [0]: the splats the finest level's groups draw (params.countSplats)
+// Per chunk: 0 when no finest-level group with splats in it wants them, else
+// how badly -- the largest cell edge among those that do, in 1/16 pixels.
+// Each group raises the chunks its splats lie in: zeroed before the cut.
+RWStructuredBuffer<uint> needs;
 StructuredBuffer<uint>   groups;           // per splat in the store: its finest-level group
 
 static const uint kWanted = 1;
@@ -80,6 +84,19 @@ void lodCutFinest(uint3 tid: SV_DispatchThreadID) {
     const bool seen = lodVisible(params, cell, params.level);
     selected[g] = (seen && ((here && !above) || (!here && !resident && !kept))) ? 1u : 0u;
     state[g] = ((here || !seen) ? 0u : kWanted) | ((!here && resident && seen) ? kDrawn : 0u) | (kept ? kKept : 0u);
+    if (!here && seen && params.chunks > 0) {
+        // Glass draws nothing until it comes: it is wanted as a cell four
+        // times the threshold is, ahead of what a merge stands in for, where
+        // it is not wanted more by its own size.
+        const float edge = projectedEdge(cell, params.level);
+        const float wanted = kept ? max(edge, 4.0 * params.threshold) : edge;
+        const uint want = uint(clamp(wanted * 16.0, 1.0, 4294967040.0));
+        const uint lastSplat = (g + 1 < params.count ? starts[g + 1] : params.splats) - 1;
+        const uint lastChunk = min(lastSplat / params.chunkSplats, params.chunks - 1);
+        for (uint c = starts[g] / params.chunkSplats; c <= lastChunk; ++c) {
+            InterlockedMax(needs[c], want);
+        }
+    }
     if (params.countSplats != 0 && !here && resident && seen) {
         const uint last = g + 1 < params.count ? starts[g + 1] : params.splats;
         InterlockedAdd(splatTotal[0], last - starts[g]);
