@@ -668,14 +668,18 @@ equal to 1e-4.
 - **The splats appended.** With the eye moving, a cut cost 20 ms choosing and
   9 to 10 gathering whatever the view (`ATHENEA_LOD_TIMES`): a selection, a
   prefix sum and a copy of the selection over all 106 M splats, every frame.
-  A budgeted cut of a cloud with no payload counts its splats from the finest
-  level's groups (each adds its run's length where its splats are drawn) and
-  gathers them by `lodGatherAppend`: a splat asks its group's state and takes
-  the next free place, and only the runs of the store whose chunks the cut
-  wants splats from are walked (a view drawn in merges walks none). Choosing:
-  4.7 ms; gathering: 2.3 to 4.4. A frame with the eye moving, before and
-  after: 51 and 31 ms high up, 72 and 50 over the cliff, 45 and 25 at street
-  level.
+  A budgeted cut of a cloud with no payload has the finest level's groups say
+  how many splats each draws, sums those over the groups (a few million, not
+  the splats) for where each group's begin and how many there are, and
+  gathers by `lodGatherAppend`: a splat asks its group's state and takes its
+  group's place plus how far into the group it is in the Morton order. Only
+  the runs of the store whose chunks the cut wants splats from are walked (a
+  view drawn in merges walks none). The order is the store's, the same every
+  frame: two cuts of one view are the same image to the bit (an atomic
+  counter in its place swapped splats of one depth bucket between frames).
+  Choosing: 5.3 ms; gathering: 2.5 to 4.3. A frame with the eye moving,
+  before and after: 51 and 32 ms high up, 72 and 49 over the cliff, 45 and 25
+  at street level.
 - **The chunks' needs.** They were one thread a chunk walking every group
   with splats in it, 35 ms for 408 chunks of this town, paid by every cut of a
   streamed cloud. The finest level's cut now raises them itself: each group

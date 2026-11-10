@@ -44,7 +44,7 @@ void lodCutGroups(uint3 tid: SV_DispatchThreadID) {
 StructuredBuffer<uint>   starts;           // finest level: each group's first splat
 StructuredBuffer<uint>   residentChunks;   // per chunk: 1 when on the device
 RWStructuredBuffer<uint> state;            // finest level, per group
-RWStructuredBuffer<uint> splatTotal;       // [0]: the splats the finest level's groups draw (params.countSplats)
+RWStructuredBuffer<uint> splatCounts;      // per group: the splats it draws, 0 where it draws none (params.countSplats)
 // Per chunk: 0 when no finest-level group with splats in it wants them, else
 // how badly -- the largest cell edge among those that do, in 1/16 pixels.
 // Each group raises the chunks its splats lie in: zeroed before the cut.
@@ -97,9 +97,9 @@ void lodCutFinest(uint3 tid: SV_DispatchThreadID) {
             InterlockedMax(needs[c], want);
         }
     }
-    if (params.countSplats != 0 && !here && resident && seen) {
+    if (params.countSplats != 0) {
         const uint last = g + 1 < params.count ? starts[g + 1] : params.splats;
-        InterlockedAdd(splatTotal[0], last - starts[g]);
+        splatCounts[g] = (!here && resident && seen) ? last - starts[g] : 0u;
     }
 }
 

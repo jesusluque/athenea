@@ -118,11 +118,13 @@ public struct LodParams {
     /// cut: 1 where a cell outside the view is not drawn (a budgeted cut,
     /// which counts what a frame shows): the view's four side planes in the
     /// cloud's space, n . x + d >= 0 inside, already widened by a margin.
-    /// cut, the finest level: 1 to sum the splats its groups draw into
-    /// `splatTotal` (an appended gather needs no selection to count them).
+    /// cut, the finest level: 1 to write the splats each group draws into
+    /// `splatCounts` (an appended gather places and counts them by it).
     public uint   countSplats;
-    /// gather, appended: the most gaussians it may write past `base`.
+    /// gather, appended: the most gaussians it may write past `base`, and
+    /// the place in the cloud's Morton order of the run's first splat.
     public uint   appendLimit;
+    public uint   mortonBase;
     public uint   frustumOn;
     public float4 frustumA;
     public float4 frustumB;

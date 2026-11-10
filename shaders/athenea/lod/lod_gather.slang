@@ -74,8 +74,9 @@ uint lerpHalves(uint a, uint b, float t) {
     return packHalves(lerp(lowHalf(a), lowHalf(b), t), lerp(highHalf(a), highHalf(b), t));
 }
 
-StructuredBuffer<uint>     state;     // the finest level's per-group state (lod_cut): bit 1, its splats are drawn
-RWStructuredBuffer<uint>   counter;   // [0]: the gaussians appended so far
+StructuredBuffer<uint>     state;        // the finest level's per-group state (lod_cut): bit 1, its splats are drawn
+StructuredBuffer<uint>     splatBases;   // per finest-level group: the splats drawn by the groups before it
+StructuredBuffer<uint>     starts;       // per finest-level group: its first splat in the Morton order
 
 /// Gaussian k of the source written as gaussian j of the frame's cloud.
 void emit(uint j, uint k) {
@@ -157,9 +158,12 @@ void lodGather(uint3 tid: SV_DispatchThreadID) {
 /// THE SPLATS APPENDED. A cut made every frame (a budgeted one, for a moving
 /// eye) spent most of its time on its splats: a selection, a prefix sum over
 /// every splat in the store and a copy of the selection to tell the next cut
-/// by. Here a splat asks its group's state itself and takes the next free
-/// place past `base`: one pass, no selection and no sum. The order the splats
-/// land in is not the store's, which a rasteriser that sorts does not see.
+/// by. Here the finest level's groups say how many splats each draws, a
+/// prefix sum over the groups (a few million, not the splats) says where
+/// each group's begin, and a splat asks its group's state and takes its own
+/// place: its group's, plus how far into the group it is in the Morton
+/// order. One pass over the splats, and the order they land in is the
+/// store's, the same every frame.
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void lodGatherAppend(uint3 tid: SV_DispatchThreadID) {
@@ -168,11 +172,11 @@ void lodGatherAppend(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint k = params.offset + i;
-    if ((state[groups[k]] & 2u) == 0u) {
+    const uint g = groups[k];
+    if ((state[g] & 2u) == 0u) {
         return;
     }
-    uint at;
-    InterlockedAdd(counter[0], 1u, at);
+    const uint at = splatBases[g] + (params.mortonBase + i - starts[g]);
     if (at < params.appendLimit) {
         emit(params.base + at, k);
     }

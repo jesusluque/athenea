@@ -531,9 +531,9 @@ struct CutSelector::Frame {
     /// Per part -- the levels, then the runs of the store the splats are
     /// drawn from -- which elements are drawn, where they go, how many.
     std::vector<gpu::Buffer> selected, dest, totals;
-    /// The splats appended (lodGatherAppend): how many the finest level's
-    /// groups draw, and how many have been written.
-    gpu::Buffer      splatTotal, appendCounter;
+    /// The splats appended (lodGatherAppend): how many each finest-level
+    /// group draws, where each group's begin, and how many in all.
+    gpu::Buffer      splatCounts, splatBases, splatTotal;
     gpu::Buffer      state;       ///< the finest level's per-group state
     gpu::Buffer      needs;       ///< per chunk
     gpu::Buffer      readback;    ///< every part's count, then the needs: one read
@@ -873,7 +873,8 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
             ATHENEA_TRY(ensure(frame.totals[part], 1, "cut.total"));
         }
         ATHENEA_TRY(ensure(frame.splatTotal, 1, "cut.splatTotal"));
-        ATHENEA_TRY(ensure(frame.appendCounter, 1, "cut.appendCounter"));
+        ATHENEA_TRY(ensure(frame.splatCounts, w.finestGroups, "cut.splatCounts"));
+        ATHENEA_TRY(ensure(frame.splatBases, w.finestGroups, "cut.splatBases"));
         ATHENEA_TRY(ensure(frame.state, w.finestGroups, "cut.state"));
         ATHENEA_TRY(ensure(frame.needs, w.chunks, "cut.needs"));
         works.push_back(std::move(w));
@@ -889,7 +890,6 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
             {
                 const uint32_t zero = 0;
                 batch.encoder()->uploadBufferData(frame.splatTotal.rhi(), 0, 4, &zero);
-                batch.encoder()->uploadBufferData(frame.appendCounter.rhi(), 0, 4, &zero);
                 // The chunks' needs, which the finest level's groups raise.
                 const std::vector<uint32_t> none(std::max<uint32_t>(w.chunks, 1), 0u);
                 batch.encoder()->uploadBufferData(frame.needs.rhi(), 0, none.size() * 4, none.data());
@@ -959,7 +959,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                         cursor["starts"].setBinding(lod.starts.rhi());
                         cursor["residentChunks"].setBinding(lod.resident.rhi());
                         cursor["state"].setBinding(frame.state.rhi());
-                        cursor["splatTotal"].setBinding(frame.splatTotal.rhi());
+                        cursor["splatCounts"].setBinding(frame.splatCounts.rhi());
                         cursor["needs"].setBinding(frame.needs.rhi());
                     }
                     setCut(cursor["params"], count, level.level, part == 0);
@@ -980,6 +980,10 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
             for (size_t part = 0; part < (w.fast ? w.levels : w.parts); ++part) {
                 ATHENEA_TRY(prefix_.apply(batch, frame.selected[part], frame.dest[part], frame.totals[part],
                                       w.countOf(part)));
+            }
+            if (w.fast) {
+                // Where each finest-level group's splats begin, and how many there are.
+                ATHENEA_TRY(prefix_.apply(batch, frame.splatCounts, frame.splatBases, frame.splatTotal, w.finestGroups));
             }
             // Every count of every cut into one buffer: one read for them all.
             // Appended splats are counted whole, by the finest level's groups.
@@ -1151,6 +1155,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                 // (the chunks' needs, read with the counts): a view that draws
                 // merges walks none of the splats.
                 std::vector<Run> pieces;
+                std::vector<uint32_t> mortonBases;   // appended: each piece's first splat in the Morton order
                 if (appended) {
                     int32_t previous = -2;
                     for (uint32_t c = 0; c < w.chunks; ++c) {
@@ -1163,6 +1168,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                             pieces.back().count += lod.chunkCount(c);
                         } else {
                             pieces.push_back({static_cast<uint32_t>(slot) * lod.chunkSplats, lod.chunkCount(c)});
+                            mortonBases.push_back(c * lod.chunkSplats);
                         }
                         previous = lod.chunkCount(c) == lod.chunkSplats ? slot : -2;
                     }
@@ -1172,12 +1178,16 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                 const uint32_t offset = merged ? 0u : w.runs[part - w.levels].offset;
                 if (!appended) {
                     pieces.push_back({offset, w.countOf(part)});
+                    mortonBases.push_back(0u);
                 }
-                for (const Run& piece : pieces)
+                for (size_t at = 0; at < pieces.size(); ++at) {
+                const Run& piece = pieces[at];
+                const uint32_t mortonBase = mortonBases[at];
                 (appended ? gatherAppend_ : gather_).dispatch(batch, {piece.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
                     if (appended) {
                         cursor["state"].setBinding(frame.state.rhi());
-                        cursor["counter"].setBinding(frame.appendCounter.rhi());
+                        cursor["splatBases"].setBinding(frame.splatBases.rhi());
+                        cursor["starts"].setBinding(lod.starts.rhi());
                     } else {
                         cursor["selected"].setBinding(frame.selected[part].rhi());
                         cursor["dest"].setBinding(frame.dest[part].rhi());
@@ -1210,6 +1220,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                     cursor["params"]["count"].setData(piece.count);
                     cursor["params"]["base"].setData(appended ? splatBase : base);
                     cursor["params"]["appendLimit"].setData(w.splatsDrawn);
+                    cursor["params"]["mortonBase"].setData(mortonBase);
                     cursor["params"]["offset"].setData(piece.offset);
                     cursor["params"]["shWords"].setData(lod.splats.shWords);
                     setBounds(cursor["params"], lod);
@@ -1226,6 +1237,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                     cursor["params"]["parentGroups"].setData(parent.gaussians.count);
                     cursor["params"]["pbrs"].setData(uint32_t{pbrs ? 1u : 0u});
                 });
+                }
                 if (w.joined) {
                     // Where each one's payload is.
                     payloadIndex_.dispatch(batch, {w.countOf(part), 1, 1}, [&](rhi::ShaderCursor cursor) {
