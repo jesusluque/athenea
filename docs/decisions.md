@@ -786,6 +786,39 @@ equal to 1e-4.
 - **Not done.** The paged tree; the transfer and the other payloads a cloud
   carries beside its gaussians stay the child's.
 
+### The splats by the device's rasteriser (`RenderSettings::quads`, `ATHENEA_SPLAT_QUADS`)
+- **Why.** On the town's flight the UE plugin draws the same cut in 6.4 to
+  15.6 ms where athenea takes 43 to 66 (same RTX 3070 Laptop, D3D12, 1080p).
+  Over the cliff a frame of 65 ms was: cut 5.7 and gather 13.2; project 4.5,
+  counts 2.8, depth sort 7.5, emit 3.6, tile sort 7.6, blend 19.5. The plugin
+  has no pairs and no tiles: it hands the device a quad a splat.
+- **How.** After the projection and the depth sort, `splat_quads.slang`
+  through `gpu::RasterKernel`: one instanced draw, the vertex entry reading
+  `proj[order[instance]]` and placing a quad along the ellipse's own axes
+  out to the cutoff, the fragment entry the tiles' falloff and their cut at
+  1/255, blended under what is there (source times one minus the coverage
+  held). Two half-float targets, the colour with its coverage and the
+  weight times view z, and a kernel that writes them into the frame's
+  buffers with the tiles' last lines. The splats go in batches, each twice
+  the one before, and between two a triangle writes the nearest depth where
+  a pixel holds 0.996, so the device drops what comes after before shading
+  it.
+- **Measured** (the cliff, eye moving, the draw in place of emit + tile sort
+  + blend, 30.7 ms): 48 ms drawn at once into a half-float colour and a
+  32-bit float depth sum; 40 in batches; 40 with quads along the axes in
+  place of upright boxes (the area was not the cost); 18.2 with both targets
+  half floats; 11.0 with the colour alone. A frame: 54 ms against 65. A town
+  from above is one layer deep, so the full pixels' depth saves little
+  there (9.8 ms if everything after the first batch is dropped).
+- **Checked.** The same frame by both routes: PSNR 68 dB, p99 1/255, 481 of
+  2 M pixels over 2. `[quads]` in the render tests: p99 2, max 3 on Metal.
+- **Not done.** It is asked for, not the default. A frame that does not ask
+  for depth could draw the colour alone (11 ms). Surfels are drawn as the
+  thin gaussians they project to; an under layer (meshes, points), a matte,
+  relit clouds, catchers, media and transfers keep the tiles. Vulkan's
+  flipped viewport is not checked. The counts' readback (which the quads do
+  not need beyond the visible total) still waits.
+
 ### Not done yet
 - **The cut still waits twice a frame:** once for its counts, which come back
   in one read (reading them level by level had cost 3.9 against 2.3 ms), and

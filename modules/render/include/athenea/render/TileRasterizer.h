@@ -15,6 +15,7 @@
 #include "athenea/gpu/AsyncReadback.h"
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/ComputeKernel.h"
+#include "athenea/gpu/RasterKernel.h"
 #include "athenea/gpu/Texture.h"
 #include "athenea/gpu/algo/PrefixSum.h"
 #include "athenea/gpu/algo/RadixSort.h"
@@ -241,6 +242,15 @@ struct RenderSettings {
     /// filter (docs/decisions.md, surfels). Off, it is the thin gaussian it
     /// projects to. A cloud with no flat axis draws the same either way.
     bool     surfels = true;
+    /// THE SPLATS BY THE DEVICE'S RASTERISER (splat_quads.slang): a frame of
+    /// plain gaussians drawn as a quad a visible splat, nearest first, in
+    /// place of the pairs, the tile sort and the blend. Taken where the
+    /// frame is that -- no under layer, no points, no matte, no measured
+    /// contribution, a mean depth, and every cloud a capture's (no relight,
+    /// no catcher, no medium, no transfer) -- and the tiles draw anything
+    /// else. `ATHENEA_SPLAT_QUADS` asks for it too. A surfel is drawn as the
+    /// thin gaussian it projects to.
+    bool     quads = false;
     uint32_t maxShDegree = 3;
     /// Premultiplied, linear. Transparent by default.
     std::array<float, 4> background{0, 0, 0, 0};
@@ -436,6 +446,15 @@ private:
     gpu::ComputeKernel blendComposite_;
     gpu::ComputeKernel blendCrypto_;
     gpu::ComputeKernel blendCompositeCrypto_;
+    /// RenderSettings::quads: its kernels and targets, made at the first
+    /// frame that takes the route. `quadsAsked_`: the environment asks.
+    bool               quadsAsked_ = false;
+    bool               quadsMade_ = false;
+    gpu::RasterKernel  quads_;
+    gpu::RasterKernel  quadsFull_;   ///< the depth written where a pixel is full
+    gpu::Texture       quadStop_;    ///< that depth
+    gpu::ComputeKernel quadsResolve_;
+    gpu::Texture       quadColour_, quadDepth_;
 
     bool     tight_ = false;   ///< grow to the need exactly (after releaseScratch)
     uint32_t splatCapacity_ = 0;

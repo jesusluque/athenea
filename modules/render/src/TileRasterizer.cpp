@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "athenea/core/Log.h"
+#include "athenea/core/Platform.h"
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
@@ -158,6 +159,7 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(r.blendComposite_, "athenea/splat/splat_blend", "splatBlendComposite"));
     ATHENEA_TRY(make(r.blendCrypto_, "athenea/splat/splat_blend", "splatBlendCrypto"));
     ATHENEA_TRY(make(r.blendCompositeCrypto_, "athenea/splat/splat_blend", "splatBlendCompositeCrypto"));
+    r.quadsAsked_ = !platform::env("ATHENEA_SPLAT_QUADS").empty();
     return r;
 }
 
@@ -878,6 +880,18 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     if (!ms) return std::move(ms).error();
     stats.depthSortMs = *ms;
 
+    // The quads draw from the sorted splats: no pairs, no tiles.
+    bool quads = (quadsAsked_ || settings.quads) && under == nullptr && points.empty() && !settings.cryptomatte &&
+                 settings.contribution == nullptr && settings.depth == RenderSettings::Depth::Mean &&
+                 settings.splatView == 0;
+    for (const SplatInstance& instance : instances) {
+        const scene::GpuSplats* cloud = instance.splats;
+        quads = quads && cloud != nullptr && !instance.relight && !instance.catcher && !instance.lightCatcher &&
+                !cloud->hasVolume() && !cloud->hasTransfer();
+    }
+    if (quads) {
+        pairs = 0;
+    }
     if (pairs > 0) {
         gather_.dispatch(batch, {visibleCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["order"].setBinding(depthSort_.values.rhi());
@@ -935,6 +949,127 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     const bool underCrypto = matte && under != nullptr && under->cryptoIds.valid();
     gpu::ComputeKernel& blend = matte ? (composite ? blendCompositeCrypto_ : blendCrypto_)
                                       : (composite ? blendComposite_ : blend_);
+    if (quads) {
+        if (!quadsMade_) {
+            gpu::RasterDesc desc;
+            desc.module = "athenea/splat/splat_quads";
+            desc.vertexEntry = "splatQuadVertex";
+            desc.fragmentEntry = "splatQuadFragment";
+            // Under what is there: a pixel takes what its coverage leaves.
+            rhi::ColorTargetDesc target;
+            target.format = rhi::Format::RGBA16Float;
+            target.enableBlend = true;
+            target.color = {rhi::BlendFactor::InvDestAlpha, rhi::BlendFactor::One, rhi::BlendOp::Add};
+            target.alpha = {rhi::BlendFactor::InvDestAlpha, rhi::BlendFactor::One, rhi::BlendOp::Add};
+            rhi::ColorTargetDesc depthTarget = target;
+            depthTarget.format = rhi::Format::RGBA16Float;
+            desc.targets = {target, depthTarget};
+            // Behind what the full pixels' depth says (splat_quads.slang).
+            desc.depthFormat = rhi::Format::D32Float;
+            desc.depthTest = true;
+            desc.depthWrite = false;
+            desc.depthFunc = rhi::ComparisonFunc::Less;
+            auto made = gpu::RasterKernel::create(*library_, desc);
+            if (!made) return std::move(made).error();
+            quads_ = std::move(*made);
+            gpu::RasterDesc full;
+            full.module = "athenea/splat/splat_quads";
+            full.vertexEntry = "splatQuadsFullVertex";
+            full.fragmentEntry = "splatQuadsFullFragment";
+            full.depthFormat = rhi::Format::D32Float;
+            full.depthTest = true;
+            full.depthWrite = true;
+            full.depthFunc = rhi::ComparisonFunc::Always;
+            auto madeFull = gpu::RasterKernel::create(*library_, full);
+            if (!madeFull) return std::move(madeFull).error();
+            quadsFull_ = std::move(*madeFull);
+            auto resolve = gpu::ComputeKernel::create(*library_, "athenea/splat/splat_quads", "splatQuadsResolve");
+            if (!resolve) return std::move(resolve).error();
+            quadsResolve_ = std::move(*resolve);
+            quadsMade_ = true;
+        }
+        if (!quadColour_.valid() || quadColour_.width() != settings.width || quadColour_.height() != settings.height) {
+            gpu::TextureDesc colour;
+            colour.width = settings.width;
+            colour.height = settings.height;
+            colour.format = rhi::Format::RGBA16Float;
+            colour.usage = rhi::TextureUsage::RenderTarget | rhi::TextureUsage::ShaderResource;
+            colour.label = "splat.quads.colour";
+            auto madeColour = gpu::Texture::create(*device_, colour);
+            if (!madeColour) return std::move(madeColour).error();
+            gpu::TextureDesc depth = colour;
+            depth.format = rhi::Format::RGBA16Float;
+            depth.label = "splat.quads.depth";
+            auto madeDepth = gpu::Texture::create(*device_, depth);
+            if (!madeDepth) return std::move(madeDepth).error();
+            gpu::TextureDesc stop = colour;
+            stop.format = rhi::Format::D32Float;
+            stop.usage = rhi::TextureUsage::DepthStencil;
+            stop.label = "splat.quads.stop";
+            auto madeStop = gpu::Texture::create(*device_, stop);
+            if (!madeStop) return std::move(madeStop).error();
+            quadColour_ = std::move(*madeColour);
+            quadDepth_ = std::move(*madeDepth);
+            quadStop_ = std::move(*madeStop);
+        }
+        auto stopView = quadStop_.view(0);
+        if (!stopView) return std::move(stopView).error();
+        auto colourView = quadColour_.view(0);
+        if (!colourView) return std::move(colourView).error();
+        auto depthView = quadDepth_.view(0);
+        if (!depthView) return std::move(depthView).error();
+        gpu::RasterPass pass;
+        pass.width = settings.width;
+        pass.height = settings.height;
+        pass.colours = {(*colourView).get(), (*depthView).get()};
+        pass.clearColours = {{0.0F, 0.0F, 0.0F, 0.0F}, {0.0F, 0.0F, 0.0F, 0.0F}};
+        pass.bind = [&](rhi::ShaderCursor cursor) {
+            cursor["order"].setBinding(depthSort_.values.rhi());
+            cursor["proj"].setBinding(proj_.rhi());
+            setFrame(cursor, common);
+            // base: whether an instance id already counts from the draw's first (Metal).
+            cursor["params"]["base"].setData(uint32_t{device_->caps().drawIdsIncludeStart ? 1u : 0u});
+        };
+        pass.depth = (*stopView).get();
+        pass.depthClear = 1.0F;
+        gpu::RasterPass fullPass;
+        fullPass.width = settings.width;
+        fullPass.height = settings.height;
+        fullPass.depth = (*stopView).get();
+        fullPass.clearDepth = false;
+        fullPass.bind = [&](rhi::ShaderCursor cursor) {
+            cursor["quadColour"].setBinding((*colourView).get());
+        };
+        gpu::RasterDraw fullDraw;
+        fullDraw.vertexCount = 3;
+        // Batches, each twice the one before; the full pixels' depth between.
+        uint32_t first = 0;
+        uint32_t size = 65536;
+        while (first < visibleCount) {
+            gpu::RasterDraw draw;
+            draw.vertexCount = 6;
+            draw.instanceCount = std::min(size, visibleCount - first);
+            draw.firstInstance = first;
+            quads_.run(batch, pass, std::span<const gpu::RasterDraw>(&draw, 1));
+            first += draw.instanceCount;
+            size *= 2;
+            pass.clearColours.clear();
+            pass.clearDepth = false;
+            if (first < visibleCount) {
+                quadsFull_.run(batch, fullPass, std::span<const gpu::RasterDraw>(&fullDraw, 1));
+            }
+        }
+        quadsResolve_.dispatch(batch, {settings.width, settings.height, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["quadColour"].setBinding((*colourView).get());
+            cursor["quadDepth"].setBinding((*depthView).get());
+            cursor["underColour"].setBinding(placeholderColour_.rhi());
+            cursor["underDepth"].setBinding(placeholderDepth_.rhi());
+            cursor["colour"].setBinding(targets.colour.rhi());
+            cursor["depth"].setBinding(targets.depth.rhi());
+            setFrame(cursor, common);
+            cursor["params"]["hasUnder"].setData(uint32_t{0});
+        });
+    } else
     blend.dispatch(batch, {settings.width, settings.height, 1}, [&](rhi::ShaderCursor cursor) {
         cursor["ranges"].setBinding(ranges_buffer_.rhi());
         cursor["pairSplats"].setBinding(tileSort_.values.rhi());

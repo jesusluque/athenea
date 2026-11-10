@@ -127,6 +127,34 @@ TEST_CASE("the tile rasteriser renders what the GPU reference renders", "[render
     }
 }
 
+// The quads draw a plain gaussian with the tiles' own arithmetic, the device
+// blending under what is there; they stop a pixel at 0.996 of coverage where
+// the tiles stop at 0.9999, and keep their sums in halves.
+TEST_CASE("the splats drawn as quads are the splats drawn by tiles", "[render][gpu][quads]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    CloudBuilder built = randomCloud(3000, 7);
+    auto cloud = h->loader.upload(built.raw, 3);
+    REQUIRE(cloud);
+    std::vector<render::SplatInstance> instances{{&*cloud, render::Mat4::identity()}};
+    instances.push_back({&*cloud, aofx::xform::translation({0.5, 0.0, -1.5}) * aofx::xform::rotationY(40.0)});
+    render::RenderSettings settings;
+    settings.width = 250;
+    settings.height = 190;
+    render::Camera camera = render::Camera::lookingAt({1.5, 1.0, 6.0}, {0.0, 0.0, 0.0});
+    camera.lens.focal = 30.0;
+    render::RenderTargets tiles, quads;
+    REQUIRE(h->raster.render(camera, instances, settings, tiles));
+    settings.quads = true;
+    REQUIRE(h->raster.render(camera, instances, settings, quads));
+    auto diff = render::compareImages(*h->gpu->library, quads.colour, tiles.colour, settings.width, settings.height);
+    REQUIRE(diff);
+    std::printf("  quads vs tiles: p99 %u, max %u, %llu of %llu pixels over 2\n", diff->p99, diff->max,
+                static_cast<unsigned long long>(diff->over2), static_cast<unsigned long long>(diff->pixels));
+    CHECK(diff->p99 <= 2);
+    CHECK(diff->max <= 8);
+}
+
 TEST_CASE("a single splat lands on the pixel the camera arithmetic says", "[render][gpu]") {
     ATHENEA_REQUIRE_GPU(gpu);
     auto h = harness(gpu);
