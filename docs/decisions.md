@@ -693,6 +693,11 @@ equal to 1e-4.
   over the cliff, 18 at street level; the same frame as the plugin's at the
   cliff. A random cloud of 60,000 at 2 px, staggered: 42,282 asked, 12,126
   drawn under a budget of 15,000.
+- **The frame's pairs, summed.** The rasteriser took the pairs' total from a
+  prefix sum over every splat whose offsets only a panel's counters read. A
+  frame now sums the tiles touched in runs of 64 (`splat_touched_total`); the
+  panel's frames keep the prefix sum. The stage that counts: 4.2 to 3.1 ms
+  over the cliff, the image the same to the bit.
 - **Not done.** One factor for every view a selector cuts for. With one
   threshold (no dissolve) the count falls a level at a time and the factor
   can hunt. A cloud with a transfer or a payload takes the selected path.

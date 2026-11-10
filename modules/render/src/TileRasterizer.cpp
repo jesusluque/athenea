@@ -84,6 +84,7 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(r.viewless_, "athenea/splat/splat_project", "splatTransferViewless"));
     ATHENEA_TRY(make(r.catcherViewless_, "athenea/splat/splat_project", "splatCatcherViewless"));
     ATHENEA_TRY(make(r.compact_, "athenea/splat/splat_compact", "splatCompact"));
+    ATHENEA_TRY(make(r.touchedSum_, "athenea/splat/splat_touched_total", "splatTouchedTotal"));
     ATHENEA_TRY(make(r.pointsProject_, "athenea/splat/points_project", "pointsProject"));
     auto placeholderColour = buffer(*r.device_, 1, 16, "blend.noUnderColour");
     if (!placeholderColour) return std::move(placeholderColour).error();
@@ -828,7 +829,19 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     // has nothing to count: its sums are skipped, unless a panel counts it.
     if (splatCount > 0 || settings.countSplats) {
         ATHENEA_TRY(prefix_.apply(batch, visible_, visibleOffsets_, visibleTotal_, all));
-        ATHENEA_TRY(prefix_.apply(batch, tilesTouched_, touchedOffsets_, touchedTotal_, all));
+        if (settings.countSplats) {
+            // A panel's counters read each splat's offset among the pairs.
+            ATHENEA_TRY(prefix_.apply(batch, tilesTouched_, touchedOffsets_, touchedTotal_, all));
+        } else {
+            // A frame reads the total alone (splat_touched_total).
+            const uint32_t zero = 0;
+            batch.encoder()->uploadBufferData(touchedTotal_.rhi(), 0, 4, &zero);
+            touchedSum_.dispatch(batch, {(all + 63) / 64, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["tilesTouched"].setBinding(tilesTouched_.rhi());
+                cursor["total"].setBinding(touchedTotal_.rhi());
+                cursor["params"]["count"].setData(all);
+            });
+        }
     }
     // The totals are read back below, and a read waits for the device: a
     // frame without splats reads nothing and waits for nothing.

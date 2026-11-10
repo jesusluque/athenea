@@ -392,6 +392,7 @@ private:
     gpu::ShaderLibrary* library_ = nullptr;
     gpu::PrefixSum     prefix_;
     gpu::RadixSort     sort_;
+    gpu::ComputeKernel touchedSum_;   ///< the frame's pairs, summed (splat_touched_total)
     gpu::ComputeKernel project_;
     /// The same with the transfer's shading compiled out, for a cloud that
     /// carries none (splat_project.slang's projectSplat says why).
