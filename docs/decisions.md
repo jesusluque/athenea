@@ -661,7 +661,8 @@ equal to 1e-4.
   call. The factor is part of the cut's key.
 - **What the view shows.** Counted whole, the town spent its budget off
   screen and the picture came out as coarse merges. A budgeted cut tests each
-  cell's box, grown by an edge, against the view's four side planes (a tenth
+  cell's box, grown by an edge and a half (one edge lost near splats at the
+  frame's lower edge in the UE plugin, which cuts the same way), against the view's four side planes (a tenth
   wider than the image): a cell outside is not drawn, and its splats are not
   asked for. Where the eye looks is then part of the key.
 - **The splats appended.** With the eye moving, a cut cost 20 ms choosing and

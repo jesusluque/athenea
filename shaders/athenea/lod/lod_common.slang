@@ -131,7 +131,7 @@ public struct LodParams {
 };
 
 /// Whether a cell reaches into the view (LodParams::frustumOn): its box,
-/// grown by half its edge for the gaussians that reach past it, against the
+/// grown by an edge and a half for the gaussians that reach past it, against the
 /// four side planes.
 public bool lodVisible(LodParams p, uint cell, uint level) {
     if (p.frustumOn == 0) {
@@ -139,7 +139,7 @@ public bool lodVisible(LodParams p, uint cell, uint level) {
     }
     const float edge = p.extent / float(1u << level);
     const float3 centre = float3(p.boundsLoX, p.boundsLoY, p.boundsLoZ) + (float3(cellIndex(cell)) + 0.5) * edge;
-    const float reach = edge;   // half the edge, and half an edge more
+    const float reach = 2.0 * edge;   // half the edge, and an edge and a half more
     const float4 planes[4] = {p.frustumA, p.frustumB, p.frustumC, p.frustumD};
     for (uint k = 0; k < 4; ++k) {
         const float3 n = planes[k].xyz;
