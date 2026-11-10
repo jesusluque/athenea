@@ -110,7 +110,15 @@ if [ "$os" = macos ]; then
         relink "$f" @loader_path/../../../../lib
     done
     find "$pkg/lib" -maxdepth 1 -type f -name '*.dylib' | while read -r f; do relink "$f" @loader_path; done
-    (cd "$out" && rm -f "$name.zip" && ditto -c -k --keepParent "$name" "$name.zip")
+    # No resource forks or extended attributes: ditto otherwise writes each
+    # file's as an AppleDouble "._name" beside it, and MaterialX reads every
+    # file of its libraries as a document (0.5.0's zip carried 1701 of them and
+    # any stage with a MaterialX material aborted at start).
+    (cd "$out" && rm -f "$name.zip" && ditto -c -k --norsrc --noextattr --keepParent "$name" "$name.zip")
+    if unzip -l "$out/$name.zip" | grep -q '/\._'; then
+        echo "package.sh: $name.zip holds AppleDouble files" >&2
+        exit 1
+    fi
     echo "$out/$name.zip"
 else
     command -v patchelf >/dev/null || { echo "package.sh: patchelf is needed on Linux" >&2; exit 1; }
