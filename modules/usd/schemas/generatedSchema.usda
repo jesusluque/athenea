@@ -94,6 +94,10 @@ ParticleField itself."""
         doc = "The cut morphed: a gaussian is drawn toward its parent as the parent's cell nears its threshold -- a fraction (morph - r) / (morph - 1) of the way, r the parent's pixels over its threshold -- so it is the parent when the cut switches (up to 1: no morph)."
         interpolation = "constant"
     )
+    float primvars:athenea:lod:thin = 0 (
+        doc = "The splats thinned: while a finest merged cell spans under this many thresholds a fraction of its splats is drawn (a hash of each, the same every frame), halving with each equal step of the logarithm down to a thirty-second where the cell is drawn merged; those drawn carry the rest's mass. A budgeted cut's (athenea:lodBudget). Up to 1: every splat."
+        interpolation = "constant"
+    )
 }
 
 class "AtheneaLiveSourceAPI" (

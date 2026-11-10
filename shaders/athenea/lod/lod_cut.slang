@@ -99,7 +99,19 @@ void lodCutFinest(uint3 tid: SV_DispatchThreadID) {
     }
     if (params.countSplats != 0) {
         const uint last = g + 1 < params.count ? starts[g + 1] : params.splats;
-        splatCounts[g] = (!here && resident && seen) ? last - starts[g] : 0u;
+        uint drawn = 0u;
+        if (!here && resident && seen) {
+            // Glass and sheets are drawn whole; the rest thinned (lod_common).
+            const float fraction = kept ? 1.0 : lodThinFraction(params, cell, params.level);
+            drawn = last - starts[g];
+            if (fraction < 1.0) {
+                drawn = 0u;
+                for (uint m = starts[g]; m < last; ++m) {
+                    drawn += lodThinKeeps(m, fraction) ? 1u : 0u;
+                }
+            }
+        }
+        splatCounts[g] = drawn;
     }
 }
 

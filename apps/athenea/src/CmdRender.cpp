@@ -34,6 +34,7 @@ struct RenderOptions {
     float                    lod = 0.0F;   ///< px a merged cell may span; 0 draws the splats
     float                    lodDissolve = 1.0F;   ///< the cut staggered: each cell at lod * this^(h - 1/2)
     float                    lodMorph = 0.0F;      ///< the cut morphed: toward the parent within this many thresholds
+    float                    lodThin = 0.0F;       ///< the splats thinned within this many thresholds (a budgeted cut's)
     uint32_t                 lodBudget = 0;        ///< the most gaussians a frame's cut draws (0: no limit)
     uint64_t                 streamBudget = 0;   ///< .athc: splats on the device at once; 0 reads it whole
     std::string              technique = "raster";    ///< raster | rt | rt-hw | rt-bvh | reference | reference-rt
@@ -291,14 +292,14 @@ int run(const RenderOptions& options, bool bench) {
         std::printf("levels of detail built in %.1f ms\n",
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
         for (size_t k = 0; k < lodClouds.size(); ++k) {
-            lodInstances.push_back({&lodClouds[k], model, {}, std::nullopt, options.lodDissolve, options.lodMorph});
+            lodInstances.push_back({&lodClouds[k], model, {}, std::nullopt, options.lodDissolve, options.lodMorph, options.lodThin});
         }
         for (const auto& cloud : athcClouds) {
-            lodInstances.push_back({cloud.get(), model, {}, std::nullopt, options.lodDissolve, options.lodMorph});
+            lodInstances.push_back({cloud.get(), model, {}, std::nullopt, options.lodDissolve, options.lodMorph, options.lodThin});
         }
         poolOf.assign(lodInstances.size(), nullptr);
         for (const auto& pool : pools) {
-            lodInstances.push_back({&pool->cloud(), model, {}, std::nullopt, options.lodDissolve, options.lodMorph});
+            lodInstances.push_back({&pool->cloud(), model, {}, std::nullopt, options.lodDissolve, options.lodMorph, options.lodThin});
             poolOf.push_back(pool.get());
         }
     }
@@ -452,6 +453,9 @@ void addOptions(CLI::App* cmd, RenderOptions& o) {
     cmd->add_option("--lod-morph", o.lodMorph,
                     "levels of detail: a gaussian drawn toward its parent as the parent's cell nears its threshold, fully at it, from this many thresholds (0: no morph)")
         ->check(CLI::Range(0.0F, 16.0F));
+    cmd->add_option("--lod-thin", o.lodThin,
+                    "levels of detail, with --lod-budget: a finest cell's splats drawn in part while it spans under this many thresholds, down to a thirty-second where it is drawn merged (0: every splat)")
+        ->check(CLI::Range(0.0F, 64.0F));
     cmd->add_option("--lod-budget", o.lodBudget,
                     "levels of detail: the most gaussians a frame draws; over it the cut goes coarser until it fits (0: no limit)");
     cmd->add_option("--stream-budget", o.streamBudget,

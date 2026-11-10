@@ -79,7 +79,11 @@ StructuredBuffer<uint>     splatBases;   // per finest-level group: the splats d
 StructuredBuffer<uint>     starts;       // per finest-level group: its first splat in the Morton order
 
 /// Gaussian k of the source written as gaussian j of the frame's cloud.
-void emit(uint j, uint k) {
+/// `thinMore` over 1 is a thinned splat (lod_common): it carries that many
+/// times its mass -- a little by width, the rest by opacity up to 1 -- and is
+/// drawn `thinToward` of the way to its group's merged gaussian, its opacity
+/// times `thinFade` (it is going out).
+void emit(uint j, uint k, float thinMore = 1.0, float thinToward = 0.0, float thinFade = 1.0) {
     // The parent and how far toward it.
     float t = 0.0;
     uint q = 0;
@@ -93,6 +97,12 @@ void emit(uint j, uint k) {
     }
     if (t > 0.0 && params.pbrs != 0 && lodKeptApart(parentPbr[q])) {
         t = 0.0;
+    }
+    const float wider = min(sqrt(sqrt(thinMore)), 1.5);
+    if (thinMore > 1.0) {
+        // A thinned splat's own way to its group, whatever the morph says.
+        q = groups[k];
+        t = thinToward;
     }
 
     if (t <= 0.0) {
@@ -109,6 +119,15 @@ void emit(uint j, uint k) {
         if (params.emission != 0) {
             emission[j] = srcEmission[k];
         }
+        if (thinMore > 1.0) {
+            const float opacity = positions[j].w;
+            positions[j].w = min(opacity * thinMore / (wider * wider), max(opacity, 1.0)) * thinFade;
+            const float add = log(wider);
+            const uint a = shape[j * 4 + 1];
+            const uint b = shape[j * 4 + 2];
+            shape[j * 4 + 1] = packHalves(halfSafe(lowHalf(a) + add), halfSafe(highHalf(a) + add));
+            shape[j * 4 + 2] = packHalves(halfSafe(lowHalf(b) + add), highHalf(b));
+        }
         return;
     }
 
@@ -118,17 +137,18 @@ void emit(uint j, uint k) {
     const uint parentRow = q * 4;
     const float3 ownLog = shapeScale(row, srcShape);
     const float3 parentLog = shapeScale(parentRow, parentShape);
-    const float3 logScale = lerp(ownLog, parentLog, t);
+    const float3 logScale = lerp(ownLog + log(wider), parentLog, t);
     float4 rotation = decodeQuaternion(srcShape[row]);
     float4 parentRotation = decodeQuaternion(parentShape[parentRow]);
     parentRotation = dot(rotation, parentRotation) < 0.0 ? -parentRotation : parentRotation;
     rotation = normalize(lerp(rotation, parentRotation, t));
     const float3 base = lerp(shapeBase(row, srcShape), shapeBase(parentRow, parentShape), t);
     // Its mass kept: at t = 1 the children's opacities sum to the parent's.
-    const float mass = own.w * discArea(exp(ownLog));
-    const float opacity = min(mass / max(discArea(exp(logScale)), 1e-30), max(own.w, parent.w));
+    const float mass = own.w * thinMore * discArea(exp(ownLog));
+    const float plain = thinMore > 1.0 ? min(own.w * thinMore / (wider * wider), max(own.w, 1.0)) : own.w;
+    const float opacity = min(mass / max(discArea(exp(logScale)), 1e-30), max(plain, parent.w));
 
-    positions[j] = float4(lerp(own.xyz, parent.xyz, t), opacity);
+    positions[j] = float4(lerp(own.xyz, parent.xyz, t), opacity * thinFade);
     shape[j * 4] = encodeQuaternion(rotation);
     shape[j * 4 + 1] = packHalves(halfSafe(logScale.x), halfSafe(logScale.y));
     shape[j * 4 + 2] = packHalves(halfSafe(logScale.z), halfSafe(base.x));
@@ -176,8 +196,60 @@ void lodGatherAppend(uint3 tid: SV_DispatchThreadID) {
     if ((state[g] & 2u) == 0u) {
         return;
     }
-    const uint at = splatBases[g] + (params.mortonBase + i - starts[g]);
-    if (at < params.appendLimit) {
-        emit(params.base + at, k);
+    // The splats thinned (lod_common): one the fraction drops is not drawn,
+    // and one it keeps stands after the kept ones before it in its group.
+    const uint morton = params.mortonBase + i;
+    const bool whole = params.pbrs != 0 && lodKeptApart(parentPbr[g]);
+    const float fraction = whole ? 1.0 : lodThinFraction(params, parentCells[g], params.level);
+    uint rank = morton - starts[g];
+    if (fraction < 1.0) {
+        if (!lodThinKeeps(morton, fraction)) {
+            return;
+        }
+        rank = 0u;
+        for (uint m = starts[g]; m < morton; ++m) {
+            rank += lodThinKeeps(m, fraction) ? 1u : 0u;
+        }
+    }
+    const uint at = splatBases[g] + rank;
+    if (at >= params.appendLimit) {
+        return;
+    }
+    // Toward its group over the band's last half: what is left of a group at
+    // the switch is the merged gaussian that takes its place.
+    const float left = fraction < 1.0 ? 1.0 - log2(fraction) / log2(kLodThinLeast) : 1.0;
+    emit(params.base + at, k, fraction < 1.0 ? kLodThinFadeMass / fraction : 1.0,
+         fraction < 1.0 ? saturate(1.0 - 2.0 * left) : 0.0, lodThinFade(morton, fraction));
+}
+
+/// THE SPLATS BY THEIR GROUPS. Where the store is the cloud's Morton order
+/// (every chunk in its own slot: splat m of the order is splat m of the
+/// store), a thread a finest-level group writes what the appended gather
+/// would, splat by splat of its run: the fraction is asked once a group, and
+/// a splat's place is a count kept along the run, where the appended gather
+/// counts the kept ones before each splat anew. Thinned, that pass over every
+/// splat of a town cost 19 to 38 ms.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void lodGatherRuns(uint3 tid: SV_DispatchThreadID) {
+    const uint g = tid.x;
+    if (g >= params.count || (state[g] & 2u) == 0u) {
+        return;
+    }
+    const bool whole = params.pbrs != 0 && lodKeptApart(parentPbr[g]);
+    const float fraction = whole ? 1.0 : lodThinFraction(params, parentCells[g], params.level);
+    const float left = fraction < 1.0 ? 1.0 - log2(fraction) / log2(kLodThinLeast) : 1.0;
+    const float more = fraction < 1.0 ? kLodThinFadeMass / fraction : 1.0;
+    const float toward = fraction < 1.0 ? saturate(1.0 - 2.0 * left) : 0.0;
+    const uint last = g + 1 < params.count ? starts[g + 1] : params.splats;
+    uint at = splatBases[g];
+    for (uint m = starts[g]; m < last; ++m) {
+        if (!lodThinKeeps(m, fraction)) {
+            continue;
+        }
+        if (at < params.appendLimit) {
+            emit(params.base + at, m, more, toward, lodThinFade(m, fraction));
+        }
+        ++at;
     }
 }

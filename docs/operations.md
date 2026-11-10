@@ -194,6 +194,7 @@ athenea info
 | `--lod` | number | `0` | pixels a merged cell may span; 0 draws every splat |
 | `--lod-dissolve` | 1..16 | `1` | the cut staggered: each merged cell switches at `--lod` × this^(h − ½), h hashed from the cell; 1 is one threshold |
 | `--lod-budget` | integer | `0` | the most gaussians a frame's cut draws; over it the cut goes coarser until it fits, and what the view does not show is left out. 0 is no limit |
+| `--lod-thin` | 0..64 | `0` | with `--lod-budget`: a finest cell's splats drawn in part while it spans under this many thresholds, down to a thirty-second where it is drawn merged; up to 1 is every splat |
 | `--lod-morph` | 0..16 | `0` | the cut morphed: a gaussian is drawn toward its parent from this many of the parent's thresholds, fully at one; up to 1 is no morph |
 | `--stream-budget` | integer | `0` | `.athc`: splats kept on the device; 0 reads the file whole |
 | `--no-antialias` | flag | off | drop the Mip-Splatting 2D filter compensation for every cloud, over what an `.spz` says |
@@ -1694,6 +1695,20 @@ with one threshold a whole level switches at once, and the count falls by a
 level's worth. A cloud read whole and cut without a budget can ask for more
 gaussians than a device holds.
 
+**The splats thinned.** The cut's last step is its largest: one merged
+gaussian for the tens of splats of a finest cell, a line across the ground
+where it happens and a pop at each cell's turn. `--lod-thin`
+(`primvars:athenea:lod:thin`) thins a cell's splats before it: while the cell
+spans under that many thresholds a fraction of them is drawn, halving with
+each equal step of the logarithm down to a thirty-second. Which ones is a
+hash of the splat's place in the cloud's order, the same every frame, and a
+splat once dropped stays dropped farther away. Those drawn carry the mass of
+those dropped (a little wider, more opaque up to 1), and over the band's last
+half they are drawn toward the cell's merged gaussian, which they are when it
+takes their place. A splat does not go out at once: it fades over the last
+30 % of the fraction before its turn. It is a budgeted cut's (`--lod-budget`), whose splats are
+appended; glass and sheets are drawn whole.
+
 **The cut morphed.** The cut swaps a parent for its children at one
 threshold, one gaussian for many. `--lod-morph` (`primvars:athenea:lod:morph`
 on a stage) draws each gaussian a fraction t of the way to its parent
@@ -2347,6 +2362,7 @@ capture graded here does not match the same numbers applied to its sRGB.
 | `primvars:athenea:lod:threshold` | float | `1` |
 | `primvars:athenea:lod:dissolve` | float | `1`, one threshold |
 | `primvars:athenea:lod:morph` | float | `0`, no morph |
+| `primvars:athenea:lod:thin` | float | `0`, every splat |
 | `primvars:athenea:stream:budget` | int64 | `0`, read whole |
 
 **`AtheneaLiveSourceAPI`** — a cloud drawn from a live stream of SPZ pages that

@@ -156,6 +156,11 @@ struct LodInstance {
     /// toward its parent as the parent's cell nears its threshold, all the
     /// way where it reaches it; up to 1 is no morph.
     float                morph = 0.0F;
+    /// The splats thinned (lod_common's lodThinFraction): a finest-level
+    /// group's splats drawn in part while its cell is under this many
+    /// thresholds, down to a thirty-second where the group takes their place.
+    /// A budgeted cut's (its splats appended); up to 1 is every splat.
+    float                thin = 0.0F;
 };
 
 struct CutStats {
@@ -210,6 +215,7 @@ private:
     gpu::Device*                        device_ = nullptr;
     gpu::PrefixSum                      prefix_;
     gpu::ComputeKernel                  gatherAppend_;   ///< the splats of a budgeted cut, appended (lod_gather)
+    gpu::ComputeKernel                  gatherRuns_;     ///< the same by their groups' runs, where thinned and the store is in order
     gpu::ComputeKernel                  cutGroups_, cutFinest_, cutSplats_, chunkNeeds_, gather_, extrasGather_,
                                         payloadIndex_, selectionChanged_;
     std::vector<std::unique_ptr<Frame>> frames_;

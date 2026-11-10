@@ -198,6 +198,7 @@ athenea info
 | `--lod` | número | `0` | píxeles que puede abarcar una celda fundida; 0 dibuja todos los splats |
 | `--lod-dissolve` | 1..16 | `1` | el corte escalonado: cada celda fundida cambia a `--lod` × esto^(h − ½), h un hash de la celda; 1 es un solo umbral |
 | `--lod-budget` | entero | `0` | el máximo de gaussianas que dibuja el corte de un frame; por encima, el corte se hace más grueso hasta caber, y lo que la vista no muestra se deja fuera. 0 es sin límite |
+| `--lod-thin` | 0..64 | `0` | con `--lod-budget`: los splats de una celda del nivel más fino se dibujan en parte mientras abarca menos de este número de umbrales, hasta un treintaidosavo donde se dibuja fusionada; hasta 1 son todos los splats |
 | `--lod-morph` | 0..16 | `0` | el corte con morph: una gaussiana se dibuja hacia su padre desde este número de umbrales del padre, del todo en uno; hasta 1 no hay morph |
 | `--stream-budget` | entero | `0` | `.athc`: splats que se quedan en el dispositivo; 0 lee el fichero entero |
 | `--no-antialias` | flag | apagado | quita la compensación de filtro 2D de Mip-Splatting a todas las nubes, por encima de lo que diga un `.spz` |
@@ -1748,6 +1749,22 @@ el corte escalonado: con un solo umbral un nivel entero cambia a la vez y la
 cuenta cae lo que vale un nivel. Una nube leída entera y cortada sin
 presupuesto puede pedir más gaussianas de las que caben en un dispositivo.
 
+**Los splats aclarados.** El último paso del corte es el mayor: una gaussiana
+fusionada por las decenas de splats de una celda del nivel más fino, una línea
+sobre el suelo donde ocurre y un pop en el turno de cada celda. `--lod-thin`
+(`primvars:athenea:lod:thin`) aclara antes los splats de la celda: mientras
+abarca menos de ese número de umbrales se dibuja una fracción de ellos, que se
+reduce a la mitad con cada paso igual del logaritmo hasta un treintaidosavo.
+Cuáles, lo decide un hash del lugar del splat en el orden de la nube, el mismo
+en cada frame, y un splat que deja de dibujarse sigue sin dibujarse más lejos.
+Los que se dibujan llevan la masa de los que no (algo más anchos, más opacos
+hasta 1), y en la última mitad de la banda se dibujan hacia la gaussiana
+fusionada de la celda, que es lo que son cuando esta ocupa su lugar. Un splat
+no se apaga de golpe: se desvanece en el último 30 % de la fracción antes de
+su turno. Es de un
+corte con presupuesto (`--lod-budget`), cuyos splats se añaden; el cristal y
+las láminas se dibujan enteros.
+
 **El corte con morph.** El corte cambia un padre por sus hijos en un umbral,
 una gaussiana por muchas. `--lod-morph` (`primvars:athenea:lod:morph` en una
 escena) dibuja cada gaussiana una fracción t del camino hacia su padre,
@@ -2429,6 +2446,7 @@ captura graduada aquí no coincide con los mismos números aplicados a su sRGB.
 | `primvars:athenea:lod:threshold` | float | `1` |
 | `primvars:athenea:lod:dissolve` | float | `1`, un solo umbral |
 | `primvars:athenea:lod:morph` | float | `0`, sin morph |
+| `primvars:athenea:lod:thin` | float | `0`, todos los splats |
 | `primvars:athenea:stream:budget` | int64 | `0`, lee entero |
 
 **`AtheneaLiveSourceAPI`** — una nube dibujada desde un stream en vivo de

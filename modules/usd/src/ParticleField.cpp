@@ -54,6 +54,7 @@ TF_DEFINE_PRIVATE_TOKENS(_assetTokens,
     ((threshold, "athenea:lod:threshold"))
     ((dissolve, "athenea:lod:dissolve"))
     ((morph, "athenea:lod:morph"))
+    ((thin, "athenea:lod:thin"))
     ((budget, "athenea:stream:budget"))
     ((live, "athenea:live:stream"))
     ((liveChunks, "athenea:live:chunks"))
@@ -216,6 +217,7 @@ athenea::usd::StreamedAsset assetOf(HdSceneDelegate* delegate, SdfPath const& id
     asset.threshold = std::max(floatOf(delegate->Get(id, _assetTokens->threshold), asset.threshold), 0.0F);
     asset.dissolve = std::max(floatOf(delegate->Get(id, _assetTokens->dissolve), asset.dissolve), 1.0F);
     asset.morph = std::max(floatOf(delegate->Get(id, _assetTokens->morph), asset.morph), 0.0F);
+    asset.thin = std::max(floatOf(delegate->Get(id, _assetTokens->thin), asset.thin), 0.0F);
     const VtValue budget = delegate->Get(id, _assetTokens->budget);
     if (budget.IsHolding<int64_t>()) {
         asset.budget = static_cast<uint64_t>(std::max<int64_t>(budget.UncheckedGet<int64_t>(), 0));

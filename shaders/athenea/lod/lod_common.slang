@@ -118,6 +118,11 @@ public struct LodParams {
     /// cut: 1 where a cell outside the view is not drawn (a budgeted cut,
     /// which counts what a frame shows): the view's four side planes in the
     /// cloud's space, n . x + d >= 0 inside, already widened by a margin.
+    /// cut and gather: the splats thinned (lodThinFraction). While a
+    /// finest-level group's cell spans under `thin` thresholds a fraction of
+    /// its splats is drawn, down to a thirty-second where the group takes
+    /// their place. Up to 1: every splat.
+    public float  thin;
     /// cut, the finest level: 1 to write the splats each group draws into
     /// `splatCounts` (an appended gather places and counts them by it).
     public uint   countSplats;
@@ -202,4 +207,42 @@ public bool lodKeptApart(uint pbrWord) {
 
 public uint levelShift(uint level) {
     return 3 * (kLevels - level);
+}
+
+/// THE SPLATS THINNED (LodParams::thin). The cut's last step is its largest:
+/// one merged gaussian for the tens of splats of a finest-level group, and
+/// with the eye moving the place where it happens shows as a line, and each
+/// group's turn as a pop. Before it a group's splats are thinned: while its
+/// cell spans r thresholds, r under `thin`, a fraction of them is drawn,
+/// halving with each equal step of log r down to a thirty-second at the
+/// switch (one or two of a group's tens). Which ones is a hash of the splat's
+/// place in the Morton order -- the same every frame, and a splat once dropped
+/// stays dropped farther away -- and those drawn take the mass of those
+/// dropped: half by width (scales by the fourth root of the inverse fraction),
+/// half by opacity (its root; past 1 the harder kernel, as a merge's).
+public static const float kLodThinLeast = 1.0 / 32.0;
+
+public float lodThinFraction(LodParams p, uint cell, uint level) {
+    if (p.thin <= 1.0 || p.threshold <= 0.0) {
+        return 1.0;
+    }
+    const float r = lodProjectedEdge(p, cell, level) / lodThresholdOf(p, cell, level);
+    const float t = saturate(log(max(r, 1.0)) / log(p.thin));
+    return exp2(log2(kLodThinLeast) * (1.0 - t));
+}
+
+/// Whether the splat at `morton` in the cloud's order is one of the fraction drawn.
+public bool lodThinKeeps(uint morton, float fraction) {
+    return fraction >= 1.0 || lodCellHash(morton, 0x9E3779B9u) < fraction;
+}
+
+/// A kept splat does not go out at once: over the last `kLodThinFadeBand` of
+/// the fraction before its turn it fades, so a band where the fraction moves
+/// does not flicker with splats going on and off. What the fading ones lack
+/// of the mass the rest make up (`kLodThinFadeMass`).
+public static const float kLodThinFadeBand = 0.3;
+public static const float kLodThinFadeMass = 1.0 / (1.0 - 0.5 * kLodThinFadeBand);
+
+public float lodThinFade(uint morton, float fraction) {
+    return fraction >= 1.0 ? 1.0 : saturate((fraction - lodCellHash(morton, 0x9E3779B9u)) / (kLodThinFadeBand * fraction));
 }

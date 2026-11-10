@@ -702,6 +702,42 @@ equal to 1e-4.
   threshold (no dissolve) the count falls a level at a time and the factor
   can hunt. A cloud with a transfer or a payload takes the selected path.
 
+### The splats thinned (`--lod-thin`, `athenea:lod:thin`)
+- **Why.** On the town's flight the place where splats give way to the finest
+  merged level showed as a line with the eye moving, and each cell's turn as
+  a pop: one merged gaussian replaces some 55 splats there, and a staggered
+  threshold only spreads where.
+- **How.** `lodThinFraction` (lod_common): the fraction of a finest cell's
+  splats drawn, from the cell's pixels over its own threshold, a
+  thirty-second at the switch. The finest level's cut counts what each cell
+  keeps (a hash a splat, `lodThinKeeps`); the appended gather places a kept
+  splat after the kept ones before it in its cell, and writes it carrying
+  the rest's mass: a little by width (the fourth root of the inverse
+  fraction, at most one and a half), the rest by opacity up to 1, and over
+  the band's last half toward the cell's merged gaussian (the morph's
+  arithmetic, the mass kept).
+- **What did not work.** The mass by width and an opacity past 1 (the harder
+  kernel): a stray splat larger than its cell, kept by the hash at a
+  thirty-second, stood as a shard over the far meadows. Toward the merged
+  gaussian such a splat shrinks.
+- **Checked.** The UE plugin thins the same splats (the same hash of the
+  same index). A frame of the flight's descent at a band of 4: houses where
+  merges stood across the town, no shard; two renders of it the same to the
+  bit. With the eye moving, a frame with it: 45 ms high up, 66 over the cliff,
+  28 at street level, against 30, 56 and 28 without (it draws gaussians where
+  merges stood).
+- **A splat fades out.** One drawn or not from one frame to the next made
+  the band flicker as the fraction moved with the eye and the budget. Over
+  the last 30 % of the fraction before its turn a kept splat's opacity falls
+  to nothing (`lodThinFade`), and the rest make up the mass it lacks.
+- **By the groups.** Thinned, the appended gather's pass over every splat
+  cost 19 to 38 ms (each splat asked the fraction and counted the kept ones
+  before it): frames of 90, 96 and 40 ms. Where every chunk is in its own
+  slot the groups are walked instead (`lodGatherRuns`): the fraction once a
+  group, the place a count along its run.
+- **Not done.** A cut without a budget (its splats are selected, not
+  appended) is not thinned; nor a paged tree.
+
 ### The cut morphed (`--lod-morph`, `athenea:lod:morph`)
 - **Why.** A staggered cut spreads the switches over a band, but each is
   still one gaussian for many between two frames.

@@ -565,6 +565,7 @@ Result<CutSelector> CutSelector::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(c.chunkNeeds_, "athenea/lod/lod_cut", "lodChunkNeeds"));
     ATHENEA_TRY(make(c.gather_, "athenea/lod/lod_gather", "lodGather"));
     ATHENEA_TRY(make(c.gatherAppend_, "athenea/lod/lod_gather", "lodGatherAppend"));
+    ATHENEA_TRY(make(c.gatherRuns_, "athenea/lod/lod_gather", "lodGatherRuns"));
     ATHENEA_TRY(make(c.extrasGather_, "athenea/lod/lod_extras", "lodExtrasGather"));
     ATHENEA_TRY(make(c.payloadIndex_, "athenea/lod/lod_extras", "lodPayloadIndex"));
     ATHENEA_TRY(make(c.selectionChanged_, "athenea/lod/lod_extras", "lodSelectionChanged"));
@@ -770,6 +771,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         mixDouble(instance.threshold.value_or(-1.0F));
         mixDouble(instance.dissolve);
         mixDouble(instance.morph);
+        mixDouble(instance.thin);
         for (float v : instance.objectToWorld.rows3x4()) {
             uint32_t bits = 0;
             std::memcpy(&bits, &v, 4);
@@ -814,6 +816,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         float              cutThreshold = 0.0F;
         float              cutDissolve = 1.0F;
         float              cutMorph = 0.0F;
+        float              cutThin = 0.0F;
         float              eye[3] = {0.0F, 0.0F, 0.0F};   ///< in the cloud's space (the gather's morph)
         float              pixelsPerUnit = 0.0F;
         uint64_t           countsAt = 0;   ///< its counts, then its needs, in counts_
@@ -855,6 +858,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
         w.cutThreshold = instance.threshold.value_or(threshold) * (budget_ > 0 ? budgetScale_ : 1.0F);
         w.cutDissolve = std::max(instance.dissolve, 1.0F);
         w.cutMorph = instance.morph > 1.0F ? instance.morph : 0.0F;
+        w.cutThin = instance.thin > 1.0F ? instance.thin : 0.0F;
         w.joined = lod.payloadCount > 0;
         w.countsAt = countWords;
         // (w.fast is set just below; the same test, here for the counts' room.)
@@ -917,6 +921,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                 p["pixelsPerUnit"].setData(pixelsPerUnit);
                 p["threshold"].setData(w.cutThreshold);
                 p["dissolve"].setData(w.cutDissolve);
+                p["thin"].setData(w.fast ? w.cutThin : 0.0F);   // the appended gather's, which places what is kept
                 p["orthographic"].setData(uint32_t{projection.orthographic ? 1u : 0u});
                 p["coarsest"].setData(uint32_t{coarsest ? 1u : 0u});
                 p["chunkSplats"].setData(lod.chunkSplats);
@@ -1156,7 +1161,18 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                 // merges walks none of the splats.
                 std::vector<Run> pieces;
                 std::vector<uint32_t> mortonBases;   // appended: each piece's first splat in the Morton order
-                if (appended) {
+                // Thinned, and every chunk in its own slot (the store is the
+                // Morton order): the groups are walked, each writing its run
+                // (lodGatherRuns).
+                bool inOrder = appended && w.cutThin > 0.0F;
+                for (uint32_t c = 0; inOrder && c < w.chunks; ++c) {
+                    inOrder = lod.slots[c] == static_cast<int32_t>(c);
+                }
+                const bool byGroups = inOrder;
+                if (byGroups) {
+                    pieces.push_back({0u, w.finestGroups});
+                    mortonBases.push_back(0u);
+                } else if (appended) {
                     int32_t previous = -2;
                     for (uint32_t c = 0; c < w.chunks; ++c) {
                         const int32_t slot = lod.slots[c];
@@ -1183,7 +1199,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                 for (size_t at = 0; at < pieces.size(); ++at) {
                 const Run& piece = pieces[at];
                 const uint32_t mortonBase = mortonBases[at];
-                (appended ? gatherAppend_ : gather_).dispatch(batch, {piece.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                (byGroups ? gatherRuns_ : appended ? gatherAppend_ : gather_).dispatch(batch, {piece.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
                     if (appended) {
                         cursor["state"].setBinding(frame.state.rhi());
                         cursor["splatBases"].setBinding(frame.splatBases.rhi());
@@ -1221,6 +1237,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                     cursor["params"]["base"].setData(appended ? splatBase : base);
                     cursor["params"]["appendLimit"].setData(w.splatsDrawn);
                     cursor["params"]["mortonBase"].setData(mortonBase);
+                    cursor["params"]["splats"].setData(lod.count);
                     cursor["params"]["offset"].setData(piece.offset);
                     cursor["params"]["shWords"].setData(lod.splats.shWords);
                     setBounds(cursor["params"], lod);
@@ -1232,6 +1249,7 @@ Result<std::vector<render::SplatInstance>> CutSelector::select(const render::Pro
                     cursor["params"]["threshold"].setData(w.cutThreshold);
                     cursor["params"]["dissolve"].setData(w.cutDissolve);
                     cursor["params"]["morph"].setData(w.cutMorph);
+                    cursor["params"]["thin"].setData(appended ? w.cutThin : 0.0F);
                     cursor["params"]["orthographic"].setData(uint32_t{projection.orthographic ? 1u : 0u});
                     cursor["params"]["morphParent"].setData(morphParent);
                     cursor["params"]["parentGroups"].setData(parent.gaussians.count);
