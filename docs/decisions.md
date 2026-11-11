@@ -20318,3 +20318,37 @@ its first harmonic alone (`maxShDegree` 0), and is not the cloud drawn by all it
 - No file carries it, no USD schema names it, the ray traced route does not read it, and a level of detail's cut
   has no latents. The projection still evaluates the harmonics it then overwrites.
 - Not timed.
+
+## A cloud's harmonics learnt by its latents, on the device (11 Nov)
+
+The fit the neural appearance waited for, and the first thing in the engine that learns. `render::NeuralFit::step`
+is one camera: the cloud drawn by its harmonics is what the cloud drawn from its latents should be, and the latents
+and the network move towards it -- a cloud's appearance distilled into eleven numbers a gaussian, gaussian for
+gaussian, its geometry as it is. Nothing is computed on the CPU and nothing is differentiated by Slang.
+
+**How a step goes** (`shaders/athenea/neural/neural_fit.slang`).
+1. Two frames from the camera: by the harmonics, by the latents.
+2. `neuralFitError`: the squared error, and its derivative at each pixel.
+3. The frame by the latents again, with the blend's fourth `contributionMode`: a pixel is the sum of weight times
+   colour, so the derivative with respect to a gaussian's colour is the weight times the pixel's, summed over its
+   pixels -- the lift of the trace section, with an error where the mask was. Three signed words a slot in 1/16384,
+   each addition rounded up or down by a hash so that what is smaller than a step survives on average.
+4. `neuralFitBackward`, once a gaussian the frame drew: the network walked backwards (`neuralBackward`), the
+   gaussian's own derivatives written, and what each layer held and each layer's error kept (100 floats).
+5. `neuralFitWeights`, one thread a weight: its layer's error times its layer's input, summed over the gaussians by
+   reading. No thread adds into another's sum, so no float is added atomically (Metal cannot) and the sum is the
+   same every run.
+6. `neuralFitAdam` for the latents (only those the frame saw) and for the weights.
+
+**Measured** (`[fit]`, Apple M5 Pro, Metal): 3000 random gaussians whose harmonics are random too -- no two
+alike, which is the worst a shared network can be asked -- 320 x 240, 1500 steps from cameras on a ring, 25 s.
+The frame's mean squared error goes from 0.0100 to 0.0016. From a camera no step used, against the harmonics'
+own frame: the first harmonic alone relMSE 0.0119, the latents 0.0027.
+
+### Not done
+
+- Only this: one cloud, one instance, its own harmonics as the pictures. No photographs, no path-traced
+  reference, no light in the network's input.
+- Three frames a step where two would do if the first by the latents kept what its blend walked.
+- The rates are constants found by trying twice; no schedule, no regulariser, no halves.
+- A real cloud is not fitted yet, so nothing says whether eleven numbers match forty-eight on one.

@@ -991,6 +991,8 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         cursor["params"]["contributionMode"].setData(settings.contribution == nullptr ? 0u
                                                      : settings.contributionMode == 3u
                                                          ? (settings.liftMask != nullptr ? 3u : 0u)
+                                                     : settings.contributionMode == 4u
+                                                         ? (settings.finalColour != nullptr ? 4u : 0u)
                                                      : settings.contributionMode == 2u && settings.finalColour != nullptr
                                                          ? 2u
                                                          : 1u);

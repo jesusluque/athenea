@@ -351,6 +351,21 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool t
                 if (before + add < before) {
                     InterlockedAdd(contribution[sSplats[j] * 2 + 1], 1u);
                 }
+            } else if (params.contributionMode == 4u) {
+                // What the frame's error asks of this gaussian's colour: the
+                // pixel is the sum of weight times colour, so the derivative
+                // of a loss with respect to the colour is the weight times
+                // the loss's derivative at the pixel (`finalColour` here),
+                // summed over its pixels. In 1 / kColourGradScale as three
+                // signed words a slot, rounded up or down by a hash so that
+                // what is smaller than a step is not lost on average.
+                const float3 g = weight * finalColour[at].rgb * kColourGradScale;
+                for (uint c = 0; c < 3; ++c) {
+                    const int step = int(floor(g[c] + hash01((at * 3u + c) ^ (sSplats[j] * 2654435761u))));
+                    if (step != 0) {
+                        InterlockedAdd(contribution[sSplats[j] * 3 + c], uint(step));
+                    }
+                }
             } else if (params.contributionMode == 3u) {
                 const uint seen = uint(weight * 1024.0 + 0.5);
                 if (seen != 0u) {

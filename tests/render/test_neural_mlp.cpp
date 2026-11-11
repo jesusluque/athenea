@@ -205,3 +205,72 @@ TEST_CASE("a cloud drawn from its latents starts as its own first harmonic draws
     // And it is the latents that were drawn: the harmonics' own frame differs.
     CHECK(other->max > 4);
 }
+
+#include "athenea/render/NeuralFit.h"
+
+TEST_CASE("a cloud's harmonics are learnt by its latents, from frames of itself", "[render][gpu][neural][fit]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto fit = render::NeuralFit::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!fit) FAIL(fit.error().toString());
+    test::CloudBuilder builder = test::randomCloud(3000, 11, 0.02F, 0.12F);
+    auto cloud = loader->upload(builder.raw, 3);
+    REQUIRE(cloud);
+    auto neural = render::makeNeuralCloud(*gpu->library, *cloud);
+    if (!neural) FAIL(neural.error().toString());
+    const render::SplatInstance instance{&*cloud, render::Mat4::identity()};
+
+    render::NeuralFitSettings how;
+    how.width = 320;
+    how.height = 240;
+    how.rateFeatures = 1.0e-2F;
+    how.rateWeights = 4.0e-3F;
+    // Cameras on a ring round the cloud, at heights that go up and down.
+    const auto cameraAt = [](uint32_t k) {
+        const double a = 2.39996323 * k;   // the golden angle: no two alike
+        const double h = 2.5 * std::sin(0.7 * k);
+        return render::Camera::lookingAt({6.0 * std::sin(a), h, 6.0 * std::cos(a)}, {0.0, 0.0, 0.0});
+    };
+    double first = 0.0;
+    double last = 0.0;
+    const uint32_t steps = 1500;
+    for (uint32_t k = 0; k < steps; ++k) {
+        const bool ask = k == 0 || (k + 1) % 250 == 0;
+        auto loss = fit->step(*raster, cameraAt(k), instance, *neural, how, ask);
+        if (!loss) FAIL(loss.error().toString());
+        if (*loss) {
+            std::printf("  fit step %u: mean squared error %.6f\n", k + 1, **loss);
+            if (k == 0) first = **loss;
+            last = **loss;
+        }
+    }
+    CHECK(last < first * 0.3);
+
+    // From a camera no step used: nearer the harmonics' frame than the first harmonic's is.
+    render::RenderSettings settings;
+    settings.width = 320;
+    settings.height = 240;
+    const render::Camera held = render::Camera::lookingAt({-3.3, 1.1, -4.9}, {0.0, 0.0, 0.0});
+    const std::vector<render::SplatInstance> plain{instance};
+    std::vector<render::SplatInstance> learnt = plain;
+    learnt[0].neural = &*neural;
+    render::RenderTargets whole, flat, ours;
+    REQUIRE(raster->render(held, plain, settings, whole));
+    settings.maxShDegree = 0;
+    REQUIRE(raster->render(held, plain, settings, flat));
+    settings.maxShDegree = 3;
+    REQUIRE(raster->render(held, learnt, settings, ours));
+    auto before = render::compareHdr(*gpu->library, flat.colour, whole.colour, settings.width, settings.height);
+    auto after = render::compareHdr(*gpu->library, ours.colour, whole.colour, settings.width, settings.height);
+    REQUIRE(before);
+    REQUIRE(after);
+    std::printf("  held-out camera against the harmonics: first harmonic alone relMSE %.5f, the latents %.5f\n",
+                before->relMse, after->relMse);
+    CHECK(after->relMse < before->relMse * 0.5);
+    test::dumpPpm(*gpu, "fit_harmonics", whole.colour, settings.width, settings.height);
+    test::dumpPpm(*gpu, "fit_first_harmonic", flat.colour, settings.width, settings.height);
+    test::dumpPpm(*gpu, "fit_latents", ours.colour, settings.width, settings.height);
+}
