@@ -281,7 +281,10 @@ three frames to look at.
 
 The measures are those of `athenea compare` against the harmonics' frame, the
 mean over the held-out cameras: relMSE, the 99th percentile in 8-bit code
-values, and the largest difference of any of them.
+values, and the largest difference of any of them. With `--relight` the same
+measures are also taken under three suns of three colours at once, against the
+engine's relighting under those three (and `-o` writes `_engine_three.exr` and
+`_latents_three.exr`).
 
 ### 2.4 `athenea convert` — a splat file into USD, or into a `.athc`
 

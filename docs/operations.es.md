@@ -285,7 +285,10 @@ frames para mirar.
 
 Las medidas son las de `athenea compare` contra el frame de los armónicos, la
 media sobre las cámaras reservadas: relMSE, el percentil 99 en code values de 8 bits,
-y la mayor diferencia de cualquiera de ellas.
+y la mayor diferencia de cualquiera de ellas. Con `--relight` las mismas
+medidas se toman además bajo tres soles de tres colores a la vez, contra el
+relight del motor bajo esos tres (y `-o` escribe `_engine_three.exr` y
+`_latents_three.exr`).
 
 ### 2.4 `athenea convert` — un fichero de splats a USD, o a un `.athc`
 

@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Commands.h"
@@ -150,7 +151,8 @@ int run(const NeuralFitOptions& o) {
         if (!made) return report(made.error());
         shadowMap.emplace(std::move(*made));
         gpu::BufferDesc desc;
-        desc.bytes = std::max<uint64_t>(cloud->count, 1) * sizeof(float);
+        // Room for the three suns the fit is measured under at the end.
+        desc.bytes = std::max<uint64_t>(cloud->count, 1) * 3 * sizeof(float);
         desc.elementBytes = sizeof(float);
         desc.label = "neural.reached";
         auto factors = gpu::Buffer::create(**device, desc);
@@ -221,6 +223,57 @@ int run(const NeuralFitOptions& o) {
         return told;
     };
 
+    // THREE SUNS AT ONCE, each its own colour: what a fit made under one white
+    // sun a frame is then measured under, since its answer is linear in the
+    // light. The engine's table holds the three; the neural cloud is told the
+    // three, in the same order.
+    std::vector<render::NeuralLight> threeSuns;
+    const auto sunsAt = [&](uint32_t k) -> Result<void> {
+        static constexpr float kTint[3][3] = {{1.0F, 0.35F, 0.2F}, {0.25F, 1.0F, 0.4F}, {0.25F, 0.4F, 1.0F}};
+        std::array<light::Light, 3> lamps;
+        threeSuns.assign(3, render::NeuralLight{});
+        for (uint32_t l = 0; l < 3; ++l) {
+            const double at = k * 3 + l + 0.25;
+            light::Light& lamp = lamps[l];
+            lamp.kind = light::LightKind::Distant;
+            lamp.lightToWorld = aofx::xform::rotationY(360.0 * std::fmod(0.5 + at * 0.8191725134, 1.0)) *
+                                aofx::xform::rotationX(-80.0 + 160.0 * std::fmod(0.5 + at * 0.6710436067, 1.0));
+            lamp.intensity = o.sun * 0.6F;
+            lamp.shadow = o.shadows;
+            for (int c = 0; c < 3; ++c) {
+                lamp.colour[c] = kTint[l][c];
+                threeSuns[l].radiance[static_cast<size_t>(c)] = lamp.intensity * kTint[l][c];
+            }
+            const render::Vec3 towards = lamp.lightToWorld.direction({0.0, 0.0, 1.0});
+            threeSuns[l].towards = {static_cast<float>(towards.x), static_cast<float>(towards.y),
+                                    static_cast<float>(towards.z)};
+        }
+        ATHENEA_TRY(table->set(std::span<const light::Light>(lamps.data(), lamps.size())));
+        lights.records = &table->records();
+        lights.count = table->count();
+        if (shadowMap) {
+            technique::ShadowMapJob job;
+            technique::ShadowMapCaster caster;
+            caster.cloud = &*cloud;
+            caster.positions = &cloud->positions;
+            caster.categories = ~uint64_t{0};
+            job.casters.push_back(caster);
+            job.lights = lights.records;
+            job.lightCount = 3;
+            job.resolution = o.mapSide;
+            job.coefficients = 7;
+            gpu::CommandBatch batch(**device);
+            ATHENEA_TRY(shadowMap->build(batch, job));
+            ATHENEA_TRY(shadowMap->factors(batch, caster, 0, mapFactors));
+            ATHENEA_TRY(batch.submit(true));
+            mapLights = render::SplatLights{};
+            mapLights.records = lights.records;
+            mapLights.count = lights.count;
+            mapLights.visibilityFactors = &mapFactors;
+            mapLights.visibilityLights = 3;
+        }
+        return ok();
+    };
     if (shadowTracer) {
         const std::vector<render::SplatInstance> whole{instance};
         auto prepared = shadowTracer->prepare(render::projectionFor(cameraAt(0, 0.0), how.width, how.height), whole);
@@ -407,6 +460,51 @@ int run(const NeuralFitOptions& o) {
     if (byMap) {
         out("and the shadow map the latents' frame reads, built and read at every gaussian: %.2f ms (waited for)\n",
             mapMs);
+    }
+    if (o.relight) {
+        // Under three coloured suns at once, against the engine's relighting under the same three.
+        Measure m;
+        for (uint32_t k = 0; k < o.heldOut; ++k) {
+            if (auto set = sunsAt(k); !set) return report(set.error());
+            const render::Camera camera = cameraAt(k, 0.5);
+            std::vector<render::SplatInstance> relit{instance};
+            relit[0].relight = true;
+            std::vector<render::SplatInstance> learnt{instance};
+            learnt[0].neural = &*neural;
+            learnt[0].neuralLight = threeSuns.data();
+            learnt[0].neuralLightCount = 3;
+            render::RenderTargets whole;
+            render::RenderTargets ours;
+            auto a = raster->render(camera, relit, settings, whole, {}, nullptr, &lights);
+            if (!a) return report(a.error());
+            auto c = raster->render(camera, learnt, settings, ours, {}, nullptr,
+                                    !neural->shadowed ? nullptr : byMap ? &mapLights : &lights);
+            if (!c) return report(c.error());
+            auto hdr = render::compareHdr(library, ours.colour, whole.colour, settings.width, settings.height);
+            if (!hdr) return report(hdr.error());
+            auto codes = render::compareImages(library, ours.colour, whole.colour, settings.width, settings.height);
+            if (!codes) return report(codes.error());
+            m.relMse += hdr->relMse / o.heldOut;
+            m.p99 += static_cast<double>(codes->p99) / o.heldOut;
+            m.max = std::max(m.max, codes->max);
+            if (k == 0 && !o.output.empty()) {
+                for (const auto& [what, targets] : {std::pair<const char*, render::RenderTargets*>{"engine_three", &whole},
+                                                    std::pair<const char*, render::RenderTargets*>{"latents_three", &ours}}) {
+                    auto colour = targets->colour.readAll<float>(**device);
+                    if (!colour) return report(colour.error());
+                    auto depth = targets->depth.readAll<float>(**device);
+                    if (!depth) return report(depth.error());
+                    const std::string path = o.output + "_" + what + ".exr";
+                    if (auto w = io::writeExr(path, settings.width, settings.height, *colour, *depth); !w) {
+                        return report(w.error());
+                    }
+                    out("wrote %s\n", path.c_str());
+                }
+            }
+        }
+        out("under three coloured suns at once (fitted under one white sun a frame): relMSE %.5f, p99 %.1f, max %u, "
+            "against %.5f, %.1f and %u under one\n",
+            m.relMse, m.p99, m.max, after->relMse, after->p99, after->max);
     }
     if (!o.save.empty()) {
         io::NeuralFile file;

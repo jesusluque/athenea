@@ -20404,6 +20404,10 @@ radiance).
 directions and radiances in the kernel's constants; where the frame casts shadows they are its lights in that
 order). `[lights]` holds the linearity it rests on: a lit cloud under a red light and a blue one each at half is,
 to the code value, the mean of it under each alone (max 0, where the two alone differ by 99).
+And it is so against the engine: the pawn's cloud fitted under one white sun a frame, then drawn under three suns
+of three colours at once (`athenea neural-fit --relight` measures it at the end; shadows from a map of 1024),
+against the engine's relighting under the same three with its rays: relMSE 0.00052, p99 13.6, max 116, where
+under one sun it measured 0.00068, 14.0 and 104.
 
 **The light is given in the gaussian's own frame** (`neuralLocalLight`): along its two longer axes and along its
 normal -- its shortest axis, turned towards the eye, as `splatNormal` turns it for the engine's relighting. Given
