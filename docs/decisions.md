@@ -20190,10 +20190,27 @@ kept the trace only in the composite walk, which costs the blend half as much ag
 its splats, where now each of the four walks has its traced twin.
 
 **On CUDA** (an RTX 3070 Laptop under WSL2, the same build of the same commands, best of 30): the pawn's frame
-is 3.90 ms plain and 4.62 traced at 1920 x 1080, 6.23 and 10.36 at 3840 x 2160 -- 0.7 ms and 4.1 ms where Metal
-gave 0.46 and 2.0; the blend alone goes from 2.29 to 6.66 ms at 4K. The millisecond at 4K this step was allowed is
-not met on either device: the trace is 365 MB written a frame, and a laptop's memory pays more for it. `[trace]`
-passes there with Metal's own counts.
+was 3.90 ms plain and 4.62 traced at 1920 x 1080, 6.23 and 10.36 at 3840 x 2160 -- 0.7 ms and 4.1 ms where Metal
+gave 0.46 and 2.0. `[trace]` passes there with Metal's own counts.
+
+**And half of that again, three ways** (the pawn, the least of five runs of a hundred frames, since a laptop's
+timings wander by a millisecond):
+
+| | Metal, 1080p | Metal, 4K | CUDA, 1080p | CUDA, 4K |
+|---|---|---|---|---|
+| a plain frame | 4.06 ms | 6.87 ms | 2.44 ms | 4.25 ms |
+| traced, as above | +0.46 | +2.0 | +0.94 | +4.15 |
+| traced, now | +0.05 | +0.62 | +0.68 | +2.23 |
+
+- A pixel nothing reached writes one word and not eleven (`kTraceEmpty` in its first, and it is read as empty
+  whatever the rest hold): most of a frame of one object is that.
+- The walk no longer carries each rank's depth -- four values a pixel in the engine's hottest loop -- but reads
+  it where the list is written, from the record the rank's slot names.
+- A gaussian's slot is read from the group's memory only where it enters the list, which most of a walk does not.
+
+A pixel's eleven words kept together, rather than a plane a word as the matte is, was tried between these and
+undone: no faster on the 3070 and a millisecond slower at 4K on Metal. The millisecond at 4K this step was allowed
+is met on Metal and not on the 3070, where what is left is the list itself in a walk of many gaussians a pixel.
 
 ### Not done
 

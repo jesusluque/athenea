@@ -252,10 +252,10 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool t
             list.weights[k] = 0.0;
         }
     }
+    // Cleared whether the walk keeps a trace or not: a walk that keeps none never reads it, and the
+    // compiler is told so by `traced` being a constant.
     TraceList traceList;
-    if (traced) {
-        traceList.clear();
-    }
+    traceList.clear();
     bool done = !inside;
     for (uint first = start; first < end; first += kBatch) {
         // Stop loading once every pixel of the tile has stopped walking.
@@ -391,7 +391,12 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool t
                 list.add(cryptoIds[sSplats[j]], weight);
             }
             if (traced) {
-                traceList.add(sSplats[j], weight, screen.z);
+                // Its slot is read only where it enters the list: most of a
+                // walk does not, and the read is one more a gaussian a pixel.
+                traceList.total += weight;
+                if (weight > traceList.floor) {
+                    traceList.enter(sSplats[j], weight);
+                }
             }
             // A TX transfer's reflection turns across the footprint: the
             // colour at this pixel is the centre's plus its slope over the
@@ -477,7 +482,11 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool t
         list.write(at, params.width * params.height);
     }
     if (traced) {
-        traceList.write(trace, at, params.width * params.height, opaqueHit ? transmittance : 0.0);
+        float depths[kTraceSlots];
+        for (uint k = 0; k < kTraceSlots; ++k) {
+            depths[k] = traceList.slots[k] != kTraceNone ? proj[traceList.slots[k]].screen.z : 0.0;
+        }
+        traceList.write(trace, at, params.width * params.height, opaqueHit ? transmittance : 0.0, depths);
     }
 
     const float coverage = 1.0 - transmittance;

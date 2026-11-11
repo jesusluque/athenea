@@ -383,7 +383,7 @@ struct RenderTargets {
     gpu::Buffer cryptoIds;
     /// THE TRACE, where the frame asked for one: `kTraceWords` uints a pixel,
     /// plane after plane (`trace[word * width * height + pixel]`), laid out
-    /// as splat_trace.slang says.
+    /// as splat_trace.slang says; a pixel nothing reached holds its first word alone.
     gpu::Buffer trace;
 
     [[nodiscard]] bool hasCrypto() const noexcept { return crypto.valid(); }

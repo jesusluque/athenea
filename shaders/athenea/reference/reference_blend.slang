@@ -95,7 +95,7 @@ void referencePixel(uint3 tid, bool traced) {
         }
         const float weight = transmittance * hitAlpha[k];
         if (traced) {
-            traceList.add(hitIndex[k], weight, hitDepth[k]);
+            traceList.add(hitIndex[k], weight);
         }
         rgb += weight * refColour[hitIndex[k]].xyz;
         depthSum += weight * hitDepth[k];
@@ -123,7 +123,11 @@ void referencePixel(uint3 tid, bool traced) {
     depth[at] = params.depthMode == 0 ? (total > 1e-6 ? depthSum / total : 0.0) : max(depthAt, 0.0);
     overflow[at] = over;
     if (traced) {
-        traceList.write(trace, at, params.width * params.height, discHit ? transmittance : 0.0);
+        float depths[kTraceSlots];
+        for (uint k = 0; k < kTraceSlots; ++k) {
+            depths[k] = traceList.slots[k] != kTraceNone ? refScreen[traceList.slots[k]].z : 0.0;
+        }
+        traceList.write(trace, at, params.width * params.height, discHit ? transmittance : 0.0, depths);
     }
 }
 
