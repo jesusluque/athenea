@@ -41,6 +41,8 @@ module neural_appearance;
 import athenea.common.packing;
 
 public static const uint kNeuralFeatures = 8;
+/// The lights a frame can draw a lit cloud under.
+public static const uint kNeuralLights = 8;
 /// A gaussian's numbers: its features, then its base colour (linear light).
 public static const uint kNeuralStride = kNeuralFeatures + 3;
 /// The view's harmonics, the features' sines and cosines, the light's harmonics.

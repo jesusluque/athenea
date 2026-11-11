@@ -450,3 +450,82 @@ TEST_CASE("a neural appearance written and read draws what it drew", "[render][g
     // Halves for floats: a code value at most.
     CHECK(diff->max <= 1);
 }
+
+TEST_CASE("a lit neural cloud under two lights is the sum of it under each", "[render][gpu][neural][relight][lights]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto fit = render::NeuralFit::create(*gpu->library);
+    auto table = light::LightTable::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!fit) FAIL(fit.error().toString());
+    if (!table) FAIL(table.error().toString());
+    test::CloudBuilder builder = test::randomCloud(2000, 7, 0.02F, 0.12F);
+    auto cloud = loader->upload(builder.raw, 3);
+    REQUIRE(cloud);
+    auto neural = render::makeNeuralCloud(*gpu->library, *cloud, 1, true);
+    if (!neural) FAIL(neural.error().toString());
+    const render::SplatInstance instance{&*cloud, render::Mat4::identity()};
+    const render::Camera camera = render::Camera::lookingAt({1.0, 0.5, 6.0}, {0.0, 0.0, 0.0});
+
+    // A few steps under a sun, so that the network says something of a light's direction.
+    render::SplatLights lights;
+    render::NeuralFitSettings how;
+    how.width = 200;
+    how.height = 150;
+    for (uint32_t k = 0; k < 80; ++k) {
+        light::Light lamp;
+        lamp.kind = light::LightKind::Distant;
+        lamp.lightToWorld = aofx::xform::rotationY(47.0 * k) * aofx::xform::rotationX(-60.0 + 13.0 * (k % 9));
+        lamp.intensity = 3.0F;
+        lamp.shadow = false;
+        REQUIRE(table->set(std::span<const light::Light>(&lamp, 1)));
+        lights.records = &table->records();
+        lights.count = table->count();
+        render::NeuralFitLight told;
+        told.teacher = &lights;
+        const render::Vec3 towards = lamp.lightToWorld.direction({0.0, 0.0, 1.0});
+        told.light.towards = {static_cast<float>(towards.x), static_cast<float>(towards.y),
+                              static_cast<float>(towards.z)};
+        told.light.radiance = {3.0F, 3.0F, 3.0F};
+        const double a = 2.39996323 * k;
+        auto stepped = fit->step(*raster, render::Camera::lookingAt({6.0 * std::sin(a), 1.0, 6.0 * std::cos(a)}, {0.0, 0.0, 0.0}),
+                                 instance, *neural, how, false, &told);
+        if (!stepped) FAIL(stepped.error().toString());
+    }
+
+    // A red light from one side, a blue one from another: each alone, and both at half.
+    const render::NeuralLight red{{0.8F, 0.5F, 0.33F}, {4.0F, 0.5F, 0.2F}};
+    const render::NeuralLight blue{{-0.6F, 0.2F, 0.77F}, {0.2F, 0.6F, 4.0F}};
+    render::RenderSettings settings;
+    settings.width = 200;
+    settings.height = 150;
+    const auto under = [&](std::vector<render::NeuralLight> which, render::RenderTargets& into) {
+        std::vector<render::SplatInstance> drawn{instance};
+        drawn[0].neural = &*neural;
+        drawn[0].neuralLight = which.data();
+        drawn[0].neuralLightCount = static_cast<uint32_t>(which.size());
+        REQUIRE(raster->render(camera, drawn, settings, into));
+    };
+    render::RenderTargets byRed, byBlue, byBoth;
+    under({red}, byRed);
+    under({blue}, byBlue);
+    render::NeuralLight halfRed = red;
+    render::NeuralLight halfBlue = blue;
+    for (int c = 0; c < 3; ++c) {
+        halfRed.radiance[static_cast<size_t>(c)] *= 0.5F;
+        halfBlue.radiance[static_cast<size_t>(c)] *= 0.5F;
+    }
+    under({halfRed, halfBlue}, byBoth);
+    // Both at half is the mean of each alone: what `compareFlicker` measures a middle frame against.
+    auto mean = render::compareFlicker(*gpu->library, byRed.colour, byBoth.colour, byBlue.colour, settings.width,
+                                       settings.height);
+    REQUIRE(mean);
+    auto apart = render::compareImages(*gpu->library, byRed.colour, byBlue.colour, settings.width, settings.height);
+    REQUIRE(apart);
+    std::printf("  two lights at half against the mean of each alone: max %u code values; the two alone differ by %u\n",
+                mean->codes.max, apart->max);
+    CHECK(mean->codes.max <= 1);
+    CHECK(apart->max > 20);
+}

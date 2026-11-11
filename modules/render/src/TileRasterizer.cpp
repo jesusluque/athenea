@@ -823,13 +823,26 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                 cursor["params"]["spread"].setData(0.0F);
                 // The frame's light, where the cloud answers one: its
                 // direction in the cloud's own space, as the view's is.
-                const NeuralLight light = instance.neuralLight != nullptr ? *instance.neuralLight : NeuralLight{};
-                Vec3 towards = aofx::xform::inverseAffine(instance.objectToWorld)
-                                   .direction({light.towards[0], light.towards[1], light.towards[2]});
-                const double length = std::sqrt(towards.x * towards.x + towards.y * towards.y + towards.z * towards.z);
-                if (length > 0.0) {
-                    towards = towards * (1.0 / length);
+                const NeuralLight white;
+                const NeuralLight* given = instance.neuralLight != nullptr ? instance.neuralLight : &white;
+                const uint32_t lightCount =
+                    instance.neuralLight != nullptr ? std::min(instance.neuralLightCount, kNeuralLights) : 1u;
+                const Mat4 worldToObject = aofx::xform::inverseAffine(instance.objectToWorld);
+                for (uint32_t l = 0; l < lightCount; ++l) {
+                    const NeuralLight& light = given[l];
+                    Vec3 towards = worldToObject.direction({light.towards[0], light.towards[1], light.towards[2]});
+                    const double length =
+                        std::sqrt(towards.x * towards.x + towards.y * towards.y + towards.z * towards.z);
+                    if (length > 0.0) {
+                        towards = towards * (1.0 / length);
+                    }
+                    const std::array<float, 4> direction{static_cast<float>(towards.x), static_cast<float>(towards.y),
+                                                         static_cast<float>(towards.z), 0.0F};
+                    const std::array<float, 4> radiance{light.radiance[0], light.radiance[1], light.radiance[2], 0.0F};
+                    cursor["params"]["lightTowards"][static_cast<int>(l)].setData(direction);
+                    cursor["params"]["lightRadiance"][static_cast<int>(l)].setData(radiance);
                 }
+                cursor["params"]["lightCount"].setData(lightCount);
                 // What reaches each gaussian from the light, where the cloud
                 // leaves that to the engine and the frame cast shadows.
                 // By a ray this frame cast, or measured before it (a shadow
@@ -841,12 +854,6 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                 cursor["params"]["shadowLights"].setData(!shadowed ? 0u : measured ? lights->visibilityLights
                                                                                   : shadowLights);
                 cursor["params"]["lit"].setData(uint32_t{neural.lit ? 1u : 0u});
-                cursor["params"]["lightX"].setData(static_cast<float>(towards.x));
-                cursor["params"]["lightY"].setData(static_cast<float>(towards.y));
-                cursor["params"]["lightZ"].setData(static_cast<float>(towards.z));
-                cursor["params"]["radianceR"].setData(light.radiance[0]);
-                cursor["params"]["radianceG"].setData(light.radiance[1]);
-                cursor["params"]["radianceB"].setData(light.radiance[2]);
             });
         }
         base += cloud->count;

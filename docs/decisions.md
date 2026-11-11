@@ -20400,6 +20400,11 @@ cloud that has learnt nothing answers with its base. It is linear in the light, 
 evaluations summed. One light a frame for now (`SplatInstance::neuralLight`: where it comes from and its
 radiance).
 
+**Several lights are several evaluations summed** (`SplatInstance::neuralLightCount`, up to eight a frame, the
+directions and radiances in the kernel's constants; where the frame casts shadows they are its lights in that
+order). `[lights]` holds the linearity it rests on: a lit cloud under a red light and a blue one each at half is,
+to the code value, the mean of it under each alone (max 0, where the two alone differ by 99).
+
 **The light is given in the gaussian's own frame** (`neuralLocalLight`): along its two longer axes and along its
 normal -- its shortest axis, turned towards the eye, as `splatNormal` turns it for the engine's relighting. Given
 in the cloud's space the fit learnt the mean of all lights and nothing of each (a held-out light relMSE 0.48, and
@@ -20473,7 +20478,9 @@ the light's, not the camera's: a second camera, or a light that has not moved, p
   shows -- what bounced, what came through -- which a product cannot.
 - The picture it learns is the engine's analytic relighting, with no shadow, no interreflection and no sky: a
   path-traced reference, a shadow term in the network's input, and a dome are the next three.
-- One distant light a frame. Several, and a light that is not at infinity, are a loop and a direction a gaussian.
+- A light that is not at infinity is a direction a gaussian, and is not done. A dome or a wall of light as so many
+  directions is the same loop below and is not tried; the fit itself is still one light a frame, which a linear
+  answer makes enough.
 - On a capture a gaussian's colour is light it was photographed under and not what it is made of: the pawn
   above is relit as the engine relights it, which takes the one for the other.
 

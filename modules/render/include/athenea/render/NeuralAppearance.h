@@ -18,6 +18,7 @@ namespace athenea::render {
 
 /// The sizes neural_appearance.slang has.
 inline constexpr uint32_t kNeuralFeatures = 8;
+inline constexpr uint32_t kNeuralLights = 8;
 inline constexpr uint32_t kNeuralStride = kNeuralFeatures + 3;
 inline constexpr uint32_t kNeuralIn = 16 + kNeuralFeatures * 2 + 9;
 inline constexpr uint32_t kNeuralHidden = 16;

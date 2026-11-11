@@ -15,13 +15,16 @@ struct NeuralShadeParams {
     uint  seed;
     float eyeX; float eyeY; float eyeZ;   // the eye, in the cloud's own space
     float spread;        // neuralInitWeights: the range of a weight
-    // LIT: 1, and the one light of the frame -- where it comes from (unit, towards it, in the cloud's
-    // space) and its radiance.
-    uint  lit; float lightX; float lightY; float lightZ;
-    float radianceR; float radianceG; float radianceB;
+    // LIT: 1, and the frame's lights -- `lightCount` of them, each where it comes from (unit, towards it,
+    // in the cloud's space) and its radiance. The answer is linear in the light, so several are several
+    // evaluations summed.
+    uint  lit; uint lightCount; uint pad0; uint pad1;
+    float4 lightTowards[kNeuralLights];
+    float4 lightRadiance[kNeuralLights];
     // What reaches each gaussian from the light: `shadowFactors` holds this many floats a slot, the
     // frame's first light's first. 0: all of it.
     uint  shadowLights;
+    uint  pad2; uint pad3; uint pad4;
 };
 
 StructuredBuffer<float4>           positions;
@@ -82,11 +85,20 @@ void neuralShade(uint3 tid: SV_DispatchThreadID) {
     const float3 eye = float3(params.eyeX, params.eyeY, params.eyeZ);
     const float3 direction = normalize(positions[i].xyz - eye);
     const bool lit = params.lit != 0;
-    const float3 light = lit ? neuralLocalLight(shape, i, positions[i].xyz, eye,
-                                                float3(params.lightX, params.lightY, params.lightZ))
-                             : float3(0.0);
-    const NeuralPass pass = neuralForward(latent, i, weights, direction, lit, light);
-    const float reached = lit && params.shadowLights != 0 ? shadowFactors[slot * params.shadowLights] : 1.0;
-    proj[slot].colour.xyz =
-        lit ? pass.colour * float3(params.radianceR, params.radianceG, params.radianceB) * reached : pass.colour;
+    if (!lit) {
+        proj[slot].colour.xyz = neuralForward(latent, i, weights, direction, false, float3(0.0)).colour;
+        return;
+    }
+    float3 colour = float3(0.0);
+    const uint lights = min(params.lightCount, kNeuralLights);
+    for (uint l = 0; l < lights; ++l) {
+        // What reaches the gaussian from this light: a light the frame's shadows did not cover reaches it whole.
+        const float reached = l < params.shadowLights ? shadowFactors[slot * params.shadowLights + l] : 1.0;
+        if (!(reached > 0.0)) {
+            continue;
+        }
+        const float3 light = neuralLocalLight(shape, i, positions[i].xyz, eye, params.lightTowards[l].xyz);
+        colour += neuralForward(latent, i, weights, direction, true, light).colour * params.lightRadiance[l].rgb * reached;
+    }
+    proj[slot].colour.xyz = colour;
 }
