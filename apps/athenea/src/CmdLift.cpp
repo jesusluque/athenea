@@ -3,6 +3,7 @@
 // athenea lift: a mask made on some cameras' frames of a cloud, carried to its
 // gaussians and drawn as the matte another camera sees (render/SplatLift.h).
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -36,7 +37,7 @@ struct LiftOptions {
     float                    threshold = 0.5F;
     bool                     byTrace = false;
     std::string              output = "lift.exr";
-    std::string              matteOutput;
+    unsigned                 turn = 0;   ///< frames of the --eye camera going once round the target, each keyed
 };
 
 int run(const LiftOptions& o) {
@@ -185,21 +186,41 @@ int run(const LiftOptions& o) {
 
     // The camera the matte is for: its frame, traced, and the matte from it.
     settings.trace = true;
-    render::RenderTargets view;
-    auto drawn = raster->render(cameraAt(o.eye.data()), instances, settings, view);
-    if (!drawn) return report(drawn.error());
     gpu::Buffer matte;
     render::MatteSettings how;
     how.hard = o.hard;
     how.threshold = o.threshold;
-    if (auto made = render::drawMatte(library, view, *lift, how, matte); !made) return report(made.error());
-    if (auto made = dispatch(*keyKernel, view.colour, matte); !made) return report(made.error());
-
-    auto rgba = keyed->readAll<float>(**device);
-    auto depth = view.depth.readAll<float>(**device);
-    if (!rgba) return report(rgba.error());
-    if (!depth) return report(depth.error());
-    if (auto written = io::writeExr(o.output, width, height, *rgba, *depth); !written) return report(written.error());
+    const auto keyFrom = [&](const double* eye, const std::string& path) -> Result<void> {
+        render::RenderTargets view;
+        auto drawn = raster->render(cameraAt(eye), instances, settings, view);
+        if (!drawn) return std::move(drawn).error();
+        ATHENEA_TRY(render::drawMatte(library, view, *lift, how, matte));
+        ATHENEA_TRY(dispatch(*keyKernel, view.colour, matte));
+        auto rgba = keyed->readAll<float>(**device);
+        if (!rgba) return std::move(rgba).error();
+        auto depth = view.depth.readAll<float>(**device);
+        if (!depth) return std::move(depth).error();
+        return io::writeExr(path, width, height, *rgba, *depth);
+    };
+    if (auto written = keyFrom(o.eye.data(), o.output); !written) return report(written.error());
+    // THE SAME KEY AS THE CAMERA GOES ROUND: the --eye camera turned about the
+    // target's up axis, a frame a step -- what a matte carried by the
+    // gaussians is for, since nothing is keyed again as the camera moves.
+    if (o.turn > 0) {
+        const std::string stem = o.output.size() > 4 ? o.output.substr(0, o.output.size() - 4) : o.output;
+        const double dx = o.eye[0] - target.x;
+        const double dy = o.eye[1] - target.y;
+        const double dz = o.eye[2] - target.z;
+        for (unsigned f = 0; f < o.turn; ++f) {
+            const double a = 6.283185307179586 * f / o.turn;
+            const double eye[3] = {target.x + dx * std::cos(a) + dz * std::sin(a), target.y + dy,
+                                   target.z - dx * std::sin(a) + dz * std::cos(a)};
+            char name[32];
+            std::snprintf(name, sizeof(name), "_%03u.exr", f);
+            if (auto written = keyFrom(eye, stem + name); !written) return report(written.error());
+        }
+        out("wrote %u frames of the camera going round: %s_NNN.exr\n", o.turn, stem.c_str());
+    }
     out("wrote %s: %u gaussians, %zu lifting camera%s, %ux%u\n", o.output.c_str(), slots, cameras,
         cameras == 1 ? "" : "s", width, height);
     return 0;
@@ -225,6 +246,7 @@ void addLift(CLI::App& app) {
     cmd->add_flag("--hard", o.hard, "a gaussian is in the mask or out of it");
     cmd->add_option("--threshold", o.threshold, "--hard: the share of a gaussian's weight inside the mask");
     cmd->add_flag("--by-trace", o.byTrace, "lift through each frame's trace rather than while blending");
+    cmd->add_option("--turn", o.turn, "also this many frames of the --eye camera going once round the target (about y), keyed: <output>_NNN.exr");
     cmd->add_option("-o,--output", o.output, "EXR: the --eye frame keyed by the matte");
     cmd->callback([options] {
         if (const int code = run(*options); code != 0) {
