@@ -154,6 +154,36 @@ threads, any thread), and a test calls it from the wrong one.
    stands while `GpuScene::placementRevision()` does, so a camera that moves
    rebuilds nothing of it.
 
+### 1.3.1 What a rasterised frame of splats can also keep, and be drawn by
+
+Three things ride on the splat rasteriser without changing a frame that asks
+for none of them (the `neural` branch; `docs/decisions.md`, 11 Nov, has what
+each measured):
+
+- **The trace** (`RenderSettings::trace`, `shaders/athenea/splat/splat_trace.slang`):
+  each pixel's four heaviest gaussians by slot, weight and depth, with what
+  the list had no room for and what closed the walk. Kept by the blend's
+  traced entry points; `ReferenceRenderer` keeps the exact walk's, which is
+  what `[trace]` holds it to.
+- **A lift** (`render/SplatLift.h`, `splat_lift.slang`): a mask over a frame
+  carried to the gaussians -- through the trace, or while the frame blends
+  (`contributionMode` 3) -- and drawn as a matte from another frame's trace.
+  `athenea lift` is its command.
+- **A neural appearance** (`render/NeuralAppearance.h`, `render/NeuralFit.h`,
+  `shaders/athenea/neural/`): a cloud's colours from a latent a gaussian and
+  one perceptron, decoded once a gaussian in view after its projection
+  (`SplatInstance::neural`), lit or not; fitted on the device by
+  `NeuralFit::step`, whose backward pass is written by hand and whose colour
+  gradients the blend carries back (`contributionMode` 4); kept beside the
+  cloud as a `.athn` (`io/NeuralFile.h`). `athenea neural-fit` fits one and
+  `athenea render --neural` draws by it. A decoder once a pixel
+  (`RenderSettings::neuralFeatures`, `neural_pixel.slang`) is there to be
+  timed and is fitted by nothing.
+
+A kernel that adds to `shaders/athenea/neural/neural_appearance.slang` adds to
+both passes: the forward one and, by hand, the backward one beside it, and
+`[neural]`'s central differences are what say the two still agree.
+
 ### 1.4 A frame, path traced
 
 The difference begins at step 3: `technique::PathTracer` integrates from the

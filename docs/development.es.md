@@ -160,6 +160,36 @@ hilos cargadores, cualquier hilo), y un test la llama desde el equivocado.
    lo hace `GpuScene::placementRevision()`, así que una cámara que se mueve
    no reconstruye nada de ella.
 
+### 1.3.1 Lo que un frame rasterizado de splats puede además guardar, y con qué puede dibujarse
+
+Tres cosas van sobre el rasterizador de splats sin cambiar un frame que no pide
+ninguna (la rama `neural`; `docs/decisions.md`, 11 nov, tiene lo que midió
+cada una):
+
+- **La trace** (`RenderSettings::trace`, `shaders/athenea/splat/splat_trace.slang`):
+  las cuatro gaussianas de más peso de cada píxel por slot, peso y profundidad, con lo
+  que no cupo en la lista y lo que cerró el recorrido. La guardan los entry points
+  con trace del blend; `ReferenceRenderer` guarda la del recorrido exacto, que es
+  contra lo que la mide `[trace]`.
+- **Un lift** (`render/SplatLift.h`, `splat_lift.slang`): una máscara sobre un frame
+  llevada a las gaussianas -- por la trace, o mientras el frame hace el blend
+  (`contributionMode` 3) -- y dibujada como matte desde la trace de otro frame.
+  `athenea lift` es su comando.
+- **Una apariencia neural** (`render/NeuralAppearance.h`, `render/NeuralFit.h`,
+  `shaders/athenea/neural/`): los colores de una nube desde un latente por gaussiana y
+  un perceptrón, decodificados una vez por gaussiana visible tras su proyección
+  (`SplatInstance::neural`), iluminada o no; ajustada en el dispositivo por
+  `NeuralFit::step`, cuyo backward pass está escrito a mano y cuyos gradientes de
+  color lleva de vuelta el blend (`contributionMode` 4); guardada junto a la
+  nube como un `.athn` (`io/NeuralFile.h`). `athenea neural-fit` ajusta una y
+  `athenea render --neural` dibuja con ella. Un decoder una vez por píxel
+  (`RenderSettings::neuralFeatures`, `neural_pixel.slang`) está para cronometrarlo
+  y nada lo ajusta.
+
+Un kernel que añade algo a `shaders/athenea/neural/neural_appearance.slang` lo añade a
+las dos pasadas: la forward y, a mano, la backward junto a ella, y las diferencias
+centrales de `[neural]` son las que dicen que las dos siguen de acuerdo.
+
 ### 1.4 Un frame, trazado
 
 La diferencia empieza en el paso 3: `technique::PathTracer` integra desde el
