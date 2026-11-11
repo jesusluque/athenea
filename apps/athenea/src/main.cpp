@@ -40,6 +40,7 @@ int main(int argc, char** argv) {
     athenea::cli::addCompare(app);
     athenea::cli::addRender(app);
     athenea::cli::addBench(app);
+    athenea::cli::addLift(app);
     athenea::cli::addConvert(app);
     athenea::cli::addDecimate(app);
     athenea::cli::addMigrate(app);

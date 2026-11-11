@@ -223,6 +223,34 @@ Admite todas las opciones de `athenea render` menos `-o`, y añade:
 No escribe imagen. Con `--stages` informa por separado de la proyección, el
 sort por profundidad, las cuentas, el emit, el sort por tile y el blend.
 
+### 2.3.1 `athenea lift` — una máscara sobre los frames de unas cámaras, como el matte que ve otra
+
+Una máscara hecha sobre uno o más frames de una nube se lleva a sus gaussianas, y
+el frame de otra cámara se escribe con ese key: lo que cubren allí las gaussianas
+de dentro de la máscara, y nada más. No intervienen ni malla ni croma; los propios
+pesos del blend de la nube dicen de qué gaussianas estaba hecho cada píxel de la máscara.
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `--splats` | rutas, obligatorio | — | `.ply`, `.splat`, `.spz`, `.sog`; varias son una sola escena |
+| `--from` | `x y z`, repetible | — | una cámara sobre la que se hace la máscara; al menos una |
+| `--mask` | rutas | — | un EXR por cada `--from`, del tamaño del frame: su canal rojo, 1 dentro de la máscara |
+| `--rect` | `left bottom right top` | — | en lugar de `--mask`: el mismo rectángulo en el frame de cada `--from`, en fracciones del frame desde su esquina inferior izquierda |
+| `--eye` | `x y z`, obligatorio | — | la cámara para la que se dibuja el matte |
+| `--target` | `x y z` | el centro de las nubes | adonde miran todas las cámaras |
+| `--up` | `x y z` | `0 1 0` | |
+| `--focal` | mm | `35` | la de todas las cámaras |
+| `--size` | `WIDTHxHEIGHT` | `1920x1080` | el de todos los frames |
+| `--degree` | 0..3 | `3` | armónicos conservados |
+| `--hard` | flag | apagado | una gaussiana está dentro de la máscara o fuera, en vez de estarlo en la proporción de su peso que cubrieron las máscaras |
+| `--threshold` | 0..1 | `0.5` | `--hard`: esa proporción |
+| `--by-trace` | flag | apagado | hace el lift por la trace de cada frame (las cuatro gaussianas de más peso de un píxel) en vez de durante el blend (todas) |
+| `-o`, `--output` | ruta | `lift.exr` | el frame de `--eye`, premultiplicado por el matte, con el matte como alfa, y su profundidad |
+
+Una gaussiana que ninguna cámara `--from` vio no tiene opinión, y se toma como dentro
+de la máscara en la medida en que lo están las demás de su píxel: una máscara hecha
+desde un lado deja el lado contrario a esa suposición, y más cámaras `--from` son lo que la quita.
+
 ### 2.4 `athenea convert` — un fichero de splats a USD, o a un `.athc`
 
 | Opción | Valor | Por defecto | Notas |
@@ -3366,6 +3394,7 @@ TX con skinning, de surfels y en niveles de detalle es una sola nube.
 | `athenea info` | un informe por la salida estándar |
 | `athenea render` | un EXR: RGBA en media y `Z` |
 | `athenea bench` | nada; los tiempos por la salida estándar |
+| `athenea lift` | el EXR de `-o`: el frame de `--eye` con el key del matte, y su profundidad |
 | `athenea convert` | una escena USD, o un `.athc` |
 | `athenea stage` | un EXR; o, con `--render-settings`, uno por producto |
 | `athenea view` | nada, o un EXR con `--snapshot` |

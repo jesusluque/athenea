@@ -4,6 +4,7 @@ add_executable(athenea
     src/CmdInfo.cpp
     src/CmdCompare.cpp
     src/CmdRender.cpp
+    src/CmdLift.cpp
     src/CmdStage.cpp
     src/CmdDecimate.cpp
     src/CmdMigrate.cpp

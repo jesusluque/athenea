@@ -20237,9 +20237,16 @@ is left is the mask's own: where one prim stands in front of the other on a lift
 calls both the same (some 15% of the gaussians seen are told the wrong prim in this scene, which is two clouds
 inside each other and so the worst there is), and no lift of flat masks removes that.
 
+**`athenea lift`** is the lift as a command: `--from` cameras with a painted mask each (`--mask`) or one rectangle
+of all their frames (`--rect`), and the `--eye` camera's frame written keyed by the matte. The masks and the key
+are kernels (`splat_lift_mask.slang`). On a capture of the pawn (325 833 gaussians) a rectangle round its head on
+the front camera's frame keys the head, the collar and the neck out of a raised camera's frame at 1280 x 720; from
+one camera the far side of the neck is the guess, from four round it it is not.
+
 ### Not done
 
-- No command lifts a mask and no AOV carries a trace or a matte: this is the `render` module's API and its test.
+- No AOV carries a trace or a matte, and a stage has no lift: `athenea lift` is splat files through the
+  rasteriser, as `athenea render` is.
 - Lifting while blending is not timed.
 - The matte goes back through four ranks and a `rest`; drawing a gaussian's share as the blend draws a colour
   (every gaussian of the walk, as the lift has) is not done, and would be the exact one.

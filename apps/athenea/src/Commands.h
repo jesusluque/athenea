@@ -38,6 +38,7 @@ inline constexpr int kExitOutOfMemory = 3;
 /// when it was the one chosen.
 void addInfo(CLI::App& app);
 void addCompare(CLI::App& app);
+void addLift(CLI::App& app);
 void addRender(CLI::App& app);
 void addBench(CLI::App& app);
 void addConvert(CLI::App& app);

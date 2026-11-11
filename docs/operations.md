@@ -219,6 +219,34 @@ Takes every option of `athenea render` except `-o`, and adds:
 Writes no image. With `--stages` it reports the project, depth sort, counts,
 emit, tile sort and blend times separately.
 
+### 2.3.1 `athenea lift` — a mask on some cameras' frames, as the matte another camera sees
+
+A mask made over one or more frames of a cloud is carried to its gaussians, and
+the frame of another camera is written keyed by it: what the gaussians inside
+the mask cover there, and nothing else. No mesh and no chroma are involved; the
+cloud's own blend weights say which gaussians each masked pixel was made of.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `--splats` | paths, required | — | `.ply`, `.splat`, `.spz`, `.sog`; several are one scene |
+| `--from` | `x y z`, repeatable | — | a camera the mask is made on; at least one |
+| `--mask` | paths | — | one EXR a `--from`, of the frame's size: its red channel, 1 inside the mask |
+| `--rect` | `left bottom right top` | — | instead of `--mask`: the same rectangle of every `--from` frame, in fractions of the frame from its bottom left corner |
+| `--eye` | `x y z`, required | — | the camera the matte is drawn for |
+| `--target` | `x y z` | the clouds' centre | what every camera looks at |
+| `--up` | `x y z` | `0 1 0` | |
+| `--focal` | mm | `35` | every camera's |
+| `--size` | `WIDTHxHEIGHT` | `1920x1080` | every frame's |
+| `--degree` | 0..3 | `3` | harmonics kept |
+| `--hard` | flag | off | a gaussian is in the mask or out of it, rather than in it by the share of its weight the masks covered |
+| `--threshold` | 0..1 | `0.5` | `--hard`: that share |
+| `--by-trace` | flag | off | lift through each frame's trace (the four heaviest gaussians of a pixel) rather than while blending (all of them) |
+| `-o`, `--output` | path | `lift.exr` | the `--eye` frame, premultiplied by the matte, with the matte as its alpha, and its depth |
+
+A gaussian no `--from` camera saw has no opinion, and is taken to be in the
+mask as far as the others of its pixel are: a mask made from one side leaves
+the far side to that guess, and more `--from` cameras are what removes it.
+
 ### 2.4 `athenea convert` — a splat file into USD, or into a `.athc`
 
 | Option | Value | Default | Notes |
@@ -3255,6 +3283,7 @@ surfels in levels of detail is one cloud.
 | `athenea info` | a report on standard output |
 | `athenea render` | one EXR: half RGBA and `Z` |
 | `athenea bench` | nothing; timings on standard output |
+| `athenea lift` | the EXR of `-o`: the `--eye` frame keyed by the matte, and its depth |
 | `athenea convert` | a USD stage, or a `.athc` |
 | `athenea stage` | one EXR; or, with `--render-settings`, one per product |
 | `athenea view` | nothing, or one EXR with `--snapshot` |
