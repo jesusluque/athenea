@@ -51,6 +51,14 @@ struct MatteSettings {
     float threshold = 0.5F;
 };
 
+/// THE MATTE AS THE FRAME BLENDS: sets `settings` so that the frame rendered
+/// with them sums the matte itself, over every gaussian of every pixel's walk,
+/// into `RenderTargets::matte` -- no trace kept, and none of its four ranks'
+/// guesses. The frame is of the lift's instances. This is the matte to key
+/// by; `drawMatte` below is what a frame that already holds a trace can do
+/// without being drawn again.
+void matteWhileBlending(RenderSettings& settings, const SplatLift& lift, const MatteSettings& how);
+
 /// The mask as another frame sees it: one float a pixel of `traced`, how far
 /// the gaussians that pixel is made of are in the mask. `matte` is made where
 /// it is not already a buffer of that size.

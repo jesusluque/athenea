@@ -74,6 +74,8 @@ inline void setFrame(rhi::ShaderCursor cursor, const FrameCommon& f) {
     p["ior"].setData(0.0F);
     // No matte unless the dispatch that wants one says so after this.
     p["cryptoMode"].setData(uint32_t{0});
+    p["matteHard"].setData(uint32_t{0});
+    p["matteThreshold"].setData(0.5F);
     p["hasUnderCrypto"].setData(uint32_t{0});
     p["tileBits"].setData(bitsFor(f.tilesX * f.tilesY));
 }

@@ -39,6 +39,7 @@ struct LiftOptions {
     float                    threshold = 0.5F;
     bool                     byTrace = false;
     std::string              output = "lift.exr";
+    bool                     matteByTrace = false;   ///< the matte from the frame's trace, not summed by its blend
     unsigned                 turn = 0;   ///< frames of the --eye camera going once round the target, each keyed
 };
 
@@ -194,12 +195,27 @@ int run(const LiftOptions& o) {
     render::MatteSettings how;
     how.hard = o.hard;
     how.threshold = o.threshold;
+    // A frame and its matte: summed by the frame's own blend, over every gaussian of a pixel's walk
+    // (no trace kept), or with --matte-by-trace read off the four a trace names.
+    const auto matted = [&](const double* eye, render::RenderTargets& view) -> Result<const gpu::Buffer*> {
+        render::RenderSettings framed = settings;
+        framed.trace = o.matteByTrace;
+        if (!o.matteByTrace) {
+            render::matteWhileBlending(framed, *lift, how);
+        }
+        auto drawn = raster->render(cameraAt(eye), instances, framed, view);
+        if (!drawn) return std::move(drawn).error();
+        if (!o.matteByTrace) {
+            return &view.matte;
+        }
+        ATHENEA_TRY(render::drawMatte(library, view, *lift, how, matte));
+        return &matte;
+    };
     const auto keyFrom = [&](const double* eye, const std::string& path) -> Result<void> {
         render::RenderTargets view;
-        auto drawn = raster->render(cameraAt(eye), instances, settings, view);
-        if (!drawn) return std::move(drawn).error();
-        ATHENEA_TRY(render::drawMatte(library, view, *lift, how, matte));
-        ATHENEA_TRY(dispatch(*keyKernel, view.colour, matte));
+        auto of = matted(eye, view);
+        if (!of) return std::move(of).error();
+        ATHENEA_TRY(dispatch(*keyKernel, view.colour, **of));
         auto rgba = keyed->readAll<float>(**device);
         if (!rgba) return std::move(rgba).error();
         auto depth = view.depth.readAll<float>(**device);
@@ -221,16 +237,13 @@ int run(const LiftOptions& o) {
             const double a = 0.5 * (k - 1) * 3.14159265358979 / 180.0;
             const double eye[3] = {target.x + dx * std::cos(a) + dz * std::sin(a), o.eye[1],
                                    target.z - dx * std::sin(a) + dz * std::cos(a)};
-            auto drawn = raster->render(cameraAt(eye), instances, settings, views[static_cast<size_t>(k)]);
-            if (!drawn) return report(drawn.error());
+            auto of = matted(eye, views[static_cast<size_t>(k)]);
+            if (!of) return report(of.error());
             auto made = floats(4, "lift.keyed.measure");
             if (!made) return report(made.error());
             keys[static_cast<size_t>(k)] = *made;
-            if (auto m = render::drawMatte(library, views[static_cast<size_t>(k)], *lift, how, matte); !m) {
-                return report(m.error());
-            }
             keyedInto = &keys[static_cast<size_t>(k)];
-            auto keyedNow = dispatch(*keyKernel, views[static_cast<size_t>(k)].colour, matte);
+            auto keyedNow = dispatch(*keyKernel, views[static_cast<size_t>(k)].colour, **of);
             keyedInto = nullptr;
             if (!keyedNow) return report(keyedNow.error());
         }
@@ -241,6 +254,31 @@ int run(const LiftOptions& o) {
         out("three frames half a degree apart, the middle against its neighbours' mean: the keyed frames relMSE %.6f, "
             "p99 %u, max %u; the whole frames %.6f, %u, %u\n",
             key->hdr.relMse, key->codes.p99, key->codes.max, whole->hdr.relMse, whole->codes.p99, whole->codes.max);
+        // What a keyed frame costs against a plain one: the least of a hundred, each waited for.
+        const auto timed = [&](int kind) -> Result<double> {
+            double best = 1.0e30;
+            render::RenderTargets into;
+            for (int round = 0; round < 100; ++round) {
+                render::RenderSettings framed = settings;
+                framed.trace = kind == 2;
+                framed.timeStages = true;
+                if (kind == 1) {
+                    render::matteWhileBlending(framed, *lift, how);
+                }
+                auto stats = raster->render(cameraAt(o.eye.data()), instances, framed, into);
+                if (!stats) return std::move(stats).error();
+                best = std::min(best, stats->totalMs);
+            }
+            return best;
+        };
+        auto plain = timed(0);
+        auto byBlend = timed(1);
+        auto byTrace = timed(2);
+        if (!plain) return report(plain.error());
+        if (!byBlend) return report(byBlend.error());
+        if (!byTrace) return report(byTrace.error());
+        out("a frame: %.2f ms plain, %.2f with its matte summed by the blend, %.2f keeping a trace to read one from\n",
+            *plain, *byBlend, *byTrace);
     }
     // THE SAME KEY AS THE CAMERA GOES ROUND: the --eye camera turned about the
     // target's up axis, a frame a step -- what a matte carried by the
@@ -284,6 +322,7 @@ void addLift(CLI::App& app) {
     cmd->add_option("--degree", o.degree, "harmonic degree cap 0..3");
     cmd->add_flag("--hard", o.hard, "a gaussian is in the mask or out of it");
     cmd->add_option("--threshold", o.threshold, "--hard: the share of a gaussian's weight inside the mask");
+    cmd->add_flag("--matte-by-trace", o.matteByTrace, "read the matte off the frame's trace (four gaussians a pixel) rather than have the blend sum it");
     cmd->add_flag("--by-trace", o.byTrace, "lift through each frame's trace rather than while blending");
     cmd->add_option("--turn", o.turn, "also this many frames of the --eye camera going once round the target (about y), keyed: <output>_NNN.exr");
     cmd->add_option("-o,--output", o.output, "EXR: the --eye frame keyed by the matte");

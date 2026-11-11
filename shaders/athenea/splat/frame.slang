@@ -139,6 +139,10 @@ public struct FrameParams {
     // times `finalColour` (the loss's derivative at the pixel), in
     // 1 / kColourGradScale (1/256) as three signed words a slot.
     public uint  contributionMode;
+    // THE MATTE A WALK SUMS (splat_blend's `matteOut`): 1, a gaussian is in the mask or out of it by
+    // `matteThreshold` rather than in it by its share.
+    public uint  matteHard;
+    public float matteThreshold;
     // Relighting happens in the world, where the lights are: the cloud to
     // world rows, and the eye there. The colour from the harmonics is still
     // the cloud's own business, which is why the eye above stays as it is.

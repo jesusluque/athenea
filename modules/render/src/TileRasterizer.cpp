@@ -162,6 +162,8 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(r.blendFeatures8_, "athenea/splat/splat_blend", "splatBlendFeatures8"));
     ATHENEA_TRY(make(r.blendFeatures16_, "athenea/splat/splat_blend", "splatBlendFeatures16"));
     ATHENEA_TRY(make(r.blendFeatures32_, "athenea/splat/splat_blend", "splatBlendFeatures32"));
+    ATHENEA_TRY(make(r.blendMatte_, "athenea/splat/splat_blend", "splatBlendMatte"));
+    ATHENEA_TRY(make(r.blendMatteComposite_, "athenea/splat/splat_blend", "splatBlendMatteComposite"));
     ATHENEA_TRY(make(r.pixelFeatures_, "athenea/neural/neural_pixel", "neuralPixelFeatures"));
     ATHENEA_TRY(make(r.pixelDecode_, "athenea/neural/neural_pixel", "neuralPixelDecode"));
     ATHENEA_TRY(make(r.blendTraceCrypto_, "athenea/splat/splat_blend", "splatBlendTraceCrypto"));
@@ -1060,7 +1062,18 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     const bool underCrypto = matte && under != nullptr && under->cryptoIds.valid();
     const bool traced = settings.trace && targets.trace.valid();
     const bool featured = featureWords != 0 && !traced && !matte && !composite;
-    gpu::ComputeKernel& blend = featured ? (featureWords == 4 ? blendFeatures8_ : featureWords == 8 ? blendFeatures16_
+    // A matte summed by the walk: the plain walk's twin, or the composite one's.
+    const bool lifted = settings.matteLift != nullptr && !traced && !matte && !featured;
+    if (lifted) {
+        const uint64_t bytes = uint64_t{settings.width} * settings.height * sizeof(float);
+        if (!targets.matte.valid() || targets.matte.bytes() != bytes) {
+            auto made = buffer(*device_, uint64_t{settings.width} * settings.height, 4, "target.matte");
+            if (!made) return std::move(made).error();
+            targets.matte = *made;
+        }
+    }
+    gpu::ComputeKernel& blend = lifted ? (composite ? blendMatteComposite_ : blendMatte_)
+                                : featured ? (featureWords == 4 ? blendFeatures8_ : featureWords == 8 ? blendFeatures16_
                                                                                                       : blendFeatures32_)
                                 : traced  ? (matte ? (composite ? blendTraceCompositeCrypto_ : blendTraceCrypto_)
                                                  : (composite ? blendTraceComposite_ : blendTrace_))
@@ -1085,6 +1098,8 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                                                      : placeholderCrypto_.rhi());
         cursor["crypto"].setBinding(matte ? targets.crypto.rhi() : placeholderOut_.rhi());
         cursor["trace"].setBinding(traced ? targets.trace.rhi() : placeholderOut_.rhi());
+        cursor["slotLift"].setBinding(lifted ? settings.matteLift->rhi() : placeholderCrypto_.rhi());
+        cursor["matteOut"].setBinding(lifted ? targets.matte.rhi() : placeholderDepth_.rhi());
         cursor["slotFeatures"].setBinding(featured ? slotFeatures_.rhi() : placeholderCrypto_.rhi());
         cursor["features"].setBinding(featured ? targets.features.rhi() : placeholderOut_.rhi());
         cursor["contribution"].setBinding(settings.contribution != nullptr ? settings.contribution->rhi()
@@ -1102,6 +1117,8 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                                                      : settings.contributionMode == 2u && settings.finalColour != nullptr
                                                          ? 2u
                                                          : 1u);
+        cursor["params"]["matteHard"].setData(uint32_t{settings.matteHard ? 1u : 0u});
+        cursor["params"]["matteThreshold"].setData(settings.matteThreshold);
         cursor["params"]["hasUnder"].setData(uint32_t{under != nullptr ? 1u : 0u});
         cursor["params"]["hasUnderCrypto"].setData(uint32_t{underCrypto ? 1u : 0u});
         cursor["params"]["envBaseSide"].setData(sky ? lights->envBaseSide : 1u);

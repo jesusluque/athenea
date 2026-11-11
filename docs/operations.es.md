@@ -246,6 +246,7 @@ pesos del blend de la nube dicen de qué gaussianas estaba hecho cada píxel de 
 | `--degree` | 0..3 | `3` | armónicos conservados |
 | `--hard` | flag | apagado | una gaussiana está dentro de la máscara o fuera, en vez de estarlo en la proporción de su peso que cubrieron las máscaras |
 | `--threshold` | 0..1 | `0.5` | `--hard`: esa proporción |
+| `--matte-by-trace` | flag | apagado | lee el matte de la trace del frame de `--eye` (las cuatro gaussianas de más peso de un píxel, y una suposición para el resto) en vez de que lo sume el blend del frame sobre todas las gaussianas, que es lo que se hace por defecto y no guarda trace |
 | `--by-trace` | flag | apagado | hace el lift por la trace de cada frame (las cuatro gaussianas de más peso de un píxel) en vez de durante el blend (todas) |
 | `--turn` | entero | `0` | además este número de frames de la cámara `--eye` dando una vuelta al target (sobre y), cada uno con el key del mismo lift: `<output>_NNN.exr` |
 | `-o`, `--output` | ruta | `lift.exr` | el frame de `--eye`, premultiplicado por el matte, con el matte como alfa, y su profundidad |

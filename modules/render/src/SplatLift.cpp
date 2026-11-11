@@ -60,6 +60,12 @@ void liftWhileBlending(RenderSettings& settings, SplatLift& lift, const gpu::Buf
     settings.liftMask = &mask;
 }
 
+void matteWhileBlending(RenderSettings& settings, const SplatLift& lift, const MatteSettings& how) {
+    settings.matteLift = &lift.sums;
+    settings.matteHard = how.hard;
+    settings.matteThreshold = how.threshold;
+}
+
 Result<void> drawMatte(gpu::ShaderLibrary& library, const RenderTargets& traced, const SplatLift& lift,
                        const MatteSettings& settings, gpu::Buffer& matte) {
     if (!traced.hasTrace()) return noTrace();

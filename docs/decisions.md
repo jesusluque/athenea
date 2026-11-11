@@ -20762,3 +20762,36 @@ So, where the sections above say otherwise: without shadows the latents cost wha
 costs, not twice it; with shadows by a map they are 11.5 ms against the rays' 32.5, the map included, and 7.4
 where the map stands from a frame before; and with a ray a gaussian they are the engine's frame, since the rays
 are.
+
+## The matte summed by the blend, and the trace out of the keying frame (11 Nov)
+
+A key read the frame's trace: four gaussians a pixel told their share of the mask, and the rest of the pixel a
+guess. The blend now sums the matte itself (`RenderSettings::matteLift`, `render::matteWhileBlending`): what the
+lift told each gaussian is read as it is blended, over every gaussian of the walk, into one float a pixel
+(`RenderTargets::matte`). No trace is kept by a frame that keys. `athenea lift` keys this way;
+`--matte-by-trace` is the old one.
+
+**Measured** (the pawn's head keyed from four lifting cameras, RTX 3070 Laptop, CUDA; three frames half a degree
+apart as before, and a frame's time waited for, the least of a hundred):
+
+| | 1920 x 1080 | 3840 x 2160 |
+|---|---|---|
+| the cloud's own worst pixel under that move | 23 | 28 |
+| the key's, its matte read off the trace | 31 | 33 |
+| the key's, its matte summed by the blend | 23 | 28 |
+| a plain frame | 5.72 ms | 7.00 ms |
+| with its matte summed by the blend | 6.29 ms | 8.08 ms |
+| keeping a trace to read one from | 6.26 ms | 8.60 ms |
+
+The key's worst pixel is the cloud's own, at both sizes: it shimmers as what it is cut from does and no more, and
+its relMSE halves (0.000001 against 0.000002 to 0.000003). At 4K it is a millisecond over a plain frame where the
+trace is 1.6. So the trace is what it should have been from the start: for asking what a pixel is made of -- a
+pick, a debug view -- and not in the frame a camera goes to air with.
+
+What it does not mend: a key lifted from one camera still flashes (a worst pixel of 255), since the gaussians
+that camera never saw are a guess whoever sums them.
+
+### Not done
+
+- The Metal numbers, and the lift's test taught the blend's matte.
+- The trace packed into fewer words, now that it is not in the keying frame, matters less and is not done.

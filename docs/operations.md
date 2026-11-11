@@ -242,6 +242,7 @@ cloud's own blend weights say which gaussians each masked pixel was made of.
 | `--degree` | 0..3 | `3` | harmonics kept |
 | `--hard` | flag | off | a gaussian is in the mask or out of it, rather than in it by the share of its weight the masks covered |
 | `--threshold` | 0..1 | `0.5` | `--hard`: that share |
+| `--matte-by-trace` | flag | off | read the matte off the `--eye` frame's trace (the four heaviest gaussians of a pixel, and a guess for the rest) rather than have the frame's blend sum it over every gaussian, which is the default and keeps no trace |
 | `--by-trace` | flag | off | lift through each frame's trace (the four heaviest gaussians of a pixel) rather than while blending (all of them) |
 | `--turn` | integer | `0` | also this many frames of the `--eye` camera going once round the target (about y), each keyed by the same lift: `<output>_NNN.exr` |
 | `-o`, `--output` | path | `lift.exr` | the `--eye` frame, premultiplied by the matte, with the matte as its alpha, and its depth |

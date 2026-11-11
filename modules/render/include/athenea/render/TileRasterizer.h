@@ -280,6 +280,14 @@ struct RenderSettings {
     /// 0: a neural cloud is decoded a gaussian at a time. Nothing fits this
     /// way yet: it is here to be timed against the other.
     uint32_t neuralFeatures = 0;
+    /// THE MATTE, SUMMED BY THE BLEND: what a lift told the frame's gaussians
+    /// (`SplatLift::sums`, two uints a slot) read as each is blended, and a
+    /// pixel's share of the mask over every gaussian of its walk written to
+    /// `RenderTargets::matte`. `render::matteWhileBlending` sets these. It
+    /// needs no trace. Null: no matte.
+    const gpu::Buffer* matteLift = nullptr;
+    bool               matteHard = false;
+    float              matteThreshold = 0.5F;
     /// A PARAMETER OF THE GAUSSIANS DRAWN IN PLACE OF THEIR LIGHT (splat
     /// projection's `splatView`, splat_relight.slang's kSplatView*: albedo,
     /// roughness, normal, size, sky visibility, ...); 0 draws the light.
@@ -397,6 +405,8 @@ struct RenderTargets {
     /// made of them (float4, as `colour`).
     gpu::Buffer features;
     gpu::Buffer decoded;
+    /// The matte a frame summed as it blended (`RenderSettings::matteLift`): one float a pixel.
+    gpu::Buffer matte;
 
     [[nodiscard]] bool hasCrypto() const noexcept { return crypto.valid(); }
     [[nodiscard]] bool hasTrace() const noexcept { return trace.valid(); }
@@ -496,6 +506,7 @@ private:
     gpu::ComputeKernel blendCompositeCrypto_;
     gpu::ComputeKernel neuralShade_;
     gpu::ComputeKernel blendFeatures8_, blendFeatures16_, blendFeatures32_;
+    gpu::ComputeKernel blendMatte_, blendMatteComposite_;
     gpu::ComputeKernel pixelFeatures_, pixelDecode_;
     gpu::Buffer        slotFeatures_;     ///< what each slot's gaussian gives the feature sums
     gpu::Buffer        pixelWeights_;     ///< the pixel decoder's network: zeros, until something fits it

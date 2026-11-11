@@ -60,6 +60,15 @@ RWStructuredBuffer<uint>    trace;
 // with into `features`, a plane a word as the matte is. Kept by the entry
 // points that say so, each for its own count of words: the sums are registers
 // a pixel, and a walk that keeps none has none. Bound whether or not.
+// THE MATTE, SUMMED BY THE WALK ITSELF. What a lift told each gaussian
+// (splat_lift.slang: two words a slot, weight times mask and weight) is read
+// as the gaussian is blended, and a pixel is in the matte as far as every
+// gaussian of its walk is -- not the four a trace names and a guess for the
+// rest. A gaussian no lifting camera saw is still a guess (the share of the
+// pixel's known ones), but it is the only one left. One float a pixel into
+// `matteOut`; kept by the entry points that say so. Bound whether or not.
+StructuredBuffer<uint>      slotLift;
+RWStructuredBuffer<float>   matteOut;
 StructuredBuffer<uint>      slotFeatures;
 RWStructuredBuffer<uint>    features;
 static const uint kFeatureWordsMost = 16;
@@ -224,7 +233,8 @@ groupshared uint       sSplats[kBatch];
 groupshared uint4      sSlopes[kBatch];
 groupshared uint       sDone;
 
-void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool traced, uint featureWords = 0u) {
+void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool traced, uint featureWords = 0u,
+                bool lifted = false) {
     const uint px = tid.x;
     const uint py = tid.y;
     const uint lane = groupThread.y * kTile + groupThread.x;
@@ -266,6 +276,9 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool t
     // compiler is told so by `traced` being a constant.
     TraceList traceList;
     traceList.clear();
+    float matteInside = 0.0;   // weight times share, over the gaussians a lift told
+    float matteKnown = 0.0;    // their weight
+    float matteUntold = 0.0;   // the weight of those it did not
     float featureSums[kFeatureWordsMost * 2];
     for (uint c = 0; c < featureWords * 2; ++c) {
         featureSums[c] = 0.0;
@@ -404,6 +417,20 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool t
             if (matte) {
                 list.add(cryptoIds[sSplats[j]], weight);
             }
+            if (lifted) {
+                const uint told = sSplats[j] * 2u;
+                const uint seen = slotLift[told + 1u];
+                if (seen != 0u) {
+                    float share = float(slotLift[told]) / float(seen);
+                    if (params.matteHard != 0) {
+                        share = share > params.matteThreshold ? 1.0 : 0.0;
+                    }
+                    matteKnown += weight;
+                    matteInside += weight * share;
+                } else {
+                    matteUntold += weight;
+                }
+            }
             if (featureWords != 0u) {
                 const uint from = sSplats[j] * featureWords;
                 for (uint c = 0; c < featureWords; ++c) {
@@ -502,6 +529,10 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool t
     if (matte) {
         list.add(opaqueId, opaqueHit ? transmittance : 0.0);
         list.write(at, params.width * params.height);
+    }
+    if (lifted) {
+        const float share = matteKnown > 0.0 ? matteInside / matteKnown : 0.0;
+        matteOut[at] = saturate(matteInside + matteUntold * share);
     }
     if (featureWords != 0u) {
         for (uint c = 0; c < featureWords; ++c) {
@@ -609,4 +640,17 @@ void splatBlendFeatures16(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_
 [numthreads(16, 16, 1)]
 void splatBlendFeatures32(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
     blendPixel(tid, groupThread, false, false, false, 16u);
+}
+
+// The splat-only and the composite walk summing a matte.
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendMatte(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, false, false, false, 0u, true);
+}
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendMatteComposite(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, true, false, false, 0u, true);
 }
