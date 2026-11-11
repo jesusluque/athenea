@@ -53,6 +53,16 @@ RWStructuredBuffer<float4>  crypto;
 // THE TRACE (splat_trace.slang): the gaussians each pixel is made of, kept by
 // the entry points that say so. Bound whether the frame keeps one or not.
 RWStructuredBuffer<uint>    trace;
+// FEATURES BLENDED AS THE COLOUR IS, for a decoder that runs once a pixel
+// rather than once a gaussian (athenea/neural/neural_pixel.slang): what each
+// projected slot carries, `featureWords` uints of two halves each
+// (`slotFeatures`), summed by the walk with the weights it blends the colour
+// with into `features`, a plane a word as the matte is. Kept by the entry
+// points that say so, each for its own count of words: the sums are registers
+// a pixel, and a walk that keeps none has none. Bound whether or not.
+StructuredBuffer<uint>      slotFeatures;
+RWStructuredBuffer<uint>    features;
+static const uint kFeatureWordsMost = 16;
 RWStructuredBuffer<float4>  colour;   // width * height, premultiplied, linear
 RWStructuredBuffer<float>   depth;    // width * height
 ConstantBuffer<FrameParams> params;
@@ -214,7 +224,7 @@ groupshared uint       sSplats[kBatch];
 groupshared uint4      sSlopes[kBatch];
 groupshared uint       sDone;
 
-void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool traced) {
+void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool traced, uint featureWords = 0u) {
     const uint px = tid.x;
     const uint py = tid.y;
     const uint lane = groupThread.y * kTile + groupThread.x;
@@ -256,6 +266,10 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool t
     // compiler is told so by `traced` being a constant.
     TraceList traceList;
     traceList.clear();
+    float featureSums[kFeatureWordsMost * 2];
+    for (uint c = 0; c < featureWords * 2; ++c) {
+        featureSums[c] = 0.0;
+    }
     bool done = !inside;
     for (uint first = start; first < end; first += kBatch) {
         // Stop loading once every pixel of the tile has stopped walking.
@@ -390,6 +404,14 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool t
             if (matte) {
                 list.add(cryptoIds[sSplats[j]], weight);
             }
+            if (featureWords != 0u) {
+                const uint from = sSplats[j] * featureWords;
+                for (uint c = 0; c < featureWords; ++c) {
+                    const uint word = slotFeatures[from + c];
+                    featureSums[c * 2] += weight * lowHalf(word);
+                    featureSums[c * 2 + 1] += weight * highHalf(word);
+                }
+            }
             if (traced) {
                 // Its slot is read only where it enters the list: most of a
                 // walk does not, and the read is one more a gaussian a pixel.
@@ -481,6 +503,11 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool t
         list.add(opaqueId, opaqueHit ? transmittance : 0.0);
         list.write(at, params.width * params.height);
     }
+    if (featureWords != 0u) {
+        for (uint c = 0; c < featureWords; ++c) {
+            features[c * params.width * params.height + at] = packHalves(featureSums[c * 2], featureSums[c * 2 + 1]);
+        }
+    }
     if (traced) {
         float depths[kTraceSlots];
         for (uint k = 0; k < kTraceSlots; ++k) {
@@ -563,4 +590,23 @@ void splatBlendTraceCrypto(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV
 [numthreads(16, 16, 1)]
 void splatBlendTraceCompositeCrypto(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
     blendPixel(tid, groupThread, true, true, true);
+}
+
+// The splat-only walk keeping feature sums, of 8, 16 and 32 channels.
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendFeatures8(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, false, false, false, 4u);
+}
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendFeatures16(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, false, false, false, 8u);
+}
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendFeatures32(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, false, false, false, 16u);
 }

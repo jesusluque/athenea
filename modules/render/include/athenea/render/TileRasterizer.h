@@ -273,6 +273,13 @@ struct RenderSettings {
     /// a gaussian's place in the frame, `FrameStats::slotBases` of its
     /// instance plus its index in its cloud.
     bool     trace = false;
+    /// DECODED ONCE A PIXEL rather than once a gaussian: 8, 16 or 32 feature
+    /// channels of a neural cloud blended as its colour is
+    /// (`RenderTargets::features`) and a perceptron run on each pixel's
+    /// (`RenderTargets::decoded`; shaders/athenea/neural/neural_pixel.slang).
+    /// 0: a neural cloud is decoded a gaussian at a time. Nothing fits this
+    /// way yet: it is here to be timed against the other.
+    uint32_t neuralFeatures = 0;
     /// A PARAMETER OF THE GAUSSIANS DRAWN IN PLACE OF THEIR LIGHT (splat
     /// projection's `splatView`, splat_relight.slang's kSplatView*: albedo,
     /// roughness, normal, size, sky visibility, ...); 0 draws the light.
@@ -385,6 +392,11 @@ struct RenderTargets {
     /// plane after plane (`trace[word * width * height + pixel]`), laid out
     /// as splat_trace.slang says; a pixel nothing reached holds its first word alone.
     gpu::Buffer trace;
+    /// The feature sums a pixel-decoded frame keeps (`neuralFeatures / 2`
+    /// uints a pixel, two halves each, a plane a word) and what the decoder
+    /// made of them (float4, as `colour`).
+    gpu::Buffer features;
+    gpu::Buffer decoded;
 
     [[nodiscard]] bool hasCrypto() const noexcept { return crypto.valid(); }
     [[nodiscard]] bool hasTrace() const noexcept { return trace.valid(); }
@@ -483,6 +495,10 @@ private:
     gpu::ComputeKernel blendCrypto_;
     gpu::ComputeKernel blendCompositeCrypto_;
     gpu::ComputeKernel neuralShade_;
+    gpu::ComputeKernel blendFeatures8_, blendFeatures16_, blendFeatures32_;
+    gpu::ComputeKernel pixelFeatures_, pixelDecode_;
+    gpu::Buffer        slotFeatures_;     ///< what each slot's gaussian gives the feature sums
+    gpu::Buffer        pixelWeights_;     ///< the pixel decoder's network: zeros, until something fits it
     gpu::ComputeKernel blendTrace_;
     gpu::ComputeKernel blendTraceComposite_;
     gpu::ComputeKernel blendTraceCrypto_;

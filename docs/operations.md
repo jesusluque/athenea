@@ -215,6 +215,7 @@ Takes every option of `athenea render` except `-o`, and adds:
 |---|---|---|---|
 | `--repeat` | integer | `20` | frames drawn |
 | `--stages` | flag | off | wait after each stage so each is timed separately; slower, and the reason the numbers differ from a real frame |
+| `--features` | 8, 16 or 32 | off | with `--neural`: the cloud's features blended and decoded once a pixel rather than its colour decoded once a gaussian, to time it; the pixel's network is untrained, so the frame is not one to look at |
 | `--trace` | flag | off | the frame keeps its trace -- the four heaviest gaussians of each pixel, 44 bytes a pixel -- so that what it costs is timed; raster only |
 
 Writes no image. With `--stages` it reports the project, depth sort, counts,

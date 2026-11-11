@@ -219,6 +219,7 @@ Admite todas las opciones de `athenea render` menos `-o`, y añade:
 |---|---|---|---|
 | `--repeat` | entero | `20` | frames dibujados |
 | `--stages` | flag | apagado | espera tras cada etapa para cronometrarlas por separado; más lento, y por eso sus números no son los de un frame real |
+| `--features` | 8, 16 o 32 | apagado | con `--neural`: las features de la nube mezcladas y decodificadas una vez por píxel en vez de su color decodificado una vez por gaussiana, para cronometrarlo; la red del píxel no está entrenada, así que el frame no es para mirarlo |
 | `--trace` | flag | apagado | el frame guarda su trace -- las cuatro gaussianas de más peso de cada píxel, 44 bytes por píxel -- para cronometrar lo que cuesta; solo raster |
 
 No escribe imagen. Con `--stages` informa por separado de la proyección, el

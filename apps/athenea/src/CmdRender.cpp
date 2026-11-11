@@ -54,6 +54,7 @@ struct RenderOptions {
     bool                     noAntialias = false;
     bool                     trace = false;
     std::string              neural;   ///< a .athn: the one cloud's colours from its latents
+    unsigned                 features = 0;   ///< bench: decode once a pixel from this many blended channels
     int                      repeat = 1;
     bool                     stages = false;
 };
@@ -220,6 +221,7 @@ int run(const RenderOptions& options, bool bench) {
     }
     settings.timeStages = options.stages;
     settings.trace = options.trace;
+    settings.neuralFeatures = options.features;
     render::RenderTargets targets;
     std::optional<render::PointRasterizer> pointRaster;
     render::RenderTargets pointLayer;
@@ -504,6 +506,7 @@ void addBench(CLI::App& app) {
     cmd->add_option("--repeat", options->repeat, "frames");
     cmd->add_flag("--stages", options->stages, "wait after each stage to time it");
     cmd->add_flag("--trace", options->trace, "keep which gaussians each pixel is made of (raster)");
+    cmd->add_option("--features", options->features, "with --neural: decode once a pixel from 8, 16 or 32 blended feature channels, to time it (the network is untrained)");
     cmd->callback([options] {
         if (int code = run(*options, true); code != 0) {
             throw CLI::RuntimeError(code);

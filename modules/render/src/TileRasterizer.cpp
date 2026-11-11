@@ -159,6 +159,11 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(r.blendCompositeCrypto_, "athenea/splat/splat_blend", "splatBlendCompositeCrypto"));
     ATHENEA_TRY(make(r.blendTrace_, "athenea/splat/splat_blend", "splatBlendTrace"));
     ATHENEA_TRY(make(r.neuralShade_, "athenea/neural/neural_shade", "neuralShade"));
+    ATHENEA_TRY(make(r.blendFeatures8_, "athenea/splat/splat_blend", "splatBlendFeatures8"));
+    ATHENEA_TRY(make(r.blendFeatures16_, "athenea/splat/splat_blend", "splatBlendFeatures16"));
+    ATHENEA_TRY(make(r.blendFeatures32_, "athenea/splat/splat_blend", "splatBlendFeatures32"));
+    ATHENEA_TRY(make(r.pixelFeatures_, "athenea/neural/neural_pixel", "neuralPixelFeatures"));
+    ATHENEA_TRY(make(r.pixelDecode_, "athenea/neural/neural_pixel", "neuralPixelDecode"));
     ATHENEA_TRY(make(r.blendTraceCrypto_, "athenea/splat/splat_blend", "splatBlendTraceCrypto"));
     ATHENEA_TRY(make(r.blendTraceComposite_, "athenea/splat/splat_blend", "splatBlendTraceComposite"));
     ATHENEA_TRY(make(r.blendTraceCompositeCrypto_, "athenea/splat/splat_blend", "splatBlendTraceCompositeCrypto"));
@@ -405,6 +410,42 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             flattenMade_ = true;
         }
         ATHENEA_TRY(batch.submit(true));
+    }
+    // Decoded once a pixel (RenderSettings::neuralFeatures): the words a slot and a pixel carry, and
+    // the buffers that hold them.
+    const uint32_t featureWords = settings.neuralFeatures == 8 || settings.neuralFeatures == 16 ||
+                                          settings.neuralFeatures == 32
+                                      ? settings.neuralFeatures / 2
+                                      : 0u;
+    if (featureWords != 0) {
+        const uint64_t slotBytes = uint64_t{splatCapacity_} * featureWords * 4;
+        if (!slotFeatures_.valid() || slotFeatures_.bytes() < slotBytes) {
+            auto made = buffer(*device_, uint64_t{splatCapacity_} * featureWords, 4, "splat.features");
+            if (!made) return std::move(made).error();
+            slotFeatures_ = *made;
+        }
+        const uint64_t pixelBytes = uint64_t{settings.width} * settings.height * featureWords * 4;
+        if (!targets.features.valid() || targets.features.bytes() != pixelBytes) {
+            auto made = buffer(*device_, uint64_t{settings.width} * settings.height * featureWords, 4, "target.features");
+            if (!made) return std::move(made).error();
+            targets.features = *made;
+        }
+        if (!targets.decoded.valid() || targets.decoded.bytes() != uint64_t{settings.width} * settings.height * 16) {
+            auto made = buffer(*device_, uint64_t{settings.width} * settings.height, 16, "target.decoded");
+            if (!made) return std::move(made).error();
+            targets.decoded = *made;
+        }
+        if (!pixelWeights_.valid()) {
+            // (16 + 32) x 32 + 32 x 32 + 3 x 32, zeroed: a network that has learnt nothing.
+            const std::vector<float> zeros(48 * 32 + 32 * 32 + 3 * 32, 0.0F);
+            gpu::BufferDesc desc;
+            desc.bytes = zeros.size() * sizeof(float);
+            desc.elementBytes = sizeof(float);
+            desc.label = "neural.pixelWeights";
+            auto made = gpu::Buffer::create(*device_, desc, zeros.data());
+            if (!made) return std::move(made).error();
+            pixelWeights_ = *made;
+        }
     }
     Stopwatch watch(batch, settings.timeStages);
     ++frameOfCaches_;
@@ -807,7 +848,26 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             viewless = false;
         }
         project.dispatch(batch, {cloud->count, 1, 1}, bindProject);
-        if (instance.neural != nullptr && instance.neural->count == cloud->count) {
+        if (featureWords != 0 && instance.neural != nullptr && instance.neural->count == cloud->count) {
+            // Decoded once a pixel: this cloud's gaussians give the walk their
+            // features, and their colour stays the base its first harmonic is.
+            const NeuralCloud& neural = *instance.neural;
+            pixelFeatures_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["latent"].setBinding(neural.latent.rhi());
+                cursor["visible"].setBinding(visible_.rhi());
+                cursor["slotFeatures"].setBinding(slotFeatures_.rhi());
+                cursor["features"].setBinding(slotFeatures_.rhi());
+                cursor["weights"].setBinding(pixelWeights_.rhi());
+                cursor["colour"].setBinding(targets.colour.rhi());
+                cursor["decoded"].setBinding(targets.decoded.rhi());
+                cursor["params"]["count"].setData(cloud->count);
+                cursor["params"]["base"].setData(base);
+                cursor["params"]["words"].setData(featureWords);
+                cursor["params"]["latentStride"].setData(kNeuralStride);
+                cursor["params"]["width"].setData(settings.width);
+                cursor["params"]["height"].setData(settings.height);
+            });
+        } else if (instance.neural != nullptr && instance.neural->count == cloud->count) {
             // The colours again, from the cloud's latent and network, over
             // what its harmonics gave the records.
             const NeuralCloud& neural = *instance.neural;
@@ -999,7 +1059,10 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     const bool matte = settings.cryptomatte && targets.crypto.valid();
     const bool underCrypto = matte && under != nullptr && under->cryptoIds.valid();
     const bool traced = settings.trace && targets.trace.valid();
-    gpu::ComputeKernel& blend = traced  ? (matte ? (composite ? blendTraceCompositeCrypto_ : blendTraceCrypto_)
+    const bool featured = featureWords != 0 && !traced && !matte && !composite;
+    gpu::ComputeKernel& blend = featured ? (featureWords == 4 ? blendFeatures8_ : featureWords == 8 ? blendFeatures16_
+                                                                                                      : blendFeatures32_)
+                                : traced  ? (matte ? (composite ? blendTraceCompositeCrypto_ : blendTraceCrypto_)
                                                  : (composite ? blendTraceComposite_ : blendTrace_))
                                 : matte ? (composite ? blendCompositeCrypto_ : blendCrypto_)
                                         : (composite ? blendComposite_ : blend_);
@@ -1022,6 +1085,8 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                                                      : placeholderCrypto_.rhi());
         cursor["crypto"].setBinding(matte ? targets.crypto.rhi() : placeholderOut_.rhi());
         cursor["trace"].setBinding(traced ? targets.trace.rhi() : placeholderOut_.rhi());
+        cursor["slotFeatures"].setBinding(featured ? slotFeatures_.rhi() : placeholderCrypto_.rhi());
+        cursor["features"].setBinding(featured ? targets.features.rhi() : placeholderOut_.rhi());
         cursor["contribution"].setBinding(settings.contribution != nullptr ? settings.contribution->rhi()
                                                                            : visible_.rhi());
         setFrame(cursor, common);
@@ -1041,6 +1106,28 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         cursor["params"]["hasUnderCrypto"].setData(uint32_t{underCrypto ? 1u : 0u});
         cursor["params"]["envBaseSide"].setData(sky ? lights->envBaseSide : 1u);
     });
+    if (featured) {
+        // The network, once a pixel, on what the walk left it.
+        pixelDecode_.dispatch(batch, {settings.width, settings.height, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["latent"].setBinding(pixelWeights_.rhi());
+            cursor["visible"].setBinding(visible_.rhi());
+            cursor["slotFeatures"].setBinding(slotFeatures_.rhi());
+            cursor["features"].setBinding(targets.features.rhi());
+            cursor["weights"].setBinding(pixelWeights_.rhi());
+            cursor["colour"].setBinding(targets.colour.rhi());
+            cursor["decoded"].setBinding(targets.decoded.rhi());
+            cursor["params"]["count"].setData(uint32_t{0});
+            cursor["params"]["base"].setData(uint32_t{0});
+            cursor["params"]["words"].setData(featureWords);
+            cursor["params"]["latentStride"].setData(kNeuralStride);
+            cursor["params"]["width"].setData(settings.width);
+            cursor["params"]["height"].setData(settings.height);
+            cursor["params"]["focalX"].setData(static_cast<float>(projection.focalX));
+            cursor["params"]["focalY"].setData(static_cast<float>(projection.focalY));
+            cursor["params"]["centreX"].setData(static_cast<float>(projection.centreX));
+            cursor["params"]["centreY"].setData(static_cast<float>(projection.centreY));
+        });
+    }
     if (settings.countSplats) {
         // What the panel shows, counted from what the frame already wrote
         // and copied out with the submit the frame makes anyway.

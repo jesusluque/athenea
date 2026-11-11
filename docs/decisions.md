@@ -20690,3 +20690,39 @@ The lit fit without shadows comes to the same there as on Metal: relMSE 0.00100,
 - An L4, and Windows' own CUDA with OptiX.
 - The network still walks every gaussian of the cloud to find those in view, and the projection still evaluates
   the harmonics it overwrites.
+
+## Once a gaussian or once a pixel: the two ways to decode, timed (11 Nov)
+
+The branch set out to blend features and decode them once a pixel; it has decoded once a gaussian since, because a
+network a pixel measured 3.5 ms at 1080p before anything was blended. This puts the two side by side on a frame.
+`RenderSettings::neuralFeatures` (8, 16 or 32): a neural cloud's gaussians give the walk their features
+(`neural_pixel.slang`: sines and cosines of the latent, two halves a word a slot), the blend sums them with the
+weights it blends the colour with -- three more entry points, each for its own count, the sums registers a pixel
+-- and a 16 + channels -> 32 -> 32 -> 3 perceptron runs on each covered pixel, its weights in the group's memory.
+Nothing fits it: the network is zeros, and what is measured is the frame.
+
+**Measured** (`athenea bench --neural ... --features N`, the pawn, 325 833 gaussians, 119 778 in view; Apple M5
+Pro, Metal; the least of five runs of a hundred frames, which waits for the device):
+
+| the frame is drawn by | 1920 x 1080 | 3840 x 2160 |
+|---|---|---|
+| its harmonics | 3.95 ms | 7.02 ms |
+| a network a gaussian | 4.09 ms | 7.09 ms |
+| 8 channels blended, a network a pixel | 6.27 ms | 15.57 ms |
+| 16 channels | 6.95 ms | 18.16 ms |
+| 32 channels | 9.19 ms | 26.38 ms |
+
+A network a gaussian is a tenth of a millisecond over the harmonics at either size. (`athenea neural-fit` had been
+saying two: it reads the frame's own clock without waiting for the device, and the harmonics' frame was the one
+that clock flattered. `athenea bench` is the one to read, and the earlier sections' "5.0 against 7.0" is not.)
+Once a pixel is 2.3 to 5.2 ms over at 1080p and 8.6 to 19.4 at 4K: it grows with the pixels, four times from one
+size to the other, where once a gaussian grows with the gaussians in view and so not at all. Of 16 channels to 32
+the walk and the network pay a third more at 1080p and nearly half more at 4K.
+
+So for a cloud's colour the branch decodes once a gaussian, and what once a pixel is still for is what only a
+pixel has: a vector to key by, a light that falls on a pixel and not on a gaussian.
+
+### Not done
+
+- Not fitted, so nothing says what a pixel's network buys in quality for its milliseconds.
+- Not on CUDA yet.
