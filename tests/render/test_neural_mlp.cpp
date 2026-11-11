@@ -242,7 +242,7 @@ TEST_CASE("a cloud's harmonics are learnt by its latents, from frames of itself"
         auto loss = fit->step(*raster, cameraAt(k), instance, *neural, how, ask);
         if (!loss) FAIL(loss.error().toString());
         if (*loss) {
-            std::printf("  fit step %u: mean squared error %.6f\n", k + 1, **loss);
+            std::printf("  fit step %u: relMSE %.5f\n", k + 1, **loss);
             if (k == 0) first = **loss;
             last = **loss;
         }

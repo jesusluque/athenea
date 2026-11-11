@@ -247,6 +247,34 @@ A gaussian no `--from` camera saw has no opinion, and is taken to be in the
 mask as far as the others of its pixel are: a mask made from one side leaves
 the far side to that guess, and more `--from` cameras are what removes it.
 
+### 2.3.2 `athenea neural-fit` — a cloud's harmonics learnt by a latent a gaussian and one network
+
+Fits a neural appearance to a cloud and says how near it came: the cloud drawn
+by its harmonics, from cameras over a sphere round it, is what the cloud drawn
+from eleven numbers a gaussian and a network of 816 weights is moved towards.
+The geometry is not touched. Nothing is written but the measures and, with
+`-o`, three frames to look at: the fitted appearance is not saved yet.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `--splats` | path, required | — | one `.ply`, `.splat`, `.spz` or `.sog` |
+| `--steps` | integer | `3000` | a camera each; the error and the held-out measure are printed ten times on the way |
+| `--size` | `WIDTHxHEIGHT` | `960x540` | of the frames fitted and of those measured |
+| `--target` | `x y z` | the cloud's centre | what every camera looks at |
+| `--up` | `x y z` | `0 1 0` | y or z up |
+| `--distance` | number | 1.4 times the cloud's largest side | every camera's distance from the target, in the cloud's units |
+| `--focal` | mm | `35` | |
+| `--degree` | 0..3 | `3` | the harmonics being learnt |
+| `--held-out` | integer | `8` | cameras the fit never uses, measured before and after |
+| `--rate-features` | number | `0.01` | Adam's rate for the features |
+| `--rate-base` | number | `0.002` | for the base colours |
+| `--rate-weights` | number | `0.004` | for the network |
+| `-o`, `--output` | prefix | — | writes `<prefix>_harmonics.exr`, `_base.exr` and `_latents.exr`: the first held-out camera's frame by each |
+
+The measures are those of `athenea compare` against the harmonics' frame, the
+mean over the held-out cameras: relMSE, the 99th percentile in 8-bit code
+values, and the largest difference of any of them.
+
 ### 2.4 `athenea convert` — a splat file into USD, or into a `.athc`
 
 | Option | Value | Default | Notes |
@@ -3284,6 +3312,7 @@ surfels in levels of detail is one cloud.
 | `athenea render` | one EXR: half RGBA and `Z` |
 | `athenea bench` | nothing; timings on standard output |
 | `athenea lift` | the EXR of `-o`: the `--eye` frame keyed by the matte, and its depth |
+| `athenea neural-fit` | measures on standard output; with `-o`, three EXR frames |
 | `athenea convert` | a USD stage, or a `.athc` |
 | `athenea stage` | one EXR; or, with `--render-settings`, one per product |
 | `athenea view` | nothing, or one EXR with `--snapshot` |

@@ -142,6 +142,12 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
         p["correction1"].setData(1.0F - std::pow(kBeta1, t));
         p["correction2"].setData(1.0F - std::pow(kBeta2, t));
         p["sparse"].setData(uint32_t{1});
+        // The network's gradient from a share of the gaussians, another each
+        // step: it is a sum over hundreds of thousands, and an eighth of them
+        // says the same at an eighth of the reads.
+        const uint32_t every = count_ > 20000 ? 8u : 1u;
+        p["every"].setData(every);
+        p["phase"].setData(steps_ % every);
     };
     {
         gpu::CommandBatch batch(device);

@@ -33,7 +33,7 @@ import athenea.common.edit;
 
 public static const uint kTile = 16;
 /// The steps a unit of a colour's gradient is kept in (contributionMode 4).
-public static const float kColourGradScale = 16384.0;
+public static const float kColourGradScale = 256.0;
 
 // WHY A SPLAT WAS CULLED, kept where a culled slot's depth key would be: the
 // compaction reads a key only where `visible` is 1, so the word is free, and
@@ -137,7 +137,7 @@ public struct FrameParams {
     // 1/1024 as two words a slot.
     // 4: a loss's derivative with respect to each gaussian's colour, the weight
     // times `finalColour` (the loss's derivative at the pixel), in
-    // 1 / kColourGradScale as three signed words a slot.
+    // 1 / kColourGradScale (1/256) as three signed words a slot.
     public uint  contributionMode;
     // Relighting happens in the world, where the lights are: the cloud to
     // world rows, and the eye there. The colour from the harmonics is still

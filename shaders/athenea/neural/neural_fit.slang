@@ -41,7 +41,11 @@ struct NeuralFitParams {
     float correction1;  // 1 - beta1^t
     float correction2;  // 1 - beta2^t
     uint  sparse;       // neuralFitAdam: a number whose gradient is exactly zero was not seen, and stays
-    uint  pad0; uint pad1; uint pad2;
+    // neuralFitWeights: the gaussians a step sums over are one in `every`, those whose index is `phase`
+    // past a multiple of it -- a different share each step, and the sum scaled to the whole.
+    uint  every;
+    uint  phase;
+    uint  pad0;
 };
 
 StructuredBuffer<float4>           student;      // the frame drawn from the latents
@@ -62,7 +66,12 @@ StructuredBuffer<float>            gradientRead;
 RWStructuredBuffer<uint>           cleared;
 ConstantBuffer<NeuralFitParams>    params;
 
-/// The squared error, and its derivative at each pixel: twice the difference.
+/// The error, and its derivative at each pixel. The error is the squared
+/// difference over the squared level of what the pixel should be (plus a
+/// hundredth): the relMSE the engine measures images by. A plain squared
+/// difference in linear light is all highlights -- on a capture of the pawn it
+/// fell to a ninth while the dark marble, a thirtieth of the glass's level and
+/// most of the picture, drifted thirty code values off.
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void neuralFitError(uint3 tid: SV_DispatchThreadID) {
@@ -70,9 +79,11 @@ void neuralFitError(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint at = tid.y * params.width + tid.x;
-    const float3 d = student[at].rgb - teacher[at].rgb;
-    pixelGrad[at] = float4(2.0 * d, 0.0);
-    InterlockedAdd(loss[tid.y], uint(min(dot(d, d), 4.0) * 1024.0 + 0.5));
+    const float3 wanted = teacher[at].rgb;
+    const float3 d = student[at].rgb - wanted;
+    const float level = dot(wanted, wanted) / 3.0 + 1.0e-2;
+    pixelGrad[at] = float4(clamp(2.0 * d / level, float3(-50.0), float3(50.0)), 0.0);
+    InterlockedAdd(loss[tid.y], uint(min(dot(d, d) / (3.0 * level), 64.0) * 1024.0 + 0.5));
 }
 
 [shader("compute")]
@@ -148,13 +159,13 @@ void neuralFitWeights(uint3 tid: SV_DispatchThreadID) {
         input = kRecH1 + (w - kNeuralLayer2) % kNeuralHidden;
     }
     float sum = 0.0;
-    for (uint i = 0; i < params.count; ++i) {
+    for (uint i = params.phase; i < params.count; i += params.every) {
         const uint row = i * kFitRecord;
         if (recordsRead[row] != 0.0) {
             sum += recordsRead[row + error] * recordsRead[row + input];
         }
     }
-    gradient[w] = sum;
+    gradient[w] = sum * float(params.every);
 }
 
 /// Adam, a number a thread.

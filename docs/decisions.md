@@ -20342,8 +20342,33 @@ gaussian, its geometry as it is. Nothing is computed on the CPU and nothing is d
 
 **Measured** (`[fit]`, Apple M5 Pro, Metal): 3000 random gaussians whose harmonics are random too -- no two
 alike, which is the worst a shared network can be asked -- 320 x 240, 1500 steps from cameras on a ring, 25 s.
-The frame's mean squared error goes from 0.0100 to 0.0016. From a camera no step used, against the harmonics'
-own frame: the first harmonic alone relMSE 0.0119, the latents 0.0027.
+The frame's relMSE goes from 0.0165 to 0.0027. From a camera no step used, against the harmonics' own frame: the
+first harmonic alone relMSE 0.0119, the latents 0.0030.
+
+**On a capture** (`athenea neural-fit`, the pawn: 325 833 gaussians with harmonics of degree 3, 960 x 540, eight
+held-out cameras, the mean against the harmonics' frames):
+
+| steps | time | relMSE | p99, code values | max |
+|---|---|---|---|---|
+| 0 (the base colour alone) | -- | 0.01451 | 34.4 | 120 |
+| 500 | 19 s | 0.00158 | 17.1 | 156 |
+| 2000 | 78 s | 0.00084 | 11.0 | 151 |
+| 5000 | 195 s | 0.00033 | 7.0 | 112 |
+
+39 ms a step: three frames, a backward pass over the gaussians, and the network's gradient from an eighth of them,
+a different eighth each step (from all of them a step was 133 ms: 816 threads reading 326 thousand records each).
+Eleven floats a gaussian where the harmonics are forty-eight.
+
+**Two things it got wrong first, kept here.**
+- *The error.* As a plain squared difference in linear light the fit's own error fell to a ninth while the
+  held-out measures got worse: the pawn's glass is thirty times its marble's level, so the sum was the glass, and
+  the marble -- most of the picture -- drifted. The error is now the squared difference over the squared level of
+  what the pixel should be plus a hundredth, which is the relMSE the engine measures by; the colour gradients are
+  kept in 1/256 for it.
+- *The cameras.* The golden angle for the azimuth and the golden ratio for the height are the same number: every
+  camera fell on one turn of a spiral, the held-out ones on the spiral's far side, and the fit learnt the spiral
+  (its own error a twentieth, the held-out one unmoved). The cameras are now the R2 sequence, whose two
+  coordinates are independent.
 
 ### Not done
 
@@ -20351,4 +20376,7 @@ own frame: the first harmonic alone relMSE 0.0119, the latents 0.0027.
   reference, no light in the network's input.
 - Three frames a step where two would do if the first by the latents kept what its blend walked.
 - The rates are constants found by trying twice; no schedule, no regulariser, no halves.
-- A real cloud is not fitted yet, so nothing says whether eleven numbers match forty-eight on one.
+- A p99 of 7 code values and a max of 112 are not the harmonics: a few gaussians are still far off (the collar
+  under the glass), and how far 20 000 steps, a schedule or more features take it is not tried.
+- The fitted appearance is not saved: `athenea neural-fit` measures and writes three frames.
+- Not compared with fewer harmonics at the same bytes (degree 1 is 12 numbers a gaussian).

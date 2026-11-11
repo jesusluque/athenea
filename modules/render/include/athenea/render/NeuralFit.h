@@ -34,8 +34,8 @@ public:
 
     /// One step from one camera: `instance` drawn by its harmonics is what
     /// `neural` drawn from the same camera should be, and `neural` is moved
-    /// towards it. With `readLoss`, returns the frame's mean squared error
-    /// before the step (linear light, the three channels summed) -- a wait
+    /// towards it. With `readLoss`, returns the frame's error before the step
+    /// (its relMSE against the harmonics' frame, as `compareHdr` has it) -- a wait
     /// for the device, so asked for now and then and not every step.
     [[nodiscard]] Result<std::optional<double>> step(TileRasterizer& rasterizer, const Camera& camera,
                                                       const SplatInstance& instance, NeuralCloud& neural,

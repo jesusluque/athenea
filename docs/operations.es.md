@@ -251,6 +251,34 @@ Una gaussiana que ninguna cámara `--from` vio no tiene opinión, y se toma como
 de la máscara en la medida en que lo están las demás de su píxel: una máscara hecha
 desde un lado deja el lado contrario a esa suposición, y más cámaras `--from` son lo que la quita.
 
+### 2.3.2 `athenea neural-fit` — los armónicos de una nube aprendidos por un latente por gaussiana y una red
+
+Ajusta una apariencia neural a una nube y dice cuánto se acercó: la nube dibujada
+por sus armónicos, desde cámaras repartidas por una esfera a su alrededor, es hacia
+lo que se mueve la nube dibujada con once números por gaussiana y una red de 816 pesos.
+La geometría no se toca. No se escribe nada salvo las medidas y, con `-o`, tres
+frames para mirar: la apariencia ajustada aún no se guarda.
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `--splats` | ruta, obligatorio | — | un `.ply`, `.splat`, `.spz` o `.sog` |
+| `--steps` | entero | `3000` | una cámara cada uno; el error y la medida de las cámaras reservadas se imprimen diez veces por el camino |
+| `--size` | `WIDTHxHEIGHT` | `960x540` | el de los frames ajustados y el de los medidos |
+| `--target` | `x y z` | el centro de la nube | adonde miran todas las cámaras |
+| `--up` | `x y z` | `0 1 0` | y o z arriba |
+| `--distance` | número | 1,4 veces el lado mayor de la nube | la distancia de cada cámara al target, en las unidades de la nube |
+| `--focal` | mm | `35` | |
+| `--degree` | 0..3 | `3` | los armónicos que se aprenden |
+| `--held-out` | entero | `8` | cámaras que el fit nunca usa, medidas antes y después |
+| `--rate-features` | número | `0.01` | el rate de Adam para las features |
+| `--rate-base` | número | `0.002` | para los colores base |
+| `--rate-weights` | número | `0.004` | para la red |
+| `-o`, `--output` | prefijo | — | escribe `<prefijo>_harmonics.exr`, `_base.exr` y `_latents.exr`: el frame de la primera cámara reservada con cada uno |
+
+Las medidas son las de `athenea compare` contra el frame de los armónicos, la
+media sobre las cámaras reservadas: relMSE, el percentil 99 en code values de 8 bits,
+y la mayor diferencia de cualquiera de ellas.
+
 ### 2.4 `athenea convert` — un fichero de splats a USD, o a un `.athc`
 
 | Opción | Valor | Por defecto | Notas |
@@ -3395,6 +3423,7 @@ TX con skinning, de surfels y en niveles de detalle es una sola nube.
 | `athenea render` | un EXR: RGBA en media y `Z` |
 | `athenea bench` | nada; los tiempos por la salida estándar |
 | `athenea lift` | el EXR de `-o`: el frame de `--eye` con el key del matte, y su profundidad |
+| `athenea neural-fit` | las medidas por la salida estándar; con `-o`, tres frames EXR |
 | `athenea convert` | una escena USD, o un `.athc` |
 | `athenea stage` | un EXR; o, con `--render-settings`, uno por producto |
 | `athenea view` | nada, o un EXR con `--snapshot` |
