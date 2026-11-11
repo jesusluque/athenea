@@ -245,6 +245,11 @@ cloud's own blend weights say which gaussians each masked pixel was made of.
 | `--turn` | integer | `0` | also this many frames of the `--eye` camera going once round the target (about y), each keyed by the same lift: `<output>_NNN.exr` |
 | `-o`, `--output` | path | `lift.exr` | the `--eye` frame, premultiplied by the matte, with the matte as its alpha, and its depth |
 
+After the frame is written the command says how much the key shimmers as the
+camera goes by: three frames half a degree apart round the target, the middle
+against the mean of its neighbours, for the keyed frames and for the whole
+frames (relMSE, p99 and the largest difference in 8-bit code values).
+
 A gaussian no `--from` camera saw has no opinion, and is taken to be in the
 mask as far as the others of its pixel are: a mask made from one side leaves
 the far side to that guess, and more `--from` cameras are what removes it.

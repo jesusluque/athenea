@@ -20265,6 +20265,28 @@ are kernels (`splat_lift_mask.slang`). On a capture of the pawn (325 833 gaussia
 the front camera's frame keys the head, the collar and the neck out of a raised camera's frame at 1280 x 720; from
 one camera the far side of the neck is the guess, from four round it it is not.
 
+**How much a key shimmers as the camera goes by** (`athenea lift` says it of every key it makes: three frames
+half a degree apart round the target, the middle against the mean of its neighbours, `compareFlicker`, for the
+keyed frames and for the whole frames they were keyed from; the pawn's head keyed by a rectangle, Apple M5 Pro).
+The whole frames are what the cloud itself does under that move, parallax and all; a key covers fewer pixels, so
+its relMSE over the frame is smaller for that alone, and the worst pixel is the fairer of the two to read.
+
+| the key | relMSE, keyed | max, keyed | relMSE, whole | max, whole |
+|---|---|---|---|---|
+| 4 lifting cameras, lifted while blending, 960 x 540 | 0.000002 | 36 | 0.000008 | 8 |
+| the same, 1920 x 1080 | 0.000002 | 31 | 0.000011 | 23 |
+| the same, 3840 x 2160 | 0.000003 | 33 | 0.000012 | 28 |
+| the same at 1080p, a gaussian in or out (`--hard`) | 0.000006 | 69 | 0.000011 | 23 |
+| the same at 1080p, lifted by the trace's four ranks | 0.000020 | 255 | 0.000011 | 23 |
+| one lifting camera, 1080p | 0.000151 | 255 | 0.000011 | 23 |
+
+p99 is one code value in every row. A key lifted from four cameras while blending holds as still as the cloud it
+is cut from, but for its worst pixel (31 to 36 code values against 8 to 28); a hard one doubles that. The two that
+do not hold are the ones the lift's own section warned of: lifted by the trace a pixel's fifth gaussian and beyond
+were told nothing, and from one camera half the gaussians were -- and a gaussian with no opinion takes its
+pixel's, which changes with the pixel. Those flash: a worst pixel of 255, and from one camera fourteen times the
+cloud's own shimmer.
+
 ### Not done
 
 - No AOV carries a trace or a matte, and a stage has no lift: `athenea lift` is splat files through the

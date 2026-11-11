@@ -249,6 +249,11 @@ pesos del blend de la nube dicen de qué gaussianas estaba hecho cada píxel de 
 | `--turn` | entero | `0` | además este número de frames de la cámara `--eye` dando una vuelta al target (sobre y), cada uno con el key del mismo lift: `<output>_NNN.exr` |
 | `-o`, `--output` | ruta | `lift.exr` | el frame de `--eye`, premultiplicado por el matte, con el matte como alfa, y su profundidad |
 
+Tras escribir el frame, el comando dice cuánto parpadea el key al pasar la
+cámara: tres frames a medio grado alrededor del target, el central
+contra la media de sus vecinos, para los frames con key y para los frames
+completos (relMSE, p99 y la mayor diferencia en code values de 8 bits).
+
 Una gaussiana que ninguna cámara `--from` vio no tiene opinión, y se toma como dentro
 de la máscara en la medida en que lo están las demás de su píxel: una máscara hecha
 desde un lado deja el lado contrario a esa suposición, y más cámaras `--from` son lo que la quita.

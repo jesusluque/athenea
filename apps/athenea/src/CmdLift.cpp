@@ -3,6 +3,7 @@
 // athenea lift: a mask made on some cameras' frames of a cloud, carried to its
 // gaussians and drawn as the matte another camera sees (render/SplatLift.h).
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -15,6 +16,7 @@
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/io/Exr.h"
+#include "athenea/render/ReferenceRenderer.h"
 #include "athenea/render/SplatLift.h"
 #include "athenea/render/TileRasterizer.h"
 #include "athenea/scene/GpuClouds.h"
@@ -133,13 +135,15 @@ int run(const LiftOptions& o) {
     if (!mask) return report(mask.error());
     if (!keyed) return report(keyed.error());
     if (!noImage) return report(noImage.error());
+    // Where a key is written: the one buffer a frame is read back from, unless a measure keeps several.
+    const gpu::Buffer* keyedInto = nullptr;
     const auto dispatch = [&](gpu::ComputeKernel& which, const gpu::Buffer& image, const gpu::Buffer& matte) {
         gpu::CommandBatch batch(**device);
         which.dispatch(batch, {width, height, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["image"].setBinding(image.rhi());
             cursor["matte"].setBinding(matte.rhi());
             cursor["mask"].setBinding(mask->rhi());
-            cursor["keyed"].setBinding(keyed->rhi());
+            cursor["keyed"].setBinding(keyedInto != nullptr ? keyedInto->rhi() : keyed->rhi());
             cursor["params"]["width"].setData(width);
             cursor["params"]["height"].setData(height);
             const bool rect = o.rect.size() == 4;
@@ -203,6 +207,41 @@ int run(const LiftOptions& o) {
         return io::writeExr(path, width, height, *rgba, *depth);
     };
     if (auto written = keyFrom(o.eye.data(), o.output); !written) return report(written.error());
+    // HOW MUCH THE KEY SHIMMERS as the camera goes by: three frames half a
+    // degree apart round the target, the middle one against the mean of its
+    // neighbours (`compareFlicker`), for the keyed frames and for the whole
+    // ones they were keyed from. The camera moves, so both have parallax in
+    // them; what is read is the key's against the cloud's own.
+    {
+        std::array<render::RenderTargets, 3> views;
+        std::array<gpu::Buffer, 3> keys;
+        const double dx = o.eye[0] - target.x;
+        const double dz = o.eye[2] - target.z;
+        for (int k = 0; k < 3; ++k) {
+            const double a = 0.5 * (k - 1) * 3.14159265358979 / 180.0;
+            const double eye[3] = {target.x + dx * std::cos(a) + dz * std::sin(a), o.eye[1],
+                                   target.z - dx * std::sin(a) + dz * std::cos(a)};
+            auto drawn = raster->render(cameraAt(eye), instances, settings, views[static_cast<size_t>(k)]);
+            if (!drawn) return report(drawn.error());
+            auto made = floats(4, "lift.keyed.measure");
+            if (!made) return report(made.error());
+            keys[static_cast<size_t>(k)] = *made;
+            if (auto m = render::drawMatte(library, views[static_cast<size_t>(k)], *lift, how, matte); !m) {
+                return report(m.error());
+            }
+            keyedInto = &keys[static_cast<size_t>(k)];
+            auto keyedNow = dispatch(*keyKernel, views[static_cast<size_t>(k)].colour, matte);
+            keyedInto = nullptr;
+            if (!keyedNow) return report(keyedNow.error());
+        }
+        auto whole = render::compareFlicker(library, views[0].colour, views[1].colour, views[2].colour, width, height);
+        if (!whole) return report(whole.error());
+        auto key = render::compareFlicker(library, keys[0], keys[1], keys[2], width, height);
+        if (!key) return report(key.error());
+        out("three frames half a degree apart, the middle against its neighbours' mean: the keyed frames relMSE %.6f, "
+            "p99 %u, max %u; the whole frames %.6f, %u, %u\n",
+            key->hdr.relMse, key->codes.p99, key->codes.max, whole->hdr.relMse, whole->codes.p99, whole->codes.max);
+    }
     // THE SAME KEY AS THE CAMERA GOES ROUND: the --eye camera turned about the
     // target's up axis, a frame a step -- what a matte carried by the
     // gaussians is for, since nothing is keyed again as the camera moves.
