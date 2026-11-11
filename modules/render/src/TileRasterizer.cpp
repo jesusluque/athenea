@@ -330,6 +330,47 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     FrameStats stats;
     stats.splats = splatCount;
 
+    // A STILL FRAME (`RenderSettings::still`): the camera, the clouds and where they stand are the last
+    // frame's, and only what their gaussians' colours are has changed -- a wall showing another picture,
+    // a light turned. Everything before the blend that is not a colour is then the last frame's too: what
+    // is in view, its order, the tiles' lists. Checked here as far as a number can: the projection, the
+    // size, each cloud and its place. Only clouds drawn by their latents, whose colours a kernel of their
+    // own writes whole each frame, with nothing under them.
+    bool stillAble = settings.still && points.empty() && under == nullptr && settings.flatten == nullptr &&
+                     settings.neuralFeatures == 0 && splatCount > 0 &&
+                     (lights == nullptr || lights->visibilityFactors != nullptr);
+    uint64_t stillKey = 0xCBF29CE484222325ull;
+    {
+        const auto mix = [&](uint64_t v) { stillKey = (stillKey ^ v) * 0x100000001B3ull; };
+        const auto real = [&](double v) {
+            uint64_t bits = 0;
+            std::memcpy(&bits, &v, sizeof(bits));
+            mix(bits);
+        };
+        for (const double v : projection.worldToView.m) real(v);
+        real(projection.focalX);
+        real(projection.focalY);
+        real(projection.centreX);
+        real(projection.centreY);
+        real(projection.nearZ);
+        real(projection.farZ);
+        mix(projection.orthographic ? 1u : 0u);
+        mix((uint64_t{settings.width} << 32) | settings.height);
+        for (const SplatInstance& instance : instances) {
+            const scene::GpuSplats* cloud = instance.splats;
+            if (cloud == nullptr || cloud->count == 0) {
+                continue;
+            }
+            stillAble = stillAble && instance.neural != nullptr && instance.neural->count == cloud->count &&
+                        !cloud->hasVolume() && !instance.relight && !instance.catcher;
+            mix(reinterpret_cast<uintptr_t>(cloud));
+            mix((uint64_t{cloud->revision} << 32) | cloud->count);
+            for (const double v : instance.objectToWorld.m) real(v);
+        }
+    }
+    const bool still = stillAble && stillValid_ && stillKey == stillKey_;
+    stillValid_ = false;   // until this frame is drawn to its end
+
     // --- batch 1: project; how many are visible and how many pairs --------
     //
     // Both counts come from prefix sums over what the projection wrote, so one
@@ -847,12 +888,14 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             base += cloud->count;
             continue;
         }
-        if (kept != nullptr && keep) {
+        if (kept != nullptr && keep && !still) {
             viewless = true;
             (instance.catcher ? catcherViewless_ : viewless_).dispatch(batch, {cloud->count, 1, 1}, bindProject);
             viewless = false;
         }
-        project.dispatch(batch, {cloud->count, 1, 1}, bindProject);
+        if (!still) {
+            project.dispatch(batch, {cloud->count, 1, 1}, bindProject);
+        }
         if (featureWords != 0 && instance.neural != nullptr && instance.neural->count == cloud->count) {
             // Decoded once a pixel: this cloud's gaussians give the walk their
             // features, and their colour stays the base its first harmonic is.
@@ -1041,7 +1084,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     const uint32_t all = std::max(splatCount, 1u);
     // A FRAME OF NO SPLATS -- meshes alone, composited by the blend below --
     // has nothing to count: its sums are skipped, unless a panel counts it.
-    if (splatCount > 0 || settings.countSplats) {
+    if (!still && (splatCount > 0 || settings.countSplats)) {
         ATHENEA_TRY(prefix_.apply(batch, visible_, visibleOffsets_, visibleTotal_, all));
         ATHENEA_TRY(prefix_.apply(batch, tilesTouched_, touchedOffsets_, touchedTotal_, all));
     }
@@ -1050,7 +1093,10 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     ATHENEA_TRY(batch.submit());
     uint32_t visibleCount = 0;
     uint32_t pairs = 0;
-    if (splatCount > 0) {
+    if (still) {
+        visibleCount = stillVisible_;
+        pairs = stillPairs_;
+    } else if (splatCount > 0) {
         ATHENEA_TRY(visibleTotal_.read(*device_, 0, sizeof(visibleCount), &visibleCount));
         ATHENEA_TRY(touchedTotal_.read(*device_, 0, sizeof(pairs), &pairs));
     }
@@ -1062,7 +1108,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     ATHENEA_TRY(reservePairs(std::max(pairs, 1u)));
 
     // --- batch 2: sort the visible, emit, tile sort, ranges, blend ---------
-    if (visibleCount > 0) {
+    if (visibleCount > 0 && !still) {
         compact_.dispatch(batch, {splatCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["visible"].setBinding(visible_.rhi());
             cursor["visibleOffsets"].setBinding(visibleOffsets_.rhi());
@@ -1080,7 +1126,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     if (!ms) return std::move(ms).error();
     stats.depthSortMs = *ms;
 
-    if (pairs > 0) {
+    if (pairs > 0 && !still) {
         gather_.dispatch(batch, {visibleCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["order"].setBinding(depthSort_.values.rhi());
             cursor["tilesTouched"].setBinding(tilesTouched_.rhi());
@@ -1106,20 +1152,20 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     if (!ms) return std::move(ms).error();
     stats.emitMs = *ms;
 
-    if (pairs > 1) {
+    if (pairs > 1 && !still) {
         ATHENEA_TRY(sort_.sort(batch, tileSort_, pairs, bitsFor(tiles)));
     }
     // The tiles' ranges, cleared where a frame of pairs left them written:
     // after a frame of none they stay empty, and the next such frame of no
     // more tiles leaves them as they are.
-    if (pairs > 0 || rangesEmpty_ < tiles) {
+    if (!still && (pairs > 0 || rangesEmpty_ < tiles)) {
         clear_.dispatch(batch, {tiles, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["ranges"].setBinding(ranges_buffer_.rhi());
             setFrame(cursor, common);
         });
         rangesEmpty_ = pairs > 0 ? 0u : tiles;
     }
-    if (pairs > 0) {
+    if (pairs > 0 && !still) {
         ranges_.dispatch(batch, {pairs, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["pairTiles"].setBinding(tileSort_.keysLo.rhi());
             cursor["ranges"].setBinding(ranges_buffer_.rhi());
@@ -1240,6 +1286,11 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     stats.totalMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
                                                               frameStart)
                         .count();
+    stillValid_ = stillAble;
+    stillKey_ = stillKey;
+    stillVisible_ = visibleCount;
+    stillPairs_ = pairs;
+    stats.still = still;
     return stats;
 }
 

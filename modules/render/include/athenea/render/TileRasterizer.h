@@ -297,6 +297,19 @@ struct RenderSettings {
     /// its gaussians was measured before the frame and its lights carry a
     /// `revision`.
     bool     neuralKeep = false;
+    /// A STILL FRAME: the caller says the camera, the clouds, where they
+    /// stand and every setting that decides what is in view are the last
+    /// frame's this rasteriser drew, and only colours have changed -- an LED
+    /// wall showing its next picture, a light turned. The rasteriser then
+    /// keeps what is in view, its order and the tiles' lists, and runs only
+    /// the kernels that write colours and the blend. It checks the
+    /// projection, the size and each cloud (its `revision`, its place) and
+    /// draws the frame whole where any differs; a cloud's edit and the other
+    /// settings are the caller's word. Only frames whose clouds are all
+    /// drawn by their latents, with no points and nothing under them. A
+    /// rasteriser holds one camera's frame: two still cameras are two
+    /// rasterisers.
+    bool     still = false;
     /// THE MATTE, SUMMED BY THE BLEND: what a lift told the frame's gaussians
     /// (`SplatLift::sums`, two uints a slot) read as each is blended, and a
     /// pixel's share of the mask over every gaussian of its walk written to
@@ -390,6 +403,7 @@ struct FrameStats {
     uint32_t splats = 0;
     uint32_t visible = 0;
     uint32_t pairs = 0;
+    bool     still = false;   ///< the frame kept the last one's geometry (`RenderSettings::still`)
     double   projectMs = 0, depthSortMs = 0, countsMs = 0, emitMs = 0, tileSortMs = 0,
              blendMs = 0, totalMs = 0;
     /// Where each instance's gaussians start among the frame's slots, in the
@@ -534,6 +548,11 @@ private:
         uint32_t    stamp = 0;
     };
     std::unordered_map<const NeuralCloud*, MattCache> mattCaches_;
+    /// The last frame, for `RenderSettings::still`: what it was a frame of, and its counts.
+    bool     stillValid_ = false;
+    uint64_t stillKey_ = 0;
+    uint32_t stillVisible_ = 0;
+    uint32_t stillPairs_ = 0;
     gpu::ComputeKernel blendFeatures8_, blendFeatures16_, blendFeatures32_;
     gpu::ComputeKernel blendMatte_, blendMatteComposite_;
     gpu::ComputeKernel pixelFeatures_, pixelDecode_;

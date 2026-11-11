@@ -191,6 +191,11 @@ cada una):
   chunks de 1024 gaussianas que la nube ha sellado como cambiados (`NeuralCloud::touch`)
   o cuando las luces del frame son otras. Quien escriba los latentes de una nube
   fuera de un fit llama a `touch`.
+  Un frame quieto (`RenderSettings::still`) conserva la geometría del frame anterior --
+  lo que se ve, su orden, las listas de los tiles -- y ejecuta solo los kernels
+  que escriben colores y el blend, para una cámara y unas nubes que no se han
+  movido; el rasteriser comprueba la proyección y cada nube y si no
+  dibuja el frame entero (`FrameStats::still` dice cuál hizo).
 - **Una pared de luz como textura** (`render/NeuralWall.h`,
   `shaders/athenea/neural/neural_wall.slang`): las lecturas que cada gaussiana hace de la imagen
   de una pared LED -- u, v, un nivel de mip y el logaritmo de una ganancia por canal, seis

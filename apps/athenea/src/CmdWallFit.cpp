@@ -345,6 +345,29 @@ int run(const WallFitOptions& o) {
     }
     out("a frame of %ux%u: %.2f ms without the wall, %.2f ms with it\n", settings.width, settings.height, least[0],
         least[1]);
+    // A STILL FRAME: the camera and the cloud as they were, the wall showing another picture each frame --
+    // what a set with a fixed camera is. Timed, and held against the same picture's frame drawn whole.
+    render::RenderSettings stillTimed = timed;
+    stillTimed.still = true;
+    double leastStill = 1.0e30;
+    uint32_t kept = 0;
+    render::RenderTargets stillFrame;
+    for (int pass = 0; pass < 40; ++pass) {
+        wall->show(texels + static_cast<uint32_t>(pass % static_cast<int>(whole.size())));
+        auto stats = raster->render(camera, std::span<const render::SplatInstance>(&student, 1), stillTimed, stillFrame);
+        if (!stats) return report(stats.error());
+        if (stats->still) {
+            leastStill = std::min(leastStill, stats->totalMs);
+            ++kept;
+        }
+    }
+    auto wholeFrame = raster->render(camera, std::span<const render::SplatInstance>(&student, 1), settings, ours);
+    if (!wholeFrame) return report(wholeFrame.error());
+    auto same = render::compareImages(library, stillFrame.colour, ours.colour, settings.width, settings.height);
+    if (!same) return report(same.error());
+    out("a still frame, the wall's picture another each time: %.2f ms (%u of 40 kept the last frame's geometry); "
+        "against that picture's frame drawn whole: max %u code values\n",
+        leastStill, kept, same->max);
     return 0;
 }
 

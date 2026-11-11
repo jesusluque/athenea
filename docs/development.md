@@ -185,6 +185,11 @@ each measured):
   chunks of 1024 gaussians the cloud stamped as changed (`NeuralCloud::touch`)
   or when the frame's lights are others. Whoever writes a cloud's latents
   outside a fit calls `touch`.
+  A still frame (`RenderSettings::still`) keeps the last frame's geometry --
+  what is in view, its order, the tiles' lists -- and runs only the kernels
+  that write colours and the blend, for a camera and clouds that have not
+  moved; the rasteriser checks the projection and each cloud and otherwise
+  draws the frame whole (`FrameStats::still` says which it did).
 - **A wall of light as a texture** (`render/NeuralWall.h`,
   `shaders/athenea/neural/neural_wall.slang`): each gaussian's reads of an LED
   wall's picture -- u, v, a mip level and the log of a gain a channel, six

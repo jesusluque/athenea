@@ -362,7 +362,10 @@ is. Every texel wants its cloud, and every cloud the same gaussians.
 The measures are `athenea compare`'s, over five whole pictures the fit is never
 shown (a ramp, a checker, a colour a texel, a bright window on a dim wall, all
 white) from the held-out cameras, against the baked clouds summed times each
-picture's texels. The last line is a frame's time with and without the wall.
+picture's texels. The last lines are a frame's time with and without the wall,
+and a still frame's: the camera and the cloud as they were and the wall showing
+another picture, which keeps the last frame's geometry and redoes colours and
+blend alone, held against the same picture's frame drawn whole.
 
 ### 2.4 `athenea convert` — a splat file into USD, or into a `.athc`
 

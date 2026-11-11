@@ -21007,3 +21007,37 @@ eight evaluations of each network, and the matt half of those is kept. That is n
 - What a frame is mostly made of -- projection, sort, blend -- kept from frame to frame: a still camera's tiles
   that no changed chunk touches, which is where a stamp a chunk would save most.
 - The wall's light and the shadow factors kept the same way.
+
+## A still frame: the last frame's geometry, and only colours and blend again (11 Nov)
+
+Where a frame goes, on the captured pawn at 1920 x 1080 on Metal, each stage waited for: projection 0.80 ms, the
+depth sort 0.74, the counts 0.85, the pairs' emission 0.47, the tile sort and ranges 0.90, the blend 2.01, of
+5.79. Two thirds of it is deciding what is in view, in what order and in which tiles, and none of that changes
+while the camera and the gaussians stand still -- which is a set with a fixed camera before an LED wall, where
+what changes every frame is the wall's picture and so the gaussians' colours.
+
+`RenderSettings::still` is the caller saying so. The rasteriser checks what a number can (the projection, the
+frame's size, each cloud's `revision` and place) against the last frame it drew, and where they hold it skips the
+projection, the counts and their readback, both sorts, the emission and the ranges, runs the kernels that write
+colours (`neuralShade`, the wall's) and blends. Only frames whose clouds are all drawn by their latents, since
+those colours are written whole by a kernel of their own; with no points and nothing under them. The clouds'
+edits and the other settings are the caller's word. A rasteriser holds one camera's frame, so two still cameras
+are two rasterisers.
+
+The clay pawn before its wall, two reads a gaussian, the wall showing another picture each frame, Metal:
+
+| | a frame drawn whole | a still frame | |
+|---|---|---|---|
+| 1920 x 1080 | 6.06 ms | 2.80 ms | 2.2 times as fast |
+| 3840 x 2160 | 11.11 ms | 7.12 ms | 1.6 times |
+
+and the still frame is that picture's frame drawn whole to the code value (max 0) at both sizes. At 4K the blend
+is most of a frame and the saving is the same four milliseconds, a smaller share.
+
+### Not done
+
+- A camera a tile at a time: gaussians that move in some tiles while the rest stand, which is what the stamp a
+  chunk is for. A frame is still or it is not.
+- Several still cameras in one rasteriser (a set of buffers a camera).
+- Clouds drawn by their harmonics, relit ones, and frames with meshes under the splats.
+- CUDA.

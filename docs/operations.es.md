@@ -366,7 +366,10 @@ texel. Cada texel pide su nube, y todas las nubes las mismas gaussianas.
 Las medidas son las de `athenea compare`, sobre cinco imágenes completas que el fit nunca
 ve (una rampa, un checker, un color por texel, una ventana brillante en una pared oscura, todo
 blanco) desde las cámaras held-out, contra las nubes sumadas por los texels de cada
-imagen. La última línea es el tiempo de un frame con y sin la pared.
+imagen. Las últimas líneas son el tiempo de un frame con y sin la pared,
+y el de un frame quieto: la cámara y la nube como estaban y la pared mostrando
+otra imagen, que conserva la geometría del frame anterior y rehace solo colores y
+blend, comparado con el frame de esa misma imagen dibujado entero.
 
 ### 2.4 `athenea convert` — un fichero de splats a USD, o a un `.athc`
 

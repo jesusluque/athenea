@@ -605,6 +605,32 @@ TEST_CASE("a wall's light on a cloud adds as its picture does, and its reads are
     CHECK(added->max <= 1);
     CHECK(lit->mean[0] > 0.01);
 
+    // A STILL FRAME. The camera and the cloud as they were and the wall showing another picture: the frame
+    // keeps the last one's geometry and is that picture's frame drawn whole; from another camera it keeps
+    // nothing, and is right.
+    {
+        render::RenderSettings stillSettings = settings;
+        stillSettings.still = true;
+        render::RenderTargets kept, drawn;
+        shown->show(texels);
+        auto first = raster->render(camera, std::span<const render::SplatInstance>(&teacher, 1), stillSettings, kept);
+        REQUIRE(first);
+        CHECK(!first->still);
+        shown->show(texels + 1);
+        auto second = raster->render(camera, std::span<const render::SplatInstance>(&teacher, 1), stillSettings, kept);
+        REQUIRE(second);
+        CHECK(second->still);
+        const render::Camera other = render::Camera::lookingAt({-2.0, 1.5, 5.0}, {0.0, 0.0, 0.0});
+        auto moved = raster->render(other, std::span<const render::SplatInstance>(&teacher, 1), stillSettings, drawn);
+        REQUIRE(moved);
+        CHECK(!moved->still);
+        REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&teacher, 1), settings, drawn));
+        auto same = render::compareImages(*gpu->library, kept.colour, drawn.colour, settings.width, settings.height);
+        REQUIRE(same);
+        std::printf("  a still frame under another picture against that picture's frame drawn whole: max %u\n", same->max);
+        CHECK(same->max == 0);
+    }
+
     // THE READS ARE LEARNT. Shown single texels, held against a picture of a colour a texel.
     const auto apart = [&]() {
         shown->show(texels + 1);
