@@ -20448,11 +20448,27 @@ The same fit, the pawn, held-out cameras and suns, against the engine's shadowed
 The shadow's edge is back, and so is its price: the rays are the frame. A step of the fit is 124 ms where it was
 66.
 
+**And from a map instead of a ray** (`--reached map`). `technique::SplatShadowMap` -- the cloud's optical depth
+from the light, seven coefficients so that a gaussian inside the cloud reads its own depth, no ray anywhere --
+fills the same factor a gaussian a light, and comes in through the door a baked visibility field already uses
+(`SplatLights::visibilityFactors`): a shadowed neural cloud now reads it there, and `NeuralFitLight::student` is
+the lights its frames are drawn with where they are not the picture's. The picture is still the rays'. Same fit:
+
+| what reaches a gaussian comes from | relMSE | p99 | a frame by the latents | and before it |
+|---|---|---|---|---|
+| nowhere: the direction alone | 0.0025 | 34 | 6.0 ms | -- |
+| a shadow map, 2048 a side | 0.00081 | 15.5 | 4.1 ms | 18.9 ms the map |
+| a shadow map, 1024 a side | 0.00068 | 14.1 | 3.6 ms | 8.2 ms the map |
+| a ray a gaussian | 0.00052 | 10.6 | 29.9 ms | -- |
+| (the engine's shadowed relighting) | 0 | 0 | 27.6 ms | -- |
+
+The map's time is a wait for it alone, so an upper bound on what it adds to a frame it is queued with; and it is
+the light's, not the camera's: a second camera, or a light that has not moved, pays the 3.6 ms and no map. At
+1024 a side the edge is nearly the rays' at two fifths of their frame.
+
 ### Not done
 
-- A transmittance that costs no ray a gaussian: the engine's cloud shadow map (`technique::SplatShadowMap`) and
-  its baked visibility fields give the same factor from a table, and sit above this module; `SplatLights`'
-  `visibilityFactors` is the door they already come through, and a shadowed neural cloud does not read it yet.
+- The baked visibility fields are not tried, nor a map of fewer coefficients.
 - The transmittance only multiplies. As an input too, the network could say what a gaussian in shadow still
   shows -- what bounced, what came through -- which a product cannot.
 - The picture it learns is the engine's analytic relighting, with no shadow, no interreflection and no sky: a

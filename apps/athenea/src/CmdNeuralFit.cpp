@@ -24,6 +24,8 @@
 #include "athenea/render/ReferenceRenderer.h"
 #include "athenea/render/TileRasterizer.h"
 #include "athenea/scene/GpuClouds.h"
+#include "athenea/technique/SplatShadowMap.h"
+#include "athenea/gpu/CommandBatch.h"
 
 namespace athenea::cli {
 namespace {
@@ -44,7 +46,8 @@ struct NeuralFitOptions {
     bool                relight = false;   ///< a lit neural cloud, fitted to the engine's relighting under a moving sun
     float               sun = 3.0F;        ///< the sun's intensity
     bool                shadows = false;   ///< --relight: the sun casts the cloud's shadow on itself
-    bool                reached = false;   ///< --shadows: the neural cloud is told what reaches each gaussian
+    std::string         reached;           ///< --shadows: the neural cloud is told what reaches each gaussian: ray | map
+    unsigned            mapSide = 2048;    ///< --reached map: the shadow map's texels a side
     std::string         save;              ///< the fitted appearance, as a .athn
     std::string         output;            ///< a prefix: <prefix>_harmonics.exr, _base.exr, _latents.exr
 };
@@ -71,7 +74,7 @@ int run(const NeuralFitOptions& o) {
     if (!cloud) return report(cloud.error());
     auto neural = render::makeNeuralCloud(library, *cloud, 1, o.relight);
     if (neural) {
-        neural->shadowed = o.relight && o.shadows && o.reached;
+        neural->shadowed = o.relight && o.shadows && !o.reached.empty();
     }
     if (!neural) return report(neural.error());
     const render::SplatInstance instance{&*cloud, render::Mat4::identity(), {}};
@@ -117,6 +120,31 @@ int run(const NeuralFitOptions& o) {
     // the ray tracer's structures, built once since nothing moves -- so the
     // picture the cloud should be has the pawn's head darkening its collar.
     // The neural cloud is told nothing of it: only where the light comes from.
+    // WHAT REACHES A GAUSSIAN, FROM A MAP AND NOT A RAY (`--reached map`): the
+    // cloud's shadow map from the sun, built each frame with no ray at all,
+    // read at each gaussian's own depth -- its seven coefficients are what
+    // let a gaussian inside the cloud read less than the whole cloud's shadow.
+    const bool byMap = o.relight && o.shadows && o.reached == "map";
+    if (o.relight && o.shadows && !o.reached.empty() && o.reached != "ray" && o.reached != "map") {
+        err("--reached wants ray or map\n");
+        return kExitFailure;
+    }
+    std::optional<technique::SplatShadowMap> shadowMap;
+    gpu::Buffer mapFactors;
+    render::SplatLights mapLights;
+    double mapMs = 0.0;
+    if (byMap) {
+        auto made = technique::SplatShadowMap::create(library);
+        if (!made) return report(made.error());
+        shadowMap.emplace(std::move(*made));
+        gpu::BufferDesc desc;
+        desc.bytes = std::max<uint64_t>(cloud->count, 1) * sizeof(float);
+        desc.elementBytes = sizeof(float);
+        desc.label = "neural.reached";
+        auto factors = gpu::Buffer::create(**device, desc);
+        if (!factors) return report(factors.error());
+        mapFactors = *factors;
+    }
     std::optional<render::GaussianRayTracer> shadowTracer;
     if (o.relight && o.shadows) {
         if (!render::GaussianRayTracer::hardwareSupported(**device)) {
@@ -149,6 +177,30 @@ int run(const NeuralFitOptions& o) {
         }
         render::NeuralFitLight told;
         told.teacher = &lights;
+        if (shadowMap) {
+            const auto start = std::chrono::steady_clock::now();
+            technique::ShadowMapJob job;
+            technique::ShadowMapCaster caster;
+            caster.cloud = &*cloud;
+            caster.positions = &cloud->positions;
+            caster.categories = ~uint64_t{0};
+            job.casters.push_back(caster);
+            job.lights = lights.records;
+            job.lightCount = 1;
+            job.resolution = o.mapSide;
+            job.coefficients = 7;
+            gpu::CommandBatch batch(**device);
+            ATHENEA_TRY(shadowMap->build(batch, job));
+            ATHENEA_TRY(shadowMap->factors(batch, caster, 0, mapFactors));
+            ATHENEA_TRY(batch.submit(true));
+            mapMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            mapLights = render::SplatLights{};
+            mapLights.records = lights.records;
+            mapLights.count = lights.count;
+            mapLights.visibilityFactors = &mapFactors;
+            mapLights.visibilityLights = 1;
+            told.student = &mapLights;
+        }
         // A distant light shines down its own -z: it comes from its +z.
         const render::Vec3 towards = lamp.lightToWorld.direction({0.0, 0.0, 1.0});
         told.light.towards = {static_cast<float>(towards.x), static_cast<float>(towards.y),
@@ -196,7 +248,7 @@ int run(const NeuralFitOptions& o) {
             render::RenderSettings other = settings;
             other.maxShDegree = fewerDegrees;
             auto c = raster->render(camera, fewerDegrees < 3 ? byHarmonics : byLatents, other, ours, {}, nullptr,
-                                    neural->shadowed ? &lights : nullptr);
+                                    !neural->shadowed ? nullptr : byMap ? &mapLights : &lights);
             if (!c) return std::move(c).error();
             auto hdr = render::compareHdr(library, ours.colour, whole.colour, settings.width, settings.height);
             if (!hdr) return std::move(hdr).error();
@@ -223,7 +275,7 @@ int run(const NeuralFitOptions& o) {
             instances[0].neuralLight = &told.light;
         }
         auto drawn = raster->render(cameraAt(0, 0.5), instances, s, targets, {}, nullptr,
-                                    o.relight ? &lights : nullptr);
+                                    !o.relight ? nullptr : byMap && instances[0].neural != nullptr ? &mapLights : &lights);
         if (!drawn) return std::move(drawn).error();
         auto colour = targets.colour.readAll<float>(**device);
         if (!colour) return std::move(colour).error();
@@ -293,7 +345,7 @@ int run(const NeuralFitOptions& o) {
         }
         for (int round = 0; round < 20; ++round) {
             auto stats = raster->render(cameraAt(0, 0.5), instances, settings, targets, {}, nullptr,
-                                        o.relight ? &lights : nullptr);
+                                        !o.relight ? nullptr : byMap && instances[0].neural != nullptr ? &mapLights : &lights);
             if (!stats) return std::move(stats).error();
             best = std::min(best, stats->totalMs);
         }
@@ -305,6 +357,10 @@ int run(const NeuralFitOptions& o) {
     if (!latentsMs) return report(latentsMs.error());
     out("a frame at %ux%u: %.2f ms by the harmonics, %.2f ms by the latents\n", settings.width, settings.height,
         *harmonicsMs, *latentsMs);
+    if (byMap) {
+        out("and the shadow map the latents' frame reads, built and read at every gaussian: %.2f ms (waited for)\n",
+            mapMs);
+    }
     if (!o.save.empty()) {
         io::NeuralFile file;
         file.count = neural->count;
@@ -354,7 +410,8 @@ void addNeuralFit(CLI::App& app) {
     cmd->add_option("--rate-weights", o.rateWeights, "Adam's rate for the network");
     cmd->add_flag("--relight", o.relight, "a lit neural cloud, fitted to the engine's relighting of the cloud under a sun that moves");
     cmd->add_option("--sun", o.sun, "--relight: the sun's intensity");
-    cmd->add_flag("--reached", o.reached, "--shadows: the neural cloud takes what reaches each gaussian from the light, as the engine's shadow ray finds it");
+    cmd->add_option("--reached", o.reached, "--shadows: the neural cloud takes what reaches each gaussian from the light: ray (the engine's shadow ray) or map (the cloud's shadow map, no ray)");
+    cmd->add_option("--map-side", o.mapSide, "--reached map: the shadow map's texels a side");
     cmd->add_flag("--shadows", o.shadows, "--relight: the sun casts the cloud's shadow on itself in what the cloud should be");
     cmd->add_option("--save", o.save, "write the fitted appearance: a .athn, to draw the cloud by (athenea render --neural)");
     cmd->add_option("-o,--output", o.output, "a prefix: the first held-out camera's frame by the harmonics, the base and the latents");

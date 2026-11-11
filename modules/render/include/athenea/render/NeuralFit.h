@@ -34,6 +34,11 @@ struct NeuralFitSettings {
 struct NeuralFitLight {
     const SplatLights* teacher = nullptr;
     NeuralLight        light;
+    /// What a shadowed neural cloud's frames are drawn with, where it is not
+    /// the picture's own lights: the same light with what reaches each
+    /// gaussian measured another way (`SplatLights::visibilityFactors`, a
+    /// shadow map's). Null: `teacher`.
+    const SplatLights* student = nullptr;
 };
 
 class NeuralFit {

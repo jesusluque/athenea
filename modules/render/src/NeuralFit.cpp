@@ -109,7 +109,10 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
                                    nullptr, teacherLights);
     if (!drawn) return std::move(drawn).error();
     // A shadowed neural cloud takes what reaches it from the same shadow scene the picture was made with.
-    const SplatLights* studentLights = lit && neural.shadowed ? teacherLights : nullptr;
+    const SplatLights* studentLights =
+        lit && neural.shadowed ? (light->student != nullptr ? light->student : teacherLights) : nullptr;
+    const bool measured = studentLights != nullptr && studentLights->visibilityFactors != nullptr &&
+                          studentLights->visibilityLights > 0;
     drawn = rasterizer.render(camera, std::span<const SplatInstance>(&byLatents, 1), frame, student_, {}, nullptr,
                               studentLights);
     if (!drawn) return std::move(drawn).error();
@@ -132,7 +135,9 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
         cursor["colourGrad"].setBinding(colourGrad_.rhi());
         cursor["positions"].setBinding(cloud.positions.rhi());
         cursor["shape"].setBinding(cloud.shape.rhi());
-        cursor["shadowFactors"].setBinding(shadowLights != 0 ? rasterizer.shadowFactors().rhi() : latentGrad_.rhi());
+        cursor["shadowFactors"].setBinding(shadowLights == 0 ? latentGrad_.rhi()
+                                           : measured        ? studentLights->visibilityFactors->rhi()
+                                                             : rasterizer.shadowFactors().rhi());
         cursor["params"]["shadowLights"].setData(shadowLights);
         cursor["latent"].setBinding(neural.latent.rhi());
         cursor["weights"].setBinding(neural.weights.rhi());
@@ -210,7 +215,9 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
     drawn = rasterizer.render(camera, std::span<const SplatInstance>(&byLatents, 1), carrying, again_, {}, nullptr,
                               studentLights);
     if (!drawn) return std::move(drawn).error();
-    shadowLights = studentLights != nullptr ? rasterizer.shadowFactorLights() : 0u;
+    shadowLights = studentLights == nullptr ? 0u
+                   : measured                ? studentLights->visibilityLights
+                                             : rasterizer.shadowFactorLights();
     if (!drawn) return std::move(drawn).error();
     {
         gpu::CommandBatch batch(device);

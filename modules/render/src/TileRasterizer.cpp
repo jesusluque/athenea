@@ -832,9 +832,14 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                 }
                 // What reaches each gaussian from the light, where the cloud
                 // leaves that to the engine and the frame cast shadows.
-                const bool shadowed = neural.lit && neural.shadowed && splatShadows;
-                cursor["shadowFactors"].setBinding(shadowed ? shadowFactors_.rhi() : placeholderDepth_.rhi());
-                cursor["params"]["shadowLights"].setData(shadowed ? shadowLights : 0u);
+                // By a ray this frame cast, or measured before it (a shadow
+                // map's, a baked field's: `SplatLights::visibilityFactors`).
+                const bool shadowed = neural.lit && neural.shadowed && (splatShadows || measured);
+                cursor["shadowFactors"].setBinding(!shadowed ? placeholderDepth_.rhi()
+                                                   : measured ? lights->visibilityFactors->rhi()
+                                                              : shadowFactors_.rhi());
+                cursor["params"]["shadowLights"].setData(!shadowed ? 0u : measured ? lights->visibilityLights
+                                                                                  : shadowLights);
                 cursor["params"]["lit"].setData(uint32_t{neural.lit ? 1u : 0u});
                 cursor["params"]["lightX"].setData(static_cast<float>(towards.x));
                 cursor["params"]["lightY"].setData(static_cast<float>(towards.y));
