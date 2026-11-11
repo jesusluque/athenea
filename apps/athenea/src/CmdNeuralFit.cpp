@@ -4,6 +4,7 @@
 // one network (render/NeuralFit.h), and how near the cloud drawn from them is
 // to the cloud drawn by its harmonics, from cameras the fit did not use.
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -49,6 +50,7 @@ struct NeuralFitOptions {
     std::string         reached;           ///< --shadows: the neural cloud is told what reaches each gaussian: ray | map
     unsigned            mapSide = 2048;    ///< --reached map: the shadow map's texels a side
     std::string         save;              ///< the fitted appearance, as a .athn
+    std::string         load;              ///< an appearance to start from (or, with --steps 0, only to measure)
     std::string         output;            ///< a prefix: <prefix>_harmonics.exr, _base.exr, _latents.exr
 };
 
@@ -73,6 +75,16 @@ int run(const NeuralFitOptions& o) {
     auto cloud = scene::loadSplatFile(*loader, o.splats, o.degree);
     if (!cloud) return report(cloud.error());
     auto neural = render::makeNeuralCloud(library, *cloud, 1, o.relight);
+    if (neural && !o.load.empty()) {
+        auto file = io::readNeural(o.load);
+        if (!file) return report(file.error());
+        if (file->count != cloud->count || file->lit != o.relight) {
+            err("%s is of a cloud of %u gaussians, %s; this one has %u and the fit is %s\n", o.load.c_str(), file->count,
+                file->lit ? "lit" : "not lit", cloud->count, o.relight ? "lit" : "not lit");
+            return kExitFailure;
+        }
+        neural = render::neuralCloudFrom(library, file->count, file->latent, file->weights, file->lit);
+    }
     if (neural) {
         neural->shadowed = o.relight && o.shadows && !o.reached.empty();
     }
@@ -357,6 +369,41 @@ int run(const NeuralFitOptions& o) {
     if (!latentsMs) return report(latentsMs.error());
     out("a frame at %ux%u: %.2f ms by the harmonics, %.2f ms by the latents\n", settings.width, settings.height,
         *harmonicsMs, *latentsMs);
+    // HOW MUCH EACH SHIMMERS as the camera goes by: three frames half a degree
+    // apart round the target, the middle one against the mean of its
+    // neighbours (`compareFlicker`). The camera moves, so there is parallax
+    // in both; what is compared is the one against the other.
+    if (!o.relight) {
+        const auto orbit = [&](double degrees) {
+            const render::Camera base = cameraAt(0, 0.5);
+            const double a = degrees * 3.14159265358979 / 180.0;
+            const render::Vec3 eye = base.cameraToWorld.point({0.0, 0.0, 0.0});
+            const render::Vec3 d{eye.x - target.x, eye.y - target.y, eye.z - target.z};
+            // Round the up axis: y, or z where that is up.
+            render::Vec3 turned = std::abs(up.z) > 0.5
+                                      ? render::Vec3{d.x * std::cos(a) - d.y * std::sin(a), d.x * std::sin(a) + d.y * std::cos(a), d.z}
+                                      : render::Vec3{d.x * std::cos(a) + d.z * std::sin(a), d.y, -d.x * std::sin(a) + d.z * std::cos(a)};
+            render::Camera camera = render::Camera::lookingAt(target + turned, target, up);
+            camera.lens.focal = o.focal;
+            return camera;
+        };
+        const auto shimmer = [&](const std::vector<render::SplatInstance>& instances) -> Result<render::FlickerDifference> {
+            std::array<render::RenderTargets, 3> frames;
+            for (int k = 0; k < 3; ++k) {
+                auto drawn = raster->render(orbit(0.5 * (k - 1)), instances, settings, frames[static_cast<size_t>(k)]);
+                if (!drawn) return std::move(drawn).error();
+            }
+            return render::compareFlicker(library, frames[0].colour, frames[1].colour, frames[2].colour,
+                                          settings.width, settings.height);
+        };
+        auto byH = shimmer(byHarmonics);
+        if (!byH) return report(byH.error());
+        auto byL = shimmer(byLatents);
+        if (!byL) return report(byL.error());
+        out("three frames half a degree apart, the middle against its neighbours' mean: relMSE %.6f and p99 %u by the "
+            "harmonics, %.6f and %u by the latents\n",
+            byH->hdr.relMse, byH->codes.p99, byL->hdr.relMse, byL->codes.p99);
+    }
     if (byMap) {
         out("and the shadow map the latents' frame reads, built and read at every gaussian: %.2f ms (waited for)\n",
             mapMs);
@@ -413,6 +460,7 @@ void addNeuralFit(CLI::App& app) {
     cmd->add_option("--reached", o.reached, "--shadows: the neural cloud takes what reaches each gaussian from the light: ray (the engine's shadow ray) or map (the cloud's shadow map, no ray)");
     cmd->add_option("--map-side", o.mapSide, "--reached map: the shadow map's texels a side");
     cmd->add_flag("--shadows", o.shadows, "--relight: the sun casts the cloud's shadow on itself in what the cloud should be");
+    cmd->add_option("--load", o.load, "a .athn to start from; with --steps 0, only measured");
     cmd->add_option("--save", o.save, "write the fitted appearance: a .athn, to draw the cloud by (athenea render --neural)");
     cmd->add_option("-o,--output", o.output, "a prefix: the first held-out camera's frame by the harmonics, the base and the latents");
     cmd->callback([options] {

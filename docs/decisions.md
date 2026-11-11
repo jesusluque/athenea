@@ -20496,6 +20496,16 @@ or sixteen, lit or not, one network a cloud or a part). A file of its own costs 
 to a code value (halves for floats). On the pawn, `athenea render --neural` against `athenea render` from a camera
 of neither's choosing, by `athenea compare`: relMSE 0.00038, p99 7 code values, PSNR 42.7 dB, SSIM 0.994.
 
+**How much it shimmers** (`athenea neural-fit --load ... --steps 0`, which measures a saved appearance without
+fitting): three frames of the pawn half a degree apart round it, the middle one against the mean of its
+neighbours (`compareFlicker`; the camera moves, so both have parallax in it and it is the one against the other
+that is read). By the harmonics relMSE 0.000005 and p99 1 code value at 960 x 540, 0.000007 and 1 at 1920 x 1080;
+by the latents 0.000018 and 2, 0.000045 and 3. Four to six times the harmonics' and still two or three code values
+at the 99th percentile: a network a gaussian turns with the view less smoothly than nine or sixteen polynomials
+do. The same runs time a frame at 6.09 ms by the latents against 4.19 by the harmonics at 960 x 540 and 7.01
+against 5.01 at 1920 x 1080 -- two milliseconds more, where an earlier run of the same measure gave them equal at
+1080p: it is run to run, and the latents are not the cheaper.
+
 ### Not done
 
 - It is of a cloud by order alone: a cloud reordered, decimated or cut by its levels of detail is another cloud,
