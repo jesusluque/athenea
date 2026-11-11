@@ -43,6 +43,8 @@ struct WallFitOptions {
     std::vector<double> target;
     double              distance = 0.0;
     double              focal = 35.0;
+    std::vector<double> up;               ///< 0 1 0, or 0 0 1 where z is up
+    double              lowest = -0.25;   ///< the lowest a camera stands, as a share of its distance below (negative) or above the target
     unsigned            heldOut = 4;
     unsigned            lobes = 1;
     float               startLevel = -1.0F;
@@ -179,12 +181,15 @@ int run(const WallFitOptions& o) {
                                                    (d(b.min[2]) + d(b.max[2])) * 0.5};
     const double extent = std::max({d(b.max[0]) - d(b.min[0]), d(b.max[1]) - d(b.min[1]), d(b.max[2]) - d(b.min[2])});
     const double distance = o.distance > 0.0 ? o.distance : std::max(extent, 1.0e-3) * 1.4;
+    const bool zUp = o.up.size() == 3 && std::abs(o.up[2]) > 0.5;
     const auto cameraAt = [&](uint32_t k, double phase) {
         const double a = 6.283185307179586 * std::fmod(0.5 + (k + phase) * 0.7548776662466927, 1.0);
-        const double h = -0.25 + 1.15 * std::fmod(0.5 + (k + phase) * 0.5698402909980532, 1.0);
+        const double h = o.lowest + (0.9 - o.lowest) * std::fmod(0.5 + (k + phase) * 0.5698402909980532, 1.0);
         const double r = std::sqrt(std::max(1.0 - h * h, 0.0));
+        const render::Vec3 offset = zUp ? render::Vec3{r * std::sin(a), r * std::cos(a), h}
+                                        : render::Vec3{r * std::sin(a), h, r * std::cos(a)};
         render::Camera camera = render::Camera::lookingAt(
-            target + render::Vec3{r * std::sin(a), h, r * std::cos(a)} * distance, target, {0.0, 1.0, 0.0});
+            target + offset * distance, target, zUp ? render::Vec3{0.0, 0.0, 1.0} : render::Vec3{0.0, 1.0, 0.0});
         camera.lens.focal = o.focal;
         return camera;
     };
@@ -386,6 +391,8 @@ void addWallFit(CLI::App& app) {
     cmd->add_option("--target", o.target, "what every camera looks at: x y z")->expected(3);
     cmd->add_option("--distance", o.distance, "every camera's distance from the target");
     cmd->add_option("--focal", o.focal, "focal length, mm");
+    cmd->add_option("--up", o.up, "up vector: 0 1 0, or 0 0 1 for a stage whose z is up")->expected(3);
+    cmd->add_option("--lowest", o.lowest, "the lowest a camera stands: its height over the target as a share of its distance (negative: below)");
     cmd->add_option("--held-out", o.heldOut, "cameras the fit is measured from and never fitted from");
     cmd->add_option("--lobes", o.lobes, "reads of the wall a gaussian keeps");
     cmd->add_option("--start-level", o.startLevel, "how wide a read starts, as a level of the wall's mip chain");

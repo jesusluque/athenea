@@ -351,6 +351,8 @@ texel. Cada texel pide su nube, y todas las nubes las mismas gaussianas.
 | `--target` | `x y z` | el centro de la nube | adonde mira cada cámara |
 | `--distance` | número | 1,4 veces el lado mayor de la nube | en las unidades de la nube |
 | `--focal` | mm | `35` | |
+| `--up` | `x y z` | `0 1 0` | `0 0 1` para un stage cuyo z es arriba |
+| `--lowest` | número | `-0.25` | lo más bajo que se pone una cámara: su altura sobre el target como fracción de su distancia, negativa por debajo. Una nube sobre un suelo lo quiere por encima de cero; lo más alto es `0.9` |
 | `--held-out` | entero | `4` | cámaras que el fit nunca usa |
 | `--lobes` | entero | `1` | lecturas que guarda una gaussiana; seis números cada una |
 | `--start-level` | número | el nivel más ancho menos uno | con qué anchura empieza una lectura, como nivel del mip chain de la pared |

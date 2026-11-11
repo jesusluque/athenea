@@ -347,6 +347,8 @@ is. Every texel wants its cloud, and every cloud the same gaussians.
 | `--target` | `x y z` | the cloud's centre | what every camera looks at |
 | `--distance` | number | 1.4 times the cloud's largest side | in the cloud's units |
 | `--focal` | mm | `35` | |
+| `--up` | `x y z` | `0 1 0` | `0 0 1` for a stage whose z is up |
+| `--lowest` | number | `-0.25` | the lowest a camera stands: its height over the target as a share of its distance, negative for below it. A cloud on a floor wants it above zero; the highest is `0.9` |
 | `--held-out` | integer | `4` | cameras the fit never uses |
 | `--lobes` | integer | `1` | reads a gaussian keeps; six numbers each |
 | `--start-level` | number | the widest level but one | how wide a read starts, as a level of the wall's mip chain |
