@@ -157,6 +157,8 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(r.blendComposite_, "athenea/splat/splat_blend", "splatBlendComposite"));
     ATHENEA_TRY(make(r.blendCrypto_, "athenea/splat/splat_blend", "splatBlendCrypto"));
     ATHENEA_TRY(make(r.blendCompositeCrypto_, "athenea/splat/splat_blend", "splatBlendCompositeCrypto"));
+    ATHENEA_TRY(make(r.blendTrace_, "athenea/splat/splat_blend", "splatBlendTrace"));
+    ATHENEA_TRY(make(r.blendTraceCrypto_, "athenea/splat/splat_blend", "splatBlendTraceCrypto"));
     return r;
 }
 
@@ -232,7 +234,7 @@ Result<void> TileRasterizer::reservePairs(uint32_t count) {
 }
 
 Result<void> TileRasterizer::reserveTargets(RenderTargets& targets, uint32_t width,
-                                            uint32_t height, uint32_t tiles, bool crypto) {
+                                            uint32_t height, uint32_t tiles, bool crypto, bool trace) {
     if (tiles > tileCapacity_) {
         auto made = buffer(*device_, uint64_t{tiles} * 2, 4, "tile.ranges");
         if (!made) return std::move(made).error();
@@ -250,6 +252,7 @@ Result<void> TileRasterizer::reserveTargets(RenderTargets& targets, uint32_t wid
         targets.width = width;
         targets.height = height;
         targets.crypto = {};
+        targets.trace = {};
     }
     // Three float4 a pixel, allocated only where a frame asks for a matte:
     // it is a quarter again of the frame's memory, and most frames want none.
@@ -257,6 +260,13 @@ Result<void> TileRasterizer::reserveTargets(RenderTargets& targets, uint32_t wid
         auto made = buffer(*device_, uint64_t{width} * height * 3, 16, "target.crypto");
         if (!made) return std::move(made).error();
         targets.crypto = *made;
+    }
+    // The trace is eleven words a pixel, nearly three times the colour: kept
+    // only by the frame that asks what its pixels are made of.
+    if (trace && !targets.trace.valid()) {
+        auto made = buffer(*device_, uint64_t{width} * height * kTraceWords, 4, "target.trace");
+        if (!made) return std::move(made).error();
+        targets.trace = *made;
     }
     return ok();
 }
@@ -302,7 +312,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     }
     const uint32_t splatCount = static_cast<uint32_t>(total);
     ATHENEA_TRY(reserveSplats(std::max(splatCount, 1u)));
-    ATHENEA_TRY(reserveTargets(targets, settings.width, settings.height, tiles, settings.cryptomatte));
+    ATHENEA_TRY(reserveTargets(targets, settings.width, settings.height, tiles, settings.cryptomatte, settings.trace));
 
     FrameStats stats;
     stats.splats = splatCount;
@@ -395,7 +405,9 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     ++frameOfCaches_;
     uint32_t base = 0;
     size_t turnedSkies = 0;
+    stats.slotBases.reserve(instances.size());
     for (const SplatInstance& instance : instances) {
+        stats.slotBases.push_back(base);
         const scene::GpuSplats* cloud = instance.splats;
         if (cloud == nullptr || cloud->count == 0) {
             continue;
@@ -920,8 +932,10 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     const bool composite = under != nullptr || !points.empty();
     const bool matte = settings.cryptomatte && targets.crypto.valid();
     const bool underCrypto = matte && under != nullptr && under->cryptoIds.valid();
-    gpu::ComputeKernel& blend = matte ? (composite ? blendCompositeCrypto_ : blendCrypto_)
-                                      : (composite ? blendComposite_ : blend_);
+    const bool traced = settings.trace && targets.trace.valid();
+    gpu::ComputeKernel& blend = traced  ? (matte ? blendTraceCrypto_ : blendTrace_)
+                                : matte ? (composite ? blendCompositeCrypto_ : blendCrypto_)
+                                        : (composite ? blendComposite_ : blend_);
     blend.dispatch(batch, {settings.width, settings.height, 1}, [&](rhi::ShaderCursor cursor) {
         cursor["ranges"].setBinding(ranges_buffer_.rhi());
         cursor["pairSplats"].setBinding(tileSort_.values.rhi());
@@ -940,6 +954,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         cursor["underCrypto"].setBinding(underCrypto ? under->cryptoIds.rhi()
                                                      : placeholderCrypto_.rhi());
         cursor["crypto"].setBinding(matte ? targets.crypto.rhi() : placeholderOut_.rhi());
+        cursor["trace"].setBinding(traced ? targets.trace.rhi() : placeholderOut_.rhi());
         cursor["contribution"].setBinding(settings.contribution != nullptr ? settings.contribution->rhi()
                                                                            : visible_.rhi());
         setFrame(cursor, common);

@@ -23,6 +23,7 @@ public:
 
     /// Renders into `targets`; returns how many pixels had more contributors
     /// than the reference can hold (a comparison is only meaningful at zero).
+    /// With `settings.trace`, `targets.trace` is the trace of that exact walk.
     [[nodiscard]] Result<uint32_t> render(const Camera& camera,
                                           std::span<const SplatInstance> instances,
                                           const RenderSettings& settings, RenderTargets& targets,
@@ -41,6 +42,7 @@ private:
     gpu::ComputeKernel project_;
     gpu::ComputeKernel pointsProject_;
     gpu::ComputeKernel blend_;
+    gpu::ComputeKernel blendTrace_;
     gpu::ComputeKernel count_;
     gpu::ComputeKernel peakProject_;
     gpu::ComputeKernel peakBlend_;

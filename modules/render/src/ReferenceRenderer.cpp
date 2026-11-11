@@ -35,6 +35,10 @@ Result<ReferenceRenderer> ReferenceRenderer::create(gpu::ShaderLibrary& library)
     r.pointsProject_ = std::move(*points);
     auto blend = gpu::ComputeKernel::create(library, "athenea/reference/reference_blend", "referenceBlend");
     if (!blend) return std::move(blend).error();
+    auto blendTrace =
+        gpu::ComputeKernel::create(library, "athenea/reference/reference_blend", "referenceBlendTrace");
+    if (!blendTrace) return std::move(blendTrace).error();
+    r.blendTrace_ = std::move(*blendTrace);
     auto count = gpu::ComputeKernel::create(library, "athenea/reference/count_nonzero", "countNonzero");
     if (!count) return std::move(count).error();
     r.project_ = std::move(*project);
@@ -89,7 +93,14 @@ Result<uint32_t> ReferenceRenderer::render(const Camera& camera,
         targets.depth = *d;
         targets.width = settings.width;
         targets.height = settings.height;
+        targets.trace = {};
     }
+    if (settings.trace && !targets.trace.valid()) {
+        auto t = buffer(*device_, pixels * kTraceWords, 4, "ref.target.trace");
+        if (!t) return std::move(t).error();
+        targets.trace = *t;
+    }
+    const bool traced = settings.trace;
 
     gpu::CommandBatch batch(*device_);
     uint32_t base = 0;
@@ -139,7 +150,10 @@ Result<uint32_t> ReferenceRenderer::render(const Camera& camera,
         });
         base += cloud->count;
     }
-    blend_.dispatch(batch, {settings.width, settings.height, 1}, [&](rhi::ShaderCursor cursor) {
+    (traced ? blendTrace_ : blend_).dispatch(batch, {settings.width, settings.height, 1}, [&](rhi::ShaderCursor cursor) {
+        // A name a shader declares is bound: the walk that keeps no trace is
+        // handed the overflow flags in its place, which it does not write to.
+        cursor["trace"].setBinding(traced ? targets.trace.rhi() : overflow->rhi());
         cursor["refScreen"].setBinding(screen->rhi());
         cursor["refConic"].setBinding(conic->rhi());
         cursor["refColour"].setBinding(colour->rhi());

@@ -254,6 +254,13 @@ struct RenderSettings {
     /// under layer's own ids are named; a capture has no ancestry to name and
     /// is left out rather than named wrongly.
     bool     cryptomatte = false;
+    /// THE TRACE. Keep, beside the colour, which gaussians each pixel is made
+    /// of: `RenderTargets::trace` (shaders/athenea/splat/splat_trace.slang),
+    /// the `kTraceSlots` heaviest of a pixel by slot, weight and view depth,
+    /// with what the list had no room for and what closed the walk. A slot is
+    /// a gaussian's place in the frame, `FrameStats::slotBases` of its
+    /// instance plus its index in its cloud.
+    bool     trace = false;
     /// A PARAMETER OF THE GAUSSIANS DRAWN IN PLACE OF THEIR LIGHT (splat
     /// projection's `splatView`, splat_relight.slang's kSplatView*: albedo,
     /// roughness, normal, size, sky visibility, ...); 0 draws the light.
@@ -322,12 +329,21 @@ struct SplatCounters {
     std::vector<Cloud> clouds;   ///< by instance, in the order the frame was given them
 };
 
+/// The trace's size, as shaders/athenea/splat/splat_trace.slang has it: the
+/// gaussians a pixel names, and the uints a pixel takes.
+inline constexpr uint32_t kTraceSlots = 4;
+inline constexpr uint32_t kTraceWords = kTraceSlots * 2 + kTraceSlots / 2 + 1;
+
 struct FrameStats {
     uint32_t splats = 0;
     uint32_t visible = 0;
     uint32_t pairs = 0;
     double   projectMs = 0, depthSortMs = 0, countsMs = 0, emitMs = 0, tileSortMs = 0,
              blendMs = 0, totalMs = 0;
+    /// Where each instance's gaussians start among the frame's slots, in the
+    /// order the instances were given (an instance with no cloud takes none):
+    /// what turns a slot of `RenderTargets::trace` into (instance, gaussian).
+    std::vector<uint32_t> slotBases;
 };
 
 /// The images a frame writes: bottom row first, width * height.
@@ -345,8 +361,13 @@ struct RenderTargets {
     /// layer under the splats hands the blend so its coverage is named. Empty
     /// where nothing wrote ids.
     gpu::Buffer cryptoIds;
+    /// THE TRACE, where the frame asked for one: `kTraceWords` uints a pixel,
+    /// plane after plane (`trace[word * width * height + pixel]`), laid out
+    /// as splat_trace.slang says.
+    gpu::Buffer trace;
 
     [[nodiscard]] bool hasCrypto() const noexcept { return crypto.valid(); }
+    [[nodiscard]] bool hasTrace() const noexcept { return trace.valid(); }
 };
 
 class TileRasterizer {
@@ -386,7 +407,7 @@ private:
     [[nodiscard]] Result<void> reserveSplats(uint32_t count);
     [[nodiscard]] Result<void> reservePairs(uint32_t count);
     [[nodiscard]] Result<void> reserveTargets(RenderTargets& targets, uint32_t width,
-                                              uint32_t height, uint32_t tiles, bool crypto);
+                                              uint32_t height, uint32_t tiles, bool crypto, bool trace);
 
     gpu::Device*       device_ = nullptr;
     gpu::ShaderLibrary* library_ = nullptr;
@@ -435,6 +456,8 @@ private:
     gpu::ComputeKernel blendComposite_;
     gpu::ComputeKernel blendCrypto_;
     gpu::ComputeKernel blendCompositeCrypto_;
+    gpu::ComputeKernel blendTrace_;
+    gpu::ComputeKernel blendTraceCrypto_;
 
     bool     tight_ = false;   ///< grow to the need exactly (after releaseScratch)
     uint32_t splatCapacity_ = 0;

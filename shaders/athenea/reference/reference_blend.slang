@@ -10,6 +10,7 @@
 module reference_blend;
 import athenea.common.color;
 import athenea.splat.frame;
+import athenea.splat.splat_trace;
 
 static const uint kMaxHits = 1024;
 
@@ -19,11 +20,12 @@ StructuredBuffer<float4>    refColour;
 RWStructuredBuffer<float4>  colour;
 RWStructuredBuffer<float>   depth;
 RWStructuredBuffer<uint>    overflow;   // per pixel: 1 when kMaxHits was exceeded
+// The trace (athenea/splat/splat_trace.slang) of the same exact walk, written
+// by `referenceBlendTrace`: what the rasteriser's is checked against.
+RWStructuredBuffer<uint>    trace;
 ConstantBuffer<FrameParams> params;     // count: total splats
 
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void referenceBlend(uint3 tid: SV_DispatchThreadID) {
+void referencePixel(uint3 tid, bool traced) {
     const uint px = tid.x;
     const uint py = tid.y;
     if (px >= params.width || py >= params.height) {
@@ -78,6 +80,10 @@ void referenceBlend(uint3 tid: SV_DispatchThreadID) {
     float depthSum = 0.0;
     float depthAt = -1.0;
     bool discHit = false;
+    TraceList traceList;
+    if (traced) {
+        traceList.clear();
+    }
     float3 discColour = float3(0.0);
     float discZ = 0.0;
     for (uint k = 0; k < hits; ++k) {
@@ -88,6 +94,9 @@ void referenceBlend(uint3 tid: SV_DispatchThreadID) {
             break;
         }
         const float weight = transmittance * hitAlpha[k];
+        if (traced) {
+            traceList.add(hitIndex[k], weight, hitDepth[k]);
+        }
         rgb += weight * refColour[hitIndex[k]].xyz;
         depthSum += weight * hitDepth[k];
         transmittance *= 1.0 - hitAlpha[k];
@@ -113,4 +122,19 @@ void referenceBlend(uint3 tid: SV_DispatchThreadID) {
     colour[at] = float4(linearRgb + transmittance * behind.rgb, coverage + transmittance * behind.w);
     depth[at] = params.depthMode == 0 ? (total > 1e-6 ? depthSum / total : 0.0) : max(depthAt, 0.0);
     overflow[at] = over;
+    if (traced) {
+        traceList.write(trace, at, params.width * params.height, discHit ? transmittance : 0.0);
+    }
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void referenceBlend(uint3 tid: SV_DispatchThreadID) {
+    referencePixel(tid, false);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void referenceBlendTrace(uint3 tid: SV_DispatchThreadID) {
+    referencePixel(tid, true);
 }

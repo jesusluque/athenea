@@ -20135,3 +20135,47 @@ passes (half draws what float draws, p99 0).
   the program and on `PATH`, not beside NVRTC: `athenea.exe` has the builtins
   in its own folder, Blender does not. The engine now puts the package's
   `bin` first on `PATH` when it points `CUDA_PATH` at it.
+
+## A pixel says which gaussians it is made of: the trace (11 Nov)
+
+The first step of the `neural` branch, and the one that needs none of the rest of it: a frame that asks
+(`RenderSettings::trace`) keeps beside its colour, for every pixel, the four gaussians that weighed most in it --
+which (the projected slot), the weight each blended with (transmittance times alpha) and the view depth it stood at
+-- with two more numbers: `rest`, the weight of everything the list had no room for, and `under`, what the surface
+that closed the walk took (the layer under the splats, an opaque disc). So the weights, `rest` and `under` sum to
+the pixel's coverage whatever it is made of. It is what carries a mask painted on one camera's screen to the
+gaussians, and from them to another camera's screen (a matte with no chroma, a virtual product placed once and seen
+by every tracked camera), which is the next step and not in this one.
+
+**Against the Cryptomatte list.** `CryptoList` in the blend is the same walk kept per prim: it sums under one id,
+and what its lightest rank gives up is lost, which the specification allows. The trace is per gaussian -- a
+gaussian is in a pixel's walk once, so there is nothing to sum and no search for a name -- and it may not lose
+weight: a soft edge is fifty faint gaussians and not four, and a matte lifted from a list that dropped them is too
+thin exactly where a matte is hard. Hence `rest`. In the test's frame 16 283 of the 29 728 covered pixels leave
+something out of four ranks.
+
+**What it is.** `shaders/athenea/splat/splat_trace.slang` holds the list (`TraceList`: a free rank or the lightest,
+found by one search over four, in registers), the layout and its reader. `RenderTargets::trace` is eleven uints a
+pixel, plane after plane as the matte is: four slots (`kTraceNone` where empty), four depths as floats, the four
+weights as halves in two words, and (`rest`, `under`) as halves in the last. A slot is the index every per-slot
+buffer of the frame is read by; `FrameStats::slotBases` gives each instance's first slot, so a slot is (instance,
+gaussian in its cloud). Two more entry points of the blend keep it, `splatBlendTrace` and `splatBlendTraceCrypto`,
+both the composite walk: `traced` is a constant at each call site as `composite` and `matte` are, so a frame that
+keeps no trace runs the kernels it ran.
+
+**What checks it.** `[trace]` in `athenea_render_tests`: two overlapping clouds, 200 x 150. The colour with and
+without the trace is the same to the bit (`compareImages`, max 0). `ReferenceRenderer` keeps the trace of its exact
+walk (`referenceBlendTrace`), and `athenea/test/trace_check.slang` counts, against it and against the frame: ranks
+naming a slot the frame has not, pixels whose ranks do not descend, pixels naming a gaussian twice, pixels whose
+weights, rest and under miss the pixel's alpha by more than 2e-3, ranks that are not the reference's and pixels
+whose rest or under is not the reference's. All zero (Apple M5 Pro, Metal).
+
+### Not done
+
+- What it costs is not measured: no command asks for a trace yet, so there is no frame to time with and without.
+  Eleven words a pixel is 44 bytes, 365 MB written a frame at 3840 x 2160.
+- Nothing reads it yet outside the test: no AOV, no lift of a mask to the gaussians, no matte drawn from them.
+- The ray traced route keeps none.
+- A gaussian of a light catcher is not in it (it adds light and takes no coverage, as the matte has it), and a
+  medium's gaussians are, each with the alpha of its chord.
+- Four ranks is a constant of the shader and of `TileRasterizer.h` (`kTraceSlots`); eight is not tried.

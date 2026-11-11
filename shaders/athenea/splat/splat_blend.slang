@@ -8,6 +8,7 @@ import frame;
 import athenea.common.octahedral;
 import athenea.light.environment;
 import splat_relight;
+import splat_trace;
 
 StructuredBuffer<uint>      ranges;
 StructuredBuffer<uint>      pairSplats;
@@ -44,6 +45,9 @@ StructuredBuffer<uint>      underCrypto;
 RWStructuredBuffer<uint>    contribution;
 StructuredBuffer<float4>    finalColour;
 RWStructuredBuffer<float4>  crypto;
+// THE TRACE (splat_trace.slang): the gaussians each pixel is made of, kept by
+// the entry points that say so. Bound whether the frame keeps one or not.
+RWStructuredBuffer<uint>    trace;
 RWStructuredBuffer<float4>  colour;   // width * height, premultiplied, linear
 RWStructuredBuffer<float>   depth;    // width * height
 ConstantBuffer<FrameParams> params;
@@ -205,7 +209,7 @@ groupshared uint       sSplats[kBatch];
 groupshared uint4      sSlopes[kBatch];
 groupshared uint       sDone;
 
-void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
+void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool traced) {
     const uint px = tid.x;
     const uint py = tid.y;
     const uint lane = groupThread.y * kTile + groupThread.x;
@@ -242,6 +246,10 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             list.ids[k] = 0;
             list.weights[k] = 0.0;
         }
+    }
+    TraceList traceList;
+    if (traced) {
+        traceList.clear();
     }
     bool done = !inside;
     for (uint first = start; first < end; first += kBatch) {
@@ -353,6 +361,9 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             if (matte) {
                 list.add(cryptoIds[sSplats[j]], weight);
             }
+            if (traced) {
+                traceList.add(sSplats[j], weight, screen.z);
+            }
             // A TX transfer's reflection turns across the footprint: the
             // colour at this pixel is the centre's plus its slope over the
             // step from the centre (splat_project's SplatSlope).
@@ -436,6 +447,9 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
         list.add(opaqueId, opaqueHit ? transmittance : 0.0);
         list.write(at, params.width * params.height);
     }
+    if (traced) {
+        traceList.write(trace, at, params.width * params.height, opaqueHit ? transmittance : 0.0);
+    }
 
     const float coverage = 1.0 - transmittance;
     // Blended in linear light: every splat's colour was made linear when it
@@ -467,23 +481,38 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void splatBlend(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
-    blendPixel(tid, groupThread, false, false);
+    blendPixel(tid, groupThread, false, false, false);
 }
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void splatBlendComposite(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
-    blendPixel(tid, groupThread, true, false);
+    blendPixel(tid, groupThread, true, false, false);
 }
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void splatBlendCrypto(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
-    blendPixel(tid, groupThread, false, true);
+    blendPixel(tid, groupThread, false, true, false);
 }
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void splatBlendCompositeCrypto(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
-    blendPixel(tid, groupThread, true, true);
+    blendPixel(tid, groupThread, true, true, false);
+}
+
+// The trace is kept by the composite walk, whatever is under the splats: a
+// frame that wants to know what its pixels are made of is not the frame the
+// splat-only walk was folded for.
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendTrace(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, true, false, true);
+}
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendTraceCrypto(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, true, true, true);
 }
