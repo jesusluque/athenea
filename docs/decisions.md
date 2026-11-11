@@ -20355,6 +20355,16 @@ held-out cameras, the mean against the harmonics' frames):
 | 2000 | 78 s | 0.00084 | 11.0 | 151 |
 | 5000 | 195 s | 0.00033 | 7.0 | 112 |
 
+The same cloud with fewer harmonics, against its own degree 3 on the same cameras: degree 1 (12 numbers a
+gaussian) relMSE 0.00783, p99 35.5, max 83; degree 2 (27 numbers) relMSE 0.00188, p99 16.8, max 77. So eleven
+numbers and a network are, after 5000 steps, a sixth of degree 2's relMSE at two fifths of its numbers, and under
+half its p99 -- and still worse at their worst pixel (112 against 77).
+
+A frame costs what it did: 6.83 ms by the latents against 6.86 by the harmonics at 1920 x 1080, 9.38 against 9.28
+at 3840 x 2160 (best of twenty; at 960 x 540, 5.99 against 4.17). The network runs once a gaussian in view -- 120
+thousand of them here -- where a decoder a pixel was 3.5 ms at 1080p for a network four times this one, and the
+projection still evaluates the harmonics it then overwrites.
+
 39 ms a step: three frames, a backward pass over the gaussians, and the network's gradient from an eighth of them,
 a different eighth each step (from all of them a step was 133 ms: 816 threads reading 326 thousand records each).
 Eleven floats a gaussian where the harmonics are forty-eight.
@@ -20379,4 +20389,3 @@ Eleven floats a gaussian where the harmonics are forty-eight.
 - A p99 of 7 code values and a max of 112 are not the harmonics: a few gaussians are still far off (the collar
   under the glass), and how far 20 000 steps, a schedule or more features take it is not tried.
 - The fitted appearance is not saved: `athenea neural-fit` measures and writes three frames.
-- Not compared with fewer harmonics at the same bytes (degree 1 is 12 numbers a gaussian).

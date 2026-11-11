@@ -105,7 +105,7 @@ int run(const NeuralFitOptions& o) {
         double p99 = 0.0;
         uint32_t max = 0;
     };
-    const auto measure = [&]() -> Result<Measure> {
+    const auto measure = [&](uint32_t fewerDegrees = 3) -> Result<Measure> {
         Measure m;
         for (uint32_t k = 0; k < o.heldOut; ++k) {
             const render::Camera camera = cameraAt(k, 0.5);
@@ -113,7 +113,10 @@ int run(const NeuralFitOptions& o) {
             render::RenderTargets ours;
             auto a = raster->render(camera, byHarmonics, settings, whole);
             if (!a) return std::move(a).error();
-            auto c = raster->render(camera, byLatents, settings, ours);
+            // The latents; or, asked for fewer harmonics, the cloud by those.
+            render::RenderSettings other = settings;
+            other.maxShDegree = fewerDegrees;
+            auto c = raster->render(camera, fewerDegrees < 3 ? byHarmonics : byLatents, other, ours);
             if (!c) return std::move(c).error();
             auto hdr = render::compareHdr(library, ours.colour, whole.colour, settings.width, settings.height);
             if (!hdr) return std::move(hdr).error();
@@ -149,6 +152,13 @@ int run(const NeuralFitOptions& o) {
         3 * (cloud->restPerColour + 1), render::kNeuralWeights);
     out("before: relMSE %.5f, p99 %.1f, max %u (the base colour alone against the harmonics, %u held-out cameras)\n",
         before->relMse, before->p99, before->max, o.heldOut);
+    // What the same cloud is with fewer harmonics: what eleven numbers a gaussian are to be held against.
+    for (uint32_t degree = 1; degree < std::min(o.degree, 3u); ++degree) {
+        auto fewer = measure(degree);
+        if (!fewer) return report(fewer.error());
+        out("harmonics of degree %u (%u numbers a gaussian): relMSE %.5f, p99 %.1f, max %u\n", degree,
+            3 * (degree + 1) * (degree + 1), fewer->relMse, fewer->p99, fewer->max);
+    }
     if (auto w = write("harmonics", byHarmonics, 3); !w) return report(w.error());
     if (auto w = write("base", byHarmonics, 0); !w) return report(w.error());
 
@@ -170,6 +180,23 @@ int run(const NeuralFitOptions& o) {
     if (!after) return report(after.error());
     out("after %u steps in %.1f s (%.1f ms a step): relMSE %.5f, p99 %.1f, max %u\n", o.steps, seconds,
         o.steps > 0 ? seconds * 1000.0 / o.steps : 0.0, after->relMse, after->p99, after->max);
+    // What a frame costs by each: the best of twenty from the first held-out camera.
+    const auto timed = [&](const std::vector<render::SplatInstance>& instances) -> Result<double> {
+        double best = 1.0e30;
+        render::RenderTargets targets;
+        for (int round = 0; round < 20; ++round) {
+            auto stats = raster->render(cameraAt(0, 0.5), instances, settings, targets);
+            if (!stats) return std::move(stats).error();
+            best = std::min(best, stats->totalMs);
+        }
+        return best;
+    };
+    auto harmonicsMs = timed(byHarmonics);
+    if (!harmonicsMs) return report(harmonicsMs.error());
+    auto latentsMs = timed(byLatents);
+    if (!latentsMs) return report(latentsMs.error());
+    out("a frame at %ux%u: %.2f ms by the harmonics, %.2f ms by the latents\n", settings.width, settings.height,
+        *harmonicsMs, *latentsMs);
     if (auto w = write("latents", byLatents, 3); !w) return report(w.error());
     return 0;
 }
