@@ -20744,3 +20744,21 @@ keeping all the same; what they were said to buy is not measured by a clock that
 ### Not done
 
 - Not fitted, so nothing says what a pixel's network buys in quality for its milliseconds.
+
+## The relit frames, timed again by a clock that waits (11 Nov)
+
+The frame times in the lit sections above were read as the unlit ones were, before the device had finished.
+Timed again waiting for it stage by stage (`athenea neural-fit`, the pawn, 960 x 540, Apple M5 Pro; the waits are
+in every number, so it is the one against the other that is read):
+
+| the pawn relit | the engine's relighting | the latents |
+|---|---|---|
+| no shadow | 7.3 ms | 7.3 ms |
+| shadows; the latents told the direction alone | 32.3 ms | 7.4 ms |
+| shadows; the latents with a shadow map of 1024 | 32.5 ms | 7.4 ms, and 4.1 for the map |
+| shadows; the latents with a ray a gaussian | 32.4 ms | 32.6 ms |
+
+So, where the sections above say otherwise: without shadows the latents cost what the engine's own relighting
+costs, not twice it; with shadows by a map they are 11.5 ms against the rays' 32.5, the map included, and 7.4
+where the map stands from a frame before; and with a ray a gaussian they are the engine's frame, since the rays
+are.
