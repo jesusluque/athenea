@@ -80,6 +80,8 @@ struct SplatOverride {
     bool                 replaceColour = false;
 };
 
+class NeuralWall;
+
 struct SplatInstance {
     const scene::GpuSplats* splats = nullptr;
     Mat4                    objectToWorld = Mat4::identity();
@@ -141,6 +143,11 @@ struct SplatInstance {
     /// shadows they are the frame's lights, in that order.
     const NeuralLight*      neuralLight = nullptr;
     uint32_t                neuralLightCount = 1;
+    /// A WALL OF LIGHT THE CLOUD STANDS BEFORE (NeuralWall.h): what the
+    /// picture the wall shows adds to each gaussian's colour, read off the
+    /// wall's mip chain where the gaussian learnt to. The wall's reads are
+    /// this cloud's, gaussian for gaussian. Null: none.
+    NeuralWall*             wall = nullptr;
     /// `primvars:athenea:splat:catcher`: a shadow catcher (athenea mesh2splat
     /// --shadow-catcher), projected by a kernel of its own: black, as opaque
     /// as what its object took of the light reaching it.

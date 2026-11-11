@@ -207,6 +207,7 @@ TEST_CASE("a cloud drawn from its latents starts as its own first harmonic draws
 }
 
 #include "athenea/render/NeuralFit.h"
+#include "athenea/render/NeuralWall.h"
 
 TEST_CASE("a cloud's harmonics are learnt by its latents, from frames of itself", "[render][gpu][neural][fit]") {
     ATHENEA_REQUIRE_GPU(gpu);
@@ -528,4 +529,110 @@ TEST_CASE("a lit neural cloud under two lights is the sum of it under each", "[r
                 mean->codes.max, apart->max);
     CHECK(mean->codes.max <= 1);
     CHECK(apart->max > 20);
+}
+
+TEST_CASE("a wall's light on a cloud adds as its picture does, and its reads are learnt from frames",
+          "[render][gpu][neural][wall]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto shown = render::NeuralWall::create(*gpu->library);
+    auto learnt = render::NeuralWall::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!shown) FAIL(shown.error().toString());
+    if (!learnt) FAIL(learnt.error().toString());
+    test::CloudBuilder builder = test::randomCloud(2000, 7, 0.02F, 0.12F);
+    auto cloud = loader->upload(builder.raw, 3);
+    REQUIRE(cloud);
+    // The cloud gives no light of its own: lit, under no light.
+    auto dark = render::makeNeuralCloud(*gpu->library, *cloud, 1, true);
+    if (!dark) FAIL(dark.error().toString());
+    const render::NeuralLight none;
+
+    // A wall of 8 x 4 texels behind the cloud. The one the frames come from reads it narrow and strong
+    // and stands a little aside; the one that learns starts wide and faint, where the wall is said to be.
+    const uint32_t wide = 8;
+    const uint32_t high = 4;
+    const uint32_t texels = wide * high;
+    render::WallRect rect;
+    rect.centre = {0.0F, 0.0F, -3.0F};
+    rect.halfU = 3.0F;
+    rect.halfV = 1.5F;
+    render::WallRect aside = rect;
+    aside.centre = {0.5F, 0.2F, -3.0F};
+    REQUIRE(shown->start(*cloud, aside, 1, wide, high, texels + 2, 1.0F, 0.6F));
+    REQUIRE(learnt->start(*cloud, rect, 1, wide, high, texels + 2, -1.0F, 0.05F));
+    for (render::NeuralWall* wall : {&*shown, &*learnt}) {
+        for (uint32_t k = 0; k < texels; ++k) {
+            REQUIRE(wall->pattern(k, 0, k));
+        }
+        REQUIRE(wall->pattern(texels, 5, 0));      // white
+        REQUIRE(wall->pattern(texels + 1, 3, 5));  // a colour a texel
+    }
+    const auto before = [&](render::NeuralWall& wall) {
+        render::SplatInstance instance{&*cloud, render::Mat4::identity()};
+        instance.neural = &*dark;
+        instance.neuralLight = &none;
+        instance.neuralLightCount = 0;
+        instance.wall = &wall;
+        return instance;
+    };
+    const render::SplatInstance teacher = before(*shown);
+    const render::SplatInstance student = before(*learnt);
+    render::RenderSettings settings;
+    settings.width = 200;
+    settings.height = 150;
+    const uint32_t pixels = settings.width * settings.height;
+    const render::Camera camera = render::Camera::lookingAt({1.0, 0.5, 6.0}, {0.0, 0.0, 0.0});
+
+    // LIGHT ADDS. The frame under the white wall is the frames under each texel alone, summed.
+    render::RenderTargets whole, one;
+    gpu::Buffer summed = floats(*gpu->device, pixels, 4, "wall.summed");
+    shown->show(texels);
+    REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&teacher, 1), settings, whole));
+    for (uint32_t k = 0; k < texels; ++k) {
+        shown->show(k);
+        REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&teacher, 1), settings, one));
+        REQUIRE(shown->accumulate(one.colour, summed, pixels, texels, k, k == 0));
+    }
+    auto added = render::compareImages(*gpu->library, whole.colour, summed, settings.width, settings.height);
+    REQUIRE(added);
+    auto lit = render::imageStats(*gpu->library, whole.colour, settings.width, settings.height);
+    REQUIRE(lit);
+    std::printf("  the white wall against its texels summed: max %u code values; the frame's mean %.3f\n", added->max,
+                lit->mean[0]);
+    CHECK(added->max <= 1);
+    CHECK(lit->mean[0] > 0.01);
+
+    // THE READS ARE LEARNT. Shown single texels, held against a picture of a colour a texel.
+    const auto apart = [&]() {
+        shown->show(texels + 1);
+        learnt->show(texels + 1);
+        render::RenderTargets a, b;
+        REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&teacher, 1), settings, a));
+        REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&student, 1), settings, b));
+        auto hdr = render::compareHdr(*gpu->library, b.colour, a.colour, settings.width, settings.height);
+        REQUIRE(hdr);
+        return hdr->relMse;
+    };
+    const double start = apart();
+    render::NeuralWallSettings how;
+    how.width = settings.width;
+    how.height = settings.height;
+    render::RenderTargets pictured;
+    for (uint32_t k = 0; k < 600; ++k) {
+        const uint32_t texel = (k * 7) % texels;
+        const double a = 2.39996323 * k;
+        const render::Camera from =
+            render::Camera::lookingAt({6.0 * std::sin(a), 1.0 + std::sin(a * 0.37), 6.0 * std::cos(a)}, {0.0, 0.0, 0.0});
+        shown->show(texel);
+        learnt->show(texel);
+        REQUIRE(raster->render(from, std::span<const render::SplatInstance>(&teacher, 1), settings, pictured));
+        auto stepped = learnt->step(*raster, from, student, pictured.colour, how);
+        if (!stepped) FAIL(stepped.error().toString());
+    }
+    const double end = apart();
+    std::printf("  a picture the fit never saw: relMSE %.5f before, %.5f after 600 steps\n", start, end);
+    CHECK(end < start * 0.25);
 }

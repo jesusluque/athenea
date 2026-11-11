@@ -20865,3 +20865,61 @@ most of what is wrong at a shadow's edge is not this.
 - More than five reads, or reads weighted as the gaussian is.
 - The relight's own use of it (`athenea stage` with splat shadows): the field is there and nothing sets it.
 - Metal: the kernel compiles and the `[neural]` tests pass there; these numbers are CUDA's.
+
+## An LED wall as a texture each gaussian reads (11 Nov)
+
+A wall of light is a light whose picture is known every frame, and what it does to a gaussian is linear in that
+picture: a row of numbers, one a texel. The row is not kept. A gaussian keeps `lobes` reads of the wall's mip
+chain -- u, v, a level, the log of a gain a channel, six numbers a read -- and its colour under a picture is the
+sum of its reads of that picture (after Azzarelli et al., who learn a gaussian's texture coordinate on a known
+display). `render::NeuralWall` holds the reads and the pictures as pyramids, `SplatInstance::wall` adds the wall's
+light to the gaussians in view after the projection, and `NeuralWall::step` moves the reads through the read's own
+derivatives (bilinear in u and v, the difference of two levels in the level), the blend's fourth contribution mode
+carrying each pixel's error back. A read starts where the gaussian's normal meets the wall, wide and faint.
+
+What it learns from is the path tracer: the clay pawn on its red floor, 99 820 gaussians, baked 32 times with one
+texel of an 8 x 4 wall lit each time (a `RectLight` 6 cm square, 14 cm behind the pawn). Light adds, so the frame
+under any picture is those clouds drawn and summed times the picture's texels, and that sum is both what a
+whole-picture step is fitted to and what the fit is held against: five pictures it is never shown, from four
+cameras it never stood at. 4000 steps at 960 x 540 on Metal (an M-series Mac):
+
+| what a gaussian keeps | fitted to | relMSE | p99 | max | window | white |
+|---|---|---|---|---|---|---|
+| a gain alone, on the wall's mean (`--frozen`) | single texels | 0.0498 | 75.3 | 165 | 0.0717 | 0.0447 |
+| one read | single texels | 0.0224 | 59.9 | 140 | 0.0271 | 0.0207 |
+| two reads | single texels | 0.0154 | 48.5 | 134 | 0.0171 | 0.0147 |
+| two reads | a colour a texel, every step | 0.0035 | 20.5 | 95 | 0.0106 | 0.00007 |
+| a gain alone | pictures of every grain, every step | 0.0123 | 36.5 | 102 | 0.0394 | 0.0023 |
+| one read | the same | 0.0064 | 27.0 | 123 | 0.0207 | 0.0011 |
+| two reads | the same | 0.0040 | 23.9 | 126 | 0.0113 | 0.0008 |
+| four reads | the same | 0.0035 | 22.0 | 119 | 0.0093 | 0.0007 |
+
+Two things it says. A texel alone is a dim frame, and what each gaussian is off by under one texel adds up under a
+picture that lights all thirty-two: fitted to single texels even the white wall, which asks only that the gains
+sum right, was off by 0.0147, and fitted to whole pictures it is 0.00007 -- two hundred times less. And where a
+gaussian reads matters: against the gain alone under the same fit, four reads are 3.5 times less error over the
+five pictures and 4.2 times less under the window, the one picture that is mostly somewhere.
+
+Pictures of every grain (a colour a texel, a colour a block of two and of four, one texel in four lit) were meant
+to teach the reads where to be, and did not beat a colour a texel: 0.0040 against 0.0035 for two reads, the window
+0.0113 against 0.0106. They are the default all the same, one run each being no ground to choose on.
+
+The wall costs a frame nothing a clock can see: 6.73 ms against 6.65 with four reads, 5.08 against 5.01 with two.
+A whole-picture step costs 182 ms where a single texel's costs 24, being a frame a texel.
+
+What the frames show that the numbers do not: seams and blotches on the pawn and a mottled floor under the window.
+Neighbouring gaussians learn their reads alone, and two that read different texels of an 8 x 4 wall differ by a
+texel's worth of light.
+
+### Not done
+
+- Anything that holds neighbouring gaussians' reads together, which is what the seams ask for.
+- A read that depends on the view: a shiny thing reflects the wall elsewhere from another camera, and these reads
+  are a matt thing's. The pawn is clay.
+- A wall of more than 8 x 4, and a picture that is a frame of video or a render (`NeuralWall::picture` takes one
+  and nothing has given it one).
+- The wall's own units: a picture's texel is in units of the bake's light (a patch at intensity 20), not nits.
+- The reads in a file. They live as long as the command.
+- The row itself -- 32 gains a channel a gaussian -- as what the reads are measured against: the baked clouds are
+  that row, with the view in it.
+- CUDA for the fit against bakes; the `[wall]` test passes on both.

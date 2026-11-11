@@ -318,6 +318,51 @@ cloud's, which is that sun's picture of them -- where the two hold the same
 gaussians, which a bake that dropped some does not, and the line is then refused. `-o` writes
 `<prefix>_picture_sun0..2.exr` and `_latents_sun0..2.exr`.
 
+### 2.3.3 `athenea wall-fit` — a cloud taught what a wall of light does to it
+
+An LED wall is a light whose picture is known every frame. Each gaussian learns
+where on the wall it reads that picture, how wide and how much -- `--lobes`
+reads of six numbers each -- and is then lit by whatever the wall shows with
+one filtered read a lobe, no light sampled and no ray. What it learns from is
+the path tracer: the same mesh baked into the same gaussians with one texel of
+the wall lit at a time. The manifest's first line is the wall, in the cloud's
+space, and then a line a texel:
+
+```
+wall W H  cx cy cz  ux uy uz  vx vy vz  halfU halfV
+patch <texel> <file.usda>
+```
+
+`W` x `H` texels; the centre; the unit axes along the picture's u and v; half
+the wall's size along each. Texel `y * W + x`, the bottom row first, is the
+cloud `athenea mesh2splat` baked under a `RectLight` standing where that texel
+is. Every texel wants its cloud, and every cloud the same gaussians.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `--patches` | path | — | the manifest; required |
+| `--steps` | integer | `4000` | a camera each |
+| `--size` | `WIDTHxHEIGHT` | `960x540` | of the frames fitted and measured |
+| `--target` | `x y z` | the cloud's centre | what every camera looks at |
+| `--distance` | number | 1.4 times the cloud's largest side | in the cloud's units |
+| `--focal` | mm | `35` | |
+| `--held-out` | integer | `4` | cameras the fit never uses |
+| `--lobes` | integer | `1` | reads a gaussian keeps; six numbers each |
+| `--start-level` | number | the widest level but one | how wide a read starts, as a level of the wall's mip chain |
+| `--start-gain` | number | `0.05` | how strong a gaussian's reads start, together |
+| `--rate-uv` | number | `0.002` | Adam's rate for where a read is, in walls a step |
+| `--rate-level` | number | `0.01` | for how wide it is |
+| `--rate-gain` | number | `0.01` | for the log of its gain |
+| `--rate-decay` | number | `0.1` | what the rates have fallen to by the last step |
+| `--whole-every` | integer | `1` | one step in this many is fitted to a whole picture -- a colour a texel, a colour a block, a few texels lit -- whose frame is every texel's cloud drawn and summed, so it costs a frame a texel; the others to one texel alone. `0`: single texels only |
+| `--frozen` | flag | off | every read is the whole wall's mean and only its gain is learnt: the wall as a light with no picture, to compare against |
+| `-o`, `--output` | prefix | — | `<prefix>_<picture>_picture.exr` and `_wall.exr` for ramp, checker, random, window and white, from the first held-out camera |
+
+The measures are `athenea compare`'s, over five whole pictures the fit is never
+shown (a ramp, a checker, a colour a texel, a bright window on a dim wall, all
+white) from the held-out cameras, against the baked clouds summed times each
+picture's texels. The last line is a frame's time with and without the wall.
+
 ### 2.4 `athenea convert` — a splat file into USD, or into a `.athc`
 
 | Option | Value | Default | Notes |

@@ -185,6 +185,15 @@ cada una):
   `athenea render --neural` dibuja con ella. Un decoder una vez por píxel
   (`RenderSettings::neuralFeatures`, `neural_pixel.slang`) está para cronometrarlo
   y nada lo ajusta.
+- **Una pared de luz como textura** (`render/NeuralWall.h`,
+  `shaders/athenea/neural/neural_wall.slang`): las lecturas que cada gaussiana hace de la imagen
+  de una pared LED -- u, v, un nivel de mip y el logaritmo de una ganancia por canal, seis
+  números por lectura -- sumadas a su color tras la proyección
+  (`SplatInstance::wall`), se dibuje la nube con lo que se dibuje. Las imágenes de la
+  pared son pirámides en un buffer (`NeuralWall::pattern`, `picture`);
+  `NeuralWall::step` ajusta las lecturas por las derivadas de la propia lectura, con el
+  blend llevando el error de vuelta como hace para una apariencia neural.
+  `athenea wall-fit` es su comando.
 
 Un kernel que añade algo a `shaders/athenea/neural/neural_appearance.slang` lo añade a
 las dos pasadas: la forward y, a mano, la backward junto a ella, y las diferencias

@@ -1,5 +1,6 @@
 // Copyright (c) 2026 jesus luque.
 #include "athenea/render/TileRasterizer.h"
+#include "athenea/render/NeuralWall.h"
 
 #include <algorithm>
 #include <cmath>
@@ -923,6 +924,9 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                                                                                   : shadowLights);
                 cursor["params"]["lit"].setData(uint32_t{neural.lit ? 1u : 0u});
             });
+        }
+        if (instance.wall != nullptr && instance.wall->count() == cloud->count && featureWords == 0) {
+            instance.wall->shade(batch, base, proj_, visible_);
         }
         base += cloud->count;
     }

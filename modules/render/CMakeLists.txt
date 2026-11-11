@@ -6,6 +6,7 @@ athenea_add_module(render
         src/SplatLift.cpp
         src/NeuralAppearance.cpp
         src/NeuralFit.cpp
+        src/NeuralWall.cpp
         src/TileRasterizer.cpp
         src/Flatten.cpp
         src/ReferenceRenderer.cpp

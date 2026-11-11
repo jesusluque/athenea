@@ -163,6 +163,7 @@ How the pieces fit:
   against a reference, all computed by kernels.
 - **The CLI** is `apps/athenea` (CLI11): `CmdRender` (render/bench), `CmdLift` (a mask carried to the gaussians and keyed from another camera),
   `CmdNeuralFit` (a cloud's colours learnt by a latent a gaussian and one network),
+  `CmdWallFit` (where each gaussian reads an LED wall's picture, learnt from bakes),
   `CmdStage` (convert/stage), `CmdView`, `CmdAofx`, `CmdLive`, `CmdInfo`,
   `CmdMesh2Splat` (a mesh into gaussians, optionally skinned), `CmdVisibility`
   (bake a skinned cloud's per-part visibility into its file), `CmdStream`

@@ -322,6 +322,51 @@ primera nube, que es la foto que ese sol hizo de ellas -- cuando las dos tienen 
 gaussianas, cosa que no ocurre si el bake descartó alguna, y entonces la línea se rechaza. `-o` escribe
 `<prefijo>_picture_sun0..2.exr` y `_latents_sun0..2.exr`.
 
+### 2.3.3 `athenea wall-fit` — una nube a la que se enseña lo que le hace una pared de luz
+
+Una pared LED es una luz cuya imagen se conoce en cada frame. Cada gaussiana aprende
+dónde de la pared lee esa imagen, con qué anchura y cuánto -- `--lobes`
+lecturas de seis números cada una -- y queda iluminada por lo que la pared muestre con
+una lectura filtrada por lobe, sin muestrear ninguna luz y sin ningún rayo. De lo que aprende es
+del path tracer: la misma malla convertida en las mismas gaussianas con un solo texel de
+la pared encendido cada vez. La primera línea del manifest es la pared, en el espacio de la
+nube, y luego una línea por texel:
+
+```
+wall W H  cx cy cz  ux uy uz  vx vy vz  halfU halfV
+patch <texel> <file.usda>
+```
+
+`W` x `H` texels; el centro; los ejes unitarios a lo largo de u y v de la imagen; la mitad
+del tamaño de la pared en cada uno. El texel `y * W + x`, la fila de abajo primero, es la
+nube que `athenea mesh2splat` hizo bajo un `RectLight` puesto donde está ese
+texel. Cada texel pide su nube, y todas las nubes las mismas gaussianas.
+
+| Opción | Valor | Por defecto | Notas |
+|---|---|---|---|
+| `--patches` | ruta | — | el manifest; obligatorio |
+| `--steps` | entero | `4000` | una cámara cada uno |
+| `--size` | `WIDTHxHEIGHT` | `960x540` | de los frames ajustados y medidos |
+| `--target` | `x y z` | el centro de la nube | adonde mira cada cámara |
+| `--distance` | número | 1,4 veces el lado mayor de la nube | en las unidades de la nube |
+| `--focal` | mm | `35` | |
+| `--held-out` | entero | `4` | cámaras que el fit nunca usa |
+| `--lobes` | entero | `1` | lecturas que guarda una gaussiana; seis números cada una |
+| `--start-level` | número | el nivel más ancho menos uno | con qué anchura empieza una lectura, como nivel del mip chain de la pared |
+| `--start-gain` | número | `0.05` | con qué fuerza empiezan las lecturas de una gaussiana, juntas |
+| `--rate-uv` | número | `0.002` | el rate de Adam para dónde está una lectura, en paredes por step |
+| `--rate-level` | número | `0.01` | para su anchura |
+| `--rate-gain` | número | `0.01` | para el logaritmo de su ganancia |
+| `--rate-decay` | número | `0.1` | a cuánto han caído los rates en el último step |
+| `--whole-every` | entero | `1` | uno de cada tantos steps se ajusta a una imagen completa -- un color por texel, un color por bloque, unos pocos texels encendidos -- cuyo frame es la nube de cada texel dibujada y sumada, así que cuesta un frame por texel; los demás a un texel solo. `0`: solo texels sueltos |
+| `--frozen` | flag | off | cada lectura es la media de toda la pared y solo se aprende su ganancia: la pared como una luz sin imagen, para comparar |
+| `-o`, `--output` | prefijo | — | `<prefijo>_<imagen>_picture.exr` y `_wall.exr` para ramp, checker, random, window y white, desde la primera cámara held-out |
+
+Las medidas son las de `athenea compare`, sobre cinco imágenes completas que el fit nunca
+ve (una rampa, un checker, un color por texel, una ventana brillante en una pared oscura, todo
+blanco) desde las cámaras held-out, contra las nubes sumadas por los texels de cada
+imagen. La última línea es el tiempo de un frame con y sin la pared.
+
 ### 2.4 `athenea convert` — un fichero de splats a USD, o a un `.athc`
 
 | Opción | Valor | Por defecto | Notas |
