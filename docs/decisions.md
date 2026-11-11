@@ -20595,14 +20595,42 @@ upload. The map was right. A lit cloud's base starts as its gaussians' own colou
 first cloud's -- the mesh already lit by the first sun, its shadow in it. The second shadow was the first sun's,
 in the base, for the fit to unlearn.
 
-Still six times the analytic picture's 0.00068, and its p99 of 14: twenty-four suns, a base that starts as a
-picture, and noise a gaussian in the bakes themselves (64 paths).
+**What it is not short of** (the same scene, the shadow map and the second answer throughout):
+
+| | relMSE, held-out suns | p99 | relMSE, the suns it learnt from |
+|---|---|---|---|
+| 24 suns, 3000 steps | 0.0045 | 38 | 0.0034 |
+| 48 suns, 3000 steps | 0.0041 | 37 | 0.0039 |
+| 48 suns, 8000 steps | 0.0063 | 35 | 0.0056 |
+| 48 suns, 8000 steps, the rates falling to a tenth (`--rate-decay 0.1`) | 0.0033 | 34 | 0.0029 |
+| the same, to a hundredth | 0.0042 | 38 | 0.0038 |
+| the same to a tenth, the transmittance an input of the network as well | 0.0032 | 34 | 0.0029 |
+
+Not suns: twice as many buy a tenth. Not steps, unless the rates fall. Not the bakes' noise: the same sun baked
+with 96 paths a gaussian and with 1024 differ by relMSE 0.00006 and p99 9, a fiftieth of what is left. And not
+what it has seen against what it has not: the suns it learnt from measure what the held-out ones do, so it is the
+model that does not hold the picture, not the fit that has too little of it. A difference image says where: a
+line along every shadow's edge, where the map's edge is not the path tracer's; the pawn's collar and neck, thin
+and shadowing themselves, where a map of the whole cloud has least to say; and single gaussians of the floor.
+Giving the network the transmittance to read as well as to be multiplied by moves none of it (and is not kept).
+
+So the lit fit against a path tracer stands at relMSE 0.0033 and p99 34, five times the analytic picture's 0.00071
+and its p99 of 15, and what separates them is the engine's shadow term and not the network.
+
+(A cloud converted with `--no-bake`, to start the base from the material rather than from a sun's picture, does
+not hold the same gaussians: a bake drops those it could not bake, 99 792 kept of 99 820 where the unbaked keeps
+99 799. A manifest's `base` line is read and refused where the counts differ, which is always, today.)
+
+(And a note for whoever measures against "the path tracer": the baked cloud drawn by the engine and the mesh path
+traced from the same camera are relMSE 0.060 and p99 92 apart, at 96 paths a gaussian or 1024. The pictures here
+are the clouds.)
 
 ### Not done
 
-- A base that starts as what the gaussians are made of rather than as one sun's picture of them: the mean of the
-  clouds, or the conversion's own albedo.
-- More suns than twenty-four, and a regulariser on the features (their rate at zero changes nothing here: 0.0073).
+- A base that starts as what the gaussians are made of: the unbaked conversion's colours carried to the baked
+  cloud's gaussians through `GpuSplats::origin`, which both keep.
+- A shadow term that is the path tracer's at an edge and on a thin thing: more of the map's terms, the baked
+  visibility fields, or a ray where the map is unsure.
 
 ## The neural branch on CUDA: what holds, and what costs more (11 Nov)
 

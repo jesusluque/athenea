@@ -271,6 +271,7 @@ three frames to look at.
 | `--rate-features` | number | `0.01` | Adam's rate for the features |
 | `--rate-base` | number | `0.002` | for the base colours |
 | `--rate-weights` | number | `0.004` | for the network |
+| `--rate-decay` | number | `1` | what the three rates have fallen to by the last step, as a factor, step by step; `0.1` is what a long fit wants |
 | `--reached` | `ray` or `map` | — | `--shadows`: the neural cloud is also given what reaches each gaussian from the light, and its colour is its answer times that. `ray`: the transmittance the engine's shadow ray finds, so every frame by it casts those rays. `map`: read from the cloud's shadow map from the sun, built with no ray; what the cloud should be is still the rays' |
 | `--map-side` | integer | `2048` | `--reached map`: the shadow map's texels a side |
 | `--map-coefficients` | 1, 3, 5 or 7 | `7` | `--reached map`: the map's total optical depth and its Fourier pairs |
@@ -290,7 +291,7 @@ engine's relighting under those three (and `-o` writes `_engine_three.exr` and
 `_latents_three.exr`).
 
 **`--pictures`: fitted to what the path tracer baked.** The manifest is a text
-file, a line a cloud: `train` or `held`, the sun's turn about y and then about
+file, a line a cloud: `train` or `held` (or `base`, below), the sun's turn about y and then about
 x in degrees (a distant light shining down its own -z, as
 `xformOp:rotateY`, `xformOp:rotateX` author it), and a USD file beside the
 manifest -- the same mesh converted by `athenea mesh2splat` under that sun, so
@@ -299,7 +300,11 @@ shadows, in their harmonics. A lit neural cloud of those gaussians is told each
 `train` sun and moved towards its cloud, and is measured against the `held`
 clouds, whose suns it was never shown, from the held-out cameras. `--reached
 map` gives it the cloud's shadow map from each sun; there is no ray here, so
-`--reached ray` and `--shadows` do not apply. `-o` writes
+`--reached ray` and `--shadows` do not apply. A `base` line (its two angles
+not read) names the same gaussians converted with `--no-bake`: the neural
+cloud's base colours then start as the material's own rather than as the first
+cloud's, which is that sun's picture of them -- where the two hold the same
+gaussians, which a bake that dropped some does not, and the line is then refused. `-o` writes
 `<prefix>_picture_sun0..2.exr` and `_latents_sun0..2.exr`.
 
 ### 2.4 `athenea convert` — a splat file into USD, or into a `.athc`

@@ -49,6 +49,7 @@ struct NeuralFitOptions {
     float               rateFeatures = 1.0e-2F;
     float               rateBase = 2.0e-3F;
     float               rateWeights = 4.0e-3F;
+    float               rateDecay = 1.0F;      ///< what the three rates are multiplied by at the last step, falling to it step by step
     bool                relight = false;   ///< a lit neural cloud, fitted to the engine's relighting under a moving sun
     float               sun = 3.0F;        ///< the sun's intensity
     bool                shadows = false;   ///< --relight: the sun casts the cloud's shadow on itself
@@ -98,6 +99,7 @@ int runPictures(const NeuralFitOptions& o) {
 
     struct Picture {
         bool                              held = false;
+        bool                              base = false;   ///< not a picture: the gaussians with their material alone
         double                            yaw = 0.0;
         double                            pitch = 0.0;
         std::unique_ptr<scene::GpuSplats> cloud;
@@ -120,10 +122,12 @@ int runPictures(const NeuralFitOptions& o) {
                 continue;
             }
             picture.held = kind == "held";
+            picture.base = kind == "base";
             auto cloud = usd::uploadParticleField(library, *loader, beside / file);
             if (!cloud) return report(cloud.error());
             picture.cloud = std::make_unique<scene::GpuSplats>(std::move(*cloud));
-            if (!pictures.empty() && picture.cloud->count != pictures.front().cloud->count) {
+            if (!picture.base && !pictures.empty() && !pictures.front().base &&
+                picture.cloud->count != pictures.front().cloud->count) {
                 err("%s holds %u gaussians and the first cloud %u: not the same gaussians\n", file.c_str(),
                     picture.cloud->count, pictures.front().cloud->count);
                 return kExitFailure;
@@ -133,7 +137,17 @@ int runPictures(const NeuralFitOptions& o) {
     }
     std::vector<size_t> train;
     std::vector<size_t> held;
+    // WHERE THE BASE STARTS. A lit cloud's base is what its gaussians are made
+    // of; started from a picture it starts as that picture's light, shadow and
+    // all, for the fit to unlearn. A `base` line names the same gaussians
+    // converted with no bake (`athenea mesh2splat --no-bake`): their colour is
+    // then the material's own.
+    const scene::GpuSplats* material = nullptr;
     for (size_t k = 0; k < pictures.size(); ++k) {
+        if (pictures[k].base) {
+            material = pictures[k].cloud.get();
+            continue;
+        }
         (pictures[k].held ? held : train).push_back(k);
     }
     if (train.empty() || held.empty()) {
@@ -142,7 +156,12 @@ int runPictures(const NeuralFitOptions& o) {
     }
     // The gaussians are the first cloud's; every cloud's are the same.
     const scene::GpuSplats& cloud = *pictures[train.front()].cloud;
-    auto neural = render::makeNeuralCloud(library, cloud, 1, true);
+    if (material != nullptr && material->count != cloud.count) {
+        err("the base cloud holds %u gaussians and the pictures %u: a conversion with no bake keeps the gaussians a bake drops\n",
+            material->count, cloud.count);
+        return kExitFailure;
+    }
+    auto neural = render::makeNeuralCloud(library, material != nullptr ? *material : cloud, 1, true);
     if (!neural) return report(neural.error());
     neural->shadowed = byMap;
     const render::SplatInstance instance{&cloud, render::Mat4::identity(), {}};
@@ -293,6 +312,10 @@ int runPictures(const NeuralFitOptions& o) {
         const render::SplatInstance baked{picture.cloud.get(), render::Mat4::identity(), {}};
         told->picture = &baked;
         const bool ask = k == 0 || (k + 1) % every == 0;
+        const float falling = std::pow(o.rateDecay, static_cast<float>(k) / static_cast<float>(std::max(o.steps, 1u)));
+        how.rateFeatures = o.rateFeatures * falling;
+        how.rateBase = o.rateBase * falling;
+        how.rateWeights = o.rateWeights * falling;
         auto loss = fit->step(*raster, cameraAt(k, 0.0), instance, *neural, how, ask, &*told);
         if (!loss) return report(loss.error());
         if (*loss) {
@@ -648,6 +671,10 @@ int run(const NeuralFitOptions& o) {
             if (!made) return report(made.error());
             told = *made;
         }
+        const float falling = std::pow(o.rateDecay, static_cast<float>(k) / static_cast<float>(std::max(o.steps, 1u)));
+        how.rateFeatures = o.rateFeatures * falling;
+        how.rateBase = o.rateBase * falling;
+        how.rateWeights = o.rateWeights * falling;
         auto loss = fit->step(*raster, cameraAt(k, 0.0), instance, *neural, how, ask, o.relight ? &told : nullptr);
         if (!loss) return report(loss.error());
         if (*loss) {
@@ -817,6 +844,7 @@ void addNeuralFit(CLI::App& app) {
     cmd->add_option("--rate-features", o.rateFeatures, "Adam's rate for the features");
     cmd->add_option("--rate-base", o.rateBase, "Adam's rate for the base colours");
     cmd->add_option("--rate-weights", o.rateWeights, "Adam's rate for the network");
+    cmd->add_option("--rate-decay", o.rateDecay, "what the three rates fall to by the last step, as a factor (1: they stay)");
     cmd->add_flag("--relight", o.relight, "a lit neural cloud, fitted to the engine's relighting of the cloud under a sun that moves");
     cmd->add_option("--sun", o.sun, "--relight: the sun's intensity");
     cmd->add_option("--reached", o.reached, "--shadows: the neural cloud takes what reaches each gaussian from the light: ray (the engine's shadow ray) or map (the cloud's shadow map, no ray)");

@@ -275,6 +275,7 @@ frames para mirar.
 | `--rate-features` | número | `0.01` | el rate de Adam para las features |
 | `--rate-base` | número | `0.002` | para los colores base |
 | `--rate-weights` | número | `0.004` | para la red |
+| `--rate-decay` | número | `1` | a cuánto han caído los tres rates en el último paso, como factor, paso a paso; `0.1` es lo que pide un fit largo |
 | `--reached` | `ray` o `map` | — | `--shadows`: a la nube neural se le da además lo que llega a cada gaussiana desde la luz, y su color es su respuesta por eso. `ray`: la transmitancia que encuentra el shadow ray del motor, así que cada frame dibujado con ella traza esos rayos. `map`: leída del shadow map de la nube desde el sol, construido sin ningún rayo; lo que la nube debe ser sigue siendo lo de los rayos |
 | `--map-side` | entero | `2048` | `--reached map`: los texels por lado del shadow map |
 | `--map-coefficients` | 1, 3, 5 o 7 | `7` | `--reached map`: la profundidad óptica total del mapa y sus pares de Fourier |
@@ -294,7 +295,7 @@ relight del motor bajo esos tres (y `-o` escribe `_engine_three.exr` y
 `_latents_three.exr`).
 
 **`--pictures`: ajustado a lo que horneó el path tracer.** El manifiesto es un fichero
-de texto, una línea por nube: `train` o `held`, el giro del sol sobre y y luego sobre
+de texto, una línea por nube: `train` o `held` (o `base`, abajo), el giro del sol sobre y y luego sobre
 x en grados (una luz distante que alumbra hacia su propio -z, como lo escriben
 `xformOp:rotateY`, `xformOp:rotateX`), y un fichero USD junto al
 manifiesto -- la misma malla convertida por `athenea mesh2splat` bajo ese sol, de modo
@@ -303,7 +304,11 @@ sombras, en sus armónicos. A una nube neural iluminada de esas gaussianas se le
 sol `train` y se mueve hacia su nube, y se mide contra las nubes `held`,
 cuyos soles nunca se le enseñaron, desde las cámaras reservadas. `--reached
 map` le da el shadow map de la nube desde cada sol; aquí no hay rayos, así que
-`--reached ray` y `--shadows` no se aplican. `-o` escribe
+`--reached ray` y `--shadows` no se aplican. Una línea `base` (sus dos ángulos
+no se leen) nombra las mismas gaussianas convertidas con `--no-bake`: los colores
+base de la nube neural arrancan entonces como los del propio material y no como los de la
+primera nube, que es la foto que ese sol hizo de ellas -- cuando las dos tienen las mismas
+gaussianas, cosa que no ocurre si el bake descartó alguna, y entonces la línea se rechaza. `-o` escribe
 `<prefijo>_picture_sun0..2.exr` y `_latents_sun0..2.exr`.
 
 ### 2.4 `athenea convert` — un fichero de splats a USD, o a un `.athc`
