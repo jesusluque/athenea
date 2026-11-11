@@ -6,6 +6,16 @@ pass). The version lives in one place, the top-level `project()` line, and is
 what `athenea --version` and `athenea info` print. A minor version is a set of
 merged work; a patch version fixes what a minor one shipped.
 
+## Unreleased
+
+- **video-encode**: with geometry in the video (`--geometry-video`), a frame
+  is cut into slices by the planes it really has: the check that a whole
+  frame fits one picture counted the plain layout's planes (14 at degree 0
+  against 31 folded), so a frame too tall for the size asked for went out as
+  one picture.
+- **Formats**: `docs/formats.md` (and `.es.md`) specifies `.athc`, `.athz`
+  and `.athv` to the byte, with the messages a `.athv` stream carries.
+
 ## 0.5.0 — 2026-11-08
 
 - **D3D12**: the engine runs on Direct3D 12 with DXC (carried in the Windows

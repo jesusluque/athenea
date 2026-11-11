@@ -133,7 +133,7 @@ Result<PlaneLayout> PlaneLayout::make(uint32_t nSplats, uint32_t nBits, uint32_t
 Result<uint32_t> PlaneLayout::sliceSplats(uint32_t nSplats, uint32_t nBits, uint32_t nRest, bool nHi,
                                           uint32_t nChunk, uint32_t nColumns, uint32_t mostWidth,
                                           uint32_t mostHeight, bool nChroma, bool nGeometry, uint32_t nFold) {
-    if (make(nSplats, nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight, nChroma, nGeometry)) {
+    if (make(nSplats, nBits, nRest, nHi, nChunk, nColumns, 0, mostWidth, mostHeight, nChroma, nGeometry, nFold)) {
         return nSplats;
     }
     // Chunk counts, from the most that could fit down: bookkeeping on sizes.

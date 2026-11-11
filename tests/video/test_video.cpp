@@ -682,3 +682,20 @@ TEST_CASE("a picture held to a smaller size cuts the frame into slices that fit 
     // Degree 3 (59 planes) needs more than 1080 rows for even one chunk in three columns.
     CHECK_FALSE(video::PlaneLayout::sliceSplats(splats, 8, 15, false, video::PlaneLayout::kBandSplats, 0, 1920, 1080));
 }
+
+TEST_CASE("geometry in the video counts its folded planes when a frame is cut into slices", "[video][layout]") {
+    // Three chunks at degree 0: the plain layout's 14 planes fit 1920 x 1080
+    // (three columns, five rows of 192), the folded geometry's 31 do not
+    // (eleven rows); one chunk of them does.
+    const uint32_t band = video::PlaneLayout::kBandSplats;
+    const uint32_t fold = video::PlaneLayout::kGeometryVideo | 0x101010u;
+    REQUIRE(video::PlaneLayout::make(3 * band, 8, 0, false, band, 0, 0, 1920, 1080));
+    CHECK_FALSE(video::PlaneLayout::make(3 * band, 8, 0, false, band, 0, 0, 1920, 1080, false, false, fold));
+    auto cap = video::PlaneLayout::sliceSplats(3 * band, 8, 0, false, band, 0, 1920, 1080, false, false, fold);
+    REQUIRE(cap);
+    CHECK(*cap == band);
+    auto layout = video::PlaneLayout::make(*cap, 8, 0, false, band, 0, 0, 1920, 1080, false, false, fold);
+    REQUIRE(layout);
+    CHECK(layout->planes() == 31u);
+    CHECK(layout->height <= 1080);
+}
