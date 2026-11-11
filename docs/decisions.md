@@ -20189,9 +20189,14 @@ are kept and a gaussian too light for the list (most of a walk, once four are in
 kept the trace only in the composite walk, which costs the blend half as much again in a frame with nothing under
 its splats, where now each of the four walks has its traced twin.
 
+**On CUDA** (an RTX 3070 Laptop under WSL2, the same build of the same commands, best of 30): the pawn's frame
+is 3.90 ms plain and 4.62 traced at 1920 x 1080, 6.23 and 10.36 at 3840 x 2160 -- 0.7 ms and 4.1 ms where Metal
+gave 0.46 and 2.0; the blend alone goes from 2.29 to 6.66 ms at 4K. The millisecond at 4K this step was allowed is
+not met on either device: the trace is 365 MB written a frame, and a laptop's memory pays more for it. `[trace]`
+passes there with Metal's own counts.
+
 ### Not done
 
-- Not timed on CUDA.
 - Nothing reads it yet outside the test: no AOV, no lift of a mask to the gaussians, no matte drawn from them.
 - The ray traced route keeps none.
 - A gaussian of a light catcher is not in it (it adds light and takes no coverage, as the matte has it), and a
@@ -20295,9 +20300,11 @@ acceleration Slang's experimental `neural` module reaches for (`import slang.neu
 `-experimental-feature`; not run through the engine), a smaller network, fewer pixels, or to run once a gaussian in
 view rather than once a pixel -- which is what is measured next.
 
+**On CUDA** (RTX 3070 Laptop, WSL2): forward 4.9 ms at 1920 x 1080 and 13.7 at 3840 x 2160, backward by hand 8.1
+and 33.8, and Slang's 1184 ms at 1080p with the same wrong derivative (19 104 of 19 200 pixels off).
+
 ### Not done
 
-- Not run on CUDA.
 - Halves, and the `neural` module's cooperative matrices, are not tried.
 - The weights' own gradient summed over pixels is not timed by hand (Slang's pass adds 1699 atomics a pixel).
 
@@ -20570,3 +20577,29 @@ and the third is not a measure of anything.
 - The map's sun against the bake's: found, not fixed.
 - More suns than twenty-four, and a regulariser on the features (their rate at zero changes nothing here: 0.0073).
 - The transmittance still only multiplies, so what a floor throws back into a shadow is not the network's to say.
+
+## The neural branch on CUDA: what holds, and what costs more (11 Nov)
+
+Everything above was measured on Metal. The same tree built under WSL2 for CUDA (an RTX 3070 Laptop, no OptiX),
+`[trace]` and `[neural]` passing with the counts Metal gave, and the pawn fitted there.
+
+**What holds.** The fit: after 5000 steps the pawn's latents are relMSE 0.00029, p99 7.0 and max 88 against its
+harmonics on the held-out cameras (Metal: 0.00033, 7.0, 112), against degree 2's 0.00188 and 16.8. The shimmer:
+0.000016 and p99 2 by the latents against 0.000005 and 1 by the harmonics at 960 x 540 (Metal: 0.000018 and 2).
+
+**What costs more.** A step of the fit is 60.5 ms where Metal's is 39. And a frame by the latents is not what a
+frame by the harmonics is there: 9.4 ms against 2.6 at 960 x 540, 9.8 against 2.6 at 1920 x 1080, 12.7 against 2.7
+at 3840 x 2160 -- seven to ten milliseconds for the network a gaussian in view, where Metal's was two or none.
+(The harmonics' 2.6 ms is what the frame's own clock says without waiting for the device, which `athenea bench`
+does: bench times the same cloud at 3.9 and 6.2 ms. The difference between the two columns is the one to read.)
+On this device the network a gaussian is the dearer way to colour a capture by a factor of three and more.
+
+**What is not there.** `--shadows` is refused: the rays a relit splat's shadow takes want a device that traces,
+and CUDA under WSL has no OptiX. So the shadowed fits are Metal's alone; the shadow map's route needs no ray and
+is the one CUDA could take, but its picture here is the rays'.
+
+### Not done
+
+- An L4, and Windows' own CUDA with OptiX.
+- Why the network costs a 3070 seven milliseconds for 120 thousand gaussians: `neuralShade` walks every gaussian
+  of the cloud and reads its weights from a buffer 960 times each; nothing of it is tuned.
