@@ -69,11 +69,24 @@ void neuralInitWeights(uint3 tid: SV_DispatchThreadID) {
     made[i] = i < kNeuralLayer2 ? (hash01(i * 2654435761u + params.seed) * 2.0 - 1.0) * params.spread : 0.0;
 }
 
+/// The network's weights in the group's memory: read from the buffer once a
+/// group of 64 gaussians, each thread its share, rather than 960 times a
+/// gaussian (neural_appearance.slang's INeuralWeights).
+groupshared float sWeights[kNeuralWeights];
+struct NeuralWeightsHere : INeuralWeights {
+    float at(uint index) { return sWeights[index]; }
+}
+
 /// The colours of one cloud's gaussians in this frame, written over what the
 /// projection put in their records.
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void neuralShade(uint3 tid: SV_DispatchThreadID) {
+void neuralShade(uint3 tid: SV_DispatchThreadID, uint3 lane: SV_GroupThreadID) {
+    for (uint w = lane.x; w < kNeuralWeights; w += 64) {
+        sWeights[w] = weights[w];
+    }
+    GroupMemoryBarrierWithGroupSync();
+    const NeuralWeightsHere held;
     const uint i = tid.x;
     if (i >= params.count) {
         return;
@@ -86,7 +99,7 @@ void neuralShade(uint3 tid: SV_DispatchThreadID) {
     const float3 direction = normalize(positions[i].xyz - eye);
     const bool lit = params.lit != 0;
     if (!lit) {
-        proj[slot].colour.xyz = neuralForward(latent, i, weights, direction, false, float3(0.0)).colour;
+        proj[slot].colour.xyz = neuralForward(latent, i, held, direction, false, float3(0.0)).colour;
         return;
     }
     float3 colour = float3(0.0);
@@ -98,7 +111,7 @@ void neuralShade(uint3 tid: SV_DispatchThreadID) {
             continue;
         }
         const float3 light = neuralLocalLight(shape, i, positions[i].xyz, eye, params.lightTowards[l].xyz);
-        colour += neuralForward(latent, i, weights, direction, true, light).colour * params.lightRadiance[l].rgb * reached;
+        colour += neuralForward(latent, i, held, direction, true, light).colour * params.lightRadiance[l].rgb * reached;
     }
     proj[slot].colour.xyz = colour;
 }

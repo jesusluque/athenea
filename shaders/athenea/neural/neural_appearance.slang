@@ -57,6 +57,21 @@ public static const uint kNeuralLayer1 = kNeuralHidden * kNeuralIn;
 public static const uint kNeuralLayer2 = kNeuralLayer1 + kNeuralHidden * kNeuralHidden;
 public static const uint kNeuralWeights = kNeuralLayer2 + 3 * kNeuralHidden;
 
+/// WHERE THE NETWORK'S WEIGHTS ARE READ FROM. A frame reads all of them once
+/// a gaussian in view, and reading them from the buffer each time is most of
+/// what the network costs (seven milliseconds of a frame on an RTX 3070 for
+/// 120 thousand gaussians); a kernel that shades may keep them in its group's
+/// memory instead, read once a group. So the passes take whichever.
+public interface INeuralWeights {
+    float at(uint index);
+}
+
+/// The weights where they live: the cloud's buffer.
+public struct NeuralWeightBuffer : INeuralWeights {
+    public StructuredBuffer<float> buffer;
+    public float at(uint index) { return buffer[index]; }
+}
+
 /// What one evaluation held, for the backward pass to walk.
 public struct NeuralPass {
     public float x[kNeuralIn];
@@ -114,8 +129,8 @@ public float3 neuralLocalLight(StructuredBuffer<uint> shape, uint gaussian, floa
 /// `lit`: the colour is the answer to a unit of light arriving from `light`
 /// (unit, towards the light, in the gaussian's own frame: `neuralLocalLight`)
 /// rather than the gaussian's own.
-public NeuralPass neuralForward(StructuredBuffer<float> latent, uint gaussian, StructuredBuffer<float> weights,
-                                float3 direction, bool lit, float3 light) {
+public NeuralPass neuralForward<W : INeuralWeights>(StructuredBuffer<float> latent, uint gaussian, W weights,
+                                                    float3 direction, bool lit, float3 light) {
     NeuralPass pass;
     float sh[16];
     harmonics(direction, sh);
@@ -136,14 +151,14 @@ public NeuralPass neuralForward(StructuredBuffer<float> latent, uint gaussian, S
     for (uint r = 0; r < kNeuralHidden; ++r) {
         float s = 0.0;
         for (uint c = 0; c < kNeuralIn; ++c) {
-            s += weights[kNeuralLayer0 + r * kNeuralIn + c] * pass.x[c];
+            s += weights.at(kNeuralLayer0 + r * kNeuralIn + c) * pass.x[c];
         }
         pass.h0[r] = max(s, 0.0);
     }
     for (uint r = 0; r < kNeuralHidden; ++r) {
         float s = 0.0;
         for (uint c = 0; c < kNeuralHidden; ++c) {
-            s += weights[kNeuralLayer1 + r * kNeuralHidden + c] * pass.h0[c];
+            s += weights.at(kNeuralLayer1 + r * kNeuralHidden + c) * pass.h0[c];
         }
         pass.h1[r] = max(s, 0.0);
     }
@@ -151,7 +166,7 @@ public NeuralPass neuralForward(StructuredBuffer<float> latent, uint gaussian, S
     for (uint r = 0; r < 3; ++r) {
         float s = 0.0;
         for (uint c = 0; c < kNeuralHidden; ++c) {
-            s += weights[kNeuralLayer2 + r * kNeuralHidden + c] * pass.h1[c];
+            s += weights.at(kNeuralLayer2 + r * kNeuralHidden + c) * pass.h1[c];
         }
         o[r] = s;
     }
@@ -187,21 +202,21 @@ public struct NeuralBack {
     public float  dLatent[kNeuralStride];  // the features', then the base's
 };
 
-public NeuralBack neuralBackward(NeuralPass pass, StructuredBuffer<float> weights, float3 dColour) {
+public NeuralBack neuralBackward<W : INeuralWeights>(NeuralPass pass, W weights, float3 dColour) {
     NeuralBack back;
     back.dOut = dColour * pass.perOutput;
     const float3 through = dColour * pass.perBase;
     for (uint c = 0; c < kNeuralHidden; ++c) {
         float s = 0.0;
         for (uint r = 0; r < 3; ++r) {
-            s += weights[kNeuralLayer2 + r * kNeuralHidden + c] * back.dOut[r];
+            s += weights.at(kNeuralLayer2 + r * kNeuralHidden + c) * back.dOut[r];
         }
         back.d1[c] = pass.h1[c] > 0.0 ? s : 0.0;
     }
     for (uint c = 0; c < kNeuralHidden; ++c) {
         float s = 0.0;
         for (uint r = 0; r < kNeuralHidden; ++r) {
-            s += weights[kNeuralLayer1 + r * kNeuralHidden + c] * back.d1[r];
+            s += weights.at(kNeuralLayer1 + r * kNeuralHidden + c) * back.d1[r];
         }
         back.d0[c] = pass.h0[c] > 0.0 ? s : 0.0;
     }
@@ -209,8 +224,8 @@ public NeuralBack neuralBackward(NeuralPass pass, StructuredBuffer<float> weight
         float dSin = 0.0;
         float dCos = 0.0;
         for (uint r = 0; r < kNeuralHidden; ++r) {
-            dSin += weights[kNeuralLayer0 + r * kNeuralIn + 16 + k] * back.d0[r];
-            dCos += weights[kNeuralLayer0 + r * kNeuralIn + 16 + kNeuralFeatures + k] * back.d0[r];
+            dSin += weights.at(kNeuralLayer0 + r * kNeuralIn + 16 + k) * back.d0[r];
+            dCos += weights.at(kNeuralLayer0 + r * kNeuralIn + 16 + kNeuralFeatures + k) * back.d0[r];
         }
         // x = sin z and cos z, which the pass kept.
         back.dLatent[k] = dSin * pass.x[16 + kNeuralFeatures + k] - dCos * pass.x[16 + k];

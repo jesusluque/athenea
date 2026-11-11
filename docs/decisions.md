@@ -20598,8 +20598,19 @@ On this device the network a gaussian is the dearer way to colour a capture by a
 and CUDA under WSL has no OptiX. So the shadowed fits are Metal's alone; the shadow map's route needs no ray and
 is the one CUDA could take, but its picture here is the rays'.
 
+**Half of it was the weights.** `neuralShade` read the network's 960 weights from their buffer once a gaussian;
+it now copies them into its group's memory once a group of 64 and reads them there (`INeuralWeights`: the passes
+take whichever). On the 3070 a frame by the latents goes from 9.8 to 4.9 ms at 1920 x 1080 and from 12.7 to 6.3 at
+3840 x 2160, against 2.0 by the harmonics on that run: three milliseconds for the network where it was seven. On
+Metal nothing moves (6.8 ms against 4.5 by the harmonics at 1080p, as before), whose buffer reads were not what
+it cost.
+
+The lit fit without shadows comes to the same there as on Metal: relMSE 0.00100, p99 19.4 after 3000 steps
+(Metal: 0.00100, 19.2), 0.00079 under three coloured suns at once (Metal with shadows from a map: 0.00052), a frame
+7.6 ms against the engine's own relighting at 2.5 before the weights moved. `--shadows` is refused, as said.
+
 ### Not done
 
 - An L4, and Windows' own CUDA with OptiX.
-- Why the network costs a 3070 seven milliseconds for 120 thousand gaussians: `neuralShade` walks every gaussian
-  of the cloud and reads its weights from a buffer 960 times each; nothing of it is tuned.
+- The network still walks every gaussian of the cloud to find those in view, and the projection still evaluates
+  the harmonics it overwrites.

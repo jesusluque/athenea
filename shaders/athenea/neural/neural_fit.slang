@@ -131,8 +131,10 @@ void neuralFitBackward(uint3 tid: SV_DispatchThreadID) {
     const float3 light = lit ? neuralLocalLight(shape, i, positions[i].xyz, eye,
                                                 float3(params.lightX, params.lightY, params.lightZ))
                              : float3(0.0);
-    const NeuralPass pass = neuralForward(latent, i, weights, direction, lit, light);
-    const NeuralBack back = neuralBackward(pass, weights, dColour);
+    NeuralWeightBuffer held;
+    held.buffer = weights;
+    const NeuralPass pass = neuralForward(latent, i, held, direction, lit, light);
+    const NeuralBack back = neuralBackward(pass, held, dColour);
     for (uint k = 0; k < kNeuralStride; ++k) {
         gradient[i * kNeuralStride + k] = back.dLatent[k];
     }
