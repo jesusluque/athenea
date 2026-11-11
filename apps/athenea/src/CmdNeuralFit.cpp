@@ -60,6 +60,7 @@ struct NeuralFitOptions {
     std::string         save;              ///< the fitted appearance, as a .athn
     std::string         pictures;          ///< a manifest of the same cloud baked under suns: what a lit fit learns from
     std::string         load;              ///< an appearance to start from (or, with --steps 0, only to measure)
+    unsigned            turn = 0;          ///< --relight: frames of a sun going once round, written by the engine and by the latents
     std::string         output;            ///< a prefix: <prefix>_harmonics.exr, _base.exr, _latents.exr
 };
 
@@ -455,11 +456,10 @@ int run(const NeuralFitOptions& o) {
         if (!made) return report(made.error());
         shadowTracer.emplace(std::move(*made));
     }
-    const auto sunAt = [&](uint32_t k, double phase) -> Result<render::NeuralFitLight> {
+    const auto sunFrom = [&](double yaw, double pitch) -> Result<render::NeuralFitLight> {
         light::Light lamp;
         lamp.kind = light::LightKind::Distant;
-        lamp.lightToWorld = aofx::xform::rotationY(360.0 * std::fmod(0.5 + (k + phase) * 0.8191725134, 1.0)) *
-                            aofx::xform::rotationX(-80.0 + 160.0 * std::fmod(0.5 + (k + phase) * 0.6710436067, 1.0));
+        lamp.lightToWorld = aofx::xform::rotationY(yaw) * aofx::xform::rotationX(pitch);
         lamp.intensity = o.sun;
         lamp.shadow = o.shadows;
         ATHENEA_TRY(table->set(std::span<const light::Light>(&lamp, 1)));
@@ -506,6 +506,10 @@ int run(const NeuralFitOptions& o) {
                               static_cast<float>(towards.z)};
         told.light.radiance = {o.sun, o.sun, o.sun};
         return told;
+    };
+    const auto sunAt = [&](uint32_t k, double phase) -> Result<render::NeuralFitLight> {
+        return sunFrom(360.0 * std::fmod(0.5 + (k + phase) * 0.8191725134, 1.0),
+                       -80.0 + 160.0 * std::fmod(0.5 + (k + phase) * 0.6710436067, 1.0));
     };
 
     // THREE SUNS AT ONCE, each its own colour: what a fit made under one white
@@ -796,6 +800,41 @@ int run(const NeuralFitOptions& o) {
             "against %.5f, %.1f and %u under one\n",
             m.relMse, m.p99, m.max, after->relMse, after->p99, after->max);
     }
+    if (o.relight && o.turn > 0 && !o.output.empty()) {
+        // A sun going once round the cloud, forty degrees up, from the first held-out camera: the
+        // engine's relighting and the latents', a frame each a step, for a film of the two side by side.
+        for (unsigned f = 0; f < o.turn; ++f) {
+            auto told = sunFrom(360.0 * f / o.turn, -40.0);
+            if (!told) return report(told.error());
+            const render::Camera camera = cameraAt(0, 0.5);
+            std::vector<render::SplatInstance> relit{instance};
+            relit[0].relight = true;
+            std::vector<render::SplatInstance> learnt{instance};
+            learnt[0].neural = &*neural;
+            learnt[0].neuralLight = &told->light;
+            render::RenderTargets whole;
+            render::RenderTargets ours;
+            auto a = raster->render(camera, relit, settings, whole, {}, nullptr, &lights);
+            if (!a) return report(a.error());
+            auto c = raster->render(camera, learnt, settings, ours, {}, nullptr,
+                                    !neural->shadowed ? nullptr : byMap ? &mapLights : &lights);
+            if (!c) return report(c.error());
+            for (const auto& [what, targets] : {std::pair<const char*, render::RenderTargets*>{"engine", &whole},
+                                                std::pair<const char*, render::RenderTargets*>{"latents", &ours}}) {
+                auto colour = targets->colour.readAll<float>(**device);
+                if (!colour) return report(colour.error());
+                auto depth = targets->depth.readAll<float>(**device);
+                if (!depth) return report(depth.error());
+                char name[32];
+                std::snprintf(name, sizeof(name), "_turn_%s_%03u.exr", what, f);
+                if (auto w = io::writeExr(o.output + name, settings.width, settings.height, *colour, *depth); !w) {
+                    return report(w.error());
+                }
+            }
+        }
+        out("wrote %u frames of a sun going round, by the engine and by the latents: %s_turn_*.exr\n", o.turn,
+            o.output.c_str());
+    }
     if (!o.save.empty()) {
         io::NeuralFile file;
         file.count = neural->count;
@@ -847,6 +886,7 @@ void addNeuralFit(CLI::App& app) {
     cmd->add_option("--rate-decay", o.rateDecay, "what the three rates fall to by the last step, as a factor (1: they stay)");
     cmd->add_flag("--relight", o.relight, "a lit neural cloud, fitted to the engine's relighting of the cloud under a sun that moves");
     cmd->add_option("--sun", o.sun, "--relight: the sun's intensity");
+    cmd->add_option("--turn", o.turn, "--relight with -o: this many frames of a sun going once round, by the engine and by the latents");
     cmd->add_option("--reached", o.reached, "--shadows: the neural cloud takes what reaches each gaussian from the light: ray (the engine's shadow ray) or map (the cloud's shadow map, no ray)");
     cmd->add_option("--map-side", o.mapSide, "--reached map: the shadow map's texels a side");
     cmd->add_option("--map-coefficients", o.mapCoefficients, "--reached map: 1, 3, 5 or 7 -- the map's total optical depth and its Fourier pairs");

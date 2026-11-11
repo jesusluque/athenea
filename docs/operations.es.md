@@ -284,6 +284,7 @@ frames para mirar.
 | `--save` | ruta | — | escribe la apariencia ajustada como un `.athn` (§8.2), con el que `athenea render --neural` dibuja la nube |
 | `--relight` | flag | apagado | ajusta en su lugar una nube neural iluminada: lo que debe ser es el relight del propio motor sobre la nube (sus colores como aquello de lo que está hecha, sin sombra) bajo un sol que viene de una dirección distinta en cada paso, y las cámaras reservadas se miden bajo soles que el fit nunca usó |
 | `--sun` | número | `3` | `--relight`: la intensidad del sol |
+| `--turn` | entero | `0` | `--relight` con `-o`: este número de frames de un sol que da una vuelta a la nube, a cuarenta grados de altura, desde la primera cámara reservada, como `<prefijo>_turn_engine_NNN.exr` y `_turn_latents_NNN.exr` |
 | `--shadows` | flag | apagado | `--relight`: en lo que la nube debe ser, el sol arroja la sombra de la nube sobre sí misma (un rayo por gaussiana, a través de las gaussianas de la propia nube); necesita un dispositivo que trace rayos. A la nube neural se le sigue diciendo solo de dónde viene la luz |
 | `-o`, `--output` | prefijo | — | escribe `<prefijo>_harmonics.exr`, `_base.exr` y `_latents.exr`: el frame de la primera cámara reservada con cada uno; con `--relight`, `<prefijo>_engine_sun0..2.exr` y `_latents_sun0..2.exr`, esa cámara bajo tres soles reservados |
 

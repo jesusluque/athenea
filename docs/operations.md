@@ -280,6 +280,7 @@ three frames to look at.
 | `--save` | path | — | writes the fitted appearance as a `.athn` (§8.2), which `athenea render --neural` draws the cloud by |
 | `--relight` | flag | off | fits a lit neural cloud instead: what it should be is the engine's own relighting of the cloud (its colours as what it is made of, no shadow) under a sun from a different direction each step, and the held-out cameras are measured under suns the fit never used |
 | `--sun` | number | `3` | `--relight`: the sun's intensity |
+| `--turn` | integer | `0` | `--relight` with `-o`: this many frames of a sun going once round the cloud, forty degrees up, from the first held-out camera, as `<prefix>_turn_engine_NNN.exr` and `_turn_latents_NNN.exr` |
 | `--shadows` | flag | off | `--relight`: in what the cloud should be, the sun casts the cloud's shadow on itself (a ray a gaussian, through the cloud's own gaussians); needs a device that traces rays. The neural cloud is still told only where the light comes from |
 | `-o`, `--output` | prefix | — | writes `<prefix>_harmonics.exr`, `_base.exr` and `_latents.exr`: the first held-out camera's frame by each; with `--relight`, `<prefix>_engine_sun0..2.exr` and `_latents_sun0..2.exr`, that camera under three held-out suns |
 
