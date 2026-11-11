@@ -262,7 +262,8 @@ frames para mirar.
 
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
-| `--splats` | ruta, obligatorio | — | un `.ply`, `.splat`, `.spz` o `.sog` |
+| `--splats` | ruta | — | un `.ply`, `.splat`, `.spz` o `.sog`; esto o `--pictures` |
+| `--pictures` | ruta | — | en lugar de `--splats`: un manifiesto de una malla horneada en las mismas gaussianas bajo varios soles, y un fit iluminado a esas nubes (abajo) |
 | `--steps` | entero | `3000` | una cámara cada uno; el error y la medida de las cámaras reservadas se imprimen diez veces por el camino |
 | `--size` | `WIDTHxHEIGHT` | `960x540` | el de los frames ajustados y el de los medidos |
 | `--target` | `x y z` | el centro de la nube | adonde miran todas las cámaras |
@@ -289,6 +290,19 @@ y la mayor diferencia de cualquiera de ellas. Con `--relight` las mismas
 medidas se toman además bajo tres soles de tres colores a la vez, contra el
 relight del motor bajo esos tres (y `-o` escribe `_engine_three.exr` y
 `_latents_three.exr`).
+
+**`--pictures`: ajustado a lo que horneó el path tracer.** El manifiesto es un fichero
+de texto, una línea por nube: `train` o `held`, el giro del sol sobre y y luego sobre
+x en grados (una luz distante que alumbra hacia su propio -z, como lo escriben
+`xformOp:rotateY`, `xformOp:rotateX`), y un fichero USD junto al
+manifiesto -- la misma malla convertida por `athenea mesh2splat` bajo ese sol, de modo
+que cada fichero tiene las mismas gaussianas con la luz de ese sol, rebotes y
+sombras, en sus armónicos. A una nube neural iluminada de esas gaussianas se le dice cada
+sol `train` y se mueve hacia su nube, y se mide contra las nubes `held`,
+cuyos soles nunca se le enseñaron, desde las cámaras reservadas. `--reached
+map` le da el shadow map de la nube desde cada sol; aquí no hay rayos, así que
+`--reached ray` y `--shadows` no se aplican. `-o` escribe
+`<prefijo>_picture_sun0..2.exr` y `_latents_sun0..2.exr`.
 
 ### 2.4 `athenea convert` — un fichero de splats a USD, o a un `.athc`
 

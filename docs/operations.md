@@ -258,7 +258,8 @@ three frames to look at.
 
 | Option | Value | Default | Notes |
 |---|---|---|---|
-| `--splats` | path, required | — | one `.ply`, `.splat`, `.spz` or `.sog` |
+| `--splats` | path | — | one `.ply`, `.splat`, `.spz` or `.sog`; this or `--pictures` |
+| `--pictures` | path | — | instead of `--splats`: a manifest of one mesh baked into the same gaussians under several suns, and a lit fit to those (below) |
 | `--steps` | integer | `3000` | a camera each; the error and the held-out measure are printed ten times on the way |
 | `--size` | `WIDTHxHEIGHT` | `960x540` | of the frames fitted and of those measured |
 | `--target` | `x y z` | the cloud's centre | what every camera looks at |
@@ -285,6 +286,19 @@ values, and the largest difference of any of them. With `--relight` the same
 measures are also taken under three suns of three colours at once, against the
 engine's relighting under those three (and `-o` writes `_engine_three.exr` and
 `_latents_three.exr`).
+
+**`--pictures`: fitted to what the path tracer baked.** The manifest is a text
+file, a line a cloud: `train` or `held`, the sun's turn about y and then about
+x in degrees (a distant light shining down its own -z, as
+`xformOp:rotateY`, `xformOp:rotateX` author it), and a USD file beside the
+manifest -- the same mesh converted by `athenea mesh2splat` under that sun, so
+every file holds the same gaussians with that sun's light, bounces and
+shadows, in their harmonics. A lit neural cloud of those gaussians is told each
+`train` sun and moved towards its cloud, and is measured against the `held`
+clouds, whose suns it was never shown, from the held-out cameras. `--reached
+map` gives it the cloud's shadow map from each sun; there is no ray here, so
+`--reached ray` and `--shadows` do not apply. `-o` writes
+`<prefix>_picture_sun0..2.exr` and `_latents_sun0..2.exr`.
 
 ### 2.4 `athenea convert` — a splat file into USD, or into a `.athc`
 

@@ -39,6 +39,12 @@ struct NeuralFitLight {
     /// gaussian measured another way (`SplatLights::visibilityFactors`, a
     /// shadow map's). Null: `teacher`.
     const SplatLights* student = nullptr;
+    /// THE PICTURE, where it is not the engine's relighting of the cloud:
+    /// another cloud of the same gaussians whose harmonics already hold the
+    /// light of this frame's light -- the same mesh baked under it by the
+    /// path tracer, bounces and shadows and all. Drawn as it is, by its
+    /// harmonics; `teacher` is then not read. Null: the cloud relit.
+    const SplatInstance* picture = nullptr;
 };
 
 class NeuralFit {

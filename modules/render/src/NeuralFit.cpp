@@ -98,11 +98,21 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
     if (neural.lit != (light != nullptr)) {
         return Error(ErrorCode::InvalidArgument, "a lit neural cloud is fitted under a light, and only a lit one is");
     }
+    const bool pictured = lit && light->picture != nullptr;
+    if (pictured && (light->picture->splats == nullptr || light->picture->splats->count != neural.count)) {
+        return Error(ErrorCode::InvalidArgument, "the picture's cloud is not this cloud's gaussians");
+    }
     if (lit) {
-        byHarmonics.relight = true;
+        if (pictured) {
+            byHarmonics = *light->picture;
+            byHarmonics.neural = nullptr;
+            byHarmonics.relight = false;
+        } else {
+            byHarmonics.relight = true;
+        }
         byLatents.neuralLight = &light->light;
     }
-    const SplatLights* teacherLights = lit ? light->teacher : nullptr;
+    const SplatLights* teacherLights = lit && !pictured ? light->teacher : nullptr;
 
     // What the frame should be, and what it is.
     auto drawn = rasterizer.render(camera, std::span<const SplatInstance>(&byHarmonics, 1), frame, teacher_, {},
@@ -110,7 +120,7 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
     if (!drawn) return std::move(drawn).error();
     // A shadowed neural cloud takes what reaches it from the same shadow scene the picture was made with.
     const SplatLights* studentLights =
-        lit && neural.shadowed ? (light->student != nullptr ? light->student : teacherLights) : nullptr;
+        lit && neural.shadowed ? (light->student != nullptr ? light->student : light->teacher) : nullptr;
     const bool measured = studentLights != nullptr && studentLights->visibilityFactors != nullptr &&
                           studentLights->visibilityLights > 0;
     drawn = rasterizer.render(camera, std::span<const SplatInstance>(&byLatents, 1), frame, student_, {}, nullptr,

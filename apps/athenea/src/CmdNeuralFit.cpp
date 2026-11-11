@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -27,6 +28,9 @@
 #include "athenea/render/TileRasterizer.h"
 #include "athenea/scene/GpuClouds.h"
 #include "athenea/technique/SplatShadowMap.h"
+#include "athenea/usd/Export.h"
+#include <fstream>
+#include <sstream>
 #include "athenea/gpu/CommandBatch.h"
 
 namespace athenea::cli {
@@ -51,11 +55,265 @@ struct NeuralFitOptions {
     std::string         reached;           ///< --shadows: the neural cloud is told what reaches each gaussian: ray | map
     unsigned            mapSide = 2048;    ///< --reached map: the shadow map's texels a side
     std::string         save;              ///< the fitted appearance, as a .athn
+    std::string         pictures;          ///< a manifest of the same cloud baked under suns: what a lit fit learns from
     std::string         load;              ///< an appearance to start from (or, with --steps 0, only to measure)
     std::string         output;            ///< a prefix: <prefix>_harmonics.exr, _base.exr, _latents.exr
 };
 
+/// FITTED TO PICTURES THE PATH TRACER MADE (`--pictures`): the same mesh baked
+/// into the same gaussians under one sun after another (athenea mesh2splat,
+/// its bake's bounces and shadows in each gaussian's harmonics), each cloud
+/// the picture of its sun. A lit neural cloud of those gaussians is told each
+/// sun and moved towards its cloud, and is then held against the clouds of
+/// suns it was never shown. The manifest is a line a cloud: `train` or `held`,
+/// the sun's turn about y and then about x in degrees (a distant light shining
+/// down its own -z), and the USD file, beside the manifest.
+int runPictures(const NeuralFitOptions& o) {
+    render::NeuralFitSettings how;
+    if (std::sscanf(o.size.c_str(), "%ux%u", &how.width, &how.height) != 2 || how.width == 0 || how.height == 0) {
+        err("--size wants WIDTHxHEIGHT\n");
+        return kExitFailure;
+    }
+    how.rateFeatures = o.rateFeatures;
+    how.rateBase = o.rateBase;
+    how.rateWeights = o.rateWeights;
+    if (!o.reached.empty() && o.reached != "map") {
+        err("--pictures has no ray to cast: --reached map, or none\n");
+        return kExitFailure;
+    }
+    const bool byMap = o.reached == "map";
+    auto device = gpu::Device::create();
+    if (!device) return report(device.error());
+    gpu::ShaderLibrary library(*device);
+    auto loader = scene::CloudLoader::create(library);
+    if (!loader) return report(loader.error());
+    auto raster = render::TileRasterizer::create(library);
+    if (!raster) return report(raster.error());
+    auto fit = render::NeuralFit::create(library);
+    if (!fit) return report(fit.error());
+    auto table = light::LightTable::create(library);
+    if (!table) return report(table.error());
+
+    struct Picture {
+        bool                              held = false;
+        double                            yaw = 0.0;
+        double                            pitch = 0.0;
+        std::unique_ptr<scene::GpuSplats> cloud;
+    };
+    std::vector<Picture> pictures;
+    {
+        std::ifstream in(o.pictures);
+        if (!in) {
+            err("cannot open %s\n", o.pictures.c_str());
+            return kExitFailure;
+        }
+        const std::filesystem::path beside = std::filesystem::path(o.pictures).parent_path();
+        std::string line;
+        while (std::getline(in, line)) {
+            std::istringstream words(line);
+            std::string kind;
+            std::string file;
+            Picture picture;
+            if (!(words >> kind >> picture.yaw >> picture.pitch >> file)) {
+                continue;
+            }
+            picture.held = kind == "held";
+            auto cloud = usd::uploadParticleField(library, *loader, beside / file);
+            if (!cloud) return report(cloud.error());
+            picture.cloud = std::make_unique<scene::GpuSplats>(std::move(*cloud));
+            if (!pictures.empty() && picture.cloud->count != pictures.front().cloud->count) {
+                err("%s holds %u gaussians and the first cloud %u: not the same gaussians\n", file.c_str(),
+                    picture.cloud->count, pictures.front().cloud->count);
+                return kExitFailure;
+            }
+            pictures.push_back(std::move(picture));
+        }
+    }
+    std::vector<size_t> train;
+    std::vector<size_t> held;
+    for (size_t k = 0; k < pictures.size(); ++k) {
+        (pictures[k].held ? held : train).push_back(k);
+    }
+    if (train.empty() || held.empty()) {
+        err("%s wants clouds to learn from (train) and clouds to be held against (held)\n", o.pictures.c_str());
+        return kExitFailure;
+    }
+    // The gaussians are the first cloud's; every cloud's are the same.
+    const scene::GpuSplats& cloud = *pictures[train.front()].cloud;
+    auto neural = render::makeNeuralCloud(library, cloud, 1, true);
+    if (!neural) return report(neural.error());
+    neural->shadowed = byMap;
+    const render::SplatInstance instance{&cloud, render::Mat4::identity(), {}};
+
+    const auto d = [](float v) { return static_cast<double>(v); };
+    const scene::Bounds& b = cloud.bounds;
+    const render::Vec3 target = o.target.size() == 3
+                                    ? render::Vec3{o.target[0], o.target[1], o.target[2]}
+                                    : render::Vec3{(d(b.min[0]) + d(b.max[0])) * 0.5, (d(b.min[1]) + d(b.max[1])) * 0.5,
+                                                   (d(b.min[2]) + d(b.max[2])) * 0.5};
+    const double extent = std::max({d(b.max[0]) - d(b.min[0]), d(b.max[1]) - d(b.min[1]), d(b.max[2]) - d(b.min[2])});
+    const double distance = o.distance > 0.0 ? o.distance : std::max(extent, 1.0e-3) * 1.4;
+    const auto cameraAt = [&](uint32_t k, double phase) {
+        const double a = 6.283185307179586 * std::fmod(0.5 + (k + phase) * 0.7548776662466927, 1.0);
+        const double h = -0.25 + 1.15 * std::fmod(0.5 + (k + phase) * 0.5698402909980532, 1.0);
+        const double r = std::sqrt(std::max(1.0 - h * h, 0.0));
+        render::Camera camera = render::Camera::lookingAt(
+            target + render::Vec3{r * std::sin(a), h, r * std::cos(a)} * distance, target, {0.0, 1.0, 0.0});
+        camera.lens.focal = o.focal;
+        return camera;
+    };
+
+    // A picture's sun, as the neural cloud is told it and as the shadow map is built from it.
+    std::optional<technique::SplatShadowMap> shadowMap;
+    gpu::Buffer mapFactors;
+    render::SplatLights lights;
+    render::SplatLights mapLights;
+    if (byMap) {
+        auto made = technique::SplatShadowMap::create(library);
+        if (!made) return report(made.error());
+        shadowMap.emplace(std::move(*made));
+        gpu::BufferDesc desc;
+        desc.bytes = std::max<uint64_t>(cloud.count, 1) * sizeof(float);
+        desc.elementBytes = sizeof(float);
+        desc.label = "neural.reached";
+        auto factors = gpu::Buffer::create(**device, desc);
+        if (!factors) return report(factors.error());
+        mapFactors = *factors;
+    }
+    const auto sunOf = [&](const Picture& picture) -> Result<render::NeuralFitLight> {
+        light::Light lamp;
+        lamp.kind = light::LightKind::Distant;
+        lamp.lightToWorld = aofx::xform::rotationY(picture.yaw) * aofx::xform::rotationX(picture.pitch);
+        lamp.intensity = o.sun;
+        lamp.shadow = true;
+        ATHENEA_TRY(table->set(std::span<const light::Light>(&lamp, 1)));
+        lights.records = &table->records();
+        lights.count = table->count();
+        render::NeuralFitLight told;
+        told.teacher = &lights;
+        if (shadowMap) {
+            technique::ShadowMapJob job;
+            technique::ShadowMapCaster caster;
+            caster.cloud = &cloud;
+            caster.positions = &cloud.positions;
+            caster.categories = ~uint64_t{0};
+            job.casters.push_back(caster);
+            job.lights = lights.records;
+            job.lightCount = 1;
+            job.resolution = o.mapSide;
+            job.coefficients = 7;
+            gpu::CommandBatch batch(**device);
+            ATHENEA_TRY(shadowMap->build(batch, job));
+            ATHENEA_TRY(shadowMap->factors(batch, caster, 0, mapFactors));
+            ATHENEA_TRY(batch.submit(true));
+            mapLights = render::SplatLights{};
+            mapLights.records = lights.records;
+            mapLights.count = lights.count;
+            mapLights.visibilityFactors = &mapFactors;
+            mapLights.visibilityLights = 1;
+            told.student = &mapLights;
+        }
+        const render::Vec3 towards = lamp.lightToWorld.direction({0.0, 0.0, 1.0});
+        told.light.towards = {static_cast<float>(towards.x), static_cast<float>(towards.y),
+                              static_cast<float>(towards.z)};
+        told.light.radiance = {o.sun, o.sun, o.sun};
+        return told;
+    };
+
+    render::RenderSettings settings;
+    settings.width = how.width;
+    settings.height = how.height;
+    struct Measure {
+        double   relMse = 0.0;
+        double   p99 = 0.0;
+        uint32_t max = 0;
+    };
+    // The neural cloud told each of `which` clouds' suns, against that cloud, from the held-out cameras.
+    // `write`: the first camera's frames of the first three, under that prefix.
+    const auto measure = [&](const std::vector<size_t>& which, const std::string& write) -> Result<Measure> {
+        Measure m;
+        const double share = 1.0 / (static_cast<double>(which.size()) * o.heldOut);
+        for (size_t at = 0; at < which.size(); ++at) {
+            const Picture& picture = pictures[which[at]];
+            auto told = sunOf(picture);
+            if (!told) return std::move(told).error();
+            for (uint32_t k = 0; k < o.heldOut; ++k) {
+                const render::Camera camera = cameraAt(k, 0.5);
+                std::vector<render::SplatInstance> baked{{picture.cloud.get(), render::Mat4::identity(), {}}};
+                std::vector<render::SplatInstance> learnt{instance};
+                learnt[0].neural = &*neural;
+                learnt[0].neuralLight = &told->light;
+                render::RenderTargets whole;
+                render::RenderTargets ours;
+                auto a = raster->render(camera, baked, settings, whole);
+                if (!a) return std::move(a).error();
+                auto c = raster->render(camera, learnt, settings, ours, {}, nullptr, byMap ? &mapLights : nullptr);
+                if (!c) return std::move(c).error();
+                auto hdr = render::compareHdr(library, ours.colour, whole.colour, settings.width, settings.height);
+                if (!hdr) return std::move(hdr).error();
+                auto codes = render::compareImages(library, ours.colour, whole.colour, settings.width, settings.height);
+                if (!codes) return std::move(codes).error();
+                m.relMse += hdr->relMse * share;
+                m.p99 += static_cast<double>(codes->p99) * share;
+                m.max = std::max(m.max, codes->max);
+                if (!write.empty() && k == 0 && at < 3) {
+                    for (const auto& [what, targets] :
+                         {std::pair<const char*, render::RenderTargets*>{"picture", &whole},
+                          std::pair<const char*, render::RenderTargets*>{"latents", &ours}}) {
+                        auto colour = targets->colour.readAll<float>(**device);
+                        if (!colour) return std::move(colour).error();
+                        auto depth = targets->depth.readAll<float>(**device);
+                        if (!depth) return std::move(depth).error();
+                        const std::string path = write + "_" + what + "_sun" + std::to_string(at) + ".exr";
+                        ATHENEA_TRY(io::writeExr(path, settings.width, settings.height, *colour, *depth));
+                        out("wrote %s\n", path.c_str());
+                    }
+                }
+            }
+        }
+        return m;
+    };
+
+    out("%u gaussians; %zu clouds to learn from and %zu held out, each the mesh baked under its sun\n", cloud.count,
+        train.size(), held.size());
+    auto before = measure(held, {});
+    if (!before) return report(before.error());
+    out("before: relMSE %.5f, p99 %.1f, max %u (held-out suns and cameras, against the baked clouds)\n",
+        before->relMse, before->p99, before->max);
+    const auto start = std::chrono::steady_clock::now();
+    const unsigned every = std::max(o.steps / 10, 1u);
+    for (unsigned k = 0; k < o.steps; ++k) {
+        // The clouds in an order that visits all of them before any twice.
+        const Picture& picture = pictures[train[(static_cast<size_t>(k) * 7) % train.size()]];
+        auto told = sunOf(picture);
+        if (!told) return report(told.error());
+        const render::SplatInstance baked{picture.cloud.get(), render::Mat4::identity(), {}};
+        told->picture = &baked;
+        const bool ask = k == 0 || (k + 1) % every == 0;
+        auto loss = fit->step(*raster, cameraAt(k, 0.0), instance, *neural, how, ask, &*told);
+        if (!loss) return report(loss.error());
+        if (*loss) {
+            auto now = measure(held, {});
+            if (!now) return report(now.error());
+            out("step %u: relMSE %.5f; held out: relMSE %.5f, p99 %.1f, max %u\n", k + 1, **loss, now->relMse,
+                now->p99, now->max);
+        }
+    }
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    auto after = measure(held, o.output);
+    if (!after) return report(after.error());
+    auto seen = measure(train, {});
+    if (!seen) return report(seen.error());
+    out("after %u steps in %.1f s: held-out suns relMSE %.5f, p99 %.1f, max %u; the suns it learnt from relMSE %.5f, "
+        "p99 %.1f, max %u\n",
+        o.steps, seconds, after->relMse, after->p99, after->max, seen->relMse, seen->p99, seen->max);
+    return 0;
+}
+
 int run(const NeuralFitOptions& o) {
+    if (!o.pictures.empty()) {
+        return runPictures(o);
+    }
     render::NeuralFitSettings how;
     if (std::sscanf(o.size.c_str(), "%ux%u", &how.width, &how.height) != 2 || how.width == 0 || how.height == 0) {
         err("--size wants WIDTHxHEIGHT\n");
@@ -541,7 +799,8 @@ void addNeuralFit(CLI::App& app) {
     auto options = std::make_shared<NeuralFitOptions>();
     NeuralFitOptions& o = *options;
     CLI::App* cmd = app.add_subcommand("neural-fit", "a cloud's harmonics learnt by a latent a gaussian and one network");
-    cmd->add_option("--splats", o.splats, "a .ply / .splat / .spz / .sog file")->required();
+    cmd->add_option("--splats", o.splats, "a .ply / .splat / .spz / .sog file");
+    cmd->add_option("--pictures", o.pictures, "instead of --splats: a manifest of one mesh baked into the same gaussians under several suns (USD ParticleFields); a lit fit to those");
     cmd->add_option("--steps", o.steps, "steps of the fit, a camera each");
     cmd->add_option("--size", o.size, "WIDTHxHEIGHT of the frames fitted and measured");
     cmd->add_option("--target", o.target, "what every camera looks at: x y z")->expected(3);
@@ -562,6 +821,10 @@ void addNeuralFit(CLI::App& app) {
     cmd->add_option("--save", o.save, "write the fitted appearance: a .athn, to draw the cloud by (athenea render --neural)");
     cmd->add_option("-o,--output", o.output, "a prefix: the first held-out camera's frame by the harmonics, the base and the latents");
     cmd->callback([options] {
+        if (options->splats.empty() == options->pictures.empty()) {
+            err("give --splats or --pictures\n");
+            throw CLI::RuntimeError(kExitFailure);
+        }
         if (const int code = run(*options); code != 0) {
             throw CLI::RuntimeError(code);
         }
