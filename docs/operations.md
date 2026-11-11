@@ -285,6 +285,7 @@ three frames to look at.
 | `--map-side` | integer | `2048` | `--reached map`: the shadow map's texels a side |
 | `--map-coefficients` | 1, 3, 5 or 7 | `7` | `--reached map`: the map's total optical depth and its Fourier pairs |
 | `--map-bias` | world units | `0` | `--reached map`: how far behind a texel's nearest caster a receiver still stands on it; 0 is 2% of the slab |
+| `--map-spread` | number | `0` | `--reached map`: each gaussian reads the map at its centre and at four points this many of its own standard deviations along its two longer axes, each at its own depth, and is told the mean (the centre counts twice); `0` reads the centre alone. `3` is where the pawn's error against the path tracer was least |
 | `--load` | path | — | a `.athn` to start from; with `--steps 0` it is only measured |
 | `--save` | path | — | writes the fitted appearance as a `.athn` (§8.2), which `athenea render --neural` draws the cloud by |
 | `--relight` | flag | off | fits a lit neural cloud instead: what it should be is the engine's own relighting of the cloud (its colours as what it is made of, no shadow) under a sun from a different direction each step, and the held-out cameras are measured under suns the fit never used |

@@ -20830,3 +20830,38 @@ the colour costs nothing this measure can see. The default stays 0, which also s
 - A weight above 64, and a step other than a degree.
 - The spread between runs with one seed, measured rather than read off this table.
 - Metal.
+
+## A gaussian reads its shadow as a disc and not a point (11 Nov)
+
+Against the path tracer's bakes the lit cloud's error sits at the edges of shadows, and one cause is in how a
+gaussian is told what reaches it: `SplatShadowMap::factors` read the map at the gaussian's centre, so a gaussian
+lying across an edge was wholly in the shadow or wholly out of it. `ShadowMapCaster::receiverSpread` reads it where
+it lies instead: the centre and four points that many of its own standard deviations along its two longer axes,
+each at its own depth in the map (so a surface does not shadow itself by being read off its own plane), the centre
+counted twice, and their mean. The option is `athenea neural-fit --map-spread`; 0, the default everywhere, is the
+centre alone and what a relight has always read.
+
+The clay pawn, 24 suns baked by the path tracer and 4 held out, 4000 steps at 960 x 540, a map of 1024 with seven
+coefficients, on an RTX 3070. Held-out suns from held-out cameras, against the baked clouds:
+
+| `--map-spread` | relMSE | p99 | max | against 0 |
+|---|---|---|---|---|
+| 0 | 0.00442 | 38.2 | 198 | |
+| 0.5 | 0.00394 | 36.3 | 184 | 1.12 times less |
+| 1 | 0.00397 | 36.0 | 194 | 1.11 |
+| 2 | 0.00363 | 37.1 | 163 | 1.22 |
+| 3 | 0.00337 | 35.5 | 158 | 1.31 |
+| 4 | 0.00339 | 35.9 | 152 | 1.30 |
+| 6 | 0.00373 | 38.9 | 150 | 1.18 |
+
+It bottoms at three to four standard deviations, a third less error and a worst pixel 40 code values lower, and
+past that the disc is wider than the gaussian and blurs shadows that are sharp. The p99 hardly moves, 38 to 36:
+most of what is wrong at a shadow's edge is not this.
+
+### Not done
+
+- One run a value: the spread between runs of one value is not measured, and the steps between 0.5 and 1 are
+  inside it.
+- More than five reads, or reads weighted as the gaussian is.
+- The relight's own use of it (`athenea stage` with splat shadows): the field is there and nothing sets it.
+- Metal: the kernel compiles and the `[neural]` tests pass there; these numbers are CUDA's.

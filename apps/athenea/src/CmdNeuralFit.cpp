@@ -57,6 +57,7 @@ struct NeuralFitOptions {
     std::string         reached;           ///< --shadows: the neural cloud is told what reaches each gaussian: ray | map
     unsigned            mapSide = 2048;    ///< --reached map: the shadow map's texels a side
     unsigned            mapCoefficients = 7;   ///< 1, 3, 5 or 7: the map's total and its Fourier pairs
+    float               mapSpread = 0.0F;  ///< --reached map: each gaussian read as a disc this many of its standard deviations wide (0: its centre)
     float               mapBias = 0.0F;    ///< how far behind a texel's nearest caster a receiver still stands on it (0: 2% of the slab)
     std::string         save;              ///< the fitted appearance, as a .athn
     std::string         pictures;          ///< a manifest of the same cloud baked under suns: what a lit fit learns from
@@ -219,6 +220,7 @@ int runPictures(const NeuralFitOptions& o) {
             technique::ShadowMapJob job;
             technique::ShadowMapCaster caster;
             caster.cloud = &cloud;
+            caster.receiverSpread = o.mapSpread;
             caster.positions = &cloud.positions;
             caster.categories = ~uint64_t{0};
             job.casters.push_back(caster);
@@ -483,6 +485,7 @@ int run(const NeuralFitOptions& o) {
             technique::ShadowMapJob job;
             technique::ShadowMapCaster caster;
             caster.cloud = &*cloud;
+            caster.receiverSpread = o.mapSpread;
             caster.positions = &cloud->positions;
             caster.categories = ~uint64_t{0};
             job.casters.push_back(caster);
@@ -547,6 +550,7 @@ int run(const NeuralFitOptions& o) {
             technique::ShadowMapJob job;
             technique::ShadowMapCaster caster;
             caster.cloud = &*cloud;
+            caster.receiverSpread = o.mapSpread;
             caster.positions = &cloud->positions;
             caster.categories = ~uint64_t{0};
             job.casters.push_back(caster);
@@ -897,6 +901,7 @@ void addNeuralFit(CLI::App& app) {
     cmd->add_option("--reached", o.reached, "--shadows: the neural cloud takes what reaches each gaussian from the light: ray (the engine's shadow ray) or map (the cloud's shadow map, no ray)");
     cmd->add_option("--map-side", o.mapSide, "--reached map: the shadow map's texels a side");
     cmd->add_option("--map-coefficients", o.mapCoefficients, "--reached map: 1, 3, 5 or 7 -- the map's total optical depth and its Fourier pairs");
+    cmd->add_option("--map-spread", o.mapSpread, "--reached map: each gaussian reads the map at its centre and four points this many of its standard deviations along its two longer axes (0: its centre alone)");
     cmd->add_option("--map-bias", o.mapBias, "--reached map: how far behind a texel's nearest caster a receiver still stands on it, world units (0: 2% of the slab)");
     cmd->add_flag("--shadows", o.shadows, "--relight: the sun casts the cloud's shadow on itself in what the cloud should be");
     cmd->add_option("--load", o.load, "a .athn to start from; with --steps 0, only measured");

@@ -77,6 +77,10 @@ public struct ShadowMapParams {
     /// A medium's words a texel after the depths (shadowStrideOf): 0 where no
     /// medium casts, else its total and Fourier pairs.
     public uint  mediumCoefficients;
+    /// THE FACTORS' RECEIVER AS A DISC AND NOT A POINT: how many of its own
+    /// standard deviations along its two longer axes a gaussian is read at,
+    /// four reads about the centre's. 0: the centre alone.
+    public float spread;
 };
 
 public ConstantBuffer<ShadowMapParams> shadowParams;
@@ -572,12 +576,41 @@ void shadowMapFactors(uint3 tid: SV_DispatchThreadID) {
     }
     const uint slot = (shadowParams.base + i) * shadowParams.lightCount;
     const float3 world = toWorld(shadowPositions[i].xyz);
+    float3 first = float3(0.0);
+    float3 second = float3(0.0);
+    if (shadowParams.spread > 0.0) {
+        const uint row = i * 4;
+        const float3x3 axes = axesOfQuaternion(decodeQuaternion(shadowShape[row]));
+        const float3 scale = float3(lowHalf(shadowShape[row + 1]), highHalf(shadowShape[row + 1]),
+                                    lowHalf(shadowShape[row + 2]));   // logs
+        const uint shortest = scale.x <= scale.y ? (scale.x <= scale.z ? 0u : 2u) : (scale.y <= scale.z ? 1u : 2u);
+        const uint a = (shortest + 1u) % 3u;
+        const uint b = (shortest + 2u) % 3u;
+        const float3 origin = toWorld(float3(0.0));
+        first = toWorld(float3(axes[0][a], axes[1][a], axes[2][a]) * exp(scale[a]) * shadowParams.spread) - origin;
+        second = toWorld(float3(axes[0][b], axes[1][b], axes[2][b]) * exp(scale[b]) * shadowParams.spread) - origin;
+    }
     for (uint k = 0; k < shadowParams.lightCount && k < kShadowSlots; ++k) {
         // On the lit side of the first surface -- which is where most of a
         // surface-like cloud's gaussians are -- nothing is in the way, and
         // the reconstruction is not asked a question it cannot answer: the
         // read's own test, the same a floor's is.
-        shadowFactors[slot + k] = shadowMapRead<ShadowBufferSource>(shadowFrameOf<ShadowBufferSource>(k), k, world);
+        const ShadowMapFrame f = shadowFrameOf<ShadowBufferSource>(k);
+        float reached = shadowMapRead<ShadowBufferSource>(f, k, world);
+        if (shadowParams.spread > 0.0) {
+            // A gaussian across a shadow's edge is neither in it nor out of
+            // it, and its centre says one or the other: so it is read where
+            // it lies, at its own depth each time, and what it is told is
+            // the mean. The centre counts twice, as the middle of a gaussian
+            // does.
+            reached *= 2.0;
+            for (uint t = 0; t < 4; ++t) {
+                const float3 along = (t & 2u) != 0u ? second : first;
+                reached += shadowMapRead<ShadowBufferSource>(f, k, world + ((t & 1u) != 0u ? -along : along));
+            }
+            reached /= 6.0;
+        }
+        shadowFactors[slot + k] = reached;
     }
 }
 

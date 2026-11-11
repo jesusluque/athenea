@@ -50,6 +50,12 @@ struct ShadowMapCaster {
     /// than what an opacity would.
     bool                    volume = false;
     float                   volumeDensity = 1.0F;
+    /// `factors` alone: a gaussian read as a disc and not a point -- four
+    /// reads this many of its own standard deviations along its two longer
+    /// axes beside its centre's, each at its own depth, and their mean. A
+    /// gaussian across a shadow's edge is then told how much of it is lit.
+    /// 0: the centre alone, as a relight has always read it.
+    float                   receiverSpread = 0.0F;
 };
 
 struct ShadowMapJob {
