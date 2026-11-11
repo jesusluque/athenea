@@ -7,6 +7,8 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <memory>
 #include <vector>
 
@@ -210,7 +212,8 @@ TEST_CASE("a mask made on one camera's frame is the matte another camera's frame
         auto drawn = raster->render(camera, instances, lifting, again);
         if (!drawn) FAIL(drawn.error().toString());
     };
-    const auto measure = [&](std::array<double, 3> eye, const render::SplatLift& lift, bool hard) {
+    const auto measure = [&](std::array<double, 3> eye, const render::SplatLift& lift, bool hard,
+                             const char* dump = nullptr) {
         render::RenderTargets targets;
         frame(eye, targets);
         gpu::Buffer matte;
@@ -229,6 +232,31 @@ TEST_CASE("a mask made on one camera's frame is the matte another camera's frame
         REQUIRE(batch.submit(true));
         std::array<uint32_t, 8> row{};
         REQUIRE(stats.read(*gpu->device, 0, sizeof(row), row.data()));
+        if (dump != nullptr && std::getenv("ATHENEA_TEST_DUMP") != nullptr) {
+            // For a person to look at: the matte and the coverage it is measured against.
+            gpu::BufferDesc image;
+            image.bytes = pixels * 4 * sizeof(float);
+            image.elementBytes = 4 * sizeof(float);
+            image.label = "matte.shown";
+            auto shownMatte = gpu::Buffer::create(*gpu->device, image);
+            auto shownTruth = gpu::Buffer::create(*gpu->device, image);
+            REQUIRE(shownMatte);
+            REQUIRE(shownTruth);
+            gpu::ComputeKernel show = test::kernel(*gpu, "athenea/test/matte_show");
+            gpu::CommandBatch showing(*gpu->device);
+            show.dispatch(showing, {settings.width, settings.height, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["crypto"].setBinding(targets.crypto.rhi());
+                cursor["matte"].setBinding(matte.rhi());
+                cursor["shownMatte"].setBinding(shownMatte->rhi());
+                cursor["shownTruth"].setBinding(shownTruth->rhi());
+                cursor["params"]["width"].setData(settings.width);
+                cursor["params"]["height"].setData(settings.height);
+                cursor["params"]["id"].setData(idA);
+            });
+            REQUIRE(showing.submit(true));
+            test::dumpPpm(*gpu, std::string("lift_") + dump + "_matte", *shownMatte, settings.width, settings.height);
+            test::dumpPpm(*gpu, std::string("lift_") + dump + "_truth", *shownTruth, settings.width, settings.height);
+        }
         return row;
     };
     const auto lifted = [&](const render::SplatLift& lift) {
@@ -271,7 +299,7 @@ TEST_CASE("a mask made on one camera's frame is the matte another camera's frame
     report("the lifting camera", same);
     const auto acrossNamed = measure(side, *named, false);
     report("another camera, by the trace", acrossNamed);
-    const auto across = measure(side, *whole, false);
+    const auto across = measure(side, *whole, false, "1");
     report("another camera", across);
     const auto acrossHard = measure(side, *whole, true);
     report("another camera, hard", acrossHard);
@@ -290,7 +318,7 @@ TEST_CASE("a mask made on one camera's frame is the matte another camera's frame
             char what[64];
             std::snprintf(what, sizeof(what), "%u cameras, while blending", cameras);
             said(what, twoWhole);
-            acrossTwo = measure(side, *whole, false);
+            acrossTwo = measure(side, *whole, false, cameras == 8 ? "8" : nullptr);
             std::snprintf(what, sizeof(what), "another camera, %u lifted", cameras);
             report(what, acrossTwo);
             std::snprintf(what, sizeof(what), "another camera, %u lifted, by the trace", cameras);
