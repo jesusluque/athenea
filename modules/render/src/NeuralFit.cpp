@@ -13,7 +13,7 @@ namespace athenea::render {
 namespace {
 
 /// neural_fit.slang's kFitRecord.
-constexpr uint32_t kFitRecord = 1 + kNeuralIn + kNeuralHidden * 2 + 3 + kNeuralHidden * 2;
+constexpr uint32_t kFitRecord = 1 + kNeuralIn + kNeuralHidden * 2 + kNeuralOut + kNeuralHidden * 2;
 constexpr float kBeta1 = 0.9F;
 constexpr float kBeta2 = 0.999F;
 

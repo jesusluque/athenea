@@ -20556,7 +20556,7 @@ against 5.01 at 1920 x 1080 -- two milliseconds more, where an earlier run of th
 - A lit appearance is written and read, and `athenea render` refuses it: it has no light to tell it.
 - USD knows nothing of it, and neither does `athenea view`.
 
-## A lit fit to what the path tracer baked: first numbers, and what is wrong with them (11 Nov)
+## A lit fit to what the path tracer baked: first numbers, and a wrong turn (11 Nov)
 
 The picture a lit neural cloud learnt so far was the engine's own analytic relighting. `athenea neural-fit
 --pictures` takes instead what the path tracer made: one mesh converted by `athenea mesh2splat` into the same
@@ -20575,25 +20575,34 @@ suns, against those suns' baked clouds):
 
 | the neural cloud is told | relMSE, held-out suns | p99 | relMSE, the suns it learnt from |
 |---|---|---|---|
-| nothing learnt yet | 3.03 | 205 | -- |
-| where the light comes from | 0.0285 | 92 | 0.0135 |
-| and the cloud's shadow map from it | 0.0078 | 80 | 0.0054 |
+| nothing learnt yet | 3.4 | 205 | -- |
+| where the light comes from | 0.0298 | 88 | 0.0141 |
+| and the cloud's shadow map from it, the product alone | 0.0078 | 80 | 0.0054 |
+| the map, and a second answer for light that did not have to arrive | 0.0045 | 38 | 0.0034 |
 
-Far from the analytic picture's 0.00068 and p99 14, and the frames say why. Told the direction alone, the cloud
-has learnt its twenty-four suns and not the sun: a held-out sun's floor carries the ghosts of the shadows it was
-shown, which is what 24 lights are to a network asked for a shadow's edge. With the map the floor is clean and
-the shadow is where it should be in some frames -- and in others it is not: **the map's shadow and the baked
-sun's do not agree in this mode**, and not by the sign of an angle (drawn before any step, a held-out sun's
-frame shows a shadow of another length and direction than its cloud's). The sun is authored as `rotateY` then
-`rotateX` on a `DistantLight` and told to the map as `rotationY(yaw) * rotationX(pitch)` on a light record;
-which of the two the engine reads otherwise is not found yet. Until it is, the second row is the one to read,
-and the third is not a measure of anything.
+Told the direction alone, the cloud has learnt its twenty-four suns and not the sun: a held-out sun's floor carries
+the ghosts of the shadows it was shown, which is what 24 lights are to a network asked for a shadow's edge. With
+the map the floor is clean and the shadow is the path tracer's.
+
+**A second answer.** With the transmittance multiplying everything, what a shadow still shows was put out: the
+neck under the pawn's head black where the path tracer has it lit by the floor. The network now gives six numbers
+where it gave three -- `colour = radiance * base * (reached * direct + bounced)` -- and only the first three are
+the light that has to arrive. That is the last row: p99 from 80 to 38.
+
+**A wrong turn, kept here.** A held-out sun's frame drawn before any step showed two shadows, and the map was
+blamed for an hour: its coefficients, its bias, sixteen readings of the sun's two angles, the light table's
+upload. The map was right. A lit cloud's base starts as its gaussians' own colour, and here that colour is the
+first cloud's -- the mesh already lit by the first sun, its shadow in it. The second shadow was the first sun's,
+in the base, for the fit to unlearn.
+
+Still six times the analytic picture's 0.00068, and its p99 of 14: twenty-four suns, a base that starts as a
+picture, and noise a gaussian in the bakes themselves (64 paths).
 
 ### Not done
 
-- The map's sun against the bake's: found, not fixed.
+- A base that starts as what the gaussians are made of rather than as one sun's picture of them: the mean of the
+  clouds, or the conversion's own albedo.
 - More suns than twenty-four, and a regulariser on the features (their rate at zero changes nothing here: 0.0073).
-- The transmittance still only multiplies, so what a floor throws back into a shadow is not the network's to say.
 
 ## The neural branch on CUDA: what holds, and what costs more (11 Nov)
 

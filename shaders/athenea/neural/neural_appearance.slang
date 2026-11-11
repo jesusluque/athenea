@@ -21,10 +21,18 @@
 // gaussian is made of, not what it shone with -- answers a unit of light from
 // there,
 //
-//     colour = radiance * base * softplus(network(...) + c),   softplus(c) = 1
+//     colour = radiance * base * (reached * direct + bounced)
+//     direct = softplus(first three + c), softplus(c) = 1;  bounced = softplus(last three - 3)
 //
 // which is linear in the light as light is: two lights are two evaluations
-// summed. The same weights' layout serves both; unlit, the nine are zero.
+// summed. `reached` is how much of the light arrives at the gaussian, which
+// the engine says (a shadow ray, a shadow map; 1 where nobody does), and it
+// multiplies only the first answer: what a floor throws back into a shadow,
+// what comes round a corner, is light of that light that did not have to
+// arrive, and a product with `reached` alone put those places out (the neck
+// under the pawn's head, black where the path tracer has it pink). The same
+// weights' layout serves both; unlit, the nine are zero and the last three
+// outputs are not read.
 //
 // The light's direction is given in the gaussian's own frame
 // (`neuralLocalLight`): its third coordinate is along the gaussian's normal --
@@ -55,7 +63,12 @@ public static const uint kNeuralHidden = 16;
 public static const uint kNeuralLayer0 = 0;
 public static const uint kNeuralLayer1 = kNeuralHidden * kNeuralIn;
 public static const uint kNeuralLayer2 = kNeuralLayer1 + kNeuralHidden * kNeuralHidden;
-public static const uint kNeuralWeights = kNeuralLayer2 + 3 * kNeuralHidden;
+/// What the network gives: three numbers for the light that arrives, three for the light that does
+/// not have to (the second three are a lit cloud's alone).
+public static const uint kNeuralOut = 6;
+public static const uint kNeuralWeights = kNeuralLayer2 + kNeuralOut * kNeuralHidden;
+/// softplus(-kNeuralDim) is a twentieth: where a lit gaussian's second answer starts.
+public static const float kNeuralDim = 3.0;
 
 /// WHERE THE NETWORK'S WEIGHTS ARE READ FROM. A frame reads all of them once
 /// a gaussian in view, and reading them from the buffer each time is most of
@@ -78,7 +91,8 @@ public struct NeuralPass {
     public float h0[kNeuralHidden];
     public float h1[kNeuralHidden];
     public float3 colour;      // before the light's radiance, where lit
-    public float3 perOutput;   // the colour's derivative with respect to the network's output
+    public float3 perOutput;   // the colour's derivative with respect to the network's first three outputs
+    public float3 perSecond;   // with respect to its last three (zero where not lit)
     public float3 perBase;     // and with respect to the base
 };
 
@@ -130,7 +144,7 @@ public float3 neuralLocalLight(StructuredBuffer<uint> shape, uint gaussian, floa
 /// (unit, towards the light, in the gaussian's own frame: `neuralLocalLight`)
 /// rather than the gaussian's own.
 public NeuralPass neuralForward<W : INeuralWeights>(StructuredBuffer<float> latent, uint gaussian, W weights,
-                                                    float3 direction, bool lit, float3 light) {
+                                                    float3 direction, bool lit, float3 light, float reached) {
     NeuralPass pass;
     float sh[16];
     harmonics(direction, sh);
@@ -163,21 +177,30 @@ public NeuralPass neuralForward<W : INeuralWeights>(StructuredBuffer<float> late
         pass.h1[r] = max(s, 0.0);
     }
     float3 o = float3(0.0);
-    for (uint r = 0; r < 3; ++r) {
+    float3 second = float3(0.0);
+    for (uint r = 0; r < (lit ? kNeuralOut : 3u); ++r) {
         float s = 0.0;
         for (uint c = 0; c < kNeuralHidden; ++c) {
             s += weights.at(kNeuralLayer2 + r * kNeuralHidden + c) * pass.h1[c];
         }
-        o[r] = s;
+        if (r < 3) {
+            o[r] = s;
+        } else {
+            second[r - 3] = s;
+        }
     }
     const float3 base = float3(latent[row + kNeuralFeatures], latent[row + kNeuralFeatures + 1],
                                latent[row + kNeuralFeatures + 2]);
     if (lit) {
         const float3 shifted = o + kNeuralSoft;
         // softplus, written so that a large argument does not overflow.
-        const float3 answer = max(shifted, float3(0.0)) + log(1.0 + exp(-abs(shifted)));
+        const float3 direct = max(shifted, float3(0.0)) + log(1.0 + exp(-abs(shifted)));
+        const float3 dimmed = second - kNeuralDim;
+        const float3 bounced = max(dimmed, float3(0.0)) + log(1.0 + exp(-abs(dimmed)));
+        const float3 answer = reached * direct + bounced;
         pass.colour = base * answer;
-        pass.perOutput = base / (1.0 + exp(-shifted));
+        pass.perOutput = base * reached / (1.0 + exp(-shifted));
+        pass.perSecond = base / (1.0 + exp(-dimmed));
         pass.perBase = answer;
     } else {
         const float3 squashed = tanh(o);
@@ -186,6 +209,7 @@ public NeuralPass neuralForward<W : INeuralWeights>(StructuredBuffer<float> late
         const float3 open = float3(pass.colour.x > 0.0 ? 1.0 : 0.0, pass.colour.y > 0.0 ? 1.0 : 0.0,
                                    pass.colour.z > 0.0 ? 1.0 : 0.0);
         pass.perOutput = open * (float3(1.0) - squashed * squashed);
+        pass.perSecond = float3(0.0);
         pass.perBase = open;
     }
     return pass;
@@ -196,7 +220,7 @@ public NeuralPass neuralForward<W : INeuralWeights>(StructuredBuffer<float> late
 /// gradients (weight[r][c] of a layer: its error at r times its input at c),
 /// and the gaussian's own -- its features' and its base's.
 public struct NeuralBack {
-    public float3 dOut;                    // layer 2's error
+    public float  dOut[kNeuralOut];        // layer 2's error
     public float  d1[kNeuralHidden];       // layer 1's
     public float  d0[kNeuralHidden];       // layer 0's
     public float  dLatent[kNeuralStride];  // the features', then the base's
@@ -204,11 +228,16 @@ public struct NeuralBack {
 
 public NeuralBack neuralBackward<W : INeuralWeights>(NeuralPass pass, W weights, float3 dColour) {
     NeuralBack back;
-    back.dOut = dColour * pass.perOutput;
+    const float3 first = dColour * pass.perOutput;
+    const float3 last = dColour * pass.perSecond;
+    for (uint r = 0; r < 3; ++r) {
+        back.dOut[r] = first[r];
+        back.dOut[3 + r] = last[r];
+    }
     const float3 through = dColour * pass.perBase;
     for (uint c = 0; c < kNeuralHidden; ++c) {
         float s = 0.0;
-        for (uint r = 0; r < 3; ++r) {
+        for (uint r = 0; r < kNeuralOut; ++r) {
             s += weights.at(kNeuralLayer2 + r * kNeuralHidden + c) * back.dOut[r];
         }
         back.d1[c] = pass.h1[c] > 0.0 ? s : 0.0;

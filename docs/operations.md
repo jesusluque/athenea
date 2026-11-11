@@ -252,7 +252,7 @@ the far side to that guess, and more `--from` cameras are what removes it.
 
 Fits a neural appearance to a cloud and says how near it came: the cloud drawn
 by its harmonics, from cameras over a sphere round it, is what the cloud drawn
-from eleven numbers a gaussian and a network of 960 weights is moved towards.
+from eleven numbers a gaussian and a network of 1008 weights is moved towards.
 The geometry is not touched. `--save` writes the fitted appearance; `-o`,
 three frames to look at.
 
@@ -3288,7 +3288,7 @@ codec string and `hvcC` record built from that record's VPS, SPS and PPS
 one network, beside the cloud's own file and of it gaussian for gaussian, in
 its order (it names no cloud; the count is checked). Little endian: `ATHN`, six
 uint32 -- version (1), gaussians, numbers a gaussian (11), words a gaussian (6),
-weights (960), flags (bit 0: lit) -- then the latents as halves, two a uint32
+weights (1008), flags (bit 0: lit) -- then the latents as halves, two a uint32
 and so 24 bytes a gaussian, then the weights as float32.
 
 **Images written.** OpenEXR, linear premultiplied, bottom row first inside the

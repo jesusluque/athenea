@@ -256,7 +256,7 @@ desde un lado deja el lado contrario a esa suposición, y más cámaras `--from`
 
 Ajusta una apariencia neural a una nube y dice cuánto se acercó: la nube dibujada
 por sus armónicos, desde cámaras repartidas por una esfera a su alrededor, es hacia
-lo que se mueve la nube dibujada con once números por gaussiana y una red de 960 pesos.
+lo que se mueve la nube dibujada con once números por gaussiana y una red de 1008 pesos.
 La geometría no se toca. `--save` escribe la apariencia ajustada; `-o`, tres
 frames para mirar.
 
@@ -3398,7 +3398,7 @@ lee `athenea render --neural`: los colores de una nube como un latente por gauss
 y una red, junto al fichero de la nube y de ella gaussiana por gaussiana, en
 su orden (no nombra ninguna nube; se comprueba el número). Little endian: `ATHN`, seis
 uint32 -- versión (1), gaussianas, números por gaussiana (11), palabras por gaussiana (6),
-pesos (960), flags (bit 0: iluminada) -- luego los latentes como halves, dos por uint32
+pesos (1008), flags (bit 0: iluminada) -- luego los latentes como halves, dos por uint32
 y por tanto 24 bytes por gaussiana, y luego los pesos como float32.
 
 **Imágenes que se escriben.** OpenEXR, lineal premultiplicado, con la fila de

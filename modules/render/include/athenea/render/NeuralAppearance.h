@@ -22,7 +22,9 @@ inline constexpr uint32_t kNeuralLights = 8;
 inline constexpr uint32_t kNeuralStride = kNeuralFeatures + 3;
 inline constexpr uint32_t kNeuralIn = 16 + kNeuralFeatures * 2 + 9;
 inline constexpr uint32_t kNeuralHidden = 16;
-inline constexpr uint32_t kNeuralWeights = kNeuralHidden * kNeuralIn + kNeuralHidden * kNeuralHidden + 3 * kNeuralHidden;
+inline constexpr uint32_t kNeuralOut = 6;
+inline constexpr uint32_t kNeuralWeights =
+    kNeuralHidden * kNeuralIn + kNeuralHidden * kNeuralHidden + kNeuralOut * kNeuralHidden;
 
 /// WHAT A CLOUD IS DRAWN WITH IN PLACE OF ITS HARMONICS, where an instance
 /// names one (`SplatInstance::neural`): `kNeuralStride` floats a gaussian --

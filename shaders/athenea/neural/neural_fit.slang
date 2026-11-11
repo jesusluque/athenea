@@ -19,12 +19,12 @@ import athenea.splat.frame;
 /// What `neuralFitBackward` keeps a gaussian for the weights' sums: whether
 /// it was in view, the network's input and its two hidden layers, and the
 /// three layers' errors.
-public static const uint kFitRecord = 1 + kNeuralIn + kNeuralHidden * 2 + 3 + kNeuralHidden * 2;
+public static const uint kFitRecord = 1 + kNeuralIn + kNeuralHidden * 2 + kNeuralOut + kNeuralHidden * 2;
 static const uint kRecX = 1;
 static const uint kRecH0 = kRecX + kNeuralIn;
 static const uint kRecH1 = kRecH0 + kNeuralHidden;
 static const uint kRecDOut = kRecH1 + kNeuralHidden;
-static const uint kRecD1 = kRecDOut + 3;
+static const uint kRecD1 = kRecDOut + kNeuralOut;
 static const uint kRecD0 = kRecD1 + kNeuralHidden;
 
 struct NeuralFitParams {
@@ -121,11 +121,11 @@ void neuralFitBackward(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const bool lit = params.lit != 0;
-    // The frame drew the answer times the light's radiance and what of it
-    // reached the gaussian: so is its derivative.
+    // The frame drew the answer times the light's radiance: so is its
+    // derivative. What of the light reached the gaussian is the pass's own.
     const float reached = lit && params.shadowLights != 0 ? shadowFactors[slot * params.shadowLights] : 1.0;
     const float3 dColour = float3(summed) / kColourGradScale *
-                           (lit ? float3(params.radianceR, params.radianceG, params.radianceB) * reached : float3(1.0));
+                           (lit ? float3(params.radianceR, params.radianceG, params.radianceB) : float3(1.0));
     const float3 eye = float3(params.eyeX, params.eyeY, params.eyeZ);
     const float3 direction = normalize(positions[i].xyz - eye);
     const float3 light = lit ? neuralLocalLight(shape, i, positions[i].xyz, eye,
@@ -133,7 +133,7 @@ void neuralFitBackward(uint3 tid: SV_DispatchThreadID) {
                              : float3(0.0);
     NeuralWeightBuffer held;
     held.buffer = weights;
-    const NeuralPass pass = neuralForward(latent, i, held, direction, lit, light);
+    const NeuralPass pass = neuralForward(latent, i, held, direction, lit, light, reached);
     const NeuralBack back = neuralBackward(pass, held, dColour);
     for (uint k = 0; k < kNeuralStride; ++k) {
         gradient[i * kNeuralStride + k] = back.dLatent[k];
@@ -149,7 +149,7 @@ void neuralFitBackward(uint3 tid: SV_DispatchThreadID) {
         records[row + kRecD1 + k] = back.d1[k];
         records[row + kRecD0 + k] = back.d0[k];
     }
-    for (uint k = 0; k < 3; ++k) {
+    for (uint k = 0; k < kNeuralOut; ++k) {
         records[row + kRecDOut + k] = back.dOut[k];
     }
 }

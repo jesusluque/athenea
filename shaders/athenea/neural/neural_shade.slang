@@ -99,7 +99,7 @@ void neuralShade(uint3 tid: SV_DispatchThreadID, uint3 lane: SV_GroupThreadID) {
     const float3 direction = normalize(positions[i].xyz - eye);
     const bool lit = params.lit != 0;
     if (!lit) {
-        proj[slot].colour.xyz = neuralForward(latent, i, held, direction, false, float3(0.0)).colour;
+        proj[slot].colour.xyz = neuralForward(latent, i, held, direction, false, float3(0.0), 1.0).colour;
         return;
     }
     float3 colour = float3(0.0);
@@ -107,11 +107,8 @@ void neuralShade(uint3 tid: SV_DispatchThreadID, uint3 lane: SV_GroupThreadID) {
     for (uint l = 0; l < lights; ++l) {
         // What reaches the gaussian from this light: a light the frame's shadows did not cover reaches it whole.
         const float reached = l < params.shadowLights ? shadowFactors[slot * params.shadowLights + l] : 1.0;
-        if (!(reached > 0.0)) {
-            continue;
-        }
         const float3 light = neuralLocalLight(shape, i, positions[i].xyz, eye, params.lightTowards[l].xyz);
-        colour += neuralForward(latent, i, held, direction, true, light).colour * params.lightRadiance[l].rgb * reached;
+        colour += neuralForward(latent, i, held, direction, true, light, reached).colour * params.lightRadiance[l].rgb;
     }
     proj[slot].colour.xyz = colour;
 }
