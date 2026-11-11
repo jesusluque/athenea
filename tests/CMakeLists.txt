@@ -69,7 +69,7 @@ endif()
 athenea_test(athenea_render_tests
     SOURCES render/test_splat_render.cpp render/test_points.cpp render/test_ray_tracing.cpp
             render/test_splat_motion.cpp render/test_splat_lens.cpp render/test_ply_qa.cpp
-            render/test_splat_trace.cpp
+            render/test_splat_trace.cpp render/test_neural_mlp.cpp
             $<$<BOOL:${ATHENEA_HAVE_SPZ}>:render/test_spz.cpp>
             $<$<BOOL:${ATHENEA_HAVE_SPZ}>:render/test_flatten.cpp>
             $<$<BOOL:${ATHENEA_HAVE_WEBP}>:render/test_sog.cpp>

@@ -20254,3 +20254,41 @@ one camera the far side of the neck is the guess, from four round it it is not.
   IoU, Replica with half the cameras held out; athenea-research proposal 111) and a temporal one are not run.
 - A lift is of one list of instances in one order; a level of detail's cut, whose clouds change by the frame, has
   no slot that stays the same gaussian.
+
+## A small network in a kernel: what runs, what it costs, and who differentiates it (11 Nov)
+
+Before a gaussian carries a latent and a decoder reads it, the question the engine could not answer: does a small
+perceptron run a pixel at a time in a compute kernel on Metal and CUDA, at what cost, and can it be trained there,
+since nothing here is computed on the CPU. `[neural]` in `athenea_render_tests`
+(`shaders/athenea/test/neural_mlp.slang`) is a 16 -> 32 -> 32 -> 3 network with ReLUs, 1699 weights in a buffer,
+its forward pass and two backward passes: the one Slang's automatic differentiation writes (`bwd_diff`), and the
+same derivatives written out by hand.
+
+**Measured** (Apple M5 Pro, Metal, floats, no matrix acceleration; best of six dispatches):
+
+| | 1920 x 1080 | 3840 x 2160 |
+|---|---|---|
+| forward | 3.5 ms | 13.0 ms |
+| backward to the features, by hand | 7.1 ms | 27.0 ms |
+| backward, by Slang 2026.14.1 | 505 ms | -- |
+
+**Slang's derivative of it is wrong here, and seventy times dearer.** Against central differences (a step of
+2e-3 on one feature a pixel, 19 200 pixels) the hand-written pass is off in 463 pixels -- a ReLU's kink inside the
+step, the one place a derivative and a difference may part -- with a mean magnitude of 0.1275 against the
+differences' 0.1275. `bwd_diff` of the same function is off in 19 089 of them, mean magnitude 0.0739, whether a
+weight is read through a function with a custom backward derivative or as a constant. The network is written with
+local arrays filled in nested loops, which is how a kernel writes one; that form is what this Slang gets wrong
+(and stores by the iteration, which is the cost). So the decoder's backward pass is written by hand: for a
+perceptron it is forty lines, it is the derivative, and where its sums go is ours to choose.
+
+**What it says of the plan.** A deferred decoder of this size is 3.5 ms a 1080p frame and 13 ms a 4K one on this
+machine as plain multiply-adds, over the 2 ms the first milestone allowed it: per pixel it wants either the matrix
+acceleration Slang's experimental `neural` module reaches for (`import slang.neural` compiles for Metal with
+`-experimental-feature`; not run through the engine), a smaller network, fewer pixels, or to run once a gaussian in
+view rather than once a pixel -- which is what is measured next.
+
+### Not done
+
+- Not run on CUDA.
+- Halves, and the `neural` module's cooperative matrices, are not tried.
+- The weights' own gradient summed over pixels is not timed by hand (Slang's pass adds 1699 atomics a pixel).

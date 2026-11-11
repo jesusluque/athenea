@@ -1,0 +1,154 @@
+// Copyright (c) 2026 jesus luque.
+#include <catch2/catch_test_macros.hpp>
+
+#include "../gpu/GpuTest.h"
+
+#include <array>
+#include <chrono>
+#include <cstdio>
+
+using namespace athenea;
+
+namespace {
+
+constexpr uint32_t kIn = 16;
+constexpr uint32_t kWeights = (32 * 16 + 32) + (32 * 32 + 32) + (3 * 32 + 3);
+
+gpu::Buffer floats(gpu::Device& device, uint64_t count, uint32_t channels, const char* label) {
+    gpu::BufferDesc desc;
+    desc.bytes = count * channels * sizeof(float);
+    desc.elementBytes = channels * sizeof(float);
+    desc.label = label;
+    auto made = gpu::Buffer::create(device, desc);
+    REQUIRE(made);
+    return *made;
+}
+
+gpu::ComputeKernel entry(test::Gpu& gpu, const char* name) {
+    auto made = gpu::ComputeKernel::create(*gpu.library, "athenea/test/neural_mlp", name);
+    if (!made) FAIL(made.error().toString());
+    return std::move(*made);
+}
+
+}   // namespace
+
+TEST_CASE("a small network runs and differentiates in a kernel, a pixel at a time", "[render][gpu][neural]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::ComputeKernel init = entry(*gpu, "neuralMlpInit");
+    gpu::ComputeKernel forward = entry(*gpu, "neuralMlpForward");
+    gpu::ComputeKernel backward = entry(*gpu, "neuralMlpBackward");
+    gpu::ComputeKernel check = entry(*gpu, "neuralMlpCheck");
+    gpu::ComputeKernel byHand = entry(*gpu, "neuralMlpBackwardByHand");
+
+    gpu::Buffer weights = floats(*gpu->device, kWeights, 1, "mlp.weights");
+    gpu::Buffer weightGrad = test::uintBuffer(*gpu->device, kWeights, "mlp.weightGrad");
+    gpu::Buffer loss = test::uintBuffer(*gpu->device, 1, "mlp.loss");
+    gpu::Buffer stats = test::uintBuffer(*gpu->device, 8, "mlp.stats");
+
+    struct Frame {
+        uint32_t    width, height;
+        gpu::Buffer features, target, colour, featureGrad;
+    };
+    const auto frame = [&](uint32_t width, uint32_t height) {
+        const uint64_t pixels = uint64_t{width} * height;
+        return Frame{width, height, floats(*gpu->device, pixels * kIn, 1, "mlp.features"),
+                     floats(*gpu->device, pixels, 4, "mlp.target"), floats(*gpu->device, pixels, 4, "mlp.colour"),
+                     floats(*gpu->device, pixels * kIn, 1, "mlp.featureGrad")};
+    };
+    const auto bind = [&](rhi::ShaderCursor cursor, const Frame& f, const gpu::Buffer& made) {
+        cursor["weights"].setBinding(weights.rhi());
+        cursor["weightGrad"].setBinding(weightGrad.rhi());
+        cursor["features"].setBinding(f.features.rhi());
+        cursor["target"].setBinding(f.target.rhi());
+        cursor["colour"].setBinding(f.colour.rhi());
+        cursor["featureGrad"].setBinding(f.featureGrad.rhi());
+        cursor["loss"].setBinding(loss.rhi());
+        cursor["made"].setBinding(made.rhi());
+        cursor["stats"].setBinding(stats.rhi());
+        cursor["params"]["width"].setData(f.width);
+        cursor["params"]["height"].setData(f.height);
+        cursor["params"]["gradScale"].setData(65536.0F);
+        cursor["params"]["step"].setData(2.0e-3F);
+    };
+    // Numbers a hash made: `width` of them, `height` the seed, `gradScale` their range.
+    const auto fill = [&](const Frame& f, const gpu::Buffer& what, uint32_t count, uint32_t seed, float range) {
+        gpu::CommandBatch batch(*gpu->device);
+        init.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            bind(cursor, f, what);
+            cursor["params"]["width"].setData(count);
+            cursor["params"]["height"].setData(seed);
+            cursor["params"]["gradScale"].setData(range);
+        });
+        REQUIRE(batch.submit(true));
+    };
+
+    // The derivatives against central differences, on a small frame.
+    uint32_t slangOff = 0;
+    {
+        Frame f = frame(160, 120);
+        const uint32_t pixels = f.width * f.height;
+        fill(f, weights, kWeights, 1, 0.3F);
+        fill(f, f.features, pixels * kIn, 2, 1.0F);
+        fill(f, f.target, pixels * 4, 3, 1.0F);
+        gpu::CommandBatch batch(*gpu->device);
+        backward.dispatch(batch, {f.width, f.height, 1}, [&](rhi::ShaderCursor cursor) { bind(cursor, f, f.colour); });
+        check.dispatch(batch, {f.width, f.height, 1}, [&](rhi::ShaderCursor cursor) { bind(cursor, f, f.colour); });
+        REQUIRE(batch.submit(true));
+        std::array<uint32_t, 8> row{};
+        REQUIRE(stats.read(*gpu->device, 0, sizeof(row), row.data()));
+        std::printf("  mlp: %u pixels checked, %u derivatives off their central difference, %u not finite\n", row[0],
+                    row[1], row[2]);
+        std::printf("  mean |difference| %.4f, mean |derivative| %.4f, mean loss %.4f\n", row[3] / 16.0 / row[0], row[4] / 16.0 / row[0], row[5] / 16.0 / row[0]);
+        std::array<uint32_t, 8> hand{};
+        {
+            gpu::Buffer again = test::uintBuffer(*gpu->device, 8, "mlp.stats.hand");
+            gpu::CommandBatch second(*gpu->device);
+            byHand.dispatch(second, {f.width, f.height, 1}, [&](rhi::ShaderCursor cursor) { bind(cursor, f, f.colour); });
+            check.dispatch(second, {f.width, f.height, 1}, [&](rhi::ShaderCursor cursor) {
+                bind(cursor, f, f.colour);
+                cursor["stats"].setBinding(again.rhi());
+            });
+            REQUIRE(second.submit(true));
+            hand = {};
+            REQUIRE(again.read(*gpu->device, 0, sizeof(hand), hand.data()));
+            std::printf("  by hand: %u pixels checked, %u derivatives off, mean |derivative| %.4f\n", hand[0], hand[1],
+                        hand[4] / 16.0 / hand[0]);
+        }
+        // The backward pass written out is the derivative: a ReLU's kink
+        // inside the step is the one place it and a difference may part.
+        CHECK(hand[0] == pixels);
+        CHECK(hand[1] * 20 < hand[0]);
+        CHECK(row[0] == pixels);
+        CHECK(row[2] == 0);
+        // What Slang 2026.14.1 differentiates of this network is not its
+        // derivative (docs/decisions.md): measured and printed, not held to.
+        (void)slangOff;
+    }
+
+    // What a pixel of it costs: the forward pass a deferred decoder runs, and the backward one.
+    for (const auto& size : {std::array<uint32_t, 2>{1920, 1080}, std::array<uint32_t, 2>{3840, 2160}}) {
+        Frame f = frame(size[0], size[1]);
+        const uint32_t pixels = f.width * f.height;
+        fill(f, f.features, pixels * kIn, 2, 1.0F);
+        fill(f, f.target, pixels * 4, 3, 1.0F);
+        const auto timed = [&](gpu::ComputeKernel& kernel) {
+            double best = 1.0e30;
+            for (int round = 0; round < 6; ++round) {
+                const auto start = std::chrono::steady_clock::now();
+                gpu::CommandBatch batch(*gpu->device);
+                kernel.dispatch(batch, {f.width, f.height, 1},
+                                [&](rhi::ShaderCursor cursor) { bind(cursor, f, f.colour); });
+                REQUIRE(batch.submit(true));
+                best = std::min(best, std::chrono::duration<double, std::milli>(
+                                          std::chrono::steady_clock::now() - start)
+                                          .count());
+            }
+            return best;
+        };
+        const double forwardMs = timed(forward);
+        const double backwardMs = size[0] == 1920 ? timed(backward) : 0.0;
+        const double handMs = timed(byHand);
+        std::printf("  mlp 16-32-32-3 at %ux%u: forward %.2f ms, backward by hand %.2f ms, by Slang %.2f ms\n", f.width, f.height,
+                    forwardMs, handMs, backwardMs);
+    }
+}
