@@ -16,6 +16,8 @@
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/io/Exr.h"
+#include "athenea/io/NeuralFile.h"
+#include "athenea/render/NeuralAppearance.h"
 #include "athenea/io/Readers.h"
 #include "athenea/lod/Lod.h"
 #include "athenea/lod/Athc.h"
@@ -51,6 +53,7 @@ struct RenderOptions {
     unsigned                 degree = 3;
     bool                     noAntialias = false;
     bool                     trace = false;
+    std::string              neural;   ///< a .athn: the one cloud's colours from its latents
     int                      repeat = 1;
     bool                     stages = false;
 };
@@ -151,6 +154,36 @@ int run(const RenderOptions& options, bool bench) {
     std::vector<render::SplatInstance> instances;
     for (const auto& cloud : clouds) {
         instances.push_back({cloud.get(), model, {}});
+    }
+    // A neural appearance in place of the cloud's harmonics: of one cloud,
+    // gaussian for gaussian.
+    std::optional<render::NeuralCloud> neural;
+    if (!options.neural.empty()) {
+        if (clouds.size() != 1 || options.lod > 0.0F) {
+            std::fprintf(stderr, "--neural is one cloud's appearance: give one --splats file, and no --lod\n");
+            return 1;
+        }
+        auto file = io::readNeural(options.neural);
+        if (!file) {
+            return cli::report(file.error());
+        }
+        if (file->count != clouds[0]->count || file->stride != render::kNeuralStride ||
+            file->wordsEach != render::kNeuralWords) {
+            std::fprintf(stderr, "%s is of a cloud of %u gaussians, %u numbers each; this cloud has %u, and the engine %u\n",
+                         options.neural.c_str(), file->count, file->stride, clouds[0]->count, render::kNeuralStride);
+            return 1;
+        }
+        if (file->lit) {
+            std::fprintf(stderr, "%s is a lit appearance; athenea render has no light to give it\n",
+                         options.neural.c_str());
+            return 1;
+        }
+        auto made = render::neuralCloudFrom(library, file->count, file->latent, file->weights, file->lit);
+        if (!made) {
+            return cli::report(made.error());
+        }
+        neural.emplace(std::move(*made));
+        instances[0].neural = &*neural;
     }
     std::vector<render::PointInstance> pointInstances;
     for (const auto& cloud : pointClouds) {
@@ -446,6 +479,7 @@ void addOptions(CLI::App* cmd, RenderOptions& o) {
     cmd->add_option("--stream-budget", o.streamBudget,
                     ".athc: splats kept on the device, loaded as the view wants them (0: read whole)");
     cmd->add_flag("--no-antialias", o.noAntialias, "no Mip-Splatting 2D filter compensation");
+    cmd->add_option("--neural", o.neural, "a .athn: the cloud's colours from its latents (athenea neural-fit --save)");
 }
 
 }   // namespace

@@ -16,6 +16,7 @@
 #include "athenea/gpu/ShaderLibrary.h"
 #include "aofx/Transform.h"
 #include "athenea/io/Exr.h"
+#include "athenea/io/NeuralFile.h"
 #include "athenea/light/LightTable.h"
 #include "athenea/render/NeuralFit.h"
 #include "athenea/render/ReferenceRenderer.h"
@@ -40,6 +41,7 @@ struct NeuralFitOptions {
     float               rateWeights = 4.0e-3F;
     bool                relight = false;   ///< a lit neural cloud, fitted to the engine's relighting under a moving sun
     float               sun = 3.0F;        ///< the sun's intensity
+    std::string         save;              ///< the fitted appearance, as a .athn
     std::string         output;            ///< a prefix: <prefix>_harmonics.exr, _base.exr, _latents.exr
 };
 
@@ -266,6 +268,22 @@ int run(const NeuralFitOptions& o) {
     if (!latentsMs) return report(latentsMs.error());
     out("a frame at %ux%u: %.2f ms by the harmonics, %.2f ms by the latents\n", settings.width, settings.height,
         *harmonicsMs, *latentsMs);
+    if (!o.save.empty()) {
+        io::NeuralFile file;
+        file.count = neural->count;
+        file.stride = render::kNeuralStride;
+        file.wordsEach = render::kNeuralWords;
+        file.lit = neural->lit;
+        auto words = render::packNeuralLatents(library, *neural);
+        if (!words) return report(words.error());
+        auto weights = render::readNeuralWeights(library, *neural);
+        if (!weights) return report(weights.error());
+        file.latent = std::move(*words);
+        file.weights = std::move(*weights);
+        if (auto written = io::writeNeural(o.save, file); !written) return report(written.error());
+        out("wrote %s: %u bytes a gaussian and %zu weights\n", o.save.c_str(), render::kNeuralWords * 4,
+            file.weights.size());
+    }
     if (o.relight) {
         for (uint32_t sun = 0; sun < 3; ++sun) {
             if (auto w = write("latents_sun" + std::to_string(sun), byLatents, 3, sun); !w) return report(w.error());
@@ -296,6 +314,7 @@ void addNeuralFit(CLI::App& app) {
     cmd->add_option("--rate-weights", o.rateWeights, "Adam's rate for the network");
     cmd->add_flag("--relight", o.relight, "a lit neural cloud, fitted to the engine's relighting of the cloud under a sun that moves");
     cmd->add_option("--sun", o.sun, "--relight: the sun's intensity");
+    cmd->add_option("--save", o.save, "write the fitted appearance: a .athn, to draw the cloud by (athenea render --neural)");
     cmd->add_option("-o,--output", o.output, "a prefix: the first held-out camera's frame by the harmonics, the base and the latents");
     cmd->callback([options] {
         if (const int code = run(*options); code != 0) {

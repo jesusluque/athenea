@@ -2,6 +2,7 @@
 #include "athenea/render/NeuralAppearance.h"
 
 #include <algorithm>
+#include <string>
 
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/ComputeKernel.h"
@@ -57,6 +58,88 @@ Result<NeuralCloud> makeNeuralCloud(gpu::ShaderLibrary& library, const scene::Gp
     }
     initWeights->dispatch(batch, {kNeuralWeights, 1, 1},
                           [&](rhi::ShaderCursor cursor) { bind(cursor, neural.weights, kNeuralWeights); });
+    ATHENEA_TRY(batch.submit(true));
+    return neural;
+}
+
+namespace {
+
+Result<gpu::Buffer> made(gpu::Device& device, uint64_t bytes, uint32_t element, const char* label,
+                         const void* initial = nullptr) {
+    gpu::BufferDesc desc;
+    desc.bytes = std::max<uint64_t>(bytes, element);
+    desc.elementBytes = element;
+    desc.label = label;
+    return gpu::Buffer::create(device, desc, initial);
+}
+
+}   // namespace
+
+Result<std::vector<uint32_t>> packNeuralLatents(gpu::ShaderLibrary& library, const NeuralCloud& neural) {
+    gpu::Device& device = library.device();
+    auto packed = made(device, uint64_t{neural.count} * kNeuralWords * 4, 4, "neural.packed");
+    if (!packed) return std::move(packed).error();
+    auto kernel = gpu::ComputeKernel::create(library, "athenea/neural/neural_pack", "neuralPack");
+    if (!kernel) return std::move(kernel).error();
+    if (neural.count > 0) {
+        gpu::CommandBatch batch(device);
+        kernel->dispatch(batch, {neural.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["floats"].setBinding(neural.latent.rhi());
+            cursor["packed"].setBinding(packed->rhi());
+            // The other entry point's.
+            cursor["packedRead"].setBinding(packed->rhi());
+            cursor["unpacked"].setBinding(neural.weights.rhi());
+            cursor["params"]["count"].setData(neural.count);
+        });
+        ATHENEA_TRY(batch.submit(true));
+    }
+    std::vector<uint32_t> words(uint64_t{neural.count} * kNeuralWords);
+    if (!words.empty()) {
+        ATHENEA_TRY(packed->read(device, 0, words.size() * sizeof(uint32_t), words.data()));
+    }
+    return words;
+}
+
+Result<std::vector<float>> readNeuralWeights(gpu::ShaderLibrary& library, const NeuralCloud& neural) {
+    std::vector<float> weights(kNeuralWeights);
+    ATHENEA_TRY(neural.weights.read(library.device(), 0, weights.size() * sizeof(float), weights.data()));
+    return weights;
+}
+
+Result<NeuralCloud> neuralCloudFrom(gpu::ShaderLibrary& library, uint32_t count,
+                                    std::span<const uint32_t> latentWords, std::span<const float> weights,
+                                    bool lit) {
+    if (latentWords.size() != uint64_t{count} * kNeuralWords || weights.size() != kNeuralWeights) {
+        return Error(ErrorCode::InvalidArgument,
+                     "a neural appearance of other sizes than this engine's: " + std::to_string(weights.size()) +
+                         " weights where it has " + std::to_string(kNeuralWeights));
+    }
+    gpu::Device& device = library.device();
+    NeuralCloud neural;
+    neural.count = count;
+    neural.lit = lit;
+    auto latent = made(device, uint64_t{count} * kNeuralStride * sizeof(float), sizeof(float), "neural.latent");
+    if (!latent) return std::move(latent).error();
+    auto held = made(device, weights.size_bytes(), sizeof(float), "neural.weights", weights.data());
+    if (!held) return std::move(held).error();
+    neural.latent = *latent;
+    neural.weights = *held;
+    if (count == 0) {
+        return neural;
+    }
+    auto words = made(device, latentWords.size_bytes(), 4, "neural.packed", latentWords.data());
+    if (!words) return std::move(words).error();
+    auto kernel = gpu::ComputeKernel::create(library, "athenea/neural/neural_pack", "neuralUnpack");
+    if (!kernel) return std::move(kernel).error();
+    gpu::CommandBatch batch(device);
+    kernel->dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["packedRead"].setBinding(words->rhi());
+        cursor["unpacked"].setBinding(neural.latent.rhi());
+        // The other entry point's.
+        cursor["floats"].setBinding(neural.weights.rhi());
+        cursor["packed"].setBinding(words->rhi());
+        cursor["params"]["count"].setData(count);
+    });
     ATHENEA_TRY(batch.submit(true));
     return neural;
 }

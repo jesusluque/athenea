@@ -381,3 +381,72 @@ TEST_CASE("a lit neural cloud learns how its gaussians answer a light, and is re
     CHECK(after < before * 0.5);
     CHECK(after < crossed * 0.5);
 }
+
+#include <filesystem>
+
+#include "athenea/io/NeuralFile.h"
+
+TEST_CASE("a neural appearance written and read draws what it drew", "[render][gpu][neural][file]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto fit = render::NeuralFit::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!fit) FAIL(fit.error().toString());
+    test::CloudBuilder builder = test::randomCloud(2000, 5, 0.02F, 0.12F);
+    auto cloud = loader->upload(builder.raw, 3);
+    REQUIRE(cloud);
+    auto neural = render::makeNeuralCloud(*gpu->library, *cloud);
+    if (!neural) FAIL(neural.error().toString());
+    const render::SplatInstance instance{&*cloud, render::Mat4::identity()};
+    // A few steps, so that the features and the network hold something.
+    render::NeuralFitSettings how;
+    how.width = 200;
+    how.height = 150;
+    for (uint32_t k = 0; k < 60; ++k) {
+        const double a = 2.39996323 * k;
+        auto stepped = fit->step(*raster, render::Camera::lookingAt({6.0 * std::sin(a), 1.0, 6.0 * std::cos(a)}, {0.0, 0.0, 0.0}),
+                                 instance, *neural, how);
+        if (!stepped) FAIL(stepped.error().toString());
+    }
+
+    io::NeuralFile file;
+    file.count = neural->count;
+    file.stride = render::kNeuralStride;
+    file.wordsEach = render::kNeuralWords;
+    auto words = render::packNeuralLatents(*gpu->library, *neural);
+    auto weights = render::readNeuralWeights(*gpu->library, *neural);
+    if (!words) FAIL(words.error().toString());
+    if (!weights) FAIL(weights.error().toString());
+    file.latent = *words;
+    file.weights = *weights;
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / "athenea_test_neural.athn";
+    REQUIRE(io::writeNeural(path, file));
+    // 24 bytes a gaussian, and the network.
+    CHECK(std::filesystem::file_size(path) == 4 + 6 * 4 + uint64_t{neural->count} * 24 + render::kNeuralWeights * 4);
+    auto read = io::readNeural(path);
+    if (!read) FAIL(read.error().toString());
+    std::filesystem::remove(path);
+    CHECK(read->count == neural->count);
+    CHECK_FALSE(read->lit);
+    auto again = render::neuralCloudFrom(*gpu->library, read->count, read->latent, read->weights, read->lit);
+    if (!again) FAIL(again.error().toString());
+
+    render::RenderSettings settings;
+    settings.width = 200;
+    settings.height = 150;
+    const render::Camera camera = render::Camera::lookingAt({1.0, 0.5, 6.0}, {0.0, 0.0, 0.0});
+    std::vector<render::SplatInstance> first{instance};
+    first[0].neural = &*neural;
+    std::vector<render::SplatInstance> second{instance};
+    second[0].neural = &*again;
+    render::RenderTargets a, b;
+    REQUIRE(raster->render(camera, first, settings, a));
+    REQUIRE(raster->render(camera, second, settings, b));
+    auto diff = render::compareImages(*gpu->library, a.colour, b.colour, settings.width, settings.height);
+    REQUIRE(diff);
+    std::printf("  written and read: p99 %u, max %u\n", diff->p99, diff->max);
+    // Halves for floats: a code value at most.
+    CHECK(diff->max <= 1);
+}

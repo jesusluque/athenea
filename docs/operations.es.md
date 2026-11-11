@@ -197,6 +197,7 @@ athenea info
 | `--lod` | número | `0` | píxeles que puede abarcar una celda fundida; 0 dibuja todos los splats |
 | `--stream-budget` | entero | `0` | `.athc`: splats que se quedan en el dispositivo; 0 lee el fichero entero |
 | `--no-antialias` | flag | apagado | quita la compensación de filtro 2D de Mip-Splatting a todas las nubes, por encima de lo que diga un `.spz` |
+| `--neural` | ruta | — | un `.athn` (§2.3.2, §8.2): los colores de la nube desde sus latentes y su red en vez de desde sus armónicos. Un solo fichero en `--splats`, aquel al que se ajustó el `.athn`, y sin `--lod`; solo raster |
 | `-o`, `--output` | ruta | `out.exr` | RGBA en media más un canal `Z` |
 
 Lo que se comprueba al ejecutar, no al analizar:
@@ -256,8 +257,8 @@ desde un lado deja el lado contrario a esa suposición, y más cámaras `--from`
 Ajusta una apariencia neural a una nube y dice cuánto se acercó: la nube dibujada
 por sus armónicos, desde cámaras repartidas por una esfera a su alrededor, es hacia
 lo que se mueve la nube dibujada con once números por gaussiana y una red de 960 pesos.
-La geometría no se toca. No se escribe nada salvo las medidas y, con `-o`, tres
-frames para mirar: la apariencia ajustada aún no se guarda.
+La geometría no se toca. `--save` escribe la apariencia ajustada; `-o`, tres
+frames para mirar.
 
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
@@ -273,6 +274,7 @@ frames para mirar: la apariencia ajustada aún no se guarda.
 | `--rate-features` | número | `0.01` | el rate de Adam para las features |
 | `--rate-base` | número | `0.002` | para los colores base |
 | `--rate-weights` | número | `0.004` | para la red |
+| `--save` | ruta | — | escribe la apariencia ajustada como un `.athn` (§8.2), con el que `athenea render --neural` dibuja la nube |
 | `--relight` | flag | apagado | ajusta en su lugar una nube neural iluminada: lo que debe ser es el relight del propio motor sobre la nube (sus colores como aquello de lo que está hecha, sin sombra) bajo un sol que viene de una dirección distinta en cada paso, y las cámaras reservadas se miden bajo soles que el fit nunca usó |
 | `--sun` | número | `3` | `--relight`: la intensidad del sol |
 | `-o`, `--output` | prefijo | — | escribe `<prefijo>_harmonics.exr`, `_base.exr` y `_latents.exr`: el frame de la primera cámara reservada con cada uno; con `--relight`, `<prefijo>_engine_sun0..2.exr` y `_latents_sun0..2.exr`, esa cámara bajo tres soles reservados |
@@ -3368,6 +3370,14 @@ tamaños de los registros, el primer registro, el perfil, el tier y el nivel
 del SPS, y la cadena de códec de WebCodecs y el registro `hvcC` construido con
 el VPS, el SPS y el PPS de ese registro (`--hvcc SALIDA` lo escribe).
 
+**Una apariencia neural, `.athn`.** Lo que escribe `athenea neural-fit --save` y
+lee `athenea render --neural`: los colores de una nube como un latente por gaussiana
+y una red, junto al fichero de la nube y de ella gaussiana por gaussiana, en
+su orden (no nombra ninguna nube; se comprueba el número). Little endian: `ATHN`, seis
+uint32 -- versión (1), gaussianas, números por gaussiana (11), palabras por gaussiana (6),
+pesos (960), flags (bit 0: iluminada) -- luego los latentes como halves, dos por uint32
+y por tanto 24 bytes por gaussiana, y luego los pesos como float32.
+
 **Imágenes que se escriben.** OpenEXR, lineal premultiplicado, con la fila de
 abajo primero dentro del motor y escrito con la de arriba primero como quiere
 el formato. Un frame va en media por defecto con un canal `Z`; los canales de
@@ -3425,7 +3435,7 @@ TX con skinning, de surfels y en niveles de detalle es una sola nube.
 | `athenea render` | un EXR: RGBA en media y `Z` |
 | `athenea bench` | nada; los tiempos por la salida estándar |
 | `athenea lift` | el EXR de `-o`: el frame de `--eye` con el key del matte, y su profundidad |
-| `athenea neural-fit` | las medidas por la salida estándar; con `-o`, tres frames EXR |
+| `athenea neural-fit` | las medidas por la salida estándar; con `--save`, un `.athn`; con `-o`, frames EXR |
 | `athenea convert` | una escena USD, o un `.athc` |
 | `athenea stage` | un EXR; o, con `--render-settings`, uno por producto |
 | `athenea view` | nada, o un EXR con `--snapshot` |

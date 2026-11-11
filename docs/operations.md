@@ -193,6 +193,7 @@ athenea info
 | `--lod` | number | `0` | pixels a merged cell may span; 0 draws every splat |
 | `--stream-budget` | integer | `0` | `.athc`: splats kept on the device; 0 reads the file whole |
 | `--no-antialias` | flag | off | drop the Mip-Splatting 2D filter compensation for every cloud, over what an `.spz` says |
+| `--neural` | path | — | a `.athn` (§2.3.2, §8.2): the cloud's colours from its latents and their network rather than from its harmonics. One `--splats` file, the one the `.athn` was fitted to, and no `--lod`; raster only |
 | `-o`, `--output` | path | `out.exr` | half RGBA plus a `Z` channel |
 
 Checked while it runs, not while it parses:
@@ -252,8 +253,8 @@ the far side to that guess, and more `--from` cameras are what removes it.
 Fits a neural appearance to a cloud and says how near it came: the cloud drawn
 by its harmonics, from cameras over a sphere round it, is what the cloud drawn
 from eleven numbers a gaussian and a network of 960 weights is moved towards.
-The geometry is not touched. Nothing is written but the measures and, with
-`-o`, three frames to look at: the fitted appearance is not saved yet.
+The geometry is not touched. `--save` writes the fitted appearance; `-o`,
+three frames to look at.
 
 | Option | Value | Default | Notes |
 |---|---|---|---|
@@ -269,6 +270,7 @@ The geometry is not touched. Nothing is written but the measures and, with
 | `--rate-features` | number | `0.01` | Adam's rate for the features |
 | `--rate-base` | number | `0.002` | for the base colours |
 | `--rate-weights` | number | `0.004` | for the network |
+| `--save` | path | — | writes the fitted appearance as a `.athn` (§8.2), which `athenea render --neural` draws the cloud by |
 | `--relight` | flag | off | fits a lit neural cloud instead: what it should be is the engine's own relighting of the cloud (its colours as what it is made of, no shadow) under a sun from a different direction each step, and the held-out cameras are measured under suns the fit never used |
 | `--sun` | number | `3` | `--relight`: the sun's intensity |
 | `-o`, `--output` | prefix | — | writes `<prefix>_harmonics.exr`, `_base.exr` and `_latents.exr`: the first held-out camera's frame by each; with `--relight`, `<prefix>_engine_sun0..2.exr` and `_latents_sun0..2.exr`, that camera under three held-out suns |
@@ -3258,6 +3260,14 @@ sizes, the first record, the SPS's profile, tier and level, and the WebCodecs
 codec string and `hvcC` record built from that record's VPS, SPS and PPS
 (`--hvcc OUT` writes it).
 
+**A neural appearance, `.athn`.** What `athenea neural-fit --save` writes and
+`athenea render --neural` reads: a cloud's colours as a latent a gaussian and
+one network, beside the cloud's own file and of it gaussian for gaussian, in
+its order (it names no cloud; the count is checked). Little endian: `ATHN`, six
+uint32 -- version (1), gaussians, numbers a gaussian (11), words a gaussian (6),
+weights (960), flags (bit 0: lit) -- then the latents as halves, two a uint32
+and so 24 bytes a gaussian, then the weights as float32.
+
 **Images written.** OpenEXR, linear premultiplied, bottom row first inside the
 engine and written top row first as the format wants. A frame is half by
 default with a `Z` channel; a render product's channels follow its vars, and a
@@ -3314,7 +3324,7 @@ surfels in levels of detail is one cloud.
 | `athenea render` | one EXR: half RGBA and `Z` |
 | `athenea bench` | nothing; timings on standard output |
 | `athenea lift` | the EXR of `-o`: the `--eye` frame keyed by the matte, and its depth |
-| `athenea neural-fit` | measures on standard output; with `-o`, three EXR frames |
+| `athenea neural-fit` | measures on standard output; with `--save`, a `.athn`; with `-o`, EXR frames |
 | `athenea convert` | a USD stage, or a `.athc` |
 | `athenea stage` | one EXR; or, with `--render-settings`, one per product |
 | `athenea view` | nothing, or one EXR with `--snapshot` |

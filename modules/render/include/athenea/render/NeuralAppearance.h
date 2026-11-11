@@ -6,6 +6,8 @@
 
 #include <array>
 #include <cstdint>
+#include <span>
+#include <vector>
 
 #include "athenea/core/Result.h"
 #include "athenea/gpu/Buffer.h"
@@ -49,5 +51,21 @@ struct NeuralLight {
 /// is drawn as its harmonics' first term draws it.
 [[nodiscard]] Result<NeuralCloud> makeNeuralCloud(gpu::ShaderLibrary& library, const scene::GpuSplats& cloud,
                                                   uint32_t seed = 1, bool lit = false);
+
+/// What a file carries of a gaussian (io/NeuralFile.h): its numbers as
+/// halves, two a word.
+inline constexpr uint32_t kNeuralWords = (kNeuralStride + 1) / 2;
+
+/// A neural cloud's latents as a file carries them: packed into halves on the
+/// device, `count * kNeuralWords` words read back.
+[[nodiscard]] Result<std::vector<uint32_t>> packNeuralLatents(gpu::ShaderLibrary& library, const NeuralCloud& neural);
+/// Its weights, as they are.
+[[nodiscard]] Result<std::vector<float>> readNeuralWeights(gpu::ShaderLibrary& library, const NeuralCloud& neural);
+
+/// A neural cloud from what a file carried: the latents' words unpacked on
+/// the device, the weights as they are.
+[[nodiscard]] Result<NeuralCloud> neuralCloudFrom(gpu::ShaderLibrary& library, uint32_t count,
+                                                  std::span<const uint32_t> latentWords,
+                                                  std::span<const float> weights, bool lit);
 
 }   // namespace athenea::render

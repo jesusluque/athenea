@@ -20389,7 +20389,6 @@ Eleven floats a gaussian where the harmonics are forty-eight.
 - The rates are constants found by trying twice; no schedule, no regulariser, no halves.
 - A p99 of 7 code values and a max of 112 are not the harmonics: a few gaussians are still far off (the collar
   under the glass), and how far 20 000 steps, a schedule or more features take it is not tried.
-- The fitted appearance is not saved: `athenea neural-fit` measures and writes three frames.
 
 ## A lit neural cloud: how a gaussian answers a light, learnt (11 Nov)
 
@@ -20430,3 +20429,29 @@ against a dot product and a lobe.
 - One distant light a frame. Several, and a light that is not at infinity, are a loop and a direction a gaussian.
 - On a capture a gaussian's colour is light it was photographed under and not what it is made of: the pawn
   above is relit as the engine relights it, which takes the one for the other.
+
+## A neural appearance on disk: `.athn` (11 Nov)
+
+What a fit made was lost when the command ended. `athenea neural-fit --save` writes it and `athenea render
+--neural` draws a cloud by it: a file beside the cloud's own, of it gaussian for gaussian (`io/NeuralFile.h`).
+
+**What it holds.** The latents as halves, packed on the device (`neural_pack.slang`: eleven numbers into six
+words, 24 bytes a gaussian) and read back as words; the weights as the floats they are; a header of six words. The
+harmonics of degree 3 it stands for are 45 floats a gaussian in a 3DGS PLY, 180 bytes, and 90 as this engine holds
+them. The pawn's is 7.8 MB beside an 80.8 MB PLY.
+
+**A sidecar, not a field of a cloud's formats.** The other road -- a `latent` channel through the records, the
+loader, USD's schema, the `.athc`, the levels of detail and the decimation -- is some fifteen files and a format
+version, and is the right one once it is known what a gaussian should carry; that is still moving (eight features
+or sixteen, lit or not, one network a cloud or a part). A file of its own costs nothing to change.
+
+**What checks it.** `[file]`: a cloud fitted for sixty steps, written, read and drawn again, is the frame it drew
+to a code value (halves for floats). On the pawn, `athenea render --neural` against `athenea render` from a camera
+of neither's choosing, by `athenea compare`: relMSE 0.00038, p99 7 code values, PSNR 42.7 dB, SSIM 0.994.
+
+### Not done
+
+- It is of a cloud by order alone: a cloud reordered, decimated or cut by its levels of detail is another cloud,
+  and nothing but the count says so.
+- A lit appearance is written and read, and `athenea render` refuses it: it has no light to tell it.
+- USD knows nothing of it, and neither does `athenea view`.
