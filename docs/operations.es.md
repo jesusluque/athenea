@@ -273,7 +273,9 @@ frames para mirar: la apariencia ajustada aún no se guarda.
 | `--rate-features` | número | `0.01` | el rate de Adam para las features |
 | `--rate-base` | número | `0.002` | para los colores base |
 | `--rate-weights` | número | `0.004` | para la red |
-| `-o`, `--output` | prefijo | — | escribe `<prefijo>_harmonics.exr`, `_base.exr` y `_latents.exr`: el frame de la primera cámara reservada con cada uno |
+| `--relight` | flag | apagado | ajusta en su lugar una nube neural iluminada: lo que debe ser es el relight del propio motor sobre la nube (sus colores como aquello de lo que está hecha, sin sombra) bajo un sol que viene de una dirección distinta en cada paso, y las cámaras reservadas se miden bajo soles que el fit nunca usó |
+| `--sun` | número | `3` | `--relight`: la intensidad del sol |
+| `-o`, `--output` | prefijo | — | escribe `<prefijo>_harmonics.exr`, `_base.exr` y `_latents.exr`: el frame de la primera cámara reservada con cada uno; con `--relight`, `<prefijo>_engine_sun0..2.exr` y `_latents_sun0..2.exr`, esa cámara bajo tres soles reservados |
 
 Las medidas son las de `athenea compare` contra el frame de los armónicos, la
 media sobre las cámaras reservadas: relMSE, el percentil 99 en code values de 8 bits,

@@ -269,7 +269,9 @@ The geometry is not touched. Nothing is written but the measures and, with
 | `--rate-features` | number | `0.01` | Adam's rate for the features |
 | `--rate-base` | number | `0.002` | for the base colours |
 | `--rate-weights` | number | `0.004` | for the network |
-| `-o`, `--output` | prefix | — | writes `<prefix>_harmonics.exr`, `_base.exr` and `_latents.exr`: the first held-out camera's frame by each |
+| `--relight` | flag | off | fits a lit neural cloud instead: what it should be is the engine's own relighting of the cloud (its colours as what it is made of, no shadow) under a sun from a different direction each step, and the held-out cameras are measured under suns the fit never used |
+| `--sun` | number | `3` | `--relight`: the sun's intensity |
+| `-o`, `--output` | prefix | — | writes `<prefix>_harmonics.exr`, `_base.exr` and `_latents.exr`: the first held-out camera's frame by each; with `--relight`, `<prefix>_engine_sun0..2.exr` and `_latents_sun0..2.exr`, that camera under three held-out suns |
 
 The measures are those of `athenea compare` against the harmonics' frame, the
 mean over the held-out cameras: relMSE, the 99th percentile in 8-bit code

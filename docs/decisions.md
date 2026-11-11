@@ -20417,9 +20417,16 @@ that the latent, the network and the fit carry a light.
 two suns no step used, against the engine's relighting: relMSE 72 before (the base under three units of light),
 0.0040 after; told the other sun than the one that shone, 0.42.
 
+**On a capture** (`athenea neural-fit --relight`, the pawn's 325 833 gaussians, 960 x 540, eight held-out cameras
+each under a sun no step used, against the engine's relighting): relMSE 2.2 before, 0.0100 after 300 steps,
+0.0014 after 1500, 0.0010 after 3000 (124 s); p99 19 code values, max 108. A frame is 5.8 ms by the latents where
+the engine's own relighting of it is 2.7: here the network is the dearer of the two, a perceptron a gaussian
+against a dot product and a lobe.
+
 ### Not done
 
 - The picture it learns is the engine's analytic relighting, with no shadow, no interreflection and no sky: a
   path-traced reference, a shadow term in the network's input, and a dome are the next three.
 - One distant light a frame. Several, and a light that is not at infinity, are a loop and a direction a gaussian.
-- Not run on a capture, where a gaussian's colour is light it was photographed under and not what it is made of.
+- On a capture a gaussian's colour is light it was photographed under and not what it is made of: the pawn
+  above is relit as the engine relights it, which takes the one for the other.

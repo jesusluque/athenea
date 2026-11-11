@@ -14,7 +14,9 @@
 #include "Commands.h"
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
+#include "aofx/Transform.h"
 #include "athenea/io/Exr.h"
+#include "athenea/light/LightTable.h"
 #include "athenea/render/NeuralFit.h"
 #include "athenea/render/ReferenceRenderer.h"
 #include "athenea/render/TileRasterizer.h"
@@ -36,6 +38,8 @@ struct NeuralFitOptions {
     float               rateFeatures = 1.0e-2F;
     float               rateBase = 2.0e-3F;
     float               rateWeights = 4.0e-3F;
+    bool                relight = false;   ///< a lit neural cloud, fitted to the engine's relighting under a moving sun
+    float               sun = 3.0F;        ///< the sun's intensity
     std::string         output;            ///< a prefix: <prefix>_harmonics.exr, _base.exr, _latents.exr
 };
 
@@ -59,7 +63,7 @@ int run(const NeuralFitOptions& o) {
     if (!fit) return report(fit.error());
     auto cloud = scene::loadSplatFile(*loader, o.splats, o.degree);
     if (!cloud) return report(cloud.error());
-    auto neural = render::makeNeuralCloud(library, *cloud);
+    auto neural = render::makeNeuralCloud(library, *cloud, 1, o.relight);
     if (!neural) return report(neural.error());
     const render::SplatInstance instance{&*cloud, render::Mat4::identity(), {}};
 
@@ -93,6 +97,33 @@ int run(const NeuralFitOptions& o) {
         return camera;
     };
 
+    // LIT: a sun from a direction, as the engine's relighting takes it (a
+    // light table's records) and as the neural cloud is told it. A different
+    // one each step, over the sphere by two more independent sequences;
+    // `phase` keeps the held-out suns off the fit's as it does the cameras.
+    auto table = light::LightTable::create(library);
+    if (!table) return report(table.error());
+    render::SplatLights lights;
+    const auto sunAt = [&](uint32_t k, double phase) -> Result<render::NeuralFitLight> {
+        light::Light lamp;
+        lamp.kind = light::LightKind::Distant;
+        lamp.lightToWorld = aofx::xform::rotationY(360.0 * std::fmod(0.5 + (k + phase) * 0.8191725134, 1.0)) *
+                            aofx::xform::rotationX(-80.0 + 160.0 * std::fmod(0.5 + (k + phase) * 0.6710436067, 1.0));
+        lamp.intensity = o.sun;
+        lamp.shadow = false;
+        ATHENEA_TRY(table->set(std::span<const light::Light>(&lamp, 1)));
+        lights.records = &table->records();
+        lights.count = table->count();
+        render::NeuralFitLight told;
+        told.teacher = &lights;
+        // A distant light shines down its own -z: it comes from its +z.
+        const render::Vec3 towards = lamp.lightToWorld.direction({0.0, 0.0, 1.0});
+        told.light.towards = {static_cast<float>(towards.x), static_cast<float>(towards.y),
+                              static_cast<float>(towards.z)};
+        told.light.radiance = {o.sun, o.sun, o.sun};
+        return told;
+    };
+
     render::RenderSettings settings;
     settings.width = how.width;
     settings.height = how.height;
@@ -100,6 +131,9 @@ int run(const NeuralFitOptions& o) {
     std::vector<render::SplatInstance> byLatents{instance};
     byLatents[0].neural = &*neural;
     // How far the cloud by its latents is from the cloud by its harmonics, over the held-out cameras.
+    // The held-out sun the instances above are drawn under, where the cloud is lit: kept here, since
+    // an instance only points at its light.
+    render::NeuralFitLight heldSun;
     struct Measure {
         double relMse = 0.0;
         double p99 = 0.0;
@@ -111,7 +145,14 @@ int run(const NeuralFitOptions& o) {
             const render::Camera camera = cameraAt(k, 0.5);
             render::RenderTargets whole;
             render::RenderTargets ours;
-            auto a = raster->render(camera, byHarmonics, settings, whole);
+            if (o.relight) {
+                auto made = sunAt(k, 0.5);
+                if (!made) return std::move(made).error();
+                heldSun = *made;
+                byHarmonics[0].relight = true;
+                byLatents[0].neuralLight = &heldSun.light;
+            }
+            auto a = raster->render(camera, byHarmonics, settings, whole, {}, nullptr, o.relight ? &lights : nullptr);
             if (!a) return std::move(a).error();
             // The latents; or, asked for fewer harmonics, the cloud by those.
             render::RenderSettings other = settings;
@@ -128,13 +169,22 @@ int run(const NeuralFitOptions& o) {
         }
         return m;
     };
-    const auto write = [&](const char* what, const std::vector<render::SplatInstance>& instances,
-                           uint32_t degree) -> Result<void> {
+    const auto write = [&](const std::string& what, std::vector<render::SplatInstance> instances, uint32_t degree,
+                           uint32_t sun = 0) -> Result<void> {
         if (o.output.empty()) return ok();
         render::RenderSettings s = settings;
         s.maxShDegree = degree;
         render::RenderTargets targets;
-        auto drawn = raster->render(cameraAt(0, 0.5), instances, s, targets);
+        render::NeuralFitLight told;
+        if (o.relight) {
+            auto made = sunAt(sun, 0.5);
+            if (!made) return std::move(made).error();
+            told = *made;
+            instances[0].relight = instances[0].neural == nullptr;
+            instances[0].neuralLight = &told.light;
+        }
+        auto drawn = raster->render(cameraAt(0, 0.5), instances, s, targets, {}, nullptr,
+                                    o.relight ? &lights : nullptr);
         if (!drawn) return std::move(drawn).error();
         auto colour = targets.colour.readAll<float>(**device);
         if (!colour) return std::move(colour).error();
@@ -150,23 +200,36 @@ int run(const NeuralFitOptions& o) {
     if (!before) return report(before.error());
     out("%u gaussians; %u numbers a gaussian in place of %u, and %u weights\n", cloud->count, render::kNeuralStride,
         3 * (cloud->restPerColour + 1), render::kNeuralWeights);
-    out("before: relMSE %.5f, p99 %.1f, max %u (the base colour alone against the harmonics, %u held-out cameras)\n",
+    out("before: relMSE %.5f, p99 %.1f, max %u (the cloud before it learns, against what it should be, %u held-out cameras)\n",
         before->relMse, before->p99, before->max, o.heldOut);
     // What the same cloud is with fewer harmonics: what eleven numbers a gaussian are to be held against.
-    for (uint32_t degree = 1; degree < std::min(o.degree, 3u); ++degree) {
+    for (uint32_t degree = 1; !o.relight && degree < std::min(o.degree, 3u); ++degree) {
         auto fewer = measure(degree);
         if (!fewer) return report(fewer.error());
         out("harmonics of degree %u (%u numbers a gaussian): relMSE %.5f, p99 %.1f, max %u\n", degree,
             3 * (degree + 1) * (degree + 1), fewer->relMse, fewer->p99, fewer->max);
     }
-    if (auto w = write("harmonics", byHarmonics, 3); !w) return report(w.error());
-    if (auto w = write("base", byHarmonics, 0); !w) return report(w.error());
+    if (o.relight) {
+        // The engine's relighting under three held-out suns: what the latents' frames are to be.
+        for (uint32_t sun = 0; sun < 3; ++sun) {
+            if (auto w = write("engine_sun" + std::to_string(sun), byHarmonics, 3, sun); !w) return report(w.error());
+        }
+    } else {
+        if (auto w = write("harmonics", byHarmonics, 3); !w) return report(w.error());
+        if (auto w = write("base", byHarmonics, 0); !w) return report(w.error());
+    }
 
     const auto start = std::chrono::steady_clock::now();
     const unsigned every = std::max(o.steps / 10, 1u);
     for (unsigned k = 0; k < o.steps; ++k) {
         const bool ask = k == 0 || (k + 1) % every == 0;
-        auto loss = fit->step(*raster, cameraAt(k, 0.0), instance, *neural, how, ask);
+        render::NeuralFitLight told;
+        if (o.relight) {
+            auto made = sunAt(k, 0.0);
+            if (!made) return report(made.error());
+            told = *made;
+        }
+        auto loss = fit->step(*raster, cameraAt(k, 0.0), instance, *neural, how, ask, o.relight ? &told : nullptr);
         if (!loss) return report(loss.error());
         if (*loss) {
             auto now = measure();
@@ -184,8 +247,14 @@ int run(const NeuralFitOptions& o) {
     const auto timed = [&](const std::vector<render::SplatInstance>& instances) -> Result<double> {
         double best = 1.0e30;
         render::RenderTargets targets;
+        if (o.relight) {
+            auto made = sunAt(0, 0.5);
+            if (!made) return std::move(made).error();
+            heldSun = *made;
+        }
         for (int round = 0; round < 20; ++round) {
-            auto stats = raster->render(cameraAt(0, 0.5), instances, settings, targets);
+            auto stats = raster->render(cameraAt(0, 0.5), instances, settings, targets, {}, nullptr,
+                                        o.relight ? &lights : nullptr);
             if (!stats) return std::move(stats).error();
             best = std::min(best, stats->totalMs);
         }
@@ -197,7 +266,13 @@ int run(const NeuralFitOptions& o) {
     if (!latentsMs) return report(latentsMs.error());
     out("a frame at %ux%u: %.2f ms by the harmonics, %.2f ms by the latents\n", settings.width, settings.height,
         *harmonicsMs, *latentsMs);
-    if (auto w = write("latents", byLatents, 3); !w) return report(w.error());
+    if (o.relight) {
+        for (uint32_t sun = 0; sun < 3; ++sun) {
+            if (auto w = write("latents_sun" + std::to_string(sun), byLatents, 3, sun); !w) return report(w.error());
+        }
+    } else if (auto w = write("latents", byLatents, 3); !w) {
+        return report(w.error());
+    }
     return 0;
 }
 
@@ -219,6 +294,8 @@ void addNeuralFit(CLI::App& app) {
     cmd->add_option("--rate-features", o.rateFeatures, "Adam's rate for the features");
     cmd->add_option("--rate-base", o.rateBase, "Adam's rate for the base colours");
     cmd->add_option("--rate-weights", o.rateWeights, "Adam's rate for the network");
+    cmd->add_flag("--relight", o.relight, "a lit neural cloud, fitted to the engine's relighting of the cloud under a sun that moves");
+    cmd->add_option("--sun", o.sun, "--relight: the sun's intensity");
     cmd->add_option("-o,--output", o.output, "a prefix: the first held-out camera's frame by the harmonics, the base and the latents");
     cmd->callback([options] {
         if (const int code = run(*options); code != 0) {
