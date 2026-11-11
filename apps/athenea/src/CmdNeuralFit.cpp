@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,7 @@
 #include "athenea/io/Exr.h"
 #include "athenea/io/NeuralFile.h"
 #include "athenea/light/LightTable.h"
+#include "athenea/render/GaussianRayTracer.h"
 #include "athenea/render/NeuralFit.h"
 #include "athenea/render/ReferenceRenderer.h"
 #include "athenea/render/TileRasterizer.h"
@@ -41,6 +43,7 @@ struct NeuralFitOptions {
     float               rateWeights = 4.0e-3F;
     bool                relight = false;   ///< a lit neural cloud, fitted to the engine's relighting under a moving sun
     float               sun = 3.0F;        ///< the sun's intensity
+    bool                shadows = false;   ///< --relight: the sun casts the cloud's shadow on itself
     std::string         save;              ///< the fitted appearance, as a .athn
     std::string         output;            ///< a prefix: <prefix>_harmonics.exr, _base.exr, _latents.exr
 };
@@ -106,16 +109,40 @@ int run(const NeuralFitOptions& o) {
     auto table = light::LightTable::create(library);
     if (!table) return report(table.error());
     render::SplatLights lights;
+    // WITH SHADOWS: the cloud's own gaussians as what a shadow ray crosses --
+    // the ray tracer's structures, built once since nothing moves -- so the
+    // picture the cloud should be has the pawn's head darkening its collar.
+    // The neural cloud is told nothing of it: only where the light comes from.
+    std::optional<render::GaussianRayTracer> shadowTracer;
+    if (o.relight && o.shadows) {
+        if (!render::GaussianRayTracer::hardwareSupported(**device)) {
+            err("--shadows wants a device that traces rays\n");
+            return kExitFailure;
+        }
+        render::RayTracerSettings tracing;
+        tracing.route = render::RayTracingRoute::Hardware;
+        auto made = render::GaussianRayTracer::create(library, tracing);
+        if (!made) return report(made.error());
+        shadowTracer.emplace(std::move(*made));
+    }
     const auto sunAt = [&](uint32_t k, double phase) -> Result<render::NeuralFitLight> {
         light::Light lamp;
         lamp.kind = light::LightKind::Distant;
         lamp.lightToWorld = aofx::xform::rotationY(360.0 * std::fmod(0.5 + (k + phase) * 0.8191725134, 1.0)) *
                             aofx::xform::rotationX(-80.0 + 160.0 * std::fmod(0.5 + (k + phase) * 0.6710436067, 1.0));
         lamp.intensity = o.sun;
-        lamp.shadow = false;
+        lamp.shadow = o.shadows;
         ATHENEA_TRY(table->set(std::span<const light::Light>(&lamp, 1)));
         lights.records = &table->records();
         lights.count = table->count();
+        if (shadowTracer) {
+            const render::ShadowScene scene = shadowTracer->shadowScene();
+            lights.shadowTlas = scene.tlas;
+            lights.shadowFrames = scene.frames;
+            lights.shadowColours = scene.colours;
+            lights.shadowInstanceData = scene.instanceData;
+            lights.shadowInstanceIndices = scene.instanceIndices;
+        }
         render::NeuralFitLight told;
         told.teacher = &lights;
         // A distant light shines down its own -z: it comes from its +z.
@@ -126,6 +153,11 @@ int run(const NeuralFitOptions& o) {
         return told;
     };
 
+    if (shadowTracer) {
+        const std::vector<render::SplatInstance> whole{instance};
+        auto prepared = shadowTracer->prepare(render::projectionFor(cameraAt(0, 0.0), how.width, how.height), whole);
+        if (!prepared) return report(prepared.error());
+    }
     render::RenderSettings settings;
     settings.width = how.width;
     settings.height = how.height;
@@ -314,6 +346,7 @@ void addNeuralFit(CLI::App& app) {
     cmd->add_option("--rate-weights", o.rateWeights, "Adam's rate for the network");
     cmd->add_flag("--relight", o.relight, "a lit neural cloud, fitted to the engine's relighting of the cloud under a sun that moves");
     cmd->add_option("--sun", o.sun, "--relight: the sun's intensity");
+    cmd->add_flag("--shadows", o.shadows, "--relight: the sun casts the cloud's shadow on itself in what the cloud should be");
     cmd->add_option("--save", o.save, "write the fitted appearance: a .athn, to draw the cloud by (athenea render --neural)");
     cmd->add_option("-o,--output", o.output, "a prefix: the first held-out camera's frame by the harmonics, the base and the latents");
     cmd->callback([options] {

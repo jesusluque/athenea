@@ -20422,8 +20422,19 @@ each under a sun no step used, against the engine's relighting): relMSE 2.2 befo
 the engine's own relighting of it is 2.7: here the network is the dearer of the two, a perceptron a gaussian
 against a dot product and a lobe.
 
+**With the cloud's shadow on itself** (`--shadows`: the engine's relighting casts a ray a gaussian through the
+cloud's own gaussians, the ray tracer's structures built once). The neural cloud is told nothing more -- where
+the light comes from and no more -- and what it learns is the shading without the shadow's edge: held-out relMSE
+0.0025 after 3000 steps where the unshadowed picture gave 0.0010, p99 34 code values where it gave 19, and in the
+frames the pawn's head no longer darkens a sharp patch of its base but a blur of one. Eight features and the
+light's harmonics of degree 2 hold how open a gaussian is towards a direction only as far as degree 2 says it,
+which is what a transfer of nine coefficients holds too. What it costs is the other half: a frame by the latents
+is 6.0 ms, the engine's with its rays 28.3.
+
 ### Not done
 
+- A shadow's edge: the network wants what reaches each gaussian from the light (the transmittance the engine
+  already has a gaussian a light, by ray or by its shadow map) as an input, which is the next step.
 - The picture it learns is the engine's analytic relighting, with no shadow, no interreflection and no sky: a
   path-traced reference, a shadow term in the network's input, and a dome are the next three.
 - One distant light a frame. Several, and a light that is not at infinity, are a loop and a direction a gaussian.
