@@ -20668,7 +20668,8 @@ frame by the harmonics is there: 9.4 ms against 2.6 at 960 x 540, 9.8 against 2.
 at 3840 x 2160 -- seven to ten milliseconds for the network a gaussian in view, where Metal's was two or none.
 (The harmonics' 2.6 ms is what the frame's own clock says without waiting for the device, which `athenea bench`
 does: bench times the same cloud at 3.9 and 6.2 ms. The difference between the two columns is the one to read.)
-On this device the network a gaussian is the dearer way to colour a capture by a factor of three and more.
+(Wrong: see "Once a gaussian or once a pixel" below. Timed by `athenea bench` the two are a frame of 2.5 and 2.6
+ms.)
 
 **What is not there.** `--shadows` is refused: the rays a relit splat's shadow takes want a device that traces,
 and CUDA under WSL has no OptiX. So the shadowed fits are Metal's alone; the shadow map's route needs no ray and
@@ -20724,7 +20725,22 @@ the walk and the network pay a third more at 1080p and nearly half more at 4K.
 So for a cloud's colour the branch decodes once a gaussian, and what once a pixel is still for is what only a
 pixel has: a vector to key by, a light that falls on a pixel and not on a gaussian.
 
+**On CUDA** (RTX 3070 Laptop, WSL2, the same measure):
+
+| the frame is drawn by | 1920 x 1080 | 3840 x 2160 |
+|---|---|---|
+| its harmonics | 2.60 ms | 4.58 ms |
+| a network a gaussian | 2.48 ms | 4.97 ms |
+| 8 channels blended, a network a pixel | 3.17 ms | 10.34 ms |
+| 16 channels | 4.90 ms | 13.75 ms |
+| 32 channels | 8.01 ms | 24.75 ms |
+
+The same there: a network a gaussian is the harmonics' frame at 1080p and 0.4 ms over it at 4K, and once a pixel
+is 0.6 to 5.4 ms over at 1080p and 5.8 to 20.2 at 4K. **The CUDA section above is wrong where it says a frame by
+the latents is three times and more a frame by the harmonics** (9.8 against 2.6 ms, then 4.9 against 2.0): those
+were the unwaited clock's, which stopped the harmonics' frame early. The weights in the group's memory were worth
+keeping all the same; what they were said to buy is not measured by a clock that can be read.
+
 ### Not done
 
 - Not fitted, so nothing says what a pixel's network buys in quality for its milliseconds.
-- Not on CUDA yet.
