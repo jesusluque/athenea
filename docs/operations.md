@@ -273,6 +273,8 @@ three frames to look at.
 | `--rate-weights` | number | `0.004` | for the network |
 | `--reached` | `ray` or `map` | — | `--shadows`: the neural cloud is also given what reaches each gaussian from the light, and its colour is its answer times that. `ray`: the transmittance the engine's shadow ray finds, so every frame by it casts those rays. `map`: read from the cloud's shadow map from the sun, built with no ray; what the cloud should be is still the rays' |
 | `--map-side` | integer | `2048` | `--reached map`: the shadow map's texels a side |
+| `--map-coefficients` | 1, 3, 5 or 7 | `7` | `--reached map`: the map's total optical depth and its Fourier pairs |
+| `--map-bias` | world units | `0` | `--reached map`: how far behind a texel's nearest caster a receiver still stands on it; 0 is 2% of the slab |
 | `--load` | path | — | a `.athn` to start from; with `--steps 0` it is only measured |
 | `--save` | path | — | writes the fitted appearance as a `.athn` (§8.2), which `athenea render --neural` draws the cloud by |
 | `--relight` | flag | off | fits a lit neural cloud instead: what it should be is the engine's own relighting of the cloud (its colours as what it is made of, no shadow) under a sun from a different direction each step, and the held-out cameras are measured under suns the fit never used |

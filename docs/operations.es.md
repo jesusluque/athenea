@@ -277,6 +277,8 @@ frames para mirar.
 | `--rate-weights` | número | `0.004` | para la red |
 | `--reached` | `ray` o `map` | — | `--shadows`: a la nube neural se le da además lo que llega a cada gaussiana desde la luz, y su color es su respuesta por eso. `ray`: la transmitancia que encuentra el shadow ray del motor, así que cada frame dibujado con ella traza esos rayos. `map`: leída del shadow map de la nube desde el sol, construido sin ningún rayo; lo que la nube debe ser sigue siendo lo de los rayos |
 | `--map-side` | entero | `2048` | `--reached map`: los texels por lado del shadow map |
+| `--map-coefficients` | 1, 3, 5 o 7 | `7` | `--reached map`: la profundidad óptica total del mapa y sus pares de Fourier |
+| `--map-bias` | unidades de mundo | `0` | `--reached map`: cuánto por detrás del caster más cercano de un texel sigue un receptor estando sobre él; 0 es el 2% del slab |
 | `--load` | ruta | — | un `.athn` del que partir; con `--steps 0` solo se mide |
 | `--save` | ruta | — | escribe la apariencia ajustada como un `.athn` (§8.2), con el que `athenea render --neural` dibuja la nube |
 | `--relight` | flag | apagado | ajusta en su lugar una nube neural iluminada: lo que debe ser es el relight del propio motor sobre la nube (sus colores como aquello de lo que está hecha, sin sombra) bajo un sol que viene de una dirección distinta en cada paso, y las cámaras reservadas se miden bajo soles que el fit nunca usó |

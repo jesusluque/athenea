@@ -20523,3 +20523,42 @@ against 5.01 at 1920 x 1080 -- two milliseconds more, where an earlier run of th
   and nothing but the count says so.
 - A lit appearance is written and read, and `athenea render` refuses it: it has no light to tell it.
 - USD knows nothing of it, and neither does `athenea view`.
+
+## A lit fit to what the path tracer baked: first numbers, and what is wrong with them (11 Nov)
+
+The picture a lit neural cloud learnt so far was the engine's own analytic relighting. `athenea neural-fit
+--pictures` takes instead what the path tracer made: one mesh converted by `athenea mesh2splat` into the same
+gaussians under one sun after another, each cloud's harmonics the light of its sun -- three bounces, shadows and
+the colour a floor throws back -- and each cloud the picture of its sun (`NeuralFitLight::picture`). Twenty-four
+clouds to learn from and four held out, whose suns are not shown.
+
+**The scene** is the chess set's pawn in a clay material on a red floor, 100 thousand gaussians, a sun between
+20 and 80 degrees up. Two things made the first attempts black, both worth knowing: the pawn's own materials are
+a metal and a glass, whose bake holds the body's light alone (the polish and what a glass bends are the frame's
+to add), so drawn by its harmonics such a cloud is black; and a `DistantLight` of intensity 3 and one degree
+across is an irradiance of thousandths -- 12 540 is three.
+
+**Measured** (Apple M5 Pro, Metal, 960 x 540, 3000 steps, eight held-out cameras under each of the four held-out
+suns, against those suns' baked clouds):
+
+| the neural cloud is told | relMSE, held-out suns | p99 | relMSE, the suns it learnt from |
+|---|---|---|---|
+| nothing learnt yet | 3.03 | 205 | -- |
+| where the light comes from | 0.0285 | 92 | 0.0135 |
+| and the cloud's shadow map from it | 0.0078 | 80 | 0.0054 |
+
+Far from the analytic picture's 0.00068 and p99 14, and the frames say why. Told the direction alone, the cloud
+has learnt its twenty-four suns and not the sun: a held-out sun's floor carries the ghosts of the shadows it was
+shown, which is what 24 lights are to a network asked for a shadow's edge. With the map the floor is clean and
+the shadow is where it should be in some frames -- and in others it is not: **the map's shadow and the baked
+sun's do not agree in this mode**, and not by the sign of an angle (drawn before any step, a held-out sun's
+frame shows a shadow of another length and direction than its cloud's). The sun is authored as `rotateY` then
+`rotateX` on a `DistantLight` and told to the map as `rotationY(yaw) * rotationX(pitch)` on a light record;
+which of the two the engine reads otherwise is not found yet. Until it is, the second row is the one to read,
+and the third is not a measure of anything.
+
+### Not done
+
+- The map's sun against the bake's: found, not fixed.
+- More suns than twenty-four, and a regulariser on the features (their rate at zero changes nothing here: 0.0073).
+- The transmittance still only multiplies, so what a floor throws back into a shadow is not the network's to say.

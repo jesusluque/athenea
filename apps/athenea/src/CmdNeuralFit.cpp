@@ -54,6 +54,8 @@ struct NeuralFitOptions {
     bool                shadows = false;   ///< --relight: the sun casts the cloud's shadow on itself
     std::string         reached;           ///< --shadows: the neural cloud is told what reaches each gaussian: ray | map
     unsigned            mapSide = 2048;    ///< --reached map: the shadow map's texels a side
+    unsigned            mapCoefficients = 7;   ///< 1, 3, 5 or 7: the map's total and its Fourier pairs
+    float               mapBias = 0.0F;    ///< how far behind a texel's nearest caster a receiver still stands on it (0: 2% of the slab)
     std::string         save;              ///< the fitted appearance, as a .athn
     std::string         pictures;          ///< a manifest of the same cloud baked under suns: what a lit fit learns from
     std::string         load;              ///< an appearance to start from (or, with --steps 0, only to measure)
@@ -201,7 +203,8 @@ int runPictures(const NeuralFitOptions& o) {
             job.lights = lights.records;
             job.lightCount = 1;
             job.resolution = o.mapSide;
-            job.coefficients = 7;
+            job.coefficients = o.mapCoefficients;
+            job.selfBias = o.mapBias;
             gpu::CommandBatch batch(**device);
             ATHENEA_TRY(shadowMap->build(batch, job));
             ATHENEA_TRY(shadowMap->factors(batch, caster, 0, mapFactors));
@@ -460,7 +463,8 @@ int run(const NeuralFitOptions& o) {
             job.lights = lights.records;
             job.lightCount = 1;
             job.resolution = o.mapSide;
-            job.coefficients = 7;
+            job.coefficients = o.mapCoefficients;
+            job.selfBias = o.mapBias;
             gpu::CommandBatch batch(**device);
             ATHENEA_TRY(shadowMap->build(batch, job));
             ATHENEA_TRY(shadowMap->factors(batch, caster, 0, mapFactors));
@@ -519,7 +523,8 @@ int run(const NeuralFitOptions& o) {
             job.lights = lights.records;
             job.lightCount = 3;
             job.resolution = o.mapSide;
-            job.coefficients = 7;
+            job.coefficients = o.mapCoefficients;
+            job.selfBias = o.mapBias;
             gpu::CommandBatch batch(**device);
             ATHENEA_TRY(shadowMap->build(batch, job));
             ATHENEA_TRY(shadowMap->factors(batch, caster, 0, mapFactors));
@@ -816,6 +821,8 @@ void addNeuralFit(CLI::App& app) {
     cmd->add_option("--sun", o.sun, "--relight: the sun's intensity");
     cmd->add_option("--reached", o.reached, "--shadows: the neural cloud takes what reaches each gaussian from the light: ray (the engine's shadow ray) or map (the cloud's shadow map, no ray)");
     cmd->add_option("--map-side", o.mapSide, "--reached map: the shadow map's texels a side");
+    cmd->add_option("--map-coefficients", o.mapCoefficients, "--reached map: 1, 3, 5 or 7 -- the map's total optical depth and its Fourier pairs");
+    cmd->add_option("--map-bias", o.mapBias, "--reached map: how far behind a texel's nearest caster a receiver still stands on it, world units (0: 2% of the slab)");
     cmd->add_flag("--shadows", o.shadows, "--relight: the sun casts the cloud's shadow on itself in what the cloud should be");
     cmd->add_option("--load", o.load, "a .athn to start from; with --steps 0, only measured");
     cmd->add_option("--save", o.save, "write the fitted appearance: a .athn, to draw the cloud by (athenea render --neural)");
