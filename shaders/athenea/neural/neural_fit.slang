@@ -48,7 +48,8 @@ struct NeuralFitParams {
     // LIT (neural_appearance.slang): 1, and the frame's light as neural_shade has it.
     uint  lit;
     float lightX; float lightY; float lightZ; uint pad0;
-    float radianceR; float radianceG; float radianceB; uint pad1;
+    float radianceR; float radianceG; float radianceB;
+    uint  shadowLights;   // floats a slot in `shadowFactors`, the frame's light's first; 0: none
 };
 
 StructuredBuffer<float4>           student;      // the frame drawn from the latents
@@ -58,6 +59,7 @@ RWStructuredBuffer<uint>           loss;         // the squared error summed, in
 StructuredBuffer<uint>             colourGrad;   // three signed words a slot, as the blend summed them
 StructuredBuffer<float4>           positions;
 StructuredBuffer<uint>             shape;
+StructuredBuffer<float>            shadowFactors;
 StructuredBuffer<float>            latent;
 StructuredBuffer<float>            weights;
 RWStructuredBuffer<float>          records;      // kFitRecord a gaussian
@@ -119,9 +121,11 @@ void neuralFitBackward(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const bool lit = params.lit != 0;
-    // The frame drew the answer times the light's radiance: so is its derivative.
+    // The frame drew the answer times the light's radiance and what of it
+    // reached the gaussian: so is its derivative.
+    const float reached = lit && params.shadowLights != 0 ? shadowFactors[slot * params.shadowLights] : 1.0;
     const float3 dColour = float3(summed) / kColourGradScale *
-                           (lit ? float3(params.radianceR, params.radianceG, params.radianceB) : float3(1.0));
+                           (lit ? float3(params.radianceR, params.radianceG, params.radianceB) * reached : float3(1.0));
     const float3 eye = float3(params.eyeX, params.eyeY, params.eyeZ);
     const float3 direction = normalize(positions[i].xyz - eye);
     const float3 light = lit ? neuralLocalLight(shape, i, positions[i].xyz, eye,

@@ -270,6 +270,7 @@ three frames to look at.
 | `--rate-features` | number | `0.01` | Adam's rate for the features |
 | `--rate-base` | number | `0.002` | for the base colours |
 | `--rate-weights` | number | `0.004` | for the network |
+| `--reached` | flag | off | `--shadows`: the neural cloud is also given what reaches each gaussian from the light -- the transmittance the engine's shadow ray finds -- and its colour is its answer times that. Every frame by it then casts those rays |
 | `--save` | path | — | writes the fitted appearance as a `.athn` (§8.2), which `athenea render --neural` draws the cloud by |
 | `--relight` | flag | off | fits a lit neural cloud instead: what it should be is the engine's own relighting of the cloud (its colours as what it is made of, no shadow) under a sun from a different direction each step, and the held-out cameras are measured under suns the fit never used |
 | `--sun` | number | `3` | `--relight`: the sun's intensity |

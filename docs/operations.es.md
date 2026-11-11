@@ -274,6 +274,7 @@ frames para mirar.
 | `--rate-features` | número | `0.01` | el rate de Adam para las features |
 | `--rate-base` | número | `0.002` | para los colores base |
 | `--rate-weights` | número | `0.004` | para la red |
+| `--reached` | flag | apagado | `--shadows`: a la nube neural se le da además lo que llega a cada gaussiana desde la luz -- la transmitancia que encuentra el shadow ray del motor -- y su color es su respuesta por eso. Cada frame dibujado con ella traza entonces esos rayos |
 | `--save` | ruta | — | escribe la apariencia ajustada como un `.athn` (§8.2), con el que `athenea render --neural` dibuja la nube |
 | `--relight` | flag | apagado | ajusta en su lugar una nube neural iluminada: lo que debe ser es el relight del propio motor sobre la nube (sus colores como aquello de lo que está hecha, sin sombra) bajo un sol que viene de una dirección distinta en cada paso, y las cámaras reservadas se miden bajo soles que el fit nunca usó |
 | `--sun` | número | `3` | `--relight`: la intensidad del sol |

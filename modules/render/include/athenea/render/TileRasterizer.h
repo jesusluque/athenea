@@ -390,6 +390,12 @@ class TileRasterizer {
 public:
     [[nodiscard]] static Result<TileRasterizer> create(gpu::ShaderLibrary& library);
 
+    /// What reached each splat from each light in the last frame that cast
+    /// splat shadows: one float a (slot, light), `shadowFactorLights()` a
+    /// slot. For whoever walks that frame backwards (NeuralFit).
+    [[nodiscard]] const gpu::Buffer& shadowFactors() const noexcept { return shadowFactors_; }
+    [[nodiscard]] uint32_t shadowFactorLights() const noexcept { return shadowFactorLights_; }
+
     /// `points` are drawn as opaque discs in the same depth order as the
     /// splats. `under`, when given, is an opaque layer (a rasterised point
     /// layer of the same size) the splats are composited over and cut by.
@@ -516,6 +522,7 @@ private:
     gpu::Buffer emptyShadow_;      ///< bound where a frame casts no splat shadow
     gpu::Buffer emptyMotion_;      ///< bound where nothing moves under the shutter
     gpu::Buffer shadowFactors_;    ///< one float a (splat, light), where a relit cloud shadows
+    uint32_t    shadowFactorLights_ = 0;
     gpu::ComputeKernel splatShadow_;
     /// THE SKY TURNED INTO A TURNED CLOUD'S FRAME (splat/sky_turn.slang): a
     /// transfer is a direction of the file it was baked in, so a cloud the

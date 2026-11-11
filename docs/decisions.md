@@ -20431,10 +20431,30 @@ light's harmonics of degree 2 hold how open a gaussian is towards a direction on
 which is what a transfer of nine coefficients holds too. What it costs is the other half: a frame by the latents
 is 6.0 ms, the engine's with its rays 28.3.
 
+**Told what reaches each gaussian** (`NeuralCloud::shadowed`, `--reached`). The transmittance the engine's shadow
+ray finds for a gaussian and a light -- the factor a relit splat already takes; the rasteriser now also casts it
+for a shadowed neural cloud and hands it to `neuralShade`, and `NeuralFit` reads it back for the backward pass --
+multiplies the network's answer: the network says what the light does where it arrives, the engine how much of it
+arrives. That is the plan's `z = [m | e]` in its first form: `m` learnt, `e` recomputed every frame by the engine.
+The same fit, the pawn, held-out cameras and suns, against the engine's shadowed relighting:
+
+| the neural cloud is told | relMSE | p99, code values | a frame at 960 x 540 |
+|---|---|---|---|
+| nothing learnt yet | 2.4 (0.54 with the transmittance) | 231 (157) | -- |
+| where the light comes from | 0.0025 | 34 | 6.0 ms |
+| and what of it reaches each gaussian | 0.00052 | 10.6 | 29.9 ms |
+| (the engine's own shadowed relighting) | 0 | 0 | 27.3 ms |
+
+The shadow's edge is back, and so is its price: the rays are the frame. A step of the fit is 124 ms where it was
+66.
+
 ### Not done
 
-- A shadow's edge: the network wants what reaches each gaussian from the light (the transmittance the engine
-  already has a gaussian a light, by ray or by its shadow map) as an input, which is the next step.
+- A transmittance that costs no ray a gaussian: the engine's cloud shadow map (`technique::SplatShadowMap`) and
+  its baked visibility fields give the same factor from a table, and sit above this module; `SplatLights`'
+  `visibilityFactors` is the door they already come through, and a shadowed neural cloud does not read it yet.
+- The transmittance only multiplies. As an input too, the network could say what a gaussian in shadow still
+  shows -- what bounced, what came through -- which a product cannot.
 - The picture it learns is the engine's analytic relighting, with no shadow, no interreflection and no sky: a
   path-traced reference, a shadow term in the network's input, and a dome are the next three.
 - One distant light a frame. Several, and a light that is not at infinity, are a loop and a direction a gaussian.

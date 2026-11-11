@@ -335,9 +335,11 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     const bool measured = lights != nullptr && lights->any() && lights->visibilityFactors != nullptr &&
                           lights->visibilityLights > 0;
     const bool splatShadows = !measured && lights != nullptr && lights->any() && lights->shadows() && shadowsSupported_ &&
-                              std::any_of(instances.begin(), instances.end(),
-                                          [](const SplatInstance& i) { return i.relight; });
+                              std::any_of(instances.begin(), instances.end(), [](const SplatInstance& i) {
+                                  return i.relight || (i.neural != nullptr && i.neural->lit && i.neural->shadowed);
+                              });
     const uint32_t shadowLights = splatShadows ? std::min(lights->count, uint32_t{8}) : 0u;
+    shadowFactorLights_ = shadowLights;
     if (splatShadows) {
         uint64_t wanted = 0;
         for (const SplatInstance& instance : instances) {
@@ -355,7 +357,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             if (cloud == nullptr || cloud->count == 0) {
                 continue;
             }
-            if (instance.relight) {
+            if (instance.relight || (instance.neural != nullptr && instance.neural->lit && instance.neural->shadowed)) {
                 const std::array<float, 12> rows = instance.objectToWorld.rows3x4();
                 splatShadow_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
                     cursor["positions"].setBinding(cloud->positions.rhi());
@@ -828,6 +830,11 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                 if (length > 0.0) {
                     towards = towards * (1.0 / length);
                 }
+                // What reaches each gaussian from the light, where the cloud
+                // leaves that to the engine and the frame cast shadows.
+                const bool shadowed = neural.lit && neural.shadowed && splatShadows;
+                cursor["shadowFactors"].setBinding(shadowed ? shadowFactors_.rhi() : placeholderDepth_.rhi());
+                cursor["params"]["shadowLights"].setData(shadowed ? shadowLights : 0u);
                 cursor["params"]["lit"].setData(uint32_t{neural.lit ? 1u : 0u});
                 cursor["params"]["lightX"].setData(static_cast<float>(towards.x));
                 cursor["params"]["lightY"].setData(static_cast<float>(towards.y));

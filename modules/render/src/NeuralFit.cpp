@@ -108,7 +108,10 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
     auto drawn = rasterizer.render(camera, std::span<const SplatInstance>(&byHarmonics, 1), frame, teacher_, {},
                                    nullptr, teacherLights);
     if (!drawn) return std::move(drawn).error();
-    drawn = rasterizer.render(camera, std::span<const SplatInstance>(&byLatents, 1), frame, student_);
+    // A shadowed neural cloud takes what reaches it from the same shadow scene the picture was made with.
+    const SplatLights* studentLights = lit && neural.shadowed ? teacherLights : nullptr;
+    drawn = rasterizer.render(camera, std::span<const SplatInstance>(&byLatents, 1), frame, student_, {}, nullptr,
+                              studentLights);
     if (!drawn) return std::move(drawn).error();
 
     const Projection projection = projectionFor(camera, settings.width, settings.height);
@@ -116,6 +119,9 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
     ++steps_;
     const float t = static_cast<float>(steps_);
 
+    // What reaches each gaussian, where the cloud is shadowed: known once the frame that carries the
+    // error back has cast its shadows.
+    uint32_t shadowLights = 0;
     // Every name the module declares is bound, to the buffer of this fit it
     // means; a kernel reads the few it uses.
     const auto bind = [&](rhi::ShaderCursor cursor) {
@@ -126,6 +132,8 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
         cursor["colourGrad"].setBinding(colourGrad_.rhi());
         cursor["positions"].setBinding(cloud.positions.rhi());
         cursor["shape"].setBinding(cloud.shape.rhi());
+        cursor["shadowFactors"].setBinding(shadowLights != 0 ? rasterizer.shadowFactors().rhi() : latentGrad_.rhi());
+        cursor["params"]["shadowLights"].setData(shadowLights);
         cursor["latent"].setBinding(neural.latent.rhi());
         cursor["weights"].setBinding(neural.weights.rhi());
         cursor["records"].setBinding(records_.rhi());
@@ -199,7 +207,10 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
     carrying.contribution = &colourGrad_;
     carrying.contributionMode = 4;
     carrying.finalColour = &pixelGrad_;
-    drawn = rasterizer.render(camera, std::span<const SplatInstance>(&byLatents, 1), carrying, again_);
+    drawn = rasterizer.render(camera, std::span<const SplatInstance>(&byLatents, 1), carrying, again_, {}, nullptr,
+                              studentLights);
+    if (!drawn) return std::move(drawn).error();
+    shadowLights = studentLights != nullptr ? rasterizer.shadowFactorLights() : 0u;
     if (!drawn) return std::move(drawn).error();
     {
         gpu::CommandBatch batch(device);

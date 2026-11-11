@@ -37,6 +37,12 @@ struct NeuralCloud {
     /// unit of light from a direction, and an instance drawn by it names the
     /// frame's light (`SplatInstance::neuralLight`).
     bool        lit = false;
+    /// SHADOWED (a lit cloud's): what the network answers is what the light
+    /// does where it arrives, and how much of it arrives at each gaussian is
+    /// the engine's to say -- the transmittance a shadow ray finds, the same
+    /// factor a relit splat takes (`SplatLights`' shadow scene, handed to the
+    /// frame). The colour is the answer times it.
+    bool        shadowed = false;
 };
 
 /// The one light a lit neural cloud is drawn under: where it comes from (a

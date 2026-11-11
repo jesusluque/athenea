@@ -18,7 +18,10 @@ struct NeuralShadeParams {
     // LIT: 1, and the one light of the frame -- where it comes from (unit, towards it, in the cloud's
     // space) and its radiance.
     uint  lit; float lightX; float lightY; float lightZ;
-    float radianceR; float radianceG; float radianceB; uint pad0;
+    float radianceR; float radianceG; float radianceB;
+    // What reaches each gaussian from the light: `shadowFactors` holds this many floats a slot, the
+    // frame's first light's first. 0: all of it.
+    uint  shadowLights;
 };
 
 StructuredBuffer<float4>           positions;
@@ -26,6 +29,7 @@ StructuredBuffer<uint>             shape;
 StructuredBuffer<uint>             visible;     // one a slot, as the projection left it
 StructuredBuffer<float>            latent;
 StructuredBuffer<float>            weights;
+StructuredBuffer<float>            shadowFactors;
 RWStructuredBuffer<float>          made;        // the latent or the weights being started
 RWStructuredBuffer<ProjRecord>     proj;
 ConstantBuffer<NeuralShadeParams>  params;
@@ -82,6 +86,7 @@ void neuralShade(uint3 tid: SV_DispatchThreadID) {
                                                 float3(params.lightX, params.lightY, params.lightZ))
                              : float3(0.0);
     const NeuralPass pass = neuralForward(latent, i, weights, direction, lit, light);
+    const float reached = lit && params.shadowLights != 0 ? shadowFactors[slot * params.shadowLights] : 1.0;
     proj[slot].colour.xyz =
-        lit ? pass.colour * float3(params.radianceR, params.radianceG, params.radianceB) : pass.colour;
+        lit ? pass.colour * float3(params.radianceR, params.radianceG, params.radianceB) * reached : pass.colour;
 }

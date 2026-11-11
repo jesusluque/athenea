@@ -44,6 +44,7 @@ struct NeuralFitOptions {
     bool                relight = false;   ///< a lit neural cloud, fitted to the engine's relighting under a moving sun
     float               sun = 3.0F;        ///< the sun's intensity
     bool                shadows = false;   ///< --relight: the sun casts the cloud's shadow on itself
+    bool                reached = false;   ///< --shadows: the neural cloud is told what reaches each gaussian
     std::string         save;              ///< the fitted appearance, as a .athn
     std::string         output;            ///< a prefix: <prefix>_harmonics.exr, _base.exr, _latents.exr
 };
@@ -69,6 +70,9 @@ int run(const NeuralFitOptions& o) {
     auto cloud = scene::loadSplatFile(*loader, o.splats, o.degree);
     if (!cloud) return report(cloud.error());
     auto neural = render::makeNeuralCloud(library, *cloud, 1, o.relight);
+    if (neural) {
+        neural->shadowed = o.relight && o.shadows && o.reached;
+    }
     if (!neural) return report(neural.error());
     const render::SplatInstance instance{&*cloud, render::Mat4::identity(), {}};
 
@@ -191,7 +195,8 @@ int run(const NeuralFitOptions& o) {
             // The latents; or, asked for fewer harmonics, the cloud by those.
             render::RenderSettings other = settings;
             other.maxShDegree = fewerDegrees;
-            auto c = raster->render(camera, fewerDegrees < 3 ? byHarmonics : byLatents, other, ours);
+            auto c = raster->render(camera, fewerDegrees < 3 ? byHarmonics : byLatents, other, ours, {}, nullptr,
+                                    neural->shadowed ? &lights : nullptr);
             if (!c) return std::move(c).error();
             auto hdr = render::compareHdr(library, ours.colour, whole.colour, settings.width, settings.height);
             if (!hdr) return std::move(hdr).error();
@@ -306,6 +311,9 @@ int run(const NeuralFitOptions& o) {
         file.stride = render::kNeuralStride;
         file.wordsEach = render::kNeuralWords;
         file.lit = neural->lit;
+        if (neural->shadowed) {
+            out("note: a shadowed appearance is written as a lit one; what reaches a gaussian is the frame's to give\n");
+        }
         auto words = render::packNeuralLatents(library, *neural);
         if (!words) return report(words.error());
         auto weights = render::readNeuralWeights(library, *neural);
@@ -346,6 +354,7 @@ void addNeuralFit(CLI::App& app) {
     cmd->add_option("--rate-weights", o.rateWeights, "Adam's rate for the network");
     cmd->add_flag("--relight", o.relight, "a lit neural cloud, fitted to the engine's relighting of the cloud under a sun that moves");
     cmd->add_option("--sun", o.sun, "--relight: the sun's intensity");
+    cmd->add_flag("--reached", o.reached, "--shadows: the neural cloud takes what reaches each gaussian from the light, as the engine's shadow ray finds it");
     cmd->add_flag("--shadows", o.shadows, "--relight: the sun casts the cloud's shadow on itself in what the cloud should be");
     cmd->add_option("--save", o.save, "write the fitted appearance: a .athn, to draw the cloud by (athenea render --neural)");
     cmd->add_option("-o,--output", o.output, "a prefix: the first held-out camera's frame by the harmonics, the base and the latents");

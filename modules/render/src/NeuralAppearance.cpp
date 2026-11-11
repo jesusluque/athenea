@@ -51,6 +51,8 @@ Result<NeuralCloud> makeNeuralCloud(gpu::ShaderLibrary& library, const scene::Gp
         // Glorot's range for the widest layer: sqrt(6 / (in + out)).
         cursor["params"]["spread"].setData(0.35F);
         cursor["params"]["lit"].setData(uint32_t{0});
+        cursor["shadowFactors"].setBinding(neural.weights.rhi());
+        cursor["params"]["shadowLights"].setData(uint32_t{0});
     };
     if (cloud.count > 0) {
         initLatent->dispatch(batch, {cloud.count, 1, 1},
