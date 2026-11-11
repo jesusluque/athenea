@@ -20281,6 +20281,14 @@ local arrays filled in nested loops, which is how a kernel writes one; that form
 (and stores by the iteration, which is the cost). So the decoder's backward pass is written by hand: for a
 perceptron it is forty lines, it is the derivative, and where its sums go is ours to choose.
 
+It is a known bug, since fixed (found by athenea-research, proposal 109): shader-slang/slang#13000, "bwd_diff
+through nested [MaxIters] loops produces wrong input gradients". The reverse pass keeps each iteration's values in
+an array with a dimension a loop, and its size and its index walked those dimensions in opposite orders; the
+gradient with respect to the input is wrong as soon as the two loops' counts differ, which the 16 -> 32 and 32 -> 3
+layers here do. It reproduces from 2025.21 to 2026.12 and is merged in v2026.20; this engine's 2026.14.1 has it.
+`[ForceUnroll]` on both loops is correct and compiles in minutes. When Slang moves to 2026.20 or later, `[neural]`
+is where to look again.
+
 **What it says of the plan.** A deferred decoder of this size is 3.5 ms a 1080p frame and 13 ms a 4K one on this
 machine as plain multiply-adds, over the 2 ms the first milestone allowed it: per pixel it wants either the matrix
 acceleration Slang's experimental `neural` module reaches for (`import slang.neural` compiles for Metal with
