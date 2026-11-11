@@ -636,3 +636,59 @@ TEST_CASE("a wall's light on a cloud adds as its picture does, and its reads are
     std::printf("  a picture the fit never saw: relMSE %.5f before, %.5f after 600 steps\n", start, end);
     CHECK(end < start * 0.25);
 }
+
+TEST_CASE("a split neural cloud starts as one network's does, and its two networks are fitted together",
+          "[render][gpu][neural][split]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto fit = render::NeuralFit::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!fit) FAIL(fit.error().toString());
+    test::CloudBuilder builder = test::randomCloud(3000, 11, 0.02F, 0.12F);
+    auto cloud = loader->upload(builder.raw, 3);
+    REQUIRE(cloud);
+    auto whole = render::makeNeuralCloud(*gpu->library, *cloud);
+    auto split = render::makeNeuralCloud(*gpu->library, *cloud, 1, false, true);
+    if (!whole) FAIL(whole.error().toString());
+    if (!split) FAIL(split.error().toString());
+    CHECK(split->weightCount() == 2 * whole->weightCount());
+
+    render::RenderSettings settings;
+    settings.width = 200;
+    settings.height = 150;
+    const render::Camera camera = render::Camera::lookingAt({0.5, 0.5, 6.0}, {0.0, 0.0, 0.0});
+    const render::SplatInstance instance{&*cloud, render::Mat4::identity()};
+    const auto drawnBy = [&](const render::NeuralCloud& neural, render::RenderTargets& into) {
+        std::vector<render::SplatInstance> learnt{instance};
+        learnt[0].neural = &neural;
+        REQUIRE(raster->render(camera, learnt, settings, into));
+    };
+    // Nothing learnt: the view's network adds nothing, and the other is the base.
+    render::RenderTargets a, b;
+    drawnBy(*whole, a);
+    drawnBy(*split, b);
+    auto same = render::compareImages(*gpu->library, b.colour, a.colour, settings.width, settings.height);
+    REQUIRE(same);
+    CHECK(same->max <= 1);
+
+    render::NeuralFitSettings how;
+    how.width = settings.width;
+    how.height = settings.height;
+    double first = 0.0;
+    double last = 0.0;
+    for (uint32_t k = 0; k < 400; ++k) {
+        const double at = 2.39996323 * k;
+        const bool ask = k == 0 || k == 399;
+        auto stepped = fit->step(*raster,
+                                 render::Camera::lookingAt({6.0 * std::sin(at), 1.0, 6.0 * std::cos(at)}, {0.0, 0.0, 0.0}),
+                                 instance, *split, how, ask);
+        if (!stepped) FAIL(stepped.error().toString());
+        if (*stepped) {
+            (k == 0 ? first : last) = **stepped;
+        }
+    }
+    std::printf("  split fit: relMSE %.5f at the first step, %.5f at the four hundredth\n", first, last);
+    CHECK(last < first * 0.7);
+}

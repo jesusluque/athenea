@@ -923,6 +923,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                 cursor["params"]["shadowLights"].setData(!shadowed ? 0u : measured ? lights->visibilityLights
                                                                                   : shadowLights);
                 cursor["params"]["lit"].setData(uint32_t{neural.lit ? 1u : 0u});
+                cursor["params"]["split"].setData(uint32_t{neural.split ? 1u : 0u});
             });
         }
         if (instance.wall != nullptr && instance.wall->count() == cloud->count && featureWords == 0) {

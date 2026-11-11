@@ -79,6 +79,26 @@ public interface INeuralWeights {
     float at(uint index);
 }
 
+/// TWO NETWORKS FOR ONE CLOUD (a split cloud). What a gaussian looks like has
+/// a part that is the same from everywhere -- what it is made of, and the
+/// light that falls on it -- and a part that turns with the eye: a highlight,
+/// a reflection. One network that is given the view cannot keep them apart,
+/// so nothing it says can be kept from one camera to the next. A split cloud
+/// has two of the same shape: the first is never told the view (`kNeuralMatt`)
+/// and its answer is the colour as one network's is; the second is
+/// (`kNeuralShine`) and its answer is what the view adds. The first's answer
+/// is then a gaussian's until the gaussian or its light changes.
+public static const uint kNeuralWhole = 0;
+public static const uint kNeuralMatt = 1;
+public static const uint kNeuralShine = 2;
+
+/// A network's weights that start `offset` into another's: a split cloud's second.
+public struct NeuralWeightsFrom<W : INeuralWeights> : INeuralWeights {
+    public W    inner;
+    public uint offset;
+    public float at(uint index) { return inner.at(offset + index); }
+}
+
 /// The weights where they live: the cloud's buffer.
 public struct NeuralWeightBuffer : INeuralWeights {
     public StructuredBuffer<float> buffer;
@@ -144,12 +164,14 @@ public float3 neuralLocalLight(StructuredBuffer<uint> shape, uint gaussian, floa
 /// (unit, towards the light, in the gaussian's own frame: `neuralLocalLight`)
 /// rather than the gaussian's own.
 public NeuralPass neuralForward<W : INeuralWeights>(StructuredBuffer<float> latent, uint gaussian, W weights,
-                                                    float3 direction, bool lit, float3 light, float reached) {
+                                                    float3 direction, bool lit, float3 light, float reached,
+                                                    uint part = kNeuralWhole) {
     NeuralPass pass;
     float sh[16];
     harmonics(direction, sh);
     for (uint k = 0; k < 16; ++k) {
-        pass.x[k] = sh[k];
+        // The matt part is not told where it is seen from.
+        pass.x[k] = part == kNeuralMatt ? 0.0 : sh[k];
     }
     const uint row = gaussian * kNeuralStride;
     for (uint k = 0; k < kNeuralFeatures; ++k) {
@@ -191,7 +213,24 @@ public NeuralPass neuralForward<W : INeuralWeights>(StructuredBuffer<float> late
     }
     const float3 base = float3(latent[row + kNeuralFeatures], latent[row + kNeuralFeatures + 1],
                                latent[row + kNeuralFeatures + 2]);
-    if (lit) {
+    if (part == kNeuralShine) {
+        // What the view adds, and nothing else: its first three outputs alone. Lit, light that arrived
+        // and left towards the eye, so never less than none and starting at a twentieth; unlit, a
+        // difference either way from what the matt part said.
+        pass.perSecond = float3(0.0);
+        if (lit) {
+            const float3 dimmed = o - kNeuralDim;
+            const float3 shine = max(dimmed, float3(0.0)) + log(1.0 + exp(-abs(dimmed)));
+            pass.colour = base * reached * shine;
+            pass.perOutput = base * reached / (1.0 + exp(-dimmed));
+            pass.perBase = reached * shine;
+        } else {
+            const float3 squashed = tanh(o);
+            pass.colour = squashed;
+            pass.perOutput = float3(1.0) - squashed * squashed;
+            pass.perBase = float3(0.0);
+        }
+    } else if (lit) {
         const float3 shifted = o + kNeuralSoft;
         // softplus, written so that a large argument does not overflow.
         const float3 direct = max(shifted, float3(0.0)) + log(1.0 + exp(-abs(shifted)));

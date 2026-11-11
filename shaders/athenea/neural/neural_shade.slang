@@ -24,7 +24,8 @@ struct NeuralShadeParams {
     // What reaches each gaussian from the light: `shadowFactors` holds this many floats a slot, the
     // frame's first light's first. 0: all of it.
     uint  shadowLights;
-    uint  pad2; uint pad3; uint pad4;
+    uint  split;        // two networks: the matt part and what the view adds (neural_appearance.slang)
+    uint pad3; uint pad4;
 };
 
 StructuredBuffer<float4>           positions;
@@ -66,13 +67,13 @@ void neuralInitWeights(uint3 tid: SV_DispatchThreadID) {
     if (i >= params.count) {
         return;
     }
-    made[i] = i < kNeuralLayer2 ? (hash01(i * 2654435761u + params.seed) * 2.0 - 1.0) * params.spread : 0.0;
+    made[i] = (i % kNeuralWeights) < kNeuralLayer2 ? (hash01(i * 2654435761u + params.seed) * 2.0 - 1.0) * params.spread : 0.0;
 }
 
 /// The network's weights in the group's memory: read from the buffer once a
 /// group of 64 gaussians, each thread its share, rather than 960 times a
 /// gaussian (neural_appearance.slang's INeuralWeights).
-groupshared float sWeights[kNeuralWeights];
+groupshared float sWeights[kNeuralWeights * 2];
 struct NeuralWeightsHere : INeuralWeights {
     float at(uint index) { return sWeights[index]; }
 }
@@ -82,7 +83,8 @@ struct NeuralWeightsHere : INeuralWeights {
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void neuralShade(uint3 tid: SV_DispatchThreadID, uint3 lane: SV_GroupThreadID) {
-    for (uint w = lane.x; w < kNeuralWeights; w += 64) {
+    const uint held2 = params.split != 0 ? kNeuralWeights * 2 : kNeuralWeights;
+    for (uint w = lane.x; w < held2; w += 64) {
         sWeights[w] = weights[w];
     }
     GroupMemoryBarrierWithGroupSync();
@@ -98,8 +100,16 @@ void neuralShade(uint3 tid: SV_DispatchThreadID, uint3 lane: SV_GroupThreadID) {
     const float3 eye = float3(params.eyeX, params.eyeY, params.eyeZ);
     const float3 direction = normalize(positions[i].xyz - eye);
     const bool lit = params.lit != 0;
+    const bool split = params.split != 0;
+    NeuralWeightsFrom<NeuralWeightsHere> second;
+    second.inner = held;
+    second.offset = kNeuralWeights;
     if (!lit) {
-        proj[slot].colour.xyz = neuralForward(latent, i, held, direction, false, float3(0.0), 1.0).colour;
+        float3 own = neuralForward(latent, i, held, direction, false, float3(0.0), 1.0, split ? kNeuralMatt : kNeuralWhole).colour;
+        if (split) {
+            own += neuralForward(latent, i, second, direction, false, float3(0.0), 1.0, kNeuralShine).colour;
+        }
+        proj[slot].colour.xyz = own;
         return;
     }
     float3 colour = float3(0.0);
@@ -108,7 +118,11 @@ void neuralShade(uint3 tid: SV_DispatchThreadID, uint3 lane: SV_GroupThreadID) {
         // What reaches the gaussian from this light: a light the frame's shadows did not cover reaches it whole.
         const float reached = l < params.shadowLights ? shadowFactors[slot * params.shadowLights + l] : 1.0;
         const float3 light = neuralLocalLight(shape, i, positions[i].xyz, eye, params.lightTowards[l].xyz);
-        colour += neuralForward(latent, i, held, direction, true, light, reached).colour * params.lightRadiance[l].rgb;
+        float3 answer = neuralForward(latent, i, held, direction, true, light, reached, split ? kNeuralMatt : kNeuralWhole).colour;
+        if (split) {
+            answer += neuralForward(latent, i, second, direction, true, light, reached, kNeuralShine).colour;
+        }
+        colour += answer * params.lightRadiance[l].rgb;
     }
     proj[slot].colour.xyz = colour;
 }

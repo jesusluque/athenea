@@ -20923,3 +20923,45 @@ texel's worth of light.
 - The row itself -- 32 gains a channel a gaussian -- as what the reads are measured against: the baked clouds are
   that row, with the view in it.
 - CUDA for the fit against bakes; the `[wall]` test passes on both.
+
+## Two networks: what is the same from everywhere, and what the view adds (11 Nov)
+
+One network given the view cannot keep apart what a gaussian looks like from everywhere and what turns with the
+eye, so nothing it says can be kept from one camera to the next, or from one frame to the next while the camera
+moves. A split cloud (`NeuralCloud::split`, `athenea neural-fit --split`) has two networks of the same shape. The
+first is run with its sixteen view inputs at zero (`kNeuralMatt`) and its answer is the colour as one network's
+is; the second is given the view (`kNeuralShine`) and its first three outputs are what the view adds -- lit, light
+that arrived and left towards the eye, `base * reached * softplus(o - 3)`; unlit, `tanh(o)` either way. The colour
+is their sum, so the fit asks each the same and a gaussian's latents are pulled by both; a gaussian's two records
+are then the two networks' (the view-smoothness term, which used the second record, is not applied to a split
+cloud). Nothing is cached yet: this is what a cache would need, measured first for what it costs.
+
+| | one network | two | |
+|---|---|---|---|
+| the captured pawn, unlit, 4000 steps, Metal: relMSE | 0.00086 | 0.00052 | 1.65 times less |
+| its p99, max | 10.0, 118 | 7.9, 188 | |
+| its shimmer (relMSE, p99; the harmonics' is 0.000005, 1) | 0.000013, 2 | 0.000012, 1 | |
+| a step of that fit | 56.5 ms | 122.7 ms | 2.2 times as long |
+| the clay pawn lit, the path tracer's bakes, held-out suns, CUDA: relMSE | 0.00337 | 0.00293 | 1.15 times less |
+| its p99, max | 35.5, 158 | 33.2, 153 | |
+| that fit | 132 s | 169 s | 1.28 times as long |
+
+So splitting costs no quality: it is a little better both ways, with the worst pixel of the unlit fit worse (188
+against 118). It is not a fair fight for quality -- two networks are twice the weights -- and is not meant as one;
+what it buys is that the first network's answer is a gaussian's own.
+
+A correction to two sections above (the colour held a degree off, the shadow read as a disc): they say the spread
+between runs of one setting is not measured and may be what their tables show. It is none. The lit fit with one
+network here repeats the earlier run of the same settings to every digit printed; the stochastic rounding is
+seeded by the step. What differs between two settings is the settings, though a small change of one can still move
+the result either way.
+
+### Not done
+
+- The cache itself: the first network's answer kept a gaussian while it and its light stand, and across the
+  cameras of a frame. Until then a split cloud is two evaluations a gaussian a camera.
+- A frame's time. Only the fit's step is timed.
+- One network of 2016 weights, which is what would say whether the gain is the split or the size.
+- The view's network held small (a weight decay on it, or the view-smoothness term on it alone), which is where
+  the shimmer now lives.
+- `.athn`: a split cloud is neither saved nor loaded.

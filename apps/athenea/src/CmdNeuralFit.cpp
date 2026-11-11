@@ -57,6 +57,7 @@ struct NeuralFitOptions {
     std::string         reached;           ///< --shadows: the neural cloud is told what reaches each gaussian: ray | map
     unsigned            mapSide = 2048;    ///< --reached map: the shadow map's texels a side
     unsigned            mapCoefficients = 7;   ///< 1, 3, 5 or 7: the map's total and its Fourier pairs
+    bool                split = false;     ///< two networks: one never told the view, one for what the view adds
     float               mapSpread = 0.0F;  ///< --reached map: each gaussian read as a disc this many of its standard deviations wide (0: its centre)
     float               mapBias = 0.0F;    ///< how far behind a texel's nearest caster a receiver still stands on it (0: 2% of the slab)
     std::string         save;              ///< the fitted appearance, as a .athn
@@ -165,7 +166,7 @@ int runPictures(const NeuralFitOptions& o) {
             material->count, cloud.count);
         return kExitFailure;
     }
-    auto neural = render::makeNeuralCloud(library, material != nullptr ? *material : cloud, 1, true);
+    auto neural = render::makeNeuralCloud(library, material != nullptr ? *material : cloud, 1, true, o.split);
     if (!neural) return report(neural.error());
     neural->shadowed = byMap;
     const render::SplatInstance instance{&cloud, render::Mat4::identity(), {}};
@@ -365,7 +366,11 @@ int run(const NeuralFitOptions& o) {
     if (!fit) return report(fit.error());
     auto cloud = scene::loadSplatFile(*loader, o.splats, o.degree);
     if (!cloud) return report(cloud.error());
-    auto neural = render::makeNeuralCloud(library, *cloud, 1, o.relight);
+    if (o.split && (!o.load.empty() || !o.save.empty())) {
+        err("--split is not in a .athn yet: neither --load nor --save\n");
+        return kExitFailure;
+    }
+    auto neural = render::makeNeuralCloud(library, *cloud, 1, o.relight, o.split);
     if (neural && !o.load.empty()) {
         auto file = io::readNeural(o.load);
         if (!file) return report(file.error());
@@ -901,6 +906,7 @@ void addNeuralFit(CLI::App& app) {
     cmd->add_option("--reached", o.reached, "--shadows: the neural cloud takes what reaches each gaussian from the light: ray (the engine's shadow ray) or map (the cloud's shadow map, no ray)");
     cmd->add_option("--map-side", o.mapSide, "--reached map: the shadow map's texels a side");
     cmd->add_option("--map-coefficients", o.mapCoefficients, "--reached map: 1, 3, 5 or 7 -- the map's total optical depth and its Fourier pairs");
+    cmd->add_flag("--split", o.split, "two networks of the same shape: one never told the view, whose answer is the same from every camera, and one for what the view adds");
     cmd->add_option("--map-spread", o.mapSpread, "--reached map: each gaussian reads the map at its centre and four points this many of its standard deviations along its two longer axes (0: its centre alone)");
     cmd->add_option("--map-bias", o.mapBias, "--reached map: how far behind a texel's nearest caster a receiver still stands on it, world units (0: 2% of the slab)");
     cmd->add_flag("--shadows", o.shadows, "--relight: the sun casts the cloud's shadow on itself in what the cloud should be");

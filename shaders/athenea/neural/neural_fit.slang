@@ -59,7 +59,7 @@ struct NeuralFitParams {
     float viewSmooth;
     float viewStep;
     uint  step;           // the fit's step, so that the direction off is another each time
-    uint  pad2;
+    uint  split;          // two networks (neural_appearance.slang): a gaussian's two records are the matt part's and the view's
 };
 
 StructuredBuffer<float4>           student;      // the frame drawn from the latents
@@ -162,6 +162,23 @@ void neuralFitBackward(uint3 tid: SV_DispatchThreadID) {
                              : float3(0.0);
     NeuralWeightBuffer held;
     held.buffer = weights;
+    const bool split = params.split != 0;
+    if (split) {
+        // The colour is the two parts' sum, so each is asked the same; the latents are pulled by both.
+        NeuralWeightsFrom<NeuralWeightBuffer> second;
+        second.inner = held;
+        second.offset = kNeuralWeights;
+        const NeuralPass matt = neuralForward(latent, i, held, direction, lit, light, reached, kNeuralMatt);
+        const NeuralPass shine = neuralForward(latent, i, second, direction, lit, light, reached, kNeuralShine);
+        const NeuralBack mattBack = neuralBackward(matt, held, dColour);
+        const NeuralBack shineBack = neuralBackward(shine, second, dColour);
+        for (uint k = 0; k < kNeuralStride; ++k) {
+            gradient[i * kNeuralStride + k] = mattBack.dLatent[k] + shineBack.dLatent[k];
+        }
+        storeRecord(i * kFitRecord * 2, matt, mattBack);
+        storeRecord(i * kFitRecord * 2 + kFitRecord, shine, shineBack);
+        return;
+    }
     const NeuralPass pass = neuralForward(latent, i, held, direction, lit, light, reached);
     float3 asked = dColour;
     NeuralBack off;
@@ -195,10 +212,13 @@ void neuralFitBackward(uint3 tid: SV_DispatchThreadID) {
 [shader("compute")]
 [numthreads(16, 1, 1)]
 void neuralFitWeights(uint3 tid: SV_DispatchThreadID) {
-    const uint w = tid.x;
-    if (w >= kNeuralWeights) {
+    const bool split = params.split != 0;
+    if (tid.x >= (split ? kNeuralWeights * 2 : kNeuralWeights)) {
         return;
     }
+    // A split cloud's second network reads the gaussians' second records, its first their first.
+    const uint net = tid.x / kNeuralWeights;
+    const uint w = tid.x % kNeuralWeights;
     uint error;
     uint input;
     if (w < kNeuralLayer1) {
@@ -214,14 +234,14 @@ void neuralFitWeights(uint3 tid: SV_DispatchThreadID) {
     float sum = 0.0;
     for (uint i = params.phase; i < params.count; i += params.every) {
         // Two evaluations a gaussian: the frame's, and the one a step off where the fit holds the view smooth.
-        for (uint which = 0; which < 2; ++which) {
+        for (uint which = split ? net : 0u; which < (split ? net + 1u : 2u); ++which) {
             const uint row = (i * 2 + which) * kFitRecord;
             if (recordsRead[row] != 0.0) {
                 sum += recordsRead[row + error] * recordsRead[row + input];
             }
         }
     }
-    gradient[w] = sum * float(params.every);
+    gradient[tid.x] = sum * float(params.every);
 }
 
 /// Adam, a number a thread.

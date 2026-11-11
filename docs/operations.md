@@ -281,6 +281,7 @@ three frames to look at.
 | `--rate-weights` | number | `0.004` | for the network |
 | `--rate-decay` | number | `1` | what the three rates have fallen to by the last step, as a factor, step by step; `0.1` is what a long fit wants |
 | `--view-smooth` | number | `0` | how hard each gaussian's colour seen a degree off is held to its colour, as a multiple of what a pixel's error weighs; `0` does not hold it and saves the second evaluation. `64` took the colour's shimmer down 1.6 times on the pawn at no measured cost in quality |
+| `--split` | flag | off | two networks of the same shape rather than one: the first is never told the view, so what it says of a gaussian is the same from every camera, and the second gives what the view adds. 2016 weights where one network is 1008, two evaluations a gaussian, and not in a `.athn` yet (neither `--save` nor `--load`) |
 | `--reached` | `ray` or `map` | — | `--shadows`: the neural cloud is also given what reaches each gaussian from the light, and its colour is its answer times that. `ray`: the transmittance the engine's shadow ray finds, so every frame by it casts those rays. `map`: read from the cloud's shadow map from the sun, built with no ray; what the cloud should be is still the rays' |
 | `--map-side` | integer | `2048` | `--reached map`: the shadow map's texels a side |
 | `--map-coefficients` | 1, 3, 5 or 7 | `7` | `--reached map`: the map's total optical depth and its Fourier pairs |

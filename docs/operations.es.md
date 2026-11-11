@@ -285,6 +285,7 @@ frames para mirar.
 | `--rate-weights` | número | `0.004` | para la red |
 | `--rate-decay` | número | `1` | a cuánto han caído los tres rates en el último paso, como factor, paso a paso; `0.1` es lo que pide un fit largo |
 | `--view-smooth` | número | `0` | con cuánta fuerza se sujeta el color de cada gaussiana vista un grado más allá a su color, como múltiplo de lo que pesa el error de un píxel; `0` no lo sujeta y ahorra la segunda evaluación. `64` bajó el shimmer del color 1,6 veces en el peón sin coste medido de calidad |
+| `--split` | flag | off | dos redes de la misma forma en vez de una: a la primera nunca se le dice la vista, así que lo que dice de una gaussiana es lo mismo desde cualquier cámara, y la segunda da lo que añade la vista. 2016 pesos donde una red son 1008, dos evaluaciones por gaussiana, y todavía no está en un `.athn` (ni `--save` ni `--load`) |
 | `--reached` | `ray` o `map` | — | `--shadows`: a la nube neural se le da además lo que llega a cada gaussiana desde la luz, y su color es su respuesta por eso. `ray`: la transmitancia que encuentra el shadow ray del motor, así que cada frame dibujado con ella traza esos rayos. `map`: leída del shadow map de la nube desde el sol, construido sin ningún rayo; lo que la nube debe ser sigue siendo lo de los rayos |
 | `--map-side` | entero | `2048` | `--reached map`: los texels por lado del shadow map |
 | `--map-coefficients` | 1, 3, 5 o 7 | `7` | `--reached map`: la profundidad óptica total del mapa y sus pares de Fourier |

@@ -46,6 +46,12 @@ struct NeuralCloud {
     /// factor a relit splat takes (`SplatLights`' shadow scene, handed to the
     /// frame). The colour is the answer times it.
     bool        shadowed = false;
+    /// SPLIT: two networks of the same shape, `weights` holding both. The
+    /// first is never told the view and gives the colour that is the same
+    /// from everywhere; the second is and gives what the view adds. What
+    /// the first says of a gaussian then holds from one camera to the next.
+    bool        split = false;
+    [[nodiscard]] uint32_t weightCount() const noexcept { return split ? kNeuralWeights * 2 : kNeuralWeights; }
 };
 
 /// The one light a lit neural cloud is drawn under: where it comes from (a
@@ -59,7 +65,7 @@ struct NeuralLight {
 /// its features zero, and a network whose last layer is zero -- so the cloud
 /// is drawn as its harmonics' first term draws it.
 [[nodiscard]] Result<NeuralCloud> makeNeuralCloud(gpu::ShaderLibrary& library, const scene::GpuSplats& cloud,
-                                                  uint32_t seed = 1, bool lit = false);
+                                                  uint32_t seed = 1, bool lit = false, bool split = false);
 
 /// What a file carries of a gaussian (io/NeuralFile.h): its numbers as
 /// halves, two a word.

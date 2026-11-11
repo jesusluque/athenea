@@ -63,9 +63,9 @@ Result<void> NeuralFit::reserve(const NeuralCloud& neural, const NeuralFitSettin
         ATHENEA_TRY(assign(latentGrad_, uint64_t{count_} * kNeuralStride, "fit.latentGrad"));
         ATHENEA_TRY(assign(latentM_, uint64_t{count_} * kNeuralStride, "fit.latentM"));
         ATHENEA_TRY(assign(latentV_, uint64_t{count_} * kNeuralStride, "fit.latentV"));
-        ATHENEA_TRY(assign(weightGrad_, kNeuralWeights, "fit.weightGrad"));
-        ATHENEA_TRY(assign(weightM_, kNeuralWeights, "fit.weightM"));
-        ATHENEA_TRY(assign(weightV_, kNeuralWeights, "fit.weightV"));
+        ATHENEA_TRY(assign(weightGrad_, kNeuralWeights * 2, "fit.weightGrad"));
+        ATHENEA_TRY(assign(weightM_, kNeuralWeights * 2, "fit.weightM"));
+        ATHENEA_TRY(assign(weightV_, kNeuralWeights * 2, "fit.weightV"));
     }
     const uint32_t pixels = settings.width * settings.height;
     if (pixels != pixels_ || !pixelGrad_.valid()) {
@@ -180,6 +180,7 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
         p["viewSmooth"].setData(settings.viewSmooth);
         p["viewStep"].setData(settings.viewStep);
         p["step"].setData(steps_);
+        p["split"].setData(uint32_t{neural.split ? 1u : 0u});
         // The network's gradient from a share of the gaussians, another each
         // step: it is a sum over hundreds of thousands, and an eighth of them
         // says the same at an eighth of the reads.
@@ -235,7 +236,7 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
     {
         gpu::CommandBatch batch(device);
         backward_.dispatch(batch, {count_, 1, 1}, bind);
-        weights_.dispatch(batch, {kNeuralWeights, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        weights_.dispatch(batch, {neural.weightCount(), 1, 1}, [&](rhi::ShaderCursor cursor) {
             bind(cursor);
             cursor["gradient"].setBinding(weightGrad_.rhi());
         });
@@ -245,14 +246,14 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
             cursor["gradient"].setBinding(weightGrad_.rhi());
             cursor["params"]["count"].setData(count_ * kNeuralStride);
         });
-        adam_.dispatch(batch, {kNeuralWeights, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        adam_.dispatch(batch, {neural.weightCount(), 1, 1}, [&](rhi::ShaderCursor cursor) {
             bind(cursor);
             cursor["gradient"].setBinding(latentGrad_.rhi());
             cursor["value"].setBinding(neural.weights.rhi());
             cursor["moment1"].setBinding(weightM_.rhi());
             cursor["moment2"].setBinding(weightV_.rhi());
             cursor["gradientRead"].setBinding(weightGrad_.rhi());
-            cursor["params"]["count"].setData(kNeuralWeights);
+            cursor["params"]["count"].setData(neural.weightCount());
             cursor["params"]["stride"].setData(uint32_t{1});
             cursor["params"]["firstOfSecond"].setData(uint32_t{1});
             cursor["params"]["rate"].setData(settings.rateWeights);

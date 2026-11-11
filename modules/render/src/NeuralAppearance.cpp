@@ -11,11 +11,12 @@
 namespace athenea::render {
 
 Result<NeuralCloud> makeNeuralCloud(gpu::ShaderLibrary& library, const scene::GpuSplats& cloud, uint32_t seed,
-                                    bool lit) {
+                                    bool lit, bool split) {
     gpu::Device& device = library.device();
     NeuralCloud neural;
     neural.count = cloud.count;
     neural.lit = lit;
+    neural.split = split;
     const auto floats = [&](uint64_t count, const char* label) {
         gpu::BufferDesc desc;
         desc.bytes = std::max<uint64_t>(count, 1) * sizeof(float);
@@ -25,7 +26,7 @@ Result<NeuralCloud> makeNeuralCloud(gpu::ShaderLibrary& library, const scene::Gp
     };
     auto latent = floats(uint64_t{cloud.count} * kNeuralStride, "neural.latent");
     if (!latent) return std::move(latent).error();
-    auto weights = floats(kNeuralWeights, "neural.weights");
+    auto weights = floats(neural.weightCount(), "neural.weights");
     if (!weights) return std::move(weights).error();
     neural.latent = *latent;
     neural.weights = *weights;
@@ -54,13 +55,14 @@ Result<NeuralCloud> makeNeuralCloud(gpu::ShaderLibrary& library, const scene::Gp
         cursor["params"]["lightCount"].setData(uint32_t{0});
         cursor["shadowFactors"].setBinding(neural.weights.rhi());
         cursor["params"]["shadowLights"].setData(uint32_t{0});
+        cursor["params"]["split"].setData(uint32_t{0});
     };
     if (cloud.count > 0) {
         initLatent->dispatch(batch, {cloud.count, 1, 1},
                              [&](rhi::ShaderCursor cursor) { bind(cursor, neural.latent, cloud.count); });
     }
-    initWeights->dispatch(batch, {kNeuralWeights, 1, 1},
-                          [&](rhi::ShaderCursor cursor) { bind(cursor, neural.weights, kNeuralWeights); });
+    initWeights->dispatch(batch, {neural.weightCount(), 1, 1},
+                          [&](rhi::ShaderCursor cursor) { bind(cursor, neural.weights, neural.weightCount()); });
     ATHENEA_TRY(batch.submit(true));
     return neural;
 }
