@@ -9,10 +9,12 @@
 
 namespace athenea::render {
 
-Result<NeuralCloud> makeNeuralCloud(gpu::ShaderLibrary& library, const scene::GpuSplats& cloud, uint32_t seed) {
+Result<NeuralCloud> makeNeuralCloud(gpu::ShaderLibrary& library, const scene::GpuSplats& cloud, uint32_t seed,
+                                    bool lit) {
     gpu::Device& device = library.device();
     NeuralCloud neural;
     neural.count = cloud.count;
+    neural.lit = lit;
     const auto floats = [&](uint64_t count, const char* label) {
         gpu::BufferDesc desc;
         desc.bytes = std::max<uint64_t>(count, 1) * sizeof(float);
@@ -47,6 +49,7 @@ Result<NeuralCloud> makeNeuralCloud(gpu::ShaderLibrary& library, const scene::Gp
         cursor["params"]["seed"].setData(seed);
         // Glorot's range for the widest layer: sqrt(6 / (in + out)).
         cursor["params"]["spread"].setData(0.35F);
+        cursor["params"]["lit"].setData(uint32_t{0});
     };
     if (cloud.count > 0) {
         initLatent->dispatch(batch, {cloud.count, 1, 1},

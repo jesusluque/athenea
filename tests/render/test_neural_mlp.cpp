@@ -274,3 +274,110 @@ TEST_CASE("a cloud's harmonics are learnt by its latents, from frames of itself"
     test::dumpPpm(*gpu, "fit_first_harmonic", flat.colour, settings.width, settings.height);
     test::dumpPpm(*gpu, "fit_latents", ours.colour, settings.width, settings.height);
 }
+
+#include "athenea/light/LightTable.h"
+
+TEST_CASE("a lit neural cloud learns how its gaussians answer a light, and is relit by one it never saw",
+          "[render][gpu][neural][fit][relight]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto fit = render::NeuralFit::create(*gpu->library);
+    auto table = light::LightTable::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!fit) FAIL(fit.error().toString());
+    if (!table) FAIL(table.error().toString());
+    test::CloudBuilder builder = test::randomCloud(3000, 11, 0.02F, 0.12F);
+    auto cloud = loader->upload(builder.raw, 3);
+    REQUIRE(cloud);
+    auto neural = render::makeNeuralCloud(*gpu->library, *cloud, 1, true);
+    if (!neural) FAIL(neural.error().toString());
+    CHECK(neural->lit);
+    const render::SplatInstance instance{&*cloud, render::Mat4::identity()};
+
+    // A sun from a direction: the engine's light for the picture the cloud
+    // should be, and the same light as the neural cloud is told it.
+    render::SplatLights lights;
+    const auto sun = [&](double yaw, double pitch) {
+        light::Light lamp;
+        lamp.kind = light::LightKind::Distant;
+        lamp.lightToWorld = aofx::xform::rotationY(yaw) * aofx::xform::rotationX(pitch);
+        lamp.intensity = 3.0F;
+        lamp.shadow = false;
+        REQUIRE(table->set(std::span<const light::Light>(&lamp, 1)));
+        lights.records = &table->records();
+        lights.count = table->count();
+        render::NeuralFitLight told;
+        told.teacher = &lights;
+        // A distant light shines down its own -z: it comes from its +z.
+        const render::Vec3 towards = lamp.lightToWorld.direction({0.0, 0.0, 1.0});
+        told.light.towards = {static_cast<float>(towards.x), static_cast<float>(towards.y),
+                              static_cast<float>(towards.z)};
+        told.light.radiance = {lamp.intensity, lamp.intensity, lamp.intensity};
+        return told;
+    };
+    const auto cameraAt = [](double k) {
+        const double a = 6.283185307179586 * std::fmod(0.5 + k * 0.7548776662466927, 1.0);
+        const double h = 3.0 * (2.0 * std::fmod(0.5 + k * 0.5698402909980532, 1.0) - 1.0);
+        return render::Camera::lookingAt({6.0 * std::sin(a), h, 6.0 * std::cos(a)}, {0.0, 0.0, 0.0});
+    };
+    // Lights over the sphere, by a third and a fourth independent sequence.
+    const auto yawOf = [](double k) { return 360.0 * std::fmod(0.5 + k * 0.8191725134, 1.0); };
+    const auto pitchOf = [](double k) { return -80.0 + 160.0 * std::fmod(0.5 + k * 0.6710436067, 1.0); };
+
+    render::RenderSettings settings;
+    settings.width = 320;
+    settings.height = 240;
+    // The neural cloud under one light against the engine's relighting under another (or the same).
+    const auto against = [&](double camera, double told, double shone) {
+        const render::Camera held = cameraAt(camera);
+        const render::NeuralFitLight a = sun(yawOf(told), pitchOf(told));
+        std::vector<render::SplatInstance> learnt{instance};
+        learnt[0].neural = &*neural;
+        learnt[0].neuralLight = &a.light;
+        render::RenderTargets ours;
+        REQUIRE(raster->render(held, learnt, settings, ours));
+        const render::NeuralFitLight b = sun(yawOf(shone), pitchOf(shone));
+        std::vector<render::SplatInstance> relit{instance};
+        relit[0].relight = true;
+        render::RenderTargets truth;
+        REQUIRE(raster->render(held, relit, settings, truth, {}, nullptr, b.teacher));
+        auto hdr = render::compareHdr(*gpu->library, ours.colour, truth.colour, settings.width, settings.height);
+        REQUIRE(hdr);
+        if (told == shone) {
+            char name[64];
+            std::snprintf(name, sizeof(name), "relight_%g_neural", told);
+            test::dumpPpm(*gpu, name, ours.colour, settings.width, settings.height);
+            std::snprintf(name, sizeof(name), "relight_%g_engine", told);
+            test::dumpPpm(*gpu, name, truth.colour, settings.width, settings.height);
+        }
+        return hdr->relMse;
+    };
+    // A camera and two lights no step uses.
+    const double before = 0.5 * (against(1000.5, 2000.5, 2000.5) + against(1000.5, 2007.5, 2007.5));
+
+    render::NeuralFitSettings how;
+    how.width = 320;
+    how.height = 240;
+    how.rateFeatures = 1.0e-2F;
+    how.rateWeights = 4.0e-3F;
+    for (uint32_t k = 0; k < 3000; ++k) {
+        const render::NeuralFitLight told = sun(yawOf(k), pitchOf(k));
+        const bool ask = k == 0 || (k + 1) % 500 == 0;
+        auto loss = fit->step(*raster, cameraAt(k), instance, *neural, how, ask, &told);
+        if (!loss) FAIL(loss.error().toString());
+        if (*loss) {
+            std::printf("  lit fit step %u: relMSE %.5f\n", k + 1, **loss);
+        }
+    }
+    const double after = 0.5 * (against(1000.5, 2000.5, 2000.5) + against(1000.5, 2007.5, 2007.5));
+    // Told one light and held against the picture under the other: what it
+    // would measure if it had learnt a look and not an answer to a light.
+    const double crossed = 0.5 * (against(1000.5, 2000.5, 2007.5) + against(1000.5, 2007.5, 2000.5));
+    std::printf("  held-out camera and lights against the engine's relighting: relMSE before %.5f, after %.5f; "
+                "told the other light %.5f\n",
+                before, after, crossed);
+    CHECK(after < before * 0.5);
+    CHECK(after < crossed * 0.5);
+}

@@ -135,6 +135,8 @@ struct SplatInstance {
     /// written over what the projection made of them. Of this cloud, gaussian
     /// for gaussian; a cut of levels of detail has none. Null: its harmonics.
     const NeuralCloud*      neural = nullptr;
+    /// The light a lit neural cloud is drawn under (`NeuralCloud::lit`). Null: unlit white from +z.
+    const NeuralLight*      neuralLight = nullptr;
     /// `primvars:athenea:splat:catcher`: a shadow catcher (athenea mesh2splat
     /// --shadow-catcher), projected by a kernel of its own: black, as opaque
     /// as what its object took of the light reaching it.

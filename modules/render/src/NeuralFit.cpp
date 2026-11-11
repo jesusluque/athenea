@@ -78,7 +78,8 @@ Result<void> NeuralFit::reserve(const NeuralCloud& neural, const NeuralFitSettin
 
 Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const Camera& camera,
                                               const SplatInstance& instance, NeuralCloud& neural,
-                                              const NeuralFitSettings& settings, bool readLoss) {
+                                              const NeuralFitSettings& settings, bool readLoss,
+                                              const NeuralFitLight* light) {
     if (instance.splats == nullptr || instance.splats->count != neural.count) {
         return Error(ErrorCode::InvalidArgument, "the neural cloud is not this cloud's, gaussian for gaussian");
     }
@@ -93,9 +94,19 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
     byHarmonics.neural = nullptr;
     SplatInstance byLatents = instance;
     byLatents.neural = &neural;
+    const bool lit = neural.lit && light != nullptr;
+    if (neural.lit != (light != nullptr)) {
+        return Error(ErrorCode::InvalidArgument, "a lit neural cloud is fitted under a light, and only a lit one is");
+    }
+    if (lit) {
+        byHarmonics.relight = true;
+        byLatents.neuralLight = &light->light;
+    }
+    const SplatLights* teacherLights = lit ? light->teacher : nullptr;
 
     // What the frame should be, and what it is.
-    auto drawn = rasterizer.render(camera, std::span<const SplatInstance>(&byHarmonics, 1), frame, teacher_);
+    auto drawn = rasterizer.render(camera, std::span<const SplatInstance>(&byHarmonics, 1), frame, teacher_, {},
+                                   nullptr, teacherLights);
     if (!drawn) return std::move(drawn).error();
     drawn = rasterizer.render(camera, std::span<const SplatInstance>(&byLatents, 1), frame, student_);
     if (!drawn) return std::move(drawn).error();
@@ -114,6 +125,7 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
         cursor["loss"].setBinding(lossRows_.rhi());
         cursor["colourGrad"].setBinding(colourGrad_.rhi());
         cursor["positions"].setBinding(cloud.positions.rhi());
+        cursor["shape"].setBinding(cloud.shape.rhi());
         cursor["latent"].setBinding(neural.latent.rhi());
         cursor["weights"].setBinding(neural.weights.rhi());
         cursor["records"].setBinding(records_.rhi());
@@ -148,6 +160,24 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
         const uint32_t every = count_ > 20000 ? 8u : 1u;
         p["every"].setData(every);
         p["phase"].setData(steps_ % every);
+        Vec3 towards{0.0, 0.0, 1.0};
+        NeuralLight told;
+        if (lit) {
+            told = light->light;
+            towards = aofx::xform::inverseAffine(instance.objectToWorld)
+                          .direction({told.towards[0], told.towards[1], told.towards[2]});
+            const double length = std::sqrt(towards.x * towards.x + towards.y * towards.y + towards.z * towards.z);
+            if (length > 0.0) {
+                towards = towards * (1.0 / length);
+            }
+        }
+        p["lit"].setData(uint32_t{lit ? 1u : 0u});
+        p["lightX"].setData(static_cast<float>(towards.x));
+        p["lightY"].setData(static_cast<float>(towards.y));
+        p["lightZ"].setData(static_cast<float>(towards.z));
+        p["radianceR"].setData(told.radiance[0]);
+        p["radianceG"].setData(told.radiance[1]);
+        p["radianceB"].setData(told.radiance[2]);
     };
     {
         gpu::CommandBatch batch(device);

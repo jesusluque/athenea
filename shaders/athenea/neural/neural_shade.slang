@@ -15,6 +15,10 @@ struct NeuralShadeParams {
     uint  seed;
     float eyeX; float eyeY; float eyeZ;   // the eye, in the cloud's own space
     float spread;        // neuralInitWeights: the range of a weight
+    // LIT: 1, and the one light of the frame -- where it comes from (unit, towards it, in the cloud's
+    // space) and its radiance.
+    uint  lit; float lightX; float lightY; float lightZ;
+    float radianceR; float radianceG; float radianceB; uint pad0;
 };
 
 StructuredBuffer<float4>           positions;
@@ -71,7 +75,13 @@ void neuralShade(uint3 tid: SV_DispatchThreadID) {
     if (visible[slot] == 0u) {
         return;
     }
-    const float3 direction = normalize(positions[i].xyz - float3(params.eyeX, params.eyeY, params.eyeZ));
-    const NeuralPass pass = neuralForward(latent, i, weights, direction);
-    proj[slot].colour.xyz = pass.colour;
+    const float3 eye = float3(params.eyeX, params.eyeY, params.eyeZ);
+    const float3 direction = normalize(positions[i].xyz - eye);
+    const bool lit = params.lit != 0;
+    const float3 light = lit ? neuralLocalLight(shape, i, positions[i].xyz, eye,
+                                                float3(params.lightX, params.lightY, params.lightZ))
+                             : float3(0.0);
+    const NeuralPass pass = neuralForward(latent, i, weights, direction, lit, light);
+    proj[slot].colour.xyz =
+        lit ? pass.colour * float3(params.radianceR, params.radianceG, params.radianceB) : pass.colour;
 }

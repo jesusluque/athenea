@@ -28,18 +28,28 @@ struct NeuralFitSettings {
     float    rateWeights = 2.0e-3F;
 };
 
+/// A lit fit's frame: the lights the cloud is relit by to make the picture
+/// it should be (`SplatLights`, as a frame of relit splats takes them), and
+/// the same light as the neural cloud is told it.
+struct NeuralFitLight {
+    const SplatLights* teacher = nullptr;
+    NeuralLight        light;
+};
+
 class NeuralFit {
 public:
     [[nodiscard]] static Result<NeuralFit> create(gpu::ShaderLibrary& library);
 
-    /// One step from one camera: `instance` drawn by its harmonics is what
+    /// One step from one camera: `instance` drawn by its harmonics (or, with
+    /// `light`, relit by the engine's own relighting under that light) is what
     /// `neural` drawn from the same camera should be, and `neural` is moved
     /// towards it. With `readLoss`, returns the frame's error before the step
     /// (its relMSE against the harmonics' frame, as `compareHdr` has it) -- a wait
     /// for the device, so asked for now and then and not every step.
     [[nodiscard]] Result<std::optional<double>> step(TileRasterizer& rasterizer, const Camera& camera,
                                                       const SplatInstance& instance, NeuralCloud& neural,
-                                                      const NeuralFitSettings& settings, bool readLoss = false);
+                                                      const NeuralFitSettings& settings, bool readLoss = false,
+                                                      const NeuralFitLight* light = nullptr);
 
     [[nodiscard]] uint32_t steps() const noexcept { return steps_; }
 

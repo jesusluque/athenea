@@ -20301,7 +20301,8 @@ other -- features blended and decoded once a pixel -- waits on what the network 
 
 **What it is.** `shaders/athenea/neural/neural_appearance.slang`: eight features and a base colour a gaussian (11
 floats, where harmonics of degree 3 are 48), and one perceptron a cloud, 32 -> 16 -> 16 -> 3 with ReLUs and no
-biases, 816 weights. Its input is the view direction's harmonics of degrees 0 to 3 and the features' sines and
+biases, 816 weights (960 since the lit section below: nine more inputs, zero where a cloud is not lit). Its input
+is the view direction's harmonics of degrees 0 to 3 and the features' sines and
 cosines; its output goes through a tanh and is added to the base. The forward pass keeps what each layer held and
 the backward pass is written out beside it (`neuralBackward`: each layer's error, and the gaussian's own
 derivatives), for the fit that is not here yet. `render::NeuralCloud` holds the two buffers, as floats;
@@ -20389,3 +20390,36 @@ Eleven floats a gaussian where the harmonics are forty-eight.
 - A p99 of 7 code values and a max of 112 are not the harmonics: a few gaussians are still far off (the collar
   under the glass), and how far 20 000 steps, a schedule or more features take it is not tried.
 - The fitted appearance is not saved: `athenea neural-fit` measures and writes three frames.
+
+## A lit neural cloud: how a gaussian answers a light, learnt (11 Nov)
+
+The step from a cloud that holds its light to one that answers a light, which is what the latent was for.
+`NeuralCloud::lit`: a gaussian's base is then what it is made of, and the network -- the same network, with nine
+more inputs, the harmonics of degrees 0 to 2 of the direction a light comes from -- says how the base answers a
+unit of light from there: `colour = radiance * base * softplus(network + c)`, with `softplus(c) = 1` so that a
+cloud that has learnt nothing answers with its base. It is linear in the light, as light is: two lights are two
+evaluations summed. One light a frame for now (`SplatInstance::neuralLight`: where it comes from and its
+radiance).
+
+**The light is given in the gaussian's own frame** (`neuralLocalLight`): along its two longer axes and along its
+normal -- its shortest axis, turned towards the eye, as `splatNormal` turns it for the engine's relighting. Given
+in the cloud's space the fit learnt the mean of all lights and nothing of each (a held-out light relMSE 0.48, and
+0.68 told the wrong light: hardly worse): which way a gaussian faces was left for eight features to find. In its
+own frame, in front, behind and along are the same three numbers for every gaussian.
+
+**What it is fitted to** is the engine's own relighting of the same cloud (`SplatInstance::relight`, a distant
+light, no shadow): `NeuralFit::step` takes the frame's light both as the rasteriser's `SplatLights` and as the
+neural cloud is told it. So nothing is learnt here that the engine does not already compute; what is shown is
+that the latent, the network and the fit carry a light.
+
+**Measured** (`[relight]`, Apple M5 Pro, Metal): 3000 random gaussians, a sun from a different direction each of
+3000 steps (lights and cameras by four independent low-discrepancy sequences), 320 x 240. From a camera and under
+two suns no step used, against the engine's relighting: relMSE 72 before (the base under three units of light),
+0.0040 after; told the other sun than the one that shone, 0.42.
+
+### Not done
+
+- The picture it learns is the engine's analytic relighting, with no shadow, no interreflection and no sky: a
+  path-traced reference, a shadow term in the network's input, and a dome are the next three.
+- One distant light a frame. Several, and a light that is not at infinity, are a loop and a direction a gaussian.
+- Not run on a capture, where a gaussian's colour is light it was photographed under and not what it is made of.

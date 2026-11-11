@@ -255,7 +255,7 @@ desde un lado deja el lado contrario a esa suposición, y más cámaras `--from`
 
 Ajusta una apariencia neural a una nube y dice cuánto se acercó: la nube dibujada
 por sus armónicos, desde cámaras repartidas por una esfera a su alrededor, es hacia
-lo que se mueve la nube dibujada con once números por gaussiana y una red de 816 pesos.
+lo que se mueve la nube dibujada con once números por gaussiana y una red de 960 pesos.
 La geometría no se toca. No se escribe nada salvo las medidas y, con `-o`, tres
 frames para mirar: la apariencia ajustada aún no se guarda.
 

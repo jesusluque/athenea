@@ -251,7 +251,7 @@ the far side to that guess, and more `--from` cameras are what removes it.
 
 Fits a neural appearance to a cloud and says how near it came: the cloud drawn
 by its harmonics, from cameras over a sphere round it, is what the cloud drawn
-from eleven numbers a gaussian and a network of 816 weights is moved towards.
+from eleven numbers a gaussian and a network of 960 weights is moved towards.
 The geometry is not touched. Nothing is written but the measures and, with
 `-o`, three frames to look at: the fitted appearance is not saved yet.
 

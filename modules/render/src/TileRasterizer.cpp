@@ -819,6 +819,22 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                 cursor["params"]["eyeY"].setData(static_cast<float>(eyeObject.y));
                 cursor["params"]["eyeZ"].setData(static_cast<float>(eyeObject.z));
                 cursor["params"]["spread"].setData(0.0F);
+                // The frame's light, where the cloud answers one: its
+                // direction in the cloud's own space, as the view's is.
+                const NeuralLight light = instance.neuralLight != nullptr ? *instance.neuralLight : NeuralLight{};
+                Vec3 towards = aofx::xform::inverseAffine(instance.objectToWorld)
+                                   .direction({light.towards[0], light.towards[1], light.towards[2]});
+                const double length = std::sqrt(towards.x * towards.x + towards.y * towards.y + towards.z * towards.z);
+                if (length > 0.0) {
+                    towards = towards * (1.0 / length);
+                }
+                cursor["params"]["lit"].setData(uint32_t{neural.lit ? 1u : 0u});
+                cursor["params"]["lightX"].setData(static_cast<float>(towards.x));
+                cursor["params"]["lightY"].setData(static_cast<float>(towards.y));
+                cursor["params"]["lightZ"].setData(static_cast<float>(towards.z));
+                cursor["params"]["radianceR"].setData(light.radiance[0]);
+                cursor["params"]["radianceG"].setData(light.radiance[1]);
+                cursor["params"]["radianceB"].setData(light.radiance[2]);
             });
         }
         base += cloud->count;

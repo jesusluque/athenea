@@ -45,7 +45,10 @@ struct NeuralFitParams {
     // past a multiple of it -- a different share each step, and the sum scaled to the whole.
     uint  every;
     uint  phase;
-    uint  pad0;
+    // LIT (neural_appearance.slang): 1, and the frame's light as neural_shade has it.
+    uint  lit;
+    float lightX; float lightY; float lightZ; uint pad0;
+    float radianceR; float radianceG; float radianceB; uint pad1;
 };
 
 StructuredBuffer<float4>           student;      // the frame drawn from the latents
@@ -54,6 +57,7 @@ RWStructuredBuffer<float4>         pixelGrad;    // the loss's derivative at eac
 RWStructuredBuffer<uint>           loss;         // the squared error summed, in 1/1024, a word a row of the frame
 StructuredBuffer<uint>             colourGrad;   // three signed words a slot, as the blend summed them
 StructuredBuffer<float4>           positions;
+StructuredBuffer<uint>             shape;
 StructuredBuffer<float>            latent;
 StructuredBuffer<float>            weights;
 RWStructuredBuffer<float>          records;      // kFitRecord a gaussian
@@ -114,9 +118,16 @@ void neuralFitBackward(uint3 tid: SV_DispatchThreadID) {
         }
         return;
     }
-    const float3 dColour = float3(summed) / kColourGradScale;
-    const float3 direction = normalize(positions[i].xyz - float3(params.eyeX, params.eyeY, params.eyeZ));
-    const NeuralPass pass = neuralForward(latent, i, weights, direction);
+    const bool lit = params.lit != 0;
+    // The frame drew the answer times the light's radiance: so is its derivative.
+    const float3 dColour = float3(summed) / kColourGradScale *
+                           (lit ? float3(params.radianceR, params.radianceG, params.radianceB) : float3(1.0));
+    const float3 eye = float3(params.eyeX, params.eyeY, params.eyeZ);
+    const float3 direction = normalize(positions[i].xyz - eye);
+    const float3 light = lit ? neuralLocalLight(shape, i, positions[i].xyz, eye,
+                                                float3(params.lightX, params.lightY, params.lightZ))
+                             : float3(0.0);
+    const NeuralPass pass = neuralForward(latent, i, weights, direction, lit, light);
     const NeuralBack back = neuralBackward(pass, weights, dColour);
     for (uint k = 0; k < kNeuralStride; ++k) {
         gradient[i * kNeuralStride + k] = back.dLatent[k];
