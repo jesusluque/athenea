@@ -20714,7 +20714,9 @@ Pro, Metal; the least of five runs of a hundred frames, which waits for the devi
 
 A network a gaussian is a tenth of a millisecond over the harmonics at either size. (`athenea neural-fit` had been
 saying two: it reads the frame's own clock without waiting for the device, and the harmonics' frame was the one
-that clock flattered. `athenea bench` is the one to read, and the earlier sections' "5.0 against 7.0" is not.)
+that clock flattered. `athenea bench` is the one to read, and the earlier sections' "5.0 against 7.0" is not.
+`athenea neural-fit` now waits for the device stage by stage when it times a frame, which costs every frame the
+waits and says the same of the two: 8.0 ms by the harmonics and 8.0 by the latents at 1080p, 10.6 and 10.9 at 4K.)
 Once a pixel is 2.3 to 5.2 ms over at 1080p and 8.6 to 19.4 at 4K: it grows with the pixels, four times from one
 size to the other, where once a gaussian grows with the gaussians in view and so not at all. Of 16 channels to 32
 the walk and the network pay a third more at 1080p and nearly half more at 4K.

@@ -703,7 +703,10 @@ int run(const NeuralFitOptions& o) {
             heldSun = *made;
         }
         for (int round = 0; round < 20; ++round) {
-            auto stats = raster->render(cameraAt(0, 0.5), instances, settings, targets, {}, nullptr,
+            // Waited for, stage by stage: without it the frame's clock stops before the device has.
+            render::RenderSettings waited = settings;
+            waited.timeStages = true;
+            auto stats = raster->render(cameraAt(0, 0.5), instances, waited, targets, {}, nullptr,
                                         !o.relight ? nullptr : byMap && instances[0].neural != nullptr ? &mapLights : &lights);
             if (!stats) return std::move(stats).error();
             best = std::min(best, stats->totalMs);
