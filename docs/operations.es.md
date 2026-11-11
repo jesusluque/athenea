@@ -3281,6 +3281,10 @@ de quien lo ejecuta: están en
 
 ### 8.2 Formatos
 
+La disposición en bytes de los formatos propios de athenea -- `.athc`,
+`.athz` y `.athv`, y los mensajes que lleva un stream de `.athv` -- se
+especifica en `docs/formats.es.md`.
+
 **Nubes que se leen.** `.ply` (3DGS), `.splat`, `.spz` (Niantic, necesita
 zstd), `.sog` o un `meta.json` suelto (PlayCanvas, necesita libwebp), `.asg`
 (anchored surfel gaussians, el bitstream v1 de 3Dspace, §2.4), `.athc` (el
@@ -3337,7 +3341,7 @@ deflate (zlib: las cajas de los bloques de cada chunk y después sus partes
 altas de la posición), los conjuntos de parámetros HEVC en una imagen
 clave y la unidad de acceso como unidades NAL precedidas de su longitud.
 Little endian; los ficheros de la versión 1 se siguen leyendo.
-`modules/video/include/athenea/video/Athv.h` es su especificación.
+`docs/formats.es.md` §5 es su especificación.
 
 **Vídeo enviado como stream.** `scripts/examples/athv_stream.py` (biblioteca
 estándar de Python) lee un `.athv` por rendición -- los mismos frames a otros

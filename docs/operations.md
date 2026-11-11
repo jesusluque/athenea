@@ -3170,6 +3170,10 @@ running it; they are listed in [development.md §3](development.md#3-working-in-
 
 ### 8.2 Formats
 
+The byte layout of athenea's own formats -- `.athc`, `.athz` and `.athv`,
+and the messages a `.athv` stream carries -- is specified in
+`docs/formats.md`.
+
 **Clouds read.** `.ply` (3DGS), `.splat`, `.spz` (Niantic, needs zstd), `.sog`
 or a bare `meta.json` (PlayCanvas, needs libwebp), `.asg` (anchored surfel
 gaussians, 3Dspace's bitstream v1, §2.4), `.athc` (this engine's chunked
@@ -3222,8 +3226,7 @@ time code and timecode label, the ranges (two floats an attribute), the
 side data deflated (zlib: each chunk's blocks' boxes, then its position high
 parts), the HEVC parameter sets on a key picture
 and the access unit as length-prefixed NAL units. Little endian; version 1
-files are still read. `modules/video/include/athenea/video/Athv.h` is its
-specification.
+files are still read. `docs/formats.md` §5 is its specification.
 
 **Video sent as a stream.** `scripts/examples/athv_stream.py` (Python
 standard library) reads one `.athv` per rendition -- the same frames at
