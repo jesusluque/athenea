@@ -295,8 +295,13 @@ struct RenderSettings {
     /// taking each splat away would leave in its pixels, in 2^-24 (a pixel
     /// capped at one) as two uint a slot (low, high), against `finalColour` -- the frame drawn whole from
     /// the same camera, float4 a pixel as `RenderTargets::colour` holds it.
+    /// 3 a mask lifted to the gaussians (SplatLift.h): two uint a slot, the
+    /// weight times `liftMask` and the weight, in 1/1024 of a pixel, over
+    /// every gaussian of every pixel's walk.
     uint32_t           contributionMode = 1;
     const gpu::Buffer* finalColour = nullptr;
+    /// Mode 3's mask: one float a pixel of this frame, 0 to 1.
+    const gpu::Buffer* liftMask = nullptr;
 };
 
 /// WHAT A FRAME OF SPLATS DID, as the device counted it

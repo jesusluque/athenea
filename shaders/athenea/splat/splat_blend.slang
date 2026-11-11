@@ -42,7 +42,12 @@ StructuredBuffer<uint>      underCrypto;
 // (`finalColour`) and P what the walk holds once this splat is in, what is
 // behind it is (C - P) / T', and the pixel without it changes by w (c - that).
 // Bound whether it is counted or not.
+//
+// Or, mode 3, A MASK LIFTED TO THE GAUSSIANS (splat_lift.slang): two words a
+// slot, the weight times this pixel's `liftMask` and the weight, in 1/1024 of
+// a pixel -- every gaussian of the walk, not the few a trace names.
 RWStructuredBuffer<uint>    contribution;
+StructuredBuffer<float>     liftMask;
 StructuredBuffer<float4>    finalColour;
 RWStructuredBuffer<float4>  crypto;
 // THE TRACE (splat_trace.slang): the gaussians each pixel is made of, kept by
@@ -345,6 +350,15 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool t
                 InterlockedAdd(contribution[sSplats[j] * 2], add, before);
                 if (before + add < before) {
                     InterlockedAdd(contribution[sSplats[j] * 2 + 1], 1u);
+                }
+            } else if (params.contributionMode == 3u) {
+                const uint seen = uint(weight * 1024.0 + 0.5);
+                if (seen != 0u) {
+                    InterlockedAdd(contribution[sSplats[j] * 2 + 1], seen);
+                    const uint within = uint(weight * saturate(liftMask[at]) * 1024.0 + 0.5);
+                    if (within != 0u) {
+                        InterlockedAdd(contribution[sSplats[j] * 2], within);
+                    }
                 }
             }
             // A LIGHT CATCHER ADDS: the lamps' light on the ground under it,

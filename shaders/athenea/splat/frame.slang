@@ -131,6 +131,8 @@ public struct FrameParams {
     // 0: nothing. 1: the weight it blended with (transmittance times alpha),
     // in 1/4096 of a pixel. 2: the squared error its removal would leave
     // (`finalColour` is the frame drawn whole), in 2^-24 as two words a slot.
+    // 3: a mask lifted to the gaussians, (weight * `liftMask`, weight) in
+    // 1/1024 as two words a slot.
     public uint  contributionMode;
     // Relighting happens in the world, where the lights are: the cloud to
     // world rows, and the eye there. The colour from the harmonics is still

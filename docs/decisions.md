@@ -20179,3 +20179,53 @@ whose rest or under is not the reference's. All zero (Apple M5 Pro, Metal).
 - A gaussian of a light catcher is not in it (it adds light and takes no coverage, as the matte has it), and a
   medium's gaussians are, each with the alpha of its chord.
 - Four ranks is a constant of the shader and of `TileRasterizer.h` (`kTraceSlots`); eight is not tried.
+
+## A mask made on one camera is the matte another camera draws: the lift (11 Nov)
+
+What the trace is for. A mask over a frame -- a key, a segmentation -- is carried to the gaussians as a weighted
+mean, `s = sum(weight * mask) / sum(weight)` over the pixels a gaussian weighed in (the soft form of FlashSplat's
+assignment and LUDVIG's lift), and from them to any other camera's frame of the same instances: a pixel is in the
+matte as far as the gaussians it is made of are. `render::SplatLift` keeps the two sums and not the quotient (two
+uints a slot, in 1/1024 of a pixel: integers, since Metal has no atomic floats), so every further camera adds its
+mask to the same gaussians.
+
+**Two ways to lift, one way back.** `liftMask` reads a frame's trace: the four gaussians a pixel names.
+`liftWhileBlending` sets a frame's settings so the blend itself adds the mask to every gaussian of every pixel's
+walk -- a third `contributionMode`, beside the two `athenea decimate` prunes by, with the mask in `liftMask`.
+`drawMatte` goes back through the trace: the listed gaussians by their share, and what the list had no room for
+(`rest`) and the gaussians no camera lifted taken to be in the mask as far as the pixel's known ones are; `under`
+is not a gaussian and is left out. `MatteSettings::hard` makes a gaussian in or out at a threshold.
+
+**Measured** (`[lift]`, Apple M5 Pro, Metal): two clouds of 1200 random gaussians each, one prim each, standing
+into each other, 200 x 150, some 29 900 covered pixels. The mask is the one a person would paint -- a pixel is in
+where the left prim is most of what covers it -- and the truth, from any camera, is that prim's Cryptomatte
+coverage.
+
+| lifted from | gaussians no camera saw | measuring camera | pixels further than 0.25 | mean abs(matte - coverage) |
+|---|---|---|---|---|
+| 1 camera | 1237 of 2400 | the same | 129 | 0.036 |
+| 1 camera | 1237 | another | 3886 | 0.114 |
+| 1 camera, by the trace | 1340 | another | 3668 | 0.110 |
+| 2 cameras | 958 | another | 1326 | 0.072 |
+| 4 cameras | 180 | another | 1289 | 0.085 |
+| 8 cameras | 69 | another | 247 | 0.066 (hard: 0.040) |
+| 8 cameras, by the trace | -- | another | 241 | 0.060 |
+
+What it says: the four ranks of a trace are not what limits a lift -- lifting by the trace and lifting every
+gaussian of the walk measure the same -- what limits it is what the lifting cameras saw. One camera sees half of
+two opaque clouds, and the other half has no opinion when a second camera looks at it; a ring of eight leaves 3%
+untold and the camera that was not among them is then wrong by more than a quarter in 0.8% of its pixels. What
+is left is the mask's own: where one prim stands in front of the other on a lifting camera's screen, a flat mask
+calls both the same (some 15% of the gaussians seen are told the wrong prim in this scene, which is two clouds
+inside each other and so the worst there is), and no lift of flat masks removes that.
+
+### Not done
+
+- No command lifts a mask and no AOV carries a trace or a matte: this is the `render` module's API and its test.
+- The cost of a traced frame, and of lifting while blending, is not timed.
+- The matte goes back through four ranks and a `rest`; drawing a gaussian's share as the blend draws a colour
+  (every gaussian of the walk, as the lift has) is not done, and would be the exact one.
+- The scene is random clouds. The measures a paper would be read against (NVOS, SPIn-NeRF, LERF-Mask's boundary
+  IoU, Replica with half the cameras held out; athenea-research proposal 111) and a temporal one are not run.
+- A lift is of one list of instances in one order; a level of detail's cut, whose clouds change by the frame, has
+  no slot that stays the same gaussian.

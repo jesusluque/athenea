@@ -960,7 +960,11 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         setFrame(cursor, common);
         cursor["finalColour"].setBinding(settings.finalColour != nullptr ? settings.finalColour->rhi()
                                                                           : placeholderColour_.rhi());
+        cursor["liftMask"].setBinding(settings.liftMask != nullptr ? settings.liftMask->rhi()
+                                                                  : placeholderDepth_.rhi());
         cursor["params"]["contributionMode"].setData(settings.contribution == nullptr ? 0u
+                                                     : settings.contributionMode == 3u
+                                                         ? (settings.liftMask != nullptr ? 3u : 0u)
                                                      : settings.contributionMode == 2u && settings.finalColour != nullptr
                                                          ? 2u
                                                          : 1u);
