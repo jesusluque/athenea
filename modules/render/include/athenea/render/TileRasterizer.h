@@ -18,6 +18,7 @@
 #include "athenea/gpu/Texture.h"
 #include "athenea/gpu/algo/PrefixSum.h"
 #include "athenea/gpu/algo/RadixSort.h"
+#include "athenea/render/NeuralAppearance.h"
 #include "athenea/render/Camera.h"
 #include "athenea/render/Flatten.h"
 #include "athenea/render/Points.h"
@@ -129,6 +130,11 @@ struct SplatInstance {
     /// Object to view, the difference over the shutter: the camera's motion
     /// and this prim's, together. Zero: neither moves.
     std::array<float, 12>   viewStep{};
+    /// A NEURAL APPEARANCE (NeuralAppearance.h): this cloud's colours from a
+    /// latent a gaussian and one network rather than from its harmonics,
+    /// written over what the projection made of them. Of this cloud, gaussian
+    /// for gaussian; a cut of levels of detail has none. Null: its harmonics.
+    const NeuralCloud*      neural = nullptr;
     /// `primvars:athenea:splat:catcher`: a shadow catcher (athenea mesh2splat
     /// --shadow-catcher), projected by a kernel of its own: black, as opaque
     /// as what its object took of the light reaching it.
@@ -461,6 +467,7 @@ private:
     gpu::ComputeKernel blendComposite_;
     gpu::ComputeKernel blendCrypto_;
     gpu::ComputeKernel blendCompositeCrypto_;
+    gpu::ComputeKernel neuralShade_;
     gpu::ComputeKernel blendTrace_;
     gpu::ComputeKernel blendTraceComposite_;
     gpu::ComputeKernel blendTraceCrypto_;

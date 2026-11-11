@@ -158,6 +158,7 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(r.blendCrypto_, "athenea/splat/splat_blend", "splatBlendCrypto"));
     ATHENEA_TRY(make(r.blendCompositeCrypto_, "athenea/splat/splat_blend", "splatBlendCompositeCrypto"));
     ATHENEA_TRY(make(r.blendTrace_, "athenea/splat/splat_blend", "splatBlendTrace"));
+    ATHENEA_TRY(make(r.neuralShade_, "athenea/neural/neural_shade", "neuralShade"));
     ATHENEA_TRY(make(r.blendTraceCrypto_, "athenea/splat/splat_blend", "splatBlendTraceCrypto"));
     ATHENEA_TRY(make(r.blendTraceComposite_, "athenea/splat/splat_blend", "splatBlendTraceComposite"));
     ATHENEA_TRY(make(r.blendTraceCompositeCrypto_, "athenea/splat/splat_blend", "splatBlendTraceCompositeCrypto"));
@@ -798,6 +799,28 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             viewless = false;
         }
         project.dispatch(batch, {cloud->count, 1, 1}, bindProject);
+        if (instance.neural != nullptr && instance.neural->count == cloud->count) {
+            // The colours again, from the cloud's latent and network, over
+            // what its harmonics gave the records.
+            const NeuralCloud& neural = *instance.neural;
+            neuralShade_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["positions"].setBinding(cloud->positions.rhi());
+                cursor["shape"].setBinding(cloud->shape.rhi());
+                cursor["visible"].setBinding(visible_.rhi());
+                cursor["latent"].setBinding(neural.latent.rhi());
+                cursor["weights"].setBinding(neural.weights.rhi());
+                cursor["made"].setBinding(placeholderDepth_.rhi());
+                cursor["proj"].setBinding(proj_.rhi());
+                cursor["params"]["count"].setData(cloud->count);
+                cursor["params"]["base"].setData(base);
+                cursor["params"]["linearCloud"].setData(uint32_t{0});
+                cursor["params"]["seed"].setData(uint32_t{0});
+                cursor["params"]["eyeX"].setData(static_cast<float>(eyeObject.x));
+                cursor["params"]["eyeY"].setData(static_cast<float>(eyeObject.y));
+                cursor["params"]["eyeZ"].setData(static_cast<float>(eyeObject.z));
+                cursor["params"]["spread"].setData(0.0F);
+            });
+        }
         base += cloud->count;
     }
     if (settings.flatten != nullptr) {

@@ -20292,3 +20292,29 @@ view rather than once a pixel -- which is what is measured next.
 - Not run on CUDA.
 - Halves, and the `neural` module's cooperative matrices, are not tried.
 - The weights' own gradient summed over pixels is not timed by hand (Slang's pass adds 1699 atomics a pixel).
+
+## A cloud drawn from a latent a gaussian and one network (11 Nov)
+
+The first of the two ways the `neural` branch means to try, and the cheaper: a gaussian's colour decoded once a
+gaussian in view, before the blend, which then runs as it always did (Hahlbohm et al., arXiv 2609.05255). The
+other -- features blended and decoded once a pixel -- waits on what the network section above measured.
+
+**What it is.** `shaders/athenea/neural/neural_appearance.slang`: eight features and a base colour a gaussian (11
+floats, where harmonics of degree 3 are 48), and one perceptron a cloud, 32 -> 16 -> 16 -> 3 with ReLUs and no
+biases, 816 weights. Its input is the view direction's harmonics of degrees 0 to 3 and the features' sines and
+cosines; its output goes through a tanh and is added to the base. The forward pass keeps what each layer held and
+the backward pass is written out beside it (`neuralBackward`: each layer's error, and the gaussian's own
+derivatives), for the fit that is not here yet. `render::NeuralCloud` holds the two buffers, as floats;
+`makeNeuralCloud` starts one where a fit starts -- features zero, the base each gaussian's own colour made light,
+the network's last layer zero. `SplatInstance::neural` names one, and the rasteriser then runs `neuralShade` after
+that cloud's projection, over the colours its harmonics gave the frame's records.
+
+**What checks it.** `[neural]`: a cloud drawn from a neural cloud just started is, to the bit, the cloud drawn by
+its first harmonic alone (`maxShDegree` 0), and is not the cloud drawn by all its harmonics (p99 28 code values).
+
+### Not done
+
+- Nothing fits it: the network adds nothing yet.
+- No file carries it, no USD schema names it, the ray traced route does not read it, and a level of detail's cut
+  has no latents. The projection still evaluates the harmonics it then overwrites.
+- Not timed.

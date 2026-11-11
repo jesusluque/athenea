@@ -152,3 +152,56 @@ TEST_CASE("a small network runs and differentiates in a kernel, a pixel at a tim
                     forwardMs, handMs, backwardMs);
     }
 }
+
+#include "SplatFixtures.h"
+#include "athenea/render/NeuralAppearance.h"
+#include "athenea/render/ReferenceRenderer.h"
+#include "athenea/render/TileRasterizer.h"
+#include "athenea/scene/GpuClouds.h"
+
+TEST_CASE("a cloud drawn from its latents starts as its own first harmonic draws it", "[render][gpu][neural]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    test::CloudBuilder builder = test::randomCloud(3000, 11, 0.02F, 0.12F);
+    auto cloud = loader->upload(builder.raw, 3);
+    REQUIRE(cloud);
+    auto neural = render::makeNeuralCloud(*gpu->library, *cloud);
+    if (!neural) FAIL(neural.error().toString());
+    CHECK(neural->count == cloud->count);
+
+    render::RenderSettings settings;
+    settings.width = 200;
+    settings.height = 150;
+    const render::Camera camera = render::Camera::lookingAt({0.5, 0.5, 6.0}, {0.0, 0.0, 0.0});
+
+    // The cloud by its first harmonic alone, and by all of them.
+    const std::vector<render::SplatInstance> plain{{&*cloud, render::Mat4::identity()}};
+    render::RenderTargets flat;
+    settings.maxShDegree = 0;
+    auto drawnFlat = raster->render(camera, plain, settings, flat);
+    if (!drawnFlat) FAIL(drawnFlat.error().toString());
+    render::RenderTargets whole;
+    settings.maxShDegree = 3;
+    auto drawnWhole = raster->render(camera, plain, settings, whole);
+    if (!drawnWhole) FAIL(drawnWhole.error().toString());
+
+    // By its latents, as a fit starts: nothing learnt, so the base alone.
+    std::vector<render::SplatInstance> learnt = plain;
+    learnt[0].neural = &*neural;
+    render::RenderTargets started;
+    auto drawnStarted = raster->render(camera, learnt, settings, started);
+    if (!drawnStarted) FAIL(drawnStarted.error().toString());
+
+    auto same = render::compareImages(*gpu->library, started.colour, flat.colour, settings.width, settings.height);
+    auto other = render::compareImages(*gpu->library, started.colour, whole.colour, settings.width, settings.height);
+    if (!same) FAIL(same.error().toString());
+    if (!other) FAIL(other.error().toString());
+    std::printf("  neural start against degree 0: p99 %u, max %u; against degree 3: p99 %u, max %u\n", same->p99,
+                same->max, other->p99, other->max);
+    CHECK(same->max <= 1);
+    // And it is the latents that were drawn: the harmonics' own frame differs.
+    CHECK(other->max > 4);
+}

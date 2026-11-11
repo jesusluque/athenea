@@ -4,6 +4,7 @@ athenea_add_module(render
         src/Camera.cpp
         src/SplatQuery.cpp
         src/SplatLift.cpp
+        src/NeuralAppearance.cpp
         src/TileRasterizer.cpp
         src/Flatten.cpp
         src/ReferenceRenderer.cpp
