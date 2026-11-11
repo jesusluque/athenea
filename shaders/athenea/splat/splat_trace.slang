@@ -38,6 +38,11 @@ public struct TraceList {
     public float depths[kTraceSlots];
     /// Everything the walk blended, in the list or not.
     public float total;
+    /// The lightest rank and its weight, kept so that the many gaussians too
+    /// light for the list -- most of a walk, once four are in -- cost one
+    /// comparison each and no search.
+    public uint  lightest;
+    public float floor;
 
     [[mutating]] public void clear() {
         for (uint k = 0; k < kTraceSlots; ++k) {
@@ -46,28 +51,32 @@ public struct TraceList {
             depths[k] = 0.0;
         }
         total = 0.0;
+        lightest = 0;
+        floor = 0.0;
     }
 
     /// A gaussian of the walk. A free rank is one whose weight is still zero,
-    /// so one search finds it or the lightest; a full list gives up its
-    /// lightest only to something heavier, and what it gives up stays in
-    /// `total`, which is where `rest` comes from.
+    /// so it is the lightest there is; a full list gives up its lightest only
+    /// to something heavier, and what it gives up stays in `total`, which is
+    /// where `rest` comes from.
     [[mutating]] public void add(uint slot, float weight, float z) {
         if (!(weight > 0.0)) {
             return;
         }
         total += weight;
-        uint lightest = 0;
+        if (!(weight > floor)) {
+            return;
+        }
+        slots[lightest] = slot;
+        weights[lightest] = weight;
+        depths[lightest] = z;
+        lightest = 0;
         for (uint k = 1; k < kTraceSlots; ++k) {
             if (weights[k] < weights[lightest]) {
                 lightest = k;
             }
         }
-        if (weight > weights[lightest]) {
-            slots[lightest] = slot;
-            weights[lightest] = weight;
-            depths[lightest] = z;
-        }
+        floor = weights[lightest];
     }
 
     /// Ranks in descending weight; `under` is what closed the walk took.

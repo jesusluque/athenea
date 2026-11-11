@@ -50,6 +50,7 @@ struct RenderOptions {
     std::string              size = "1920x1080";
     unsigned                 degree = 3;
     bool                     noAntialias = false;
+    bool                     trace = false;
     int                      repeat = 1;
     bool                     stages = false;
 };
@@ -185,6 +186,7 @@ int run(const RenderOptions& options, bool bench) {
         settings.antialiasOverride = false;   // over what any file says
     }
     settings.timeStages = options.stages;
+    settings.trace = options.trace;
     render::RenderTargets targets;
     std::optional<render::PointRasterizer> pointRaster;
     render::RenderTargets pointLayer;
@@ -467,6 +469,7 @@ void addBench(CLI::App& app) {
     addOptions(cmd, *options);
     cmd->add_option("--repeat", options->repeat, "frames");
     cmd->add_flag("--stages", options->stages, "wait after each stage to time it");
+    cmd->add_flag("--trace", options->trace, "keep which gaussians each pixel is made of (raster)");
     cmd->callback([options] {
         if (int code = run(*options, true); code != 0) {
             throw CLI::RuntimeError(code);

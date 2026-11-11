@@ -159,6 +159,8 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(r.blendCompositeCrypto_, "athenea/splat/splat_blend", "splatBlendCompositeCrypto"));
     ATHENEA_TRY(make(r.blendTrace_, "athenea/splat/splat_blend", "splatBlendTrace"));
     ATHENEA_TRY(make(r.blendTraceCrypto_, "athenea/splat/splat_blend", "splatBlendTraceCrypto"));
+    ATHENEA_TRY(make(r.blendTraceComposite_, "athenea/splat/splat_blend", "splatBlendTraceComposite"));
+    ATHENEA_TRY(make(r.blendTraceCompositeCrypto_, "athenea/splat/splat_blend", "splatBlendTraceCompositeCrypto"));
     return r;
 }
 
@@ -933,7 +935,8 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     const bool matte = settings.cryptomatte && targets.crypto.valid();
     const bool underCrypto = matte && under != nullptr && under->cryptoIds.valid();
     const bool traced = settings.trace && targets.trace.valid();
-    gpu::ComputeKernel& blend = traced  ? (matte ? blendTraceCrypto_ : blendTrace_)
+    gpu::ComputeKernel& blend = traced  ? (matte ? (composite ? blendTraceCompositeCrypto_ : blendTraceCrypto_)
+                                                 : (composite ? blendTraceComposite_ : blendTrace_))
                                 : matte ? (composite ? blendCompositeCrypto_ : blendCrypto_)
                                         : (composite ? blendComposite_ : blend_);
     blend.dispatch(batch, {settings.width, settings.height, 1}, [&](rhi::ShaderCursor cursor) {

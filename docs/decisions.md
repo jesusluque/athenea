@@ -20159,9 +20159,9 @@ found by one search over four, in registers), the layout and its reader. `Render
 pixel, plane after plane as the matte is: four slots (`kTraceNone` where empty), four depths as floats, the four
 weights as halves in two words, and (`rest`, `under`) as halves in the last. A slot is the index every per-slot
 buffer of the frame is read by; `FrameStats::slotBases` gives each instance's first slot, so a slot is (instance,
-gaussian in its cloud). Two more entry points of the blend keep it, `splatBlendTrace` and `splatBlendTraceCrypto`,
-both the composite walk: `traced` is a constant at each call site as `composite` and `matte` are, so a frame that
-keeps no trace runs the kernels it ran.
+gaussian in its cloud). Four more entry points of the blend keep it, the traced twins of the four walks (`splatBlendTrace`,
+`...Composite`, `...Crypto`, `...CompositeCrypto`): `traced` is a constant at each call site as `composite` and
+`matte` are, so a frame that keeps no trace runs the kernels it ran.
 
 **What checks it.** `[trace]` in `athenea_render_tests`: two overlapping clouds, 200 x 150. The colour with and
 without the trace is the same to the bit (`compareImages`, max 0). `ReferenceRenderer` keeps the trace of its exact
@@ -20170,10 +20170,28 @@ naming a slot the frame has not, pixels whose ranks do not descend, pixels namin
 weights, rest and under miss the pixel's alpha by more than 2e-3, ranks that are not the reference's and pixels
 whose rest or under is not the reference's. All zero (Apple M5 Pro, Metal).
 
+**What it costs** (`athenea bench --trace`, Apple M5 Pro, Metal, release; best of 30 frames, and the blend alone
+from `--stages`). A capture of the pawn, 325 833 gaussians of which 119 778 are in view, and a car of 786 095, all
+in view and many deep:
+
+| cloud | size | frame, plain | frame, traced | blend, plain | blend, traced |
+|---|---|---|---|---|---|
+| pawn | 1920 x 1080 | 4.05 ms | 4.51 ms | 1.83 ms | 2.25 ms |
+| pawn | 3840 x 2160 | 6.79 ms | 8.82 ms | 4.07 ms | 5.92 ms |
+| car | 1920 x 1080 | 33.4 ms | 37.4 ms | 23.9 ms | 27.8 ms |
+| car | 3840 x 2160 | 99.1 ms | 110.9 ms | 74.7 ms | 86.4 ms |
+
+Half a millisecond at 1080p and two at 4K where the frame is light; an eighth of the blend where it is heavy. At 4K
+the trace is 365 MB written a frame (44 bytes a pixel), which is most of the pawn's two milliseconds. The first
+version cost three times this -- the pawn's 4K blend 7.41 ms, the car's 122 ms -- for two reasons, both removed:
+it searched the four ranks for the lightest at every gaussian of the walk, where now the lightest and its weight
+are kept and a gaussian too light for the list (most of a walk, once four are in) costs one comparison; and it
+kept the trace only in the composite walk, which costs the blend half as much again in a frame with nothing under
+its splats, where now each of the four walks has its traced twin.
+
 ### Not done
 
-- What it costs is not measured: no command asks for a trace yet, so there is no frame to time with and without.
-  Eleven words a pixel is 44 bytes, 365 MB written a frame at 3840 x 2160.
+- Not timed on CUDA.
 - Nothing reads it yet outside the test: no AOV, no lift of a mask to the gaussians, no matte drawn from them.
 - The ray traced route keeps none.
 - A gaussian of a light catcher is not in it (it adds light and takes no coverage, as the matte has it), and a
@@ -20222,7 +20240,7 @@ inside each other and so the worst there is), and no lift of flat masks removes 
 ### Not done
 
 - No command lifts a mask and no AOV carries a trace or a matte: this is the `render` module's API and its test.
-- The cost of a traced frame, and of lifting while blending, is not timed.
+- Lifting while blending is not timed.
 - The matte goes back through four ranks and a `rest`; drawing a gaussian's share as the blend draws a colour
   (every gaussian of the walk, as the lift has) is not done, and would be the exact one.
 - The scene is random clouds. The measures a paper would be read against (NVOS, SPIn-NeRF, LERF-Mask's boundary

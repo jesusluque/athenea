@@ -214,6 +214,7 @@ Takes every option of `athenea render` except `-o`, and adds:
 |---|---|---|---|
 | `--repeat` | integer | `20` | frames drawn |
 | `--stages` | flag | off | wait after each stage so each is timed separately; slower, and the reason the numbers differ from a real frame |
+| `--trace` | flag | off | the frame keeps its trace -- the four heaviest gaussians of each pixel, 44 bytes a pixel -- so that what it costs is timed; raster only |
 
 Writes no image. With `--stages` it reports the project, depth sort, counts,
 emit, tile sort and blend times separately.

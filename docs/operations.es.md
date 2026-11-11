@@ -218,6 +218,7 @@ Admite todas las opciones de `athenea render` menos `-o`, y añade:
 |---|---|---|---|
 | `--repeat` | entero | `20` | frames dibujados |
 | `--stages` | flag | apagado | espera tras cada etapa para cronometrarlas por separado; más lento, y por eso sus números no son los de un frame real |
+| `--trace` | flag | apagado | el frame guarda su trace -- las cuatro gaussianas de más peso de cada píxel, 44 bytes por píxel -- para cronometrar lo que cuesta; solo raster |
 
 No escribe imagen. Con `--stages` informa por separado de la proyección, el
 sort por profundidad, las cuentas, el emit, el sort por tile y el blend.

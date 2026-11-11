@@ -516,17 +516,27 @@ void splatBlendCompositeCrypto(uint3 tid: SV_DispatchThreadID, uint3 groupThread
     blendPixel(tid, groupThread, true, true, false);
 }
 
-// The trace is kept by the composite walk, whatever is under the splats: a
-// frame that wants to know what its pixels are made of is not the frame the
-// splat-only walk was folded for.
+// The same four walks keeping a trace (splat_trace.slang).
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void splatBlendTrace(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, false, false, true);
+}
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendTraceComposite(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
     blendPixel(tid, groupThread, true, false, true);
 }
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void splatBlendTraceCrypto(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, false, true, true);
+}
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendTraceCompositeCrypto(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
     blendPixel(tid, groupThread, true, true, true);
 }

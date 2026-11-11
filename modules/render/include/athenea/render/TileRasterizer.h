@@ -462,7 +462,9 @@ private:
     gpu::ComputeKernel blendCrypto_;
     gpu::ComputeKernel blendCompositeCrypto_;
     gpu::ComputeKernel blendTrace_;
+    gpu::ComputeKernel blendTraceComposite_;
     gpu::ComputeKernel blendTraceCrypto_;
+    gpu::ComputeKernel blendTraceCompositeCrypto_;
 
     bool     tight_ = false;   ///< grow to the need exactly (after releaseScratch)
     uint32_t splatCapacity_ = 0;
