@@ -597,6 +597,12 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             setFrame(cursor, common);
             cursor["params"]["cryptoMode"].setData(cryptoMode);
             cursor["params"]["splatView"].setData(settings.splatView);
+            // A cloud drawn from its latents has its colours written over
+            // after this: its harmonics past the first are not evaluated to
+            // be thrown away.
+            if (instance.neural != nullptr && instance.neural->count == cloud->count) {
+                cursor["params"]["shLimit"].setData(uint32_t{0});
+            }
             setObject(cursor, objectToView, eyeObject);
             cursor["params"]["count"].setData(cloud->count);
             cursor["params"]["base"].setData(base);
