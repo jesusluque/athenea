@@ -26,6 +26,12 @@ struct NeuralFitSettings {
     float    rateFeatures = 5.0e-3F;
     float    rateBase = 2.0e-3F;
     float    rateWeights = 2.0e-3F;
+    /// SMOOTH IN THE VIEW: each gaussian's colour seen `viewStep` radians off
+    /// the frame's direction is held to its colour seen along it, this many
+    /// times as hard as a pixel is held to its picture. 0: not held. It is
+    /// what a camera going by sees as shimmer that this holds down.
+    float    viewSmooth = 0.0F;
+    float    viewStep = 0.0175F;
 };
 
 /// A lit fit's frame: the lights the cloud is relit by to make the picture

@@ -58,8 +58,8 @@ Result<void> NeuralFit::reserve(const NeuralCloud& neural, const NeuralFitSettin
     if (neural.count != count_ || !records_.valid()) {
         count_ = neural.count;
         steps_ = 0;
-        ATHENEA_TRY(assign(colourGrad_, uint64_t{count_} * 3, "fit.colourGrad"));
-        ATHENEA_TRY(assign(records_, uint64_t{count_} * kFitRecord, "fit.records"));
+        ATHENEA_TRY(assign(colourGrad_, uint64_t{count_} * 4, "fit.colourGrad"));
+        ATHENEA_TRY(assign(records_, uint64_t{count_} * kFitRecord * 2, "fit.records"));
         ATHENEA_TRY(assign(latentGrad_, uint64_t{count_} * kNeuralStride, "fit.latentGrad"));
         ATHENEA_TRY(assign(latentM_, uint64_t{count_} * kNeuralStride, "fit.latentM"));
         ATHENEA_TRY(assign(latentV_, uint64_t{count_} * kNeuralStride, "fit.latentV"));
@@ -177,6 +177,9 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
         p["correction1"].setData(1.0F - std::pow(kBeta1, t));
         p["correction2"].setData(1.0F - std::pow(kBeta2, t));
         p["sparse"].setData(uint32_t{1});
+        p["viewSmooth"].setData(settings.viewSmooth);
+        p["viewStep"].setData(settings.viewStep);
+        p["step"].setData(steps_);
         // The network's gradient from a share of the gaussians, another each
         // step: it is a sum over hundreds of thousands, and an eighth of them
         // says the same at an eighth of the reads.
@@ -204,9 +207,9 @@ Result<std::optional<double>> NeuralFit::step(TileRasterizer& rasterizer, const 
     };
     {
         gpu::CommandBatch batch(device);
-        clear_.dispatch(batch, {count_ * 3, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        clear_.dispatch(batch, {count_ * 4, 1, 1}, [&](rhi::ShaderCursor cursor) {
             bind(cursor);
-            cursor["params"]["count"].setData(count_ * 3);
+            cursor["params"]["count"].setData(count_ * 4);
         });
         clear_.dispatch(batch, {settings.height, 1, 1}, [&](rhi::ShaderCursor cursor) {
             bind(cursor);

@@ -20795,3 +20795,38 @@ that camera never saw are a guess whoever sums them.
 
 - The Metal numbers, and the lift's test taught the blend's matte.
 - The trace packed into fewer words, now that it is not in the keying frame, matters less and is not done.
+
+## A colour held to itself a degree off: what it buys, measured (11 Nov)
+
+The network's colour shimmers under a moving camera three to six times as much as the harmonics' does (the section on
+the key's stability), and the cause is plain: a harmonic of degree three cannot change fast with the direction, and
+a network of two layers can. So the fit can now hold it: each visible gaussian is evaluated a second time from a
+direction `viewStep` (a degree) off, turned about an axis the step picks, and the difference of the two colours is
+pulled on as an error of its own, `--view-smooth` times as heavy as the pixels' error on that gaussian. The pull
+goes back through both evaluations, so a gaussian keeps two records for the weights' sums and not one, and the
+blend's fourth contribution mode carries a fourth word per slot, the weight the gaussian was seen with, which is
+what the pull is scaled by: a gaussian no pixel saw is not held.
+
+The pawn, 4000 steps at 960 x 540 on an RTX 3070, the same seed; the shimmer is the middle of three frames half a
+degree apart against its neighbours' mean, and the harmonics' own is relMSE 0.000005 with a p99 of 1:
+
+| `--view-smooth` | relMSE against the teacher | p99 | max | shimmer, relMSE | shimmer, p99 |
+|---|---|---|---|---|---|
+| 0 | 0.00069 | 9.8 | 108 | 0.000014 | 2 |
+| 1 | 0.00039 | 7.6 | 105 | 0.000012 | 2 |
+| 4 | 0.00054 | 9.4 | 120 | 0.000017 | 2 |
+| 16 | 0.00059 | 9.5 | 105 | 0.000010 | 2 |
+| 64 | 0.00054 | 9.0 | 117 | 0.000009 | 1 |
+
+At 64 the shimmer is 1.6 times less than unheld and its p99 is the harmonics' own; it is still 1.8 times theirs in
+relMSE. The quality column does not order by the weight: the runs differ by more than the term costs (the
+gradients are rounded stochastically, and 0.00039 to 0.00069 is the spread), so what it says is only that holding
+the colour costs nothing this measure can see. The default stays 0, which also skips the second evaluation.
+
+### Not done
+
+- The step's time with and without the term: the laptop's times rose run after run (52.7 to 116.6 ms a step in the
+  order they ran), which is its heat and not the term.
+- A weight above 64, and a step other than a degree.
+- The spread between runs with one seed, measured rather than read off this table.
+- Metal.

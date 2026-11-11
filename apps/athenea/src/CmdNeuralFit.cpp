@@ -49,6 +49,7 @@ struct NeuralFitOptions {
     float               rateFeatures = 1.0e-2F;
     float               rateBase = 2.0e-3F;
     float               rateWeights = 4.0e-3F;
+    float               viewSmooth = 0.0F;     ///< how hard a gaussian's colour a degree off is held to its colour
     float               rateDecay = 1.0F;      ///< what the three rates are multiplied by at the last step, falling to it step by step
     bool                relight = false;   ///< a lit neural cloud, fitted to the engine's relighting under a moving sun
     float               sun = 3.0F;        ///< the sun's intensity
@@ -81,6 +82,7 @@ int runPictures(const NeuralFitOptions& o) {
     how.rateFeatures = o.rateFeatures;
     how.rateBase = o.rateBase;
     how.rateWeights = o.rateWeights;
+    how.viewSmooth = o.viewSmooth;
     if (!o.reached.empty() && o.reached != "map") {
         err("--pictures has no ray to cast: --reached map, or none\n");
         return kExitFailure;
@@ -349,6 +351,7 @@ int run(const NeuralFitOptions& o) {
     how.rateFeatures = o.rateFeatures;
     how.rateBase = o.rateBase;
     how.rateWeights = o.rateWeights;
+    how.viewSmooth = o.viewSmooth;
     auto device = gpu::Device::create();
     if (!device) return report(device.error());
     gpu::ShaderLibrary library(*device);
@@ -886,6 +889,7 @@ void addNeuralFit(CLI::App& app) {
     cmd->add_option("--rate-features", o.rateFeatures, "Adam's rate for the features");
     cmd->add_option("--rate-base", o.rateBase, "Adam's rate for the base colours");
     cmd->add_option("--rate-weights", o.rateWeights, "Adam's rate for the network");
+    cmd->add_option("--view-smooth", o.viewSmooth, "hold each gaussian's colour seen a degree off to its colour, this many times as hard as a pixel to its picture (0: not held)");
     cmd->add_option("--rate-decay", o.rateDecay, "what the three rates fall to by the last step, as a factor (1: they stay)");
     cmd->add_flag("--relight", o.relight, "a lit neural cloud, fitted to the engine's relighting of the cloud under a sun that moves");
     cmd->add_option("--sun", o.sun, "--relight: the sun's intensity");

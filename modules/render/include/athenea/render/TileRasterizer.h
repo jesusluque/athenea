@@ -323,7 +323,7 @@ struct RenderSettings {
     /// capped at one) as two uint a slot (low, high), against `finalColour` -- the frame drawn whole from
     /// the same camera, float4 a pixel as `RenderTargets::colour` holds it.
     /// 4 a loss's derivative with respect to each gaussian's colour
-    /// (NeuralFit.h): three signed words a slot, the weight times
+    /// (NeuralFit.h): four words a slot -- three signed, the weight times
     /// `finalColour` -- here the loss's derivative at each pixel -- in 1/256.
     /// 3 a mask lifted to the gaussians (SplatLift.h): two uint a slot, the
     /// weight times `liftMask` and the weight, in 1/1024 of a pixel, over
