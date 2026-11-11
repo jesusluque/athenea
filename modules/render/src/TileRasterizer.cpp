@@ -160,6 +160,8 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(r.blendCompositeCrypto_, "athenea/splat/splat_blend", "splatBlendCompositeCrypto"));
     ATHENEA_TRY(make(r.blendTrace_, "athenea/splat/splat_blend", "splatBlendTrace"));
     ATHENEA_TRY(make(r.neuralShade_, "athenea/neural/neural_shade", "neuralShade"));
+    ATHENEA_TRY(make(r.neuralMatt_, "athenea/neural/neural_shade", "neuralMatt"));
+    ATHENEA_TRY(make(r.neuralMattDone_, "athenea/neural/neural_shade", "neuralMattDone"));
     ATHENEA_TRY(make(r.blendFeatures8_, "athenea/splat/splat_blend", "splatBlendFeatures8"));
     ATHENEA_TRY(make(r.blendFeatures16_, "athenea/splat/splat_blend", "splatBlendFeatures16"));
     ATHENEA_TRY(make(r.blendFeatures32_, "athenea/splat/splat_blend", "splatBlendFeatures32"));
@@ -874,7 +876,17 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             // The colours again, from the cloud's latent and network, over
             // what its harmonics gave the records.
             const NeuralCloud& neural = *instance.neural;
-            neuralShade_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            MattCache* kept = nullptr;
+            bool keptAll = false;
+            const auto bindNeural = [&](rhi::ShaderCursor cursor) {
+                cursor["mattRead"].setBinding(kept != nullptr ? kept->matt.rhi() : placeholderColour_.rhi());
+                cursor["mattOut"].setBinding(placeholderColour_.rhi());
+                cursor["chunkChanged"].setBinding(neural.chunkChanged.valid() ? neural.chunkChanged.rhi()
+                                                                              : cloud->shape.rhi());
+                cursor["chunkDone"].setBinding(placeholderDepth_.rhi());
+                cursor["params"]["cached"].setData(uint32_t{kept != nullptr ? 1u : 0u});
+                cursor["params"]["all"].setData(uint32_t{keptAll ? 1u : 0u});
+                cursor["params"]["stamp"].setData(neural.stamp);
                 cursor["positions"].setBinding(cloud->positions.rhi());
                 cursor["shape"].setBinding(cloud->shape.rhi());
                 cursor["visible"].setBinding(visible_.rhi());
@@ -924,7 +936,65 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
                                                                                   : shadowLights);
                 cursor["params"]["lit"].setData(uint32_t{neural.lit ? 1u : 0u});
                 cursor["params"]["split"].setData(uint32_t{neural.split ? 1u : 0u});
-            });
+            };
+            // THE MATT PART, KEPT. Under what lights it was said is a number made of them; a cloud whose
+            // shadows this frame casts by ray, or whose lights say nothing of when they change, keeps nothing.
+            const bool shadowedNow = neural.lit && neural.shadowed && (splatShadows || measured);
+            const bool keepable = settings.neuralKeep && neural.split && neural.chunkChanged.valid() &&
+                                  (!shadowedNow || (measured && lights->revision != 0));
+            if (keepable) {
+                uint64_t key = 0x9E3779B97F4A7C15ull ^ (neural.lit ? 1u : 0u) ^ (uint64_t{base} << 8);
+                const auto mix = [&](uint64_t v) { key = (key ^ v) * 0x100000001B3ull; };
+                if (neural.lit) {
+                    const NeuralLight white;
+                    const NeuralLight* given = instance.neuralLight != nullptr ? instance.neuralLight : &white;
+                    const uint32_t lightCount =
+                        instance.neuralLight != nullptr ? std::min(instance.neuralLightCount, kNeuralLights) : 1u;
+                    mix(lightCount);
+                    for (uint32_t l = 0; l < lightCount; ++l) {
+                        for (int c = 0; c < 3; ++c) {
+                            uint32_t bits = 0;
+                            std::memcpy(&bits, &given[l].towards[static_cast<size_t>(c)], sizeof(bits));
+                            mix(bits);
+                            std::memcpy(&bits, &given[l].radiance[static_cast<size_t>(c)], sizeof(bits));
+                            mix(bits);
+                        }
+                    }
+                    for (int k = 0; k < 16; ++k) {
+                        uint64_t bits = 0;
+                        const double v = instance.objectToWorld.m[static_cast<size_t>(k)];
+                        std::memcpy(&bits, &v, sizeof(bits));
+                        mix(bits);
+                    }
+                    mix(shadowedNow ? lights->revision : 0u);
+                }
+                MattCache& cache = mattCaches_[&neural];
+                const bool fresh = !cache.matt.valid() || cache.matt.bytes() < uint64_t{cloud->count} * 16;
+                if (fresh) {
+                    auto matt = buffer(*device_, std::max<uint64_t>(cloud->count, 1), 16, "neural.matt");
+                    if (!matt) return std::move(matt).error();
+                    auto done = buffer(*device_, cloud->count / kNeuralChunk + 2, 4, "neural.mattDone");
+                    if (!done) return std::move(done).error();
+                    cache.matt = *matt;
+                    cache.done = *done;
+                }
+                if (fresh || cache.key != key || cache.stamp != neural.stamp) {
+                    keptAll = fresh || cache.key != key;
+                    neuralMatt_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                        bindNeural(cursor);
+                        cursor["mattOut"].setBinding(cache.matt.rhi());
+                        cursor["chunkDone"].setBinding(cache.done.rhi());
+                    });
+                    neuralMattDone_.dispatch(batch, {cloud->count / kNeuralChunk + 1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                        bindNeural(cursor);
+                        cursor["chunkDone"].setBinding(cache.done.rhi());
+                    });
+                    cache.key = key;
+                    cache.stamp = neural.stamp;
+                }
+                kept = &cache;
+            }
+            neuralShade_.dispatch(batch, {cloud->count, 1, 1}, bindNeural);
         }
         if (instance.wall != nullptr && instance.wall->count() == cloud->count && featureWords == 0) {
             instance.wall->shade(batch, base, proj_, visible_);

@@ -20965,3 +20965,45 @@ the result either way.
 - The view's network held small (a weight decay on it, or the view-smoothness term on it alone), which is where
   the shimmer now lives.
 - `.athn`: a split cloud is neither saved nor loaded.
+
+## The matt part kept, and a stamp a chunk for what changed (11 Nov)
+
+A split cloud's first network has no eye in it once the light it is told is in the gaussian's own frame and not in
+one turned to face the eye (`neuralLocalLight`'s `faceEye`; the lit fit against the path tracer is relMSE 0.00292
+that way against 0.00293, so which side of a gaussian is out is something its features can say). Its answer is
+then a gaussian's own, and `RenderSettings::neuralKeep` keeps it: `neuralMatt` says it for every gaussian of the
+cloud, in view or not, into a buffer the rasteriser holds for that cloud, and `neuralShade` reads it and runs only
+the view's network. It is said again when the frame's lights are others (a number made of their directions, their
+radiance, the cloud's place and, where the cloud is shadowed, the lights' `revision`), or for the chunks that
+changed: a cloud carries a stamp a chunk of 1024 gaussians (`NeuralCloud::chunkChanged`, `touch`), the stamp at
+which one of them last did, and a chunk no newer than what was kept is left alone. A cloud shadowed by rays this
+frame casts keeps nothing, nor does one whose lights carry no revision; a fit's frames do not ask.
+
+The captured pawn, 325 833 gaussians, 960 x 540 on Metal, after 1500 steps of each fit; the least of the frames
+timed, the clock waiting for the device:
+
+| | a frame |
+|---|---|
+| by the harmonics | 7.00 to 7.14 ms |
+| one network | 7.20 ms |
+| two networks, nothing kept | 7.65 ms |
+| two networks, the matt part kept, two cameras taking turns | 7.43 ms |
+| the frame that fills what is kept | 9.43 ms |
+
+The kept frame is the frame that keeps nothing to the code value (max 0), from a camera other than the one that
+filled it. And it buys 0.22 ms of 7.65, a thirty-fifth. That is the finding: here the network is not where a
+frame goes -- one network costs 0.1 ms over the harmonics -- so keeping half of it cannot buy much, and two
+networks kept are still 0.23 ms dearer than one. What is kept for all 325 thousand gaussians costs 2 ms once, a
+quarter of a frame, where a frame decodes only those in view.
+
+Where it would pay is where the first network is run many times a gaussian: a lit cloud under eight lights is
+eight evaluations of each network, and the matt half of those is kept. That is not timed.
+
+### Not done
+
+- The lit case timed, one light and eight.
+- Anything that calls `touch`: nothing edits a neural cloud outside a fit yet, so the chunk stamps are exercised
+  by no command and no test.
+- What a frame is mostly made of -- projection, sort, blend -- kept from frame to frame: a still camera's tiles
+  that no changed chunk touches, which is where a stamp a chunk would save most.
+- The wall's light and the shadow factors kept the same way.

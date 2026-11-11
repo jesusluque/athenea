@@ -287,6 +287,16 @@ struct RenderSettings {
     /// 0: a neural cloud is decoded a gaussian at a time. Nothing fits this
     /// way yet: it is here to be timed against the other.
     uint32_t neuralFeatures = 0;
+    /// KEPT FROM FRAME TO FRAME AND CAMERA TO CAMERA: a split neural cloud's
+    /// matt part (`NeuralCloud::split`), which has no eye in it, is said once
+    /// for all its gaussians and read by every frame after, this camera's or
+    /// another's, until the cloud says gaussians changed (`NeuralCloud::touch`)
+    /// or the frame's lights are others. A frame then runs one network a
+    /// gaussian in view and not two. Off: a fit's frames, whose gaussians all
+    /// move every step. A shadowed cloud's is kept only where what reaches
+    /// its gaussians was measured before the frame and its lights carry a
+    /// `revision`.
+    bool     neuralKeep = false;
     /// THE MATTE, SUMMED BY THE BLEND: what a lift told the frame's gaussians
     /// (`SplatLift::sums`, two uints a slot) read as each is blended, and a
     /// pixel's share of the mask over every gaussian of its walk written to
@@ -512,6 +522,18 @@ private:
     gpu::ComputeKernel blendCrypto_;
     gpu::ComputeKernel blendCompositeCrypto_;
     gpu::ComputeKernel neuralShade_;
+    gpu::ComputeKernel neuralMatt_;
+    gpu::ComputeKernel neuralMattDone_;
+    /// A split neural cloud's matt part as it was last said, a float4 a
+    /// gaussian; `done` a chunk, the cloud's stamp it was said at; `key` what
+    /// lights it was said under.
+    struct MattCache {
+        gpu::Buffer matt;
+        gpu::Buffer done;
+        uint64_t    key = 0;
+        uint32_t    stamp = 0;
+    };
+    std::unordered_map<const NeuralCloud*, MattCache> mattCaches_;
     gpu::ComputeKernel blendFeatures8_, blendFeatures16_, blendFeatures32_;
     gpu::ComputeKernel blendMatte_, blendMatteComposite_;
     gpu::ComputeKernel pixelFeatures_, pixelDecode_;

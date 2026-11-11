@@ -52,7 +52,22 @@ struct NeuralCloud {
     /// the first says of a gaussian then holds from one camera to the next.
     bool        split = false;
     [[nodiscard]] uint32_t weightCount() const noexcept { return split ? kNeuralWeights * 2 : kNeuralWeights; }
+    /// WHAT CHANGED, AND WHEN. `stamp` goes up each time gaussians change, and
+    /// `chunkChanged` holds, a chunk of `kNeuralChunk` gaussians, the stamp at
+    /// which one of its gaussians last did -- so that what is kept of a
+    /// gaussian from frame to frame (a split cloud's matt part,
+    /// `RenderSettings::neuralKeep`) is said again for those chunks alone.
+    /// A fit, which moves every gaussian every step, does not say so: its
+    /// frames keep nothing.
+    gpu::Buffer chunkChanged;
+    uint32_t    stamp = 1;
+    /// `count` gaussians from `first` have changed (their latents were
+    /// written, or the weights: then all of them).
+    [[nodiscard]] Result<void> touch(gpu::Device& device, uint32_t first, uint32_t count);
 };
+
+/// neural_shade.slang's kNeuralChunk.
+inline constexpr uint32_t kNeuralChunk = 1024;
 
 /// The one light a lit neural cloud is drawn under: where it comes from (a
 /// unit vector towards it, in the world) and its radiance, linear rgb.

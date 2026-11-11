@@ -142,8 +142,12 @@ void harmonics(float3 d, out float sh[16]) {
 /// axes, then along its normal (its shortest axis, towards `eye`). `light` is
 /// a unit vector towards the light in the cloud's space, as `eye` and the
 /// cloud's positions are.
+/// `faceEye` false: the normal as the gaussian's own axes have it, whichever
+/// side that is -- what a split cloud's matt part is told, since where the
+/// eye is cannot enter what is kept from camera to camera; which side is out
+/// is then the gaussian's features' to say.
 public float3 neuralLocalLight(StructuredBuffer<uint> shape, uint gaussian, float3 position, float3 eye,
-                               float3 light) {
+                               float3 light, bool faceEye = true) {
     const uint row = gaussian * 4;
     const float3x3 axes = axesOfQuaternion(decodeQuaternion(shape[row]));
     const float3 scale = float3(lowHalf(shape[row + 1]), highHalf(shape[row + 1]), lowHalf(shape[row + 2]));   // logs
@@ -151,7 +155,7 @@ public float3 neuralLocalLight(StructuredBuffer<uint> shape, uint gaussian, floa
     const uint a = (shortest + 1u) % 3u;
     const uint b = (shortest + 2u) % 3u;
     float3 normal = float3(axes[0][shortest], axes[1][shortest], axes[2][shortest]);
-    if (dot(normal, eye - position) < 0.0) {
+    if (faceEye && dot(normal, eye - position) < 0.0) {
         normal = -normal;
     }
     return float3(dot(light, float3(axes[0][a], axes[1][a], axes[2][a])),

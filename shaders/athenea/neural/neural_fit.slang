@@ -168,7 +168,10 @@ void neuralFitBackward(uint3 tid: SV_DispatchThreadID) {
         NeuralWeightsFrom<NeuralWeightBuffer> second;
         second.inner = held;
         second.offset = kNeuralWeights;
-        const NeuralPass matt = neuralForward(latent, i, held, direction, lit, light, reached, kNeuralMatt);
+        const float3 own = lit ? neuralLocalLight(shape, i, positions[i].xyz, eye,
+                                                  float3(params.lightX, params.lightY, params.lightZ), false)
+                               : float3(0.0);
+        const NeuralPass matt = neuralForward(latent, i, held, direction, lit, own, reached, kNeuralMatt);
         const NeuralPass shine = neuralForward(latent, i, second, direction, lit, light, reached, kNeuralShine);
         const NeuralBack mattBack = neuralBackward(matt, held, dColour);
         const NeuralBack shineBack = neuralBackward(shine, second, dColour);

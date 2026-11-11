@@ -731,6 +731,36 @@ int run(const NeuralFitOptions& o) {
     if (!latentsMs) return report(latentsMs.error());
     out("a frame at %ux%u: %.2f ms by the harmonics, %.2f ms by the latents\n", settings.width, settings.height,
         *harmonicsMs, *latentsMs);
+    if (o.split) {
+        // THE MATT PART KEPT (`RenderSettings::neuralKeep`): two cameras taking turns, so that what is timed
+        // is a frame from a camera other than the last frame's; and the kept frame against the frame that
+        // keeps nothing, which it should be.
+        const render::SplatLights* under = !o.relight ? nullptr : byMap ? &mapLights : &lights;
+        render::RenderSettings keeping = settings;
+        keeping.neuralKeep = true;
+        keeping.timeStages = true;
+        render::RenderTargets keptFrame;
+        render::RenderTargets plainFrame;
+        double best = 1.0e30;
+        double filling = 0.0;
+        for (int round = 0; round < 40; ++round) {
+            auto stats = raster->render(cameraAt(static_cast<uint32_t>(round & 1), 0.5), byLatents, keeping, keptFrame, {},
+                                        nullptr, under);
+            if (!stats) return report(stats.error());
+            if (round == 0) {
+                filling = stats->totalMs;
+            } else {
+                best = std::min(best, stats->totalMs);
+            }
+        }
+        auto again = raster->render(cameraAt(1, 0.5), byLatents, settings, plainFrame, {}, nullptr, under);
+        if (!again) return report(again.error());
+        auto same = render::compareImages(library, keptFrame.colour, plainFrame.colour, settings.width, settings.height);
+        if (!same) return report(same.error());
+        out("its matt part kept: %.2f ms a frame, the two cameras taking turns (%.2f ms the frame that fills it); "
+            "against the frame that keeps nothing: max %u code values\n",
+            best, filling, same->max);
+    }
     // HOW MUCH EACH SHIMMERS as the camera goes by: three frames half a degree
     // apart round the target, the middle one against the mean of its
     // neighbours (`compareFlicker`). The camera moves, so there is parallax

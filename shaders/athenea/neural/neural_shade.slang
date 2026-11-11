@@ -25,8 +25,15 @@ struct NeuralShadeParams {
     // frame's first light's first. 0: all of it.
     uint  shadowLights;
     uint  split;        // two networks: the matt part and what the view adds (neural_appearance.slang)
-    uint pad3; uint pad4;
+    // KEPT (a split cloud's): `mattRead` holds each gaussian's matt part under the frame's lights, and
+    // neuralShade adds what the view adds to it. neuralMatt is what fills it: every gaussian (`all`), or
+    // those of the chunks that changed since it was last filled; neuralMattDone then stamps the chunks.
+    uint  cached; uint all; uint stamp;
 };
+
+/// Gaussians a chunk: what is said to have changed, and when, is said a chunk
+/// (`chunkChanged`, the cloud's stamp when one of its gaussians last did).
+public static const uint kNeuralChunk = 1024;
 
 StructuredBuffer<float4>           positions;
 StructuredBuffer<uint>             shape;
@@ -34,6 +41,10 @@ StructuredBuffer<uint>             visible;     // one a slot, as the projection
 StructuredBuffer<float>            latent;
 StructuredBuffer<float>            weights;
 StructuredBuffer<float>            shadowFactors;
+StructuredBuffer<float4>           mattRead;
+RWStructuredBuffer<float4>         mattOut;
+StructuredBuffer<uint>             chunkChanged;
+RWStructuredBuffer<uint>           chunkDone;
 RWStructuredBuffer<float>          made;        // the latent or the weights being started
 RWStructuredBuffer<ProjRecord>     proj;
 ConstantBuffer<NeuralShadeParams>  params;
@@ -104,25 +115,75 @@ void neuralShade(uint3 tid: SV_DispatchThreadID, uint3 lane: SV_GroupThreadID) {
     NeuralWeightsFrom<NeuralWeightsHere> second;
     second.inner = held;
     second.offset = kNeuralWeights;
+    const bool cached = split && params.cached != 0;
     if (!lit) {
-        float3 own = neuralForward(latent, i, held, direction, false, float3(0.0), 1.0, split ? kNeuralMatt : kNeuralWhole).colour;
+        float3 own = cached ? mattRead[i].rgb
+                            : neuralForward(latent, i, held, direction, false, float3(0.0), 1.0, split ? kNeuralMatt : kNeuralWhole).colour;
         if (split) {
             own += neuralForward(latent, i, second, direction, false, float3(0.0), 1.0, kNeuralShine).colour;
         }
         proj[slot].colour.xyz = own;
         return;
     }
-    float3 colour = float3(0.0);
+    float3 colour = cached ? mattRead[i].rgb : float3(0.0);
     const uint lights = min(params.lightCount, kNeuralLights);
     for (uint l = 0; l < lights; ++l) {
         // What reaches the gaussian from this light: a light the frame's shadows did not cover reaches it whole.
         const float reached = l < params.shadowLights ? shadowFactors[slot * params.shadowLights + l] : 1.0;
         const float3 light = neuralLocalLight(shape, i, positions[i].xyz, eye, params.lightTowards[l].xyz);
-        float3 answer = neuralForward(latent, i, held, direction, true, light, reached, split ? kNeuralMatt : kNeuralWhole).colour;
+        const float3 own = split ? neuralLocalLight(shape, i, positions[i].xyz, eye, params.lightTowards[l].xyz, false) : light;
+        float3 answer = cached ? float3(0.0)
+                               : neuralForward(latent, i, held, direction, true, own, reached, split ? kNeuralMatt : kNeuralWhole).colour;
         if (split) {
             answer += neuralForward(latent, i, second, direction, true, light, reached, kNeuralShine).colour;
         }
         colour += answer * params.lightRadiance[l].rgb;
     }
     proj[slot].colour.xyz = colour;
+}
+
+/// A SPLIT CLOUD'S MATT PART, KEPT. What the first network says of a gaussian
+/// under the frame's lights has no eye in it, so it is said once -- for every
+/// gaussian, in view or not -- and read by every camera and every frame until
+/// the gaussian, its light or what reaches it changes. A chunk whose stamp is
+/// no newer than what was kept is left alone.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void neuralMatt(uint3 tid: SV_DispatchThreadID, uint3 lane: SV_GroupThreadID) {
+    for (uint w = lane.x; w < kNeuralWeights; w += 64) {
+        sWeights[w] = weights[w];
+    }
+    GroupMemoryBarrierWithGroupSync();
+    const NeuralWeightsHere held;
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    const uint chunk = i / kNeuralChunk;
+    if (params.all == 0 && chunkDone[chunk] >= chunkChanged[chunk]) {
+        return;
+    }
+    const float3 nowhere = float3(0.0, 0.0, 1.0);
+    if (params.lit == 0) {
+        mattOut[i] = float4(neuralForward(latent, i, held, nowhere, false, float3(0.0), 1.0, kNeuralMatt).colour, 0.0);
+        return;
+    }
+    const uint slot = params.base + i;
+    float3 colour = float3(0.0);
+    const uint lights = min(params.lightCount, kNeuralLights);
+    for (uint l = 0; l < lights; ++l) {
+        const float reached = l < params.shadowLights ? shadowFactors[slot * params.shadowLights + l] : 1.0;
+        const float3 own = neuralLocalLight(shape, i, positions[i].xyz, float3(0.0), params.lightTowards[l].xyz, false);
+        colour += neuralForward(latent, i, held, nowhere, true, own, reached, kNeuralMatt).colour * params.lightRadiance[l].rgb;
+    }
+    mattOut[i] = float4(colour, 0.0);
+}
+
+/// The chunks stamped with what they now hold: a thread a chunk.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void neuralMattDone(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x * kNeuralChunk < params.count) {
+        chunkDone[tid.x] = params.stamp;
+    }
 }

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/ComputeKernel.h"
@@ -30,6 +31,16 @@ Result<NeuralCloud> makeNeuralCloud(gpu::ShaderLibrary& library, const scene::Gp
     if (!weights) return std::move(weights).error();
     neural.latent = *latent;
     neural.weights = *weights;
+    {
+        const std::vector<uint32_t> never((cloud.count + kNeuralChunk - 1) / kNeuralChunk + 1, 0u);
+        gpu::BufferDesc desc;
+        desc.bytes = never.size() * sizeof(uint32_t);
+        desc.elementBytes = sizeof(uint32_t);
+        desc.label = "neural.chunkChanged";
+        auto stamps = gpu::Buffer::create(device, desc, never.data());
+        if (!stamps) return std::move(stamps).error();
+        neural.chunkChanged = *stamps;
+    }
     auto initLatent = gpu::ComputeKernel::create(library, "athenea/neural/neural_shade", "neuralInitLatent");
     if (!initLatent) return std::move(initLatent).error();
     auto initWeights = gpu::ComputeKernel::create(library, "athenea/neural/neural_shade", "neuralInitWeights");
@@ -56,6 +67,11 @@ Result<NeuralCloud> makeNeuralCloud(gpu::ShaderLibrary& library, const scene::Gp
         cursor["shadowFactors"].setBinding(neural.weights.rhi());
         cursor["params"]["shadowLights"].setData(uint32_t{0});
         cursor["params"]["split"].setData(uint32_t{0});
+        cursor["params"]["cached"].setData(uint32_t{0});
+        cursor["mattRead"].setBinding(cloud.positions.rhi());
+        cursor["mattOut"].setBinding(made.rhi());
+        cursor["chunkChanged"].setBinding(cloud.shape.rhi());
+        cursor["chunkDone"].setBinding(made.rhi());
     };
     if (cloud.count > 0) {
         initLatent->dispatch(batch, {cloud.count, 1, 1},
@@ -103,6 +119,17 @@ Result<std::vector<uint32_t>> packNeuralLatents(gpu::ShaderLibrary& library, con
         ATHENEA_TRY(packed->read(device, 0, words.size() * sizeof(uint32_t), words.data()));
     }
     return words;
+}
+
+Result<void> NeuralCloud::touch(gpu::Device& device, uint32_t first, uint32_t touched) {
+    if (!chunkChanged.valid() || touched == 0 || first >= count) {
+        return ok();
+    }
+    ++stamp;
+    const uint32_t from = first / kNeuralChunk;
+    const uint32_t to = (std::min(first + touched, count) - 1) / kNeuralChunk;
+    const std::vector<uint32_t> now(to - from + 1, stamp);
+    return chunkChanged.write(device, uint64_t{from} * sizeof(uint32_t), now.size() * sizeof(uint32_t), now.data());
 }
 
 Result<std::vector<float>> readNeuralWeights(gpu::ShaderLibrary& library, const NeuralCloud& neural) {

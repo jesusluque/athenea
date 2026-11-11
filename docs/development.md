@@ -179,6 +179,12 @@ each measured):
   `athenea render --neural` draws by it. A decoder once a pixel
   (`RenderSettings::neuralFeatures`, `neural_pixel.slang`) is there to be
   timed and is fitted by nothing.
+  A split cloud (`NeuralCloud::split`) has two networks, the first never told
+  the view; with `RenderSettings::neuralKeep` the rasteriser keeps that
+  first answer a gaussian (`neuralMatt`) and says it again only for the
+  chunks of 1024 gaussians the cloud stamped as changed (`NeuralCloud::touch`)
+  or when the frame's lights are others. Whoever writes a cloud's latents
+  outside a fit calls `touch`.
 - **A wall of light as a texture** (`render/NeuralWall.h`,
   `shaders/athenea/neural/neural_wall.slang`): each gaussian's reads of an LED
   wall's picture -- u, v, a mip level and the log of a gain a channel, six
