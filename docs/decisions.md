@@ -21457,3 +21457,37 @@ relMSE 0.0054 and 0.0256, PSNR 34.4 and 27.3 dB, SSIM 0.90 and 0.82; their mean 
 
 - A width chosen by the scene rather than given: a thing against black wants 0.8, a room 1.3.
 - The second held-out view's 27 dB looked at: whether it is what no look saw, or what was seen badly.
+
+## Found from far, seen from near: a closer look makes it again, finer (12 Nov)
+
+The second held-out view's 27 dB was looked at, and it is not what no look saw. It is an arch found from fifteen
+metres and seen from four: a gaussian a pixel of the far look is a hand's width, and from near the surface is soft
+and ridged. A closer look did not mend it, because the surface was where the scene had it and so was held.
+
+`discover --refine` (on, at 2) holds a surface by how fine it is as well. The scene is drawn a second time through
+the frame's camera with each gaussian's largest standard deviation as its colour -- a neural cloud whose base is
+the size and whose network is zeros (`Discovery::sizes`), so the frame is the size of what each pixel is made of,
+blended as it is -- and a pixel whose scene is more than twice as wide as the disc this look would make there is
+not held: it joins what is taken out, and is made again from the frame.
+
+Sponza from the same ten frames, discs of 1.3 pixels, against the path tracer from the two cameras that took no
+look:
+
+| | held however coarse | `--refine 2` |
+|---|---|---|
+| view A: PSNR, SSIM | 34.4 dB, 0.900 | 34.6 dB, 0.905 |
+| view B: PSNR, SSIM | 27.3 dB, 0.822 | 28.3 dB, 0.848 |
+| gaussians | 2 151 672 | 2 977 844 |
+| the walk, a frame at 1280 x 720: least, mean | 22.8, 31.1 ms | 25.0, 37.1 ms |
+
+A decibel on the view that wanted it, for 38% more gaussians and a fifth more time a frame. Less than it should
+be: a look flags up to 364 thousand pixels as coarser and takes out 70 thousand gaussians, since a coarse gaussian
+goes only when most of its weight is on flagged pixels and the passes stop at eight, so fine ones are laid over
+coarse ones that stay.
+
+### Not done
+
+- The coarse gaussians under the fine ones taken out: by size against the new look's, a gaussian at a time, rather
+  than by where their weight fell.
+- A coarse gaussian that reaches past the frame's edge is taken out whole and leaves a gap there.
+- The looks ordered: the same ten frames nearest first would make the scene once.

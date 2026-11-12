@@ -31,13 +31,18 @@ struct FrameParams {
     /// by more than this share of the brighter of the two -- is not held: what is there is taken out and
     /// made again from the frame. 0: a surface is held by its depth alone.
     float repaint;
-    uint pad1; uint pad2;
+    /// COARSER THAN THIS LOOK: a surface the scene holds with gaussians more than this many times as
+    /// wide as the disc this frame would make there is not held -- seen from far and now seen from near --
+    /// and is taken out and made again, finer. 0: held however coarse.
+    float refine;
+    uint pad2;
 };
 
 StructuredBuffer<float4>   colour;       // the frame: linear light, premultiplied
 StructuredBuffer<float>    depth;        // its view depth, 0 or less where nothing is
 StructuredBuffer<float4>   knownColour;  // the scene as it is known, from the same camera
 StructuredBuffer<float>    knownDepth;
+StructuredBuffer<float4>   knownSize;    // the scene drawn with each gaussian's size as its colour
 RWStructuredBuffer<uint>   valid;        // a pixel: it makes a gaussian
 StructuredBuffer<uint>     validRead;
 StructuredBuffer<uint>     dest;         // its place among those that do
@@ -74,6 +79,17 @@ bool repainted(uint at) {
     return max(off.x, max(off.y, off.z)) > params.repaint;
 }
 
+/// Whether what the scene has at a pixel is coarser than this frame would make it.
+bool coarser(uint at, float z) {
+    if (!(params.refine > 0.0)) {
+        return false;
+    }
+    const float4 held = knownSize[at];
+    const float has = held.r / max(held.a, 1.0e-3);
+    const float would = params.spread * z / params.focalX;
+    return has > params.refine * would;
+}
+
 float depthAt(int x, int y) {
     if (x < 0 || y < 0 || x >= int(params.width) || y >= int(params.height)) {
         return 0.0;
@@ -95,7 +111,7 @@ void frameValid(uint3 tid: SV_DispatchThreadID) {
         InterlockedAdd(counters[0], 1u);
         if (params.hasKnown != 0) {
             const float held = knownDepth[at];
-            if (knownColour[at].a > 0.5 && abs(held - z) <= params.tolerance * z && !repainted(at)) {
+            if (knownColour[at].a > 0.5 && abs(held - z) <= params.tolerance * z && !repainted(at) && !coarser(at, z)) {
                 makes = false;
                 InterlockedAdd(counters[1], 1u);
             }
@@ -123,7 +139,7 @@ void frameSeenThrough(uint3 tid: SV_DispatchThreadID) {
     const bool empty = !(z > 0.0) && colour[at].a < 0.5 && knownColour[at].a > 0.5;
     // And a surface that is where it was and is another colour is taken out to be made again.
     const bool again = z > 0.0 && colour[at].a > 0.5 && knownColour[at].a > 0.5 &&
-                       abs(knownDepth[at] - z) <= params.tolerance * z && repainted(at);
+                       abs(knownDepth[at] - z) <= params.tolerance * z && (repainted(at) || coarser(at, z));
     seenThrough[at] = (past || empty || again) ? 1.0 : 0.0;
     if (past || empty) {
         InterlockedAdd(counters[2], 1u);

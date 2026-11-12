@@ -88,6 +88,7 @@ struct SceneOptions {
     float                    spread = 1.3F;
     std::string              views;
     float                    repaint = 0.0F;
+    float                    refine = 2.0F;
 };
 
 bool sizeOf(const std::string& text, uint32_t& width, uint32_t& height) {
@@ -706,10 +707,29 @@ int runDiscover(const SceneOptions& o) {
     settings.depth = render::RenderSettings::Depth::Threshold;
     settings.depthThreshold = 0.5F;
     render::RenderTargets known;
-    if (!instances.empty()) {
-        auto drawn = raster->render(*camera, instances, settings, known);
-        if (!drawn) return report(drawn.error());
+    // And how coarse it is there: the same pieces drawn with each gaussian's size as its colour.
+    std::vector<std::unique_ptr<render::NeuralCloud>> sized;
+    std::vector<render::SplatInstance> bySize;
+    for (size_t k = 0; k < clouds.size(); ++k) {
+        auto made = discovery->sizes(*clouds[k]);
+        if (!made) return report(made.error());
+        sized.push_back(std::make_unique<render::NeuralCloud>(std::move(*made)));
+        render::SplatInstance instance = instances[k];
+        instance.neural = sized.back().get();
+        bySize.push_back(instance);
     }
+    render::RenderTargets knownSize;
+    const auto drawKnown = [&]() -> Result<void> {
+        auto drawn = raster->render(*camera, instances, settings, known);
+        if (!drawn) return std::move(drawn).error();
+        auto sizes = raster->render(*camera, bySize, settings, knownSize);
+        if (!sizes) return std::move(sizes).error();
+        return ok();
+    };
+    if (!instances.empty()) {
+        if (auto drawn = drawKnown(); !drawn) return report(drawn.error());
+    }
+    const render::Projection projection = render::projectionFor(*camera, width, height);
     // WHAT THE FRAME SEES THROUGH IS TAKEN OUT FIRST. Where the scene has a surface nearer than the frame's,
     // what stood there has moved or gone: the gaussians that made it are stamped gone, and the scene drawn
     // again without them, so that what the frame shows in their place is found as new.
@@ -733,7 +753,8 @@ int runDiscover(const SceneOptions& o) {
             uint32_t through = 0;
             uint32_t repainted = 0;
             auto mask = discovery->seenThrough(*frameColour, *frameDepth, width, height, known.colour, known.depth,
-                                               o.tolerance, through, o.repaint, &repainted);
+                                               o.tolerance, through, o.repaint, &repainted, &knownSize.colour,
+                                               o.refine, &projection, o.spread);
             if (!mask) return report(mask.error());
             if (passes == 0) {
                 firstThrough = through;
@@ -784,8 +805,7 @@ int runDiscover(const SceneOptions& o) {
                 break;
             }
             taken += now;
-            auto again = raster->render(*camera, instances, settings, known);
-            if (!again) return report(again.error());
+            if (auto again = drawKnown(); !again) return report(again.error());
         }
         for (size_t k = 0; k < scene.pieces.size(); ++k) {
             if (newly[k] == 0) {
@@ -801,13 +821,13 @@ int runDiscover(const SceneOptions& o) {
             ++piece.revision;
             piece.movedAt = piece.revision;
         }
-        out("the frame sees through the scene at %u pixels and finds %u repainted; %u gaussians taken out in %u passes\n",
+        out("the frame sees through the scene at %u pixels and finds %u to be made again (repainted, or coarser than this look); %u gaussians taken out in %u passes\n",
             firstThrough, firstRepainted, taken, passes);
     }
-    const render::Projection projection = render::projectionFor(*camera, width, height);
     auto look = discovery->fromFrame(*frameColour, *frameDepth, width, height, projection,
                                      instances.empty() ? nullptr : &known.colour,
-                                     instances.empty() ? nullptr : &known.depth, o.tolerance, o.spread, o.repaint);
+                                     instances.empty() ? nullptr : &known.depth, o.tolerance, o.spread, o.repaint,
+                                     instances.empty() ? nullptr : &knownSize.colour, o.refine);
     if (!look) return report(look.error());
     out("%s through %s at %g: %u of its %zu pixels hold a surface; the scene already held %u of them (%.1f%%); %u "
         "gaussians made\n",
@@ -1156,6 +1176,7 @@ void addNeuralScene(CLI::App& app) {
     discover->add_option("--licence", o.licence, "what the source asks of whoever uses it");
     discover->add_option("--time", o.time, "when: with the camera, the look's snapshot");
     discover->add_option("--tolerance", o.tolerance, "a pixel is already held where the scene's depth is within this share of the frame's");
+    discover->add_option("--refine", o.refine, "a surface the scene holds with gaussians more than this many times as wide as this look's is taken out and made again, finer (0: held however coarse)");
     discover->add_option("--repaint", o.repaint, "a surface the scene holds whose colour is off the frame's by more than this share is taken out and made again (0: held by its depth alone)");
     discover->add_option("--spread", o.spread, "a gaussian's standard deviation, in pixels at its depth");
     discover->add_option("-o,--output", o.output, "the scene after the look through that camera, an EXR");

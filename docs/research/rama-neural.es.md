@@ -237,6 +237,10 @@ Cada punto con su medida y contra qué. El detalle está en `docs/decisions.md`,
 - `discover --repaint`: una superficie que sigue donde estaba y ha cambiado de color (una luz que gira) se retira
   y se rehace. Con las mismas superficies bajo otro sol, la escena conserva el 82,1 % y queda a relMSE 0,096 del
   frame nuevo; sin ello conserva el 99,9 % con los colores viejos y queda a 0,137. Falsos positivos: 1,9 %.
+- `discover --refine`: una superficie encontrada de lejos y vista de cerca se rehace más fina. En la vista held-out
+  que lo pedía, de 27,3 a 28,3 dB, con un 38 % más de gaussianas.
+- El ancho del disco de una gaussiana descubierta se midió en el edificio: 1,3 píxeles da relMSE 0,0059 al volver
+  por su cámara, contra 0,0105 con 1,0. Desde dos cámaras que no tomaron ninguna mirada: 34,6 y 28,3 dB.
 - El Sponza descubierto se recorre a 22 ms por frame como mínimo (44 de media) a 1280 × 720, con 2,35 millones de
   gaussianas; cada frame del path tracer del que salió tardó alrededor de un minuto.
 

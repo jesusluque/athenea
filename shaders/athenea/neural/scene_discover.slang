@@ -12,6 +12,7 @@
 // contribution, in 1/4096 of a pixel): a gaussian counts once it gave
 // `threshold` of that.
 module scene_discover;
+import athenea.common.packing;
 
 struct DiscoverParams {
     uint count;       // gaussians in the piece; or the words a clear walks
@@ -29,6 +30,8 @@ RWStructuredBuffer<uint>   counters;       // found now, seen again, known up to
 StructuredBuffer<uint>     seenRead;
 StructuredBuffer<uint>     lifted;         // two a slot: weight where a frame saw through, weight (1/1024 of a pixel)
 StructuredBuffer<float4>   positions;      // xyz, opacity
+StructuredBuffer<uint>     shape;          // four words a gaussian, as GpuSplats packs them
+RWStructuredBuffer<float>  sizes;          // discoverSizes: a neural cloud's latents, a gaussian's size as its colour
 RWStructuredBuffer<float4> positionsOut;
 RWStructuredBuffer<uint>   cleared;
 ConstantBuffer<DiscoverParams> params;
@@ -73,6 +76,27 @@ void discoverGone(uint3 tid: SV_DispatchThreadID) {
     if (whole >= params.threshold && through * 2u > whole) {
         seen[i] = params.stamp;
         InterlockedAdd(counters[0], 1u);
+    }
+}
+
+/// HOW COARSE THE SCENE IS, AS A PICTURE. A gaussian's largest standard
+/// deviation written where a neural cloud keeps its base colour (its features
+/// zero, its network's weights zero): drawn by that cloud, a frame's colour
+/// is the size of the gaussians each pixel is made of, blended as they are.
+/// `upTo` is the latents a gaussian (the neural cloud's stride), `stamp` how
+/// many of them are features.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void discoverSizes(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    const uint row = i * 4;
+    const float largest = max(lowHalf(shape[row + 1]), max(highHalf(shape[row + 1]), lowHalf(shape[row + 2])));   // logs
+    const float size = exp(largest);
+    for (uint k = 0; k < params.upTo; ++k) {
+        sizes[i * params.upTo + k] = k < params.stamp ? 0.0 : size;
     }
 }
 

@@ -18,6 +18,7 @@
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/gpu/algo/PrefixSum.h"
 #include "athenea/render/Camera.h"
+#include "athenea/render/NeuralAppearance.h"
 #include "athenea/scene/GpuClouds.h"
 
 namespace athenea::render {
@@ -74,7 +75,8 @@ public:
     [[nodiscard]] Result<FrameLook> fromFrame(const gpu::Buffer& colour, const gpu::Buffer& depth, uint32_t width,
                                               uint32_t height, const Projection& projection,
                                               const gpu::Buffer* knownColour, const gpu::Buffer* knownDepth,
-                                              float tolerance = 0.03F, float spread = 1.3F, float repaint = 0.0F);
+                                              float tolerance = 0.03F, float spread = 1.3F, float repaint = 0.0F,
+                                              const gpu::Buffer* knownSize = nullptr, float refine = 0.0F);
 
     /// WHERE A FRAME SEES THROUGH THE SCENE: a float a pixel, 1 where the scene
     /// drawn through the frame's camera (`knownColour`, `knownDepth`) has a
@@ -86,7 +88,9 @@ public:
     [[nodiscard]] Result<gpu::Buffer> seenThrough(const gpu::Buffer& colour, const gpu::Buffer& depth, uint32_t width,
                                                   uint32_t height, const gpu::Buffer& knownColour,
                                                   const gpu::Buffer& knownDepth, float tolerance, uint32_t& pixels,
-                                                  float repaint = 0.0F, uint32_t* repainted = nullptr);
+                                                  float repaint = 0.0F, uint32_t* repainted = nullptr,
+                                                  const gpu::Buffer* knownSize = nullptr, float refine = 0.0F,
+                                                  const Projection* projection = nullptr, float spread = 1.3F);
 
     /// The gaussians of one piece that a frame saw through: `lifted` is that
     /// mask carried to the scene's gaussians by the blend (SplatLift.h's
@@ -99,6 +103,12 @@ public:
     /// cloud, those given no opacity.
     [[nodiscard]] Result<scene::GpuSplats> without(const scene::GpuSplats& cloud, const gpu::Buffer& gone);
 
+    /// HOW COARSE A PIECE IS, AS SOMETHING TO DRAW IT BY: a neural cloud whose
+    /// colour is each gaussian's largest standard deviation. A frame drawn by
+    /// it (`SplatInstance::neural`) holds, a pixel, the size of the gaussians
+    /// it is made of -- `knownSize` below.
+    [[nodiscard]] Result<NeuralCloud> sizes(const scene::GpuSplats& cloud);
+
     /// A buffer of `words` zeros: what a look's frame sums its contributions into.
     [[nodiscard]] Result<gpu::Buffer> zeros(uint32_t words);
 
@@ -106,7 +116,7 @@ private:
     void bind(rhi::ShaderCursor cursor) const;
 
     gpu::ShaderLibrary* library_ = nullptr;
-    gpu::ComputeKernel  clear_, mark_, count_, mask_, gone_, frameValid_, framePack_, frameThrough_;
+    gpu::ComputeKernel  clear_, mark_, count_, mask_, gone_, sizes_, frameValid_, framePack_, frameThrough_;
     std::optional<gpu::PrefixSum> prefix_;
     gpu::Buffer         counters_, spareWords_, spareFloats_;
 };

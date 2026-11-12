@@ -36,6 +36,7 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(d.count_, "discoverCount"));
     ATHENEA_TRY(make(d.mask_, "discoverMask"));
     ATHENEA_TRY(make(d.gone_, "discoverGone"));
+    ATHENEA_TRY(make(d.sizes_, "discoverSizes"));
     {
         auto valid = gpu::ComputeKernel::create(library, "athenea/neural/scene_frame", "frameValid");
         if (!valid) return std::move(valid).error();
@@ -70,6 +71,8 @@ void Discovery::bind(rhi::ShaderCursor cursor) const {
     cursor["seenRead"].setBinding(spareWords_.rhi());
     cursor["lifted"].setBinding(spareWords_.rhi());
     cursor["positions"].setBinding(spareFloats_.rhi());
+    cursor["shape"].setBinding(spareWords_.rhi());
+    cursor["sizes"].setBinding(spareFloats_.rhi());
     cursor["positionsOut"].setBinding(spareFloats_.rhi());
     cursor["cleared"].setBinding(spareWords_.rhi());
 }
@@ -133,7 +136,8 @@ Result<uint32_t> Discovery::known(const gpu::Buffer& seen, uint32_t count, uint3
 
 Result<FrameLook> Discovery::fromFrame(const gpu::Buffer& colour, const gpu::Buffer& depth, uint32_t width,
                                        uint32_t height, const Projection& projection, const gpu::Buffer* knownColour,
-                                       const gpu::Buffer* knownDepth, float tolerance, float spread, float repaint) {
+                                       const gpu::Buffer* knownDepth, float tolerance, float spread, float repaint,
+                                       const gpu::Buffer* knownSize, float refine) {
     gpu::Device& device = library_->device();
     const uint32_t pixels = width * height;
     auto valid = words(device, pixels, 4, "frame.valid");
@@ -151,6 +155,7 @@ Result<FrameLook> Discovery::fromFrame(const gpu::Buffer& colour, const gpu::Buf
         cursor["depth"].setBinding(depth.rhi());
         cursor["knownColour"].setBinding(hasKnown ? knownColour->rhi() : colour.rhi());
         cursor["knownDepth"].setBinding(hasKnown ? knownDepth->rhi() : depth.rhi());
+        cursor["knownSize"].setBinding(hasKnown && knownSize != nullptr ? knownSize->rhi() : colour.rhi());
         cursor["valid"].setBinding(spareWords_.rhi());
         cursor["validRead"].setBinding(valid->rhi());
         cursor["dest"].setBinding(dest->rhi());
@@ -173,6 +178,7 @@ Result<FrameLook> Discovery::fromFrame(const gpu::Buffer& colour, const gpu::Buf
         }
         p["hasKnown"].setData(uint32_t{hasKnown ? 1u : 0u});
         p["repaint"].setData(repaint);
+        p["refine"].setData(hasKnown && knownSize != nullptr ? refine : 0.0F);
     };
     {
         gpu::CommandBatch batch(device);
@@ -221,7 +227,8 @@ Result<FrameLook> Discovery::fromFrame(const gpu::Buffer& colour, const gpu::Buf
 Result<gpu::Buffer> Discovery::seenThrough(const gpu::Buffer& colour, const gpu::Buffer& depth, uint32_t width,
                                            uint32_t height, const gpu::Buffer& knownColour,
                                            const gpu::Buffer& knownDepth, float tolerance, uint32_t& pixels,
-                                           float repaint, uint32_t* repainted) {
+                                           float repaint, uint32_t* repainted, const gpu::Buffer* knownSize,
+                                           float refine, const Projection* projection, float spread) {
     gpu::Device& device = library_->device();
     gpu::BufferDesc desc;
     desc.bytes = std::max<uint64_t>(uint64_t{width} * height, 4) * sizeof(float);
@@ -241,6 +248,7 @@ Result<gpu::Buffer> Discovery::seenThrough(const gpu::Buffer& colour, const gpu:
         cursor["depth"].setBinding(depth.rhi());
         cursor["knownColour"].setBinding(knownColour.rhi());
         cursor["knownDepth"].setBinding(knownDepth.rhi());
+        cursor["knownSize"].setBinding(knownSize != nullptr ? knownSize->rhi() : knownColour.rhi());
         cursor["valid"].setBinding(spareWords_.rhi());
         cursor["validRead"].setBinding(spareWords_.rhi());
         cursor["dest"].setBinding(spareWords_.rhi());
@@ -253,6 +261,10 @@ Result<gpu::Buffer> Discovery::seenThrough(const gpu::Buffer& colour, const gpu:
         p["tolerance"].setData(tolerance);
         p["hasKnown"].setData(uint32_t{1});
         p["repaint"].setData(repaint);
+        const bool sized = knownSize != nullptr && projection != nullptr;
+        p["refine"].setData(sized ? refine : 0.0F);
+        p["spread"].setData(spread);
+        p["focalX"].setData(sized ? static_cast<float>(projection->focalX) : 1.0F);
     });
     ATHENEA_TRY(batch.submit(true));
     std::array<uint32_t, 4> read{};
@@ -311,6 +323,35 @@ Result<scene::GpuSplats> Discovery::without(const scene::GpuSplats& cloud, const
     scene::GpuSplats kept = cloud;
     kept.positions = *positions;
     return kept;
+}
+
+Result<NeuralCloud> Discovery::sizes(const scene::GpuSplats& cloud) {
+    gpu::Device& device = library_->device();
+    NeuralCloud sized;
+    sized.count = cloud.count;
+    gpu::BufferDesc desc;
+    desc.bytes = std::max<uint64_t>(uint64_t{cloud.count} * kNeuralStride, 4) * sizeof(float);
+    desc.elementBytes = sizeof(float);
+    desc.label = "discover.sizes";
+    auto latent = gpu::Buffer::create(device, desc);
+    if (!latent) return std::move(latent).error();
+    // A network of zeros adds nothing: the colour is the base, which is the size.
+    const std::vector<float> none(kNeuralWeights, 0.0F);
+    auto weights = gpu::Buffer::fromSpan<float>(device, std::span<const float>(none), "discover.noWeights");
+    if (!weights) return std::move(weights).error();
+    sized.latent = *latent;
+    sized.weights = *weights;
+    gpu::CommandBatch batch(device);
+    sizes_.dispatch(batch, {cloud.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        bind(cursor);
+        cursor["shape"].setBinding(cloud.shape.rhi());
+        cursor["sizes"].setBinding(latent->rhi());
+        cursor["params"]["count"].setData(cloud.count);
+        cursor["params"]["upTo"].setData(kNeuralStride);
+        cursor["params"]["stamp"].setData(kNeuralFeatures);
+    });
+    ATHENEA_TRY(batch.submit(true));
+    return sized;
 }
 
 Result<scene::GpuSplats> Discovery::masked(const scene::GpuSplats& cloud, const gpu::Buffer& seen, uint32_t upTo) {
