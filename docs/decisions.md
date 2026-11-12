@@ -21718,3 +21718,11 @@ this scene, not the 36 of its best view; the worst, under 24 dB, is a view the s
 ### Not done
 
 - The worst views looked at: how much of each the scene holds, against how far off it is.
+
+## How much of a view the scene holds does not say how close it is (12 Nov)
+
+The fourteen held-out views of the found Sponza, each with the share of it the scene covers and its PSNR against
+the path tracer: the worst view (23.7 dB) is covered 74%, one covered 54% is 34.6 dB, and the best (36.0 dB) 89%.
+Cover is the mask of what a renderer need not draw; it is not a measure of how well the rest is drawn. The three
+views under 27 dB are the first of the walk, close to the wall behind the first camera, where what is covered was
+found from far.
