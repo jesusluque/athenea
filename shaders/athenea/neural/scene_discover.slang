@@ -40,6 +40,17 @@ RWStructuredBuffer<float4> positionsOut;
 RWStructuredBuffer<uint>   cleared;
 ConstantBuffer<DiscoverParams> params;
 
+/// HOW WIDE A GAUSSIAN IS, as a look counts it: the middle of its three scales (a log). A disc made by a
+/// look is as wide as the look's pixel across the way its surface falls from the eye, longer along it and
+/// thin through it; its width is the pixel's, and that is the middle one. The largest is the stretch, and
+/// by it every floor and every wall seen aslant read as coarser than the look that had just made them.
+float discWidth(uint row) {
+    const float a = lowHalf(shape[row + 1]);
+    const float b = highHalf(shape[row + 1]);
+    const float c = lowHalf(shape[row + 2]);
+    return max(min(a, b), min(max(a, b), c));
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void discoverClear(uint3 tid: SV_DispatchThreadID) {
@@ -82,7 +93,7 @@ void discoverGone(uint3 tid: SV_DispatchThreadID) {
     bool wide = false;
     if (params.coarse > 0.0) {
         const uint row = i * 4;
-        const float size = exp(max(lowHalf(shape[row + 1]), max(highHalf(shape[row + 1]), lowHalf(shape[row + 2]))));
+        const float size = exp(discWidth(row));
         const float z = dot(params.viewZ.xyz, positions[i].xyz) + params.viewZ.w;
         wide = z > 0.0 && size > params.coarse * z;
     }
@@ -106,8 +117,7 @@ void discoverSizes(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint row = i * 4;
-    const float largest = max(lowHalf(shape[row + 1]), max(highHalf(shape[row + 1]), lowHalf(shape[row + 2])));   // logs
-    const float size = exp(largest);
+    const float size = exp(discWidth(row));
     for (uint k = 0; k < params.upTo; ++k) {
         sizes[i * params.upTo + k] = k < params.stamp ? 0.0 : size;
     }

@@ -21903,3 +21903,56 @@ through and makes nothing behind any of them. Every pane keeps its picture, as a
 
 - Glass made as glass on CUDA: it wants ray queries, which is OptiX here or the L4.
 - Sponza shot on CUDA: eight gigabytes do not hold its stage.
+
+## A sequence of a hundred frames (12 Nov)
+
+The user's test: a hundred frames. A camera walking Sponza's length, a step a frame and the stage's time with it
+(`neural-scene shoot --views --time-step 1`), 960 x 540, 32 paths a pixel at eight a pass, denoised, into one
+scene; then every stored frame made a picture (`render --frame N -o NNNN.png`) and the pictures a video. Metal,
+Apple M5 Pro.
+
+What the first eight frames showed, and what was changed for it:
+
+- **A camera a step on kept half the scene and made the rest again**: 49 to 61% of a frame held, 200 to 260
+  thousand gaussians made of its 518 400 pixels, as many taken out. Two causes. A gaussian's size, for the
+  question whether it is coarser than the look, was its largest scale -- and a disc is now stretched along the
+  way its surface falls from the eye, so every floor and wall seen aslant read as coarse the frame after it was
+  made. Its width is its middle scale (`discWidth`, `discoverSizes` and `discoverGone`), which for a round disc
+  is what it was. And a frame's coarse looks lay discs in the gaps, each over its neighbours, under which the
+  fine gaussians of the frame before read as coarse too: what earlier frames found is now judged against the
+  frame as it stood without this frame's own looks, which are judged in the scene whole.
+- **A frame took 110 s**, of which the paths were few: a pass of the path tracer here costs a second or more
+  whatever it gathers, and 32 paths at one a pass are 32 of them. `--pass-samples 8`.
+
+Then, over the hundred frames:
+
+| | |
+|---|---|
+| the shoot | 2353 s: 23.4 s a frame on average, 7 s at the start and 30 to 39 at the end, 70.7 at most |
+| the path tracer's frame alone (`athenea stage`) | 4.5 to 5.1 s |
+| a scene to draw, from a frame's start | 2 s at the start, 10 to 16 at the end |
+| of a frame's surfaces, already held | 94.4% on average, 82.7% at least |
+| gaussians made a frame, after the first | 29 222 of 518 400 pixels |
+| the scene at the end | 2.56 million gaussians standing, 400 pieces and snapshots, 416 MB |
+| the hundred pictures | 434 s, 4.3 s each |
+| a stored frame against the path tracer's (frames 26, 51, 76, 100) | PSNR 32.1, 38.5, 32.8, 31.9 dB; SSIM 0.939, 0.961, 0.969, 0.958 |
+| of a stored frame, covered | 98.4% on average, 97.4% at least |
+
+The frame's cost grows with the scene and should not: by the end a view reads 283 pieces back from the disk,
+which is four fifths of its time. A piece is a look's, and in a building's inside a look's box meets nearly every
+frustum; and the device, freed after every frame, is filled again for the next from files. The path tracing
+itself stays at five seconds.
+
+What the pictures show beside the path tracer's: softer, and on walls the camera is drawing near to a dotting --
+gaussians made from far, a pixel wide there, that the nearer looks have not yet made again: a surface is made
+finer when what holds it is half as wide again as the look's disc (`--refine 1.5`), and gaps open before that.
+
+### Not done
+
+- **Pieces by place.** A look's gaussians cut into cells of the world, so that a view reads the cells it meets
+  and a walk keeps the ones it still sees on the device rather than reading them again each frame.
+- **`--refine` for a camera that draws near**: 1.5 leaves gaps; what it costs to make finer sooner is not measured.
+- **The 6% a step makes again**: mostly the surface's rim and what turns from the eye, not measured apart.
+- **A stage that moves.** The time went on and nothing in Sponza did; the sequence measures a moving camera.
+- The four frames compared are each one the scene had just been given; no frame of the walk was held out.
+- The pictures written in one run, the scene read once, rather than a process a frame.

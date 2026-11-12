@@ -430,6 +430,7 @@ athenea neural-scene render hall.aths --camera door --at 0 -o then.png   # the s
 | `--views`; `--eye`, `--target`, `--up`, `--camera` | `shoot` | | — | the views, a file of `NAME EX EY EZ TX TY TZ [UX UY UZ]` a line; or one view and the name it is kept under (`camera`) |
 | `--focal`, `--size` | `shoot` | mm, `WIDTHxHEIGHT` | `35`, `960x540` | over a 24.576 mm aperture, as `athenea stage`'s |
 | `--time`, `--times` | `shoot` | time codes | `0` | the stage's time; several are shot one after another through every view, each look finding what the last left and taking out what moved |
+| `--time-step` | `shoot` | time codes | `0` | `--views`: each view of the file is this much later than the last, from `--time`: a sequence, a frame a line, the camera and the stage both moving |
 | `--samples`, `--pass-samples`, `--bounces`, `--denoise`, `--ray-margin` | `shoot` | | `64`, `1`, `4`, off, `athenea:rayMargin`'s | the path tracer's: paths a pixel in all and a pass, bounces, whether the whole frame is denoised before its last look, and how far a ray leaves a surface (§3) |
 | `--coarsest` | `shoot` | pixels | `8` | the side of the first look's cells, a power of two; the looks go on at half of it down to one pixel. A look at cells of `f` waits for `samples / f²` paths a pixel, so every look's gaussians hold as many paths. `1`: one look, when the frame is whole |
 | `--spread`, `--tolerance`, `--refine`, `--repaint` | `shoot` | | `1`, `0.06`, `1.5`, `0` | as `discover`'s, a disc's width in cells of the look |

@@ -111,6 +111,7 @@ struct SceneOptions {
     float                    glassOpacity = 0.05F;
     float                    turned = 0.5F;
     std::vector<double>      times;
+    double                   timeStep = 0.0;
 };
 
 bool sizeOf(const std::string& text, uint32_t& width, uint32_t& height) {
@@ -1239,28 +1240,75 @@ int runShoot(const SceneOptions& all) {
                 for (const auto& cloud : clouds) {
                     slots += cloud->count;
                 }
-                // THE MASK IS CARRIED TWICE. Whole, to this frame's own earlier looks: the coarse discs a finer
-                // look replaces, glass's pictures among them. And struck where the render's surface lets
-                // the eye through, to everything older: nothing found before is taken out through glass,
-                // where the scene's depth is not the surface's and the mask would reach the pane and all
-                // that is seen through it (a look from a second side took the floor behind a pane out).
+                // THIS FRAME'S OWN LOOKS AND WHAT WAS THERE BEFORE ARE JUDGED APART. The frame's coarse looks
+                // are judged in the scene whole, by the mask as it is: a finer look replaces their discs,
+                // glass's pictures among them. What earlier frames found is judged as it stood without
+                // them: a coarse disc laid in a gap covers its neighbours too, and under it the fine
+                // gaussians a frame before had made -- right where they are -- read as coarser than this
+                // look and went (a camera a step on kept half the scene and made the rest again). And
+                // nothing found before is taken out through glass, where the scene's depth is not the
+                // surface's and the mask would reach the pane and all that is seen through it.
                 uint32_t now = 0;
                 for (int older = 0; older < 2; ++older) {
-                if (older == 1) {
-                    if (auto spared = discovery->sparePanes(*mask, planes, width, height); !spared) return report(spared.error());
+                std::vector<render::SplatInstance> judged;
+                for (size_t k = 0; k < instances.size(); ++k) {
+                    if (older == 0 || scene.pieces[pieceOf[k]].foundIn < frameFirst) {
+                        judged.push_back(instances[k]);
+                    }
                 }
-                auto lift = render::makeSplatLift(device, slots);
+                if (judged.empty()) {
+                    continue;
+                }
+                gpu::Buffer carriedMask = *mask;
+                if (older == 1) {
+                    render::RenderTargets before;
+                    render::RenderTargets beforeSize;
+                    auto drawn = raster->render(camera, judged, settings, before);
+                    if (!drawn) return report(drawn.error());
+                    std::vector<std::unique_ptr<render::NeuralCloud>> sizes;
+                    std::vector<render::SplatInstance> bySize;
+                    for (const render::SplatInstance& instance : judged) {
+                        auto size = discovery->sizes(*instance.splats);
+                        if (!size) return report(size.error());
+                        sizes.push_back(std::make_unique<render::NeuralCloud>(std::move(*size)));
+                        render::SplatInstance sizedInstance = instance;
+                        sizedInstance.neural = sizes.back().get();
+                        bySize.push_back(sizedInstance);
+                    }
+                    auto drawnSize = raster->render(camera, bySize, settings, beforeSize);
+                    if (!drawnSize) return report(drawnSize.error());
+                    uint32_t throughBefore = 0;
+                    uint32_t againBefore = 0;
+                    auto alone = discovery->seenThrough(frameColour, frameDepth, width, height, before.colour,
+                                                        before.depth, all.tolerance, throughBefore, all.repaint,
+                                                        &againBefore, &beforeSize.colour, all.refine, &projection, disc);
+                    if (!alone) return report(alone.error());
+                    if (throughBefore + againBefore == 0) {
+                        continue;
+                    }
+                    if (auto spared = discovery->sparePanes(*alone, planes, width, height); !spared) return report(spared.error());
+                    carriedMask = *alone;
+                }
+                uint32_t judgedSlots = 0;
+                for (const render::SplatInstance& instance : judged) {
+                    judgedSlots += instance.splats->count;
+                }
+                auto lift = render::makeSplatLift(device, judgedSlots);
                 if (!lift) return report(lift.error());
                 render::RenderSettings carrying = settings;
-                render::liftWhileBlending(carrying, *lift, *mask);
+                render::liftWhileBlending(carrying, *lift, carriedMask);
                 render::RenderTargets carried;
-                auto lifted = raster->render(camera, instances, carrying, carried);
+                auto lifted = raster->render(camera, judged, carrying, carried);
                 if (!lifted) return report(lifted.error());
                 uint32_t base = 0;
                 for (size_t k = 0; k < instances.size(); ++k) {
                     const io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
                     const uint32_t count = clouds[k]->count;
-                    if ((piece.foundIn >= frameFirst) != (older == 0)) {
+                    const bool own = piece.foundIn >= frameFirst;
+                    if (older == 1 && own) {
+                        continue;   // not among those judged: it has no slot in this lift
+                    }
+                    if (older == 0 && !own) {
                         base += count;
                         continue;
                     }
@@ -1487,6 +1535,9 @@ int runShoot(const SceneOptions& all) {
                 return kExitFailure;
             }
             std::string line;
+            // A SEQUENCE: with --time-step each view of the file is that much later than the last -- a
+            // camera moving through a stage that moves, a frame a line.
+            double at = time;
             while (std::getline(in, line)) {
                 if (line.empty() || line[0] == '#') {
                     continue;
@@ -1506,9 +1557,10 @@ int runShoot(const SceneOptions& all) {
                 render::Camera camera = render::Camera::lookingAt({e[0], e[1], e[2]}, {t[0], t[1], t[2]}, up);
                 camera.lens.focal = focal;
                 keepCamera(name, {e[0], e[1], e[2]}, {t[0], t[1], t[2]}, up, focal);
-                if (const int code = shootView(camera, name, time); code != 0) {
+                if (const int code = shootView(camera, name, at); code != 0) {
                     return code;
                 }
+                at += all.timeStep;
             }
             continue;
         }
@@ -1876,6 +1928,7 @@ void addNeuralScene(CLI::App& app) {
     shoot->add_option("--size", o.size, "WIDTHxHEIGHT of the render");
     shoot->add_option("--time", o.time, "the stage's time code");
     shoot->add_option("--times", o.times, "several time codes, each shot through every view in turn");
+    shoot->add_option("--time-step", o.timeStep, "--views: each view of the file is this much later than the last (a sequence, a frame a line)");
     shoot->add_option("--samples", o.samples, "paths a pixel the render gathers");
     shoot->add_option("--pass-samples", o.passSamples, "paths a pixel each pass");
     shoot->add_option("--bounces", o.bounces, "bounces after the first hit");
