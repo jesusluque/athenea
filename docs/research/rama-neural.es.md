@@ -187,3 +187,57 @@ resúmenes de athenea-research; las referencias no se han verificado leyendo los
 
 Decisiones propias de esta rama: la luz en el sistema de la gaussiana, la segunda salida para luz rebotada, el
 backprop a mano en kernels, la suma del gradiente por lectura, el formato `.athn` y las medidas de coste y parpadeo.
+
+## 11. Añadido la noche del 11 al 12 de noviembre
+
+Cada punto con su medida y contra qué. El detalle está en `docs/decisions.md`, una sección por punto.
+
+**Fit y decoder**
+- `--view-smooth`: el color de cada gaussiana visto un grado más allá se sujeta a su color. Con peso 64 el shimmer
+  del color baja 1,6× (relMSE 0,000014 → 0,000009; SH3 da 0,000005) sin coste de calidad medido. CUDA.
+- `--map-spread`: cada gaussiana lee el shadow map como un disco (centro + 4 puntos en sus dos ejes largos). Con 3,
+  el error contra el path tracer bajo soles held-out baja 1,31× (relMSE 0,00442 → 0,00337); el p99 apenas se mueve.
+- `--split`: dos redes, una que nunca recibe la dirección de vista y otra con lo que añade la vista. No cuesta
+  calidad (sin luz 0,00052 contra 0,00086 de una red; con luz 0,00293 contra 0,00337) y el step del fit tarda 2,2×.
+- La parte mate guardada entre cámaras (`RenderSettings::neuralKeep`) con un sello de cambio por chunk de 1024
+  gaussianas: el frame guardado es idéntico al que no guarda (max 0) y ahorra 0,22 ms de 7,65. La red no es donde
+  se va el frame.
+- Frame quieto (`RenderSettings::still`): con cámara y nube sin moverse se conserva proyección, orden y listas por
+  tile y se rehace solo color y blend. 2,80 ms contra 6,06 a 1080p (2,2×) y 7,12 contra 11,11 a 4K (1,6×), el
+  mismo frame al code value.
+
+**Pared LED**
+- Lecturas de textura por gaussiana (u, v, nivel de mip, ganancia) aprendidas de bakes del path tracer con un
+  texel encendido cada vez. Sobre el peón, cuatro lecturas dan relMSE 0,0035 contra 0,0123 de la pared sin imagen
+  (3,5×), en imágenes y cámaras que el fit no vio. Ajustar contra imágenes completas, y no solo texels sueltos, es
+  lo que más cuenta: la pared blanca pasa de 0,0147 a 0,00007.
+- Un grid de pesos sobre la pared (`--grid`) en vez de lecturas: con los mismos números por gaussiana, 1,9× menos
+  error que dos lecturas (0,00293 contra 0,00548). Lo que toma un material mate de la pared no tiene la forma de
+  una lectura de mip.
+- Una pared ajustada a pocos texels muestra una imagen real más fina (`--show`): un render de Sponza a 128 × 64
+  sobre la pared de 8 × 4 del peón, relMSE 0,0036 con el grid completo.
+- El límite: en el coche (CarConcept, pintura metálica) todo lo que una gaussiana guarda sin dirección de vista se
+  queda en p99 115. Falta una parte que gire con el ojo.
+
+**Escena neural y descubrimiento**
+- Formato `.aths`: un directorio con `scene.json` y, por pieza, sus gaussianas y su `.athn`. Cada pieza lleva su
+  revision, cuándo se movió y cuándo se repintó, de dónde salió (convertida, descubierta, generada) y la escena sus
+  snapshots. `athenea neural-scene add | camera | fit | render | look | discover | info`.
+- `look`: qué gaussianas de una escena ya convertida ve una cámara en un tiempo. En Sponza (dos plantas), la cámara
+  que avanza cinco metros encuentra un 11 % nuevo de lo que ve; la que se gira, el 99,9 %.
+- `discover`: gaussianas creadas a partir del frame de cualquier renderer (color y profundidad), una por píxel, solo
+  donde la escena no tiene ya esa superficie. Sponza entero, con el path tracer, descubierto desde cuatro frames
+  sin convertir geometría: 1,47 millones de gaussianas; el segundo frame ya tenía el 65,8 % de lo que vio. Con diez
+  frames y discos de un píxel, 2,35 millones, y cada frame vuelve por su cámara con relMSE 0,007 a 0,016; los
+  últimos frames ya tenían del 68 al 87 % de lo que vieron. Queda mal el borde de las siluetas (p99 107 a 131) y
+  cada gaussiana lleva solo el color de la cámara que la vio.
+
+**Lo que se intentó y no sirvió**
+- Sujetar cada lectura de la pared a su posición inicial (`--prior`): no mejora; retirado del código.
+- Imágenes de varios granos para entrenar la pared: no mejoran a un color por texel.
+- Ajustar la apariencia de una escena descubierta contra los frames (todas las piezas en el frame, el error de
+  vuelta a cada pieza por turnos): en Sponza, con 20 frames, las vistas held-out no mejoran (relMSE 0,0173 → 0,0170)
+  y las ajustadas empeoran (0,0243 → 0,0290), con ruido y desgarros visibles. Retirado del código.
+- Convertir Sponza con bake en esta máquina: no cupo en memoria mientras otros trabajos ocupaban 15 de 24 GB.
+
+Assets usados: Khronos CarConcept (CC BY 4.0) e Intel Sponza (CC BY 4.0, Frank Meinl y Anton Kaplanyan).

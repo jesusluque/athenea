@@ -21267,3 +21267,30 @@ held" is by depth alone: a surface that is where it was and has changed colour c
 - A lighter piece on disk than a PLY's 62 floats for gaussians that use 14.
 - Depth that is not the view's (a renderer that writes distance along the ray), and frames with no depth at all,
   which is where a depth model would stand.
+
+## Sponza from ten frames, and a fit to the frames that made it worse (12 Nov)
+
+Ten looks rather than four, the discs a pixel wide rather than 0.8 (Sponza has no black behind a silhouette for a
+wider disc to paint): 2 346 951 gaussians, each frame given back through its own camera at relMSE 0.007 to 0.016
+and a p99 of 107 to 131, where four looks at 0.8 gave 0.015 to 0.027 and 121 to 172. What each look found falls as
+the scene fills: the first four held 0%, 74.6%, 7.3% and 47.2% of what they saw, the six after them 81.7%, 54.5%,
+48.2%, 67.6%, 79.1% and 87.1%.
+
+From two cameras that took no look the scene as found is the path tracer's frame, a little soft: relMSE 0.0173.
+The p99 there is 243, which is the lamps and windows -- a few pixels of light a hundred times the wall's -- a disc
+too wide or a pixel off.
+
+**A fit that made it worse, and is not in the code.** The pieces' colours are each one camera's, so the next step
+looked plain: every piece in the frame at once, drawn by latents started from those colours, and the error against
+each of twenty frames carried back to a piece a step in turn (3000 steps, 45 ms each). The held-out frames did not
+move, 0.0173 to 0.0170, and the fitted ones got worse, 0.0243 to 0.0290, with noise and torn surfaces to look at.
+Not understood, and not pursued tonight; what is known is that the scene's error is where gaussians are and how
+wide, which a colour cannot mend, that a surface found by several looks is several layers of gaussians each pulled
+alone, and that the loss is relative on frames that are nearly black. On the pawn with two frames it had done the
+same (0.086 to 0.121 held out). The step and its option were written and are removed.
+
+### Not done
+
+- That fit, understood: one piece of one look first, then layers.
+- A surface found twice kept once: later looks add beside what is there where depths differ by more than 3%, and
+  the scene keeps both.
