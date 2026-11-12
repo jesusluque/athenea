@@ -20365,3 +20365,34 @@ gap, which is the path tracer's own and is not this change's.
 - On Vulkan, the textures scene (an HDRI dome, a sun, image textures and a
   normal map; 960x540, 128 paths) had not finished after 22 minutes when the
   machine restarted for an update; not yet explained.
+
+## Lights from Blender: the spot's cone, and the sun's factor of four (12 Nov)
+
+Each light of a Blender scene alone, Cycles (Blender 5.3.0, 256 samples)
+against athenea's path tracer (64 paths, 8 bounces), 480x270, RTX 3070
+Laptop:
+
+| Light | Through the USD Blender exports | Through the add-on (Blender's Hydra) |
+|---|---|---|
+| point, 150 W | 46.9 dB, same mean | 46.9 dB |
+| area, 120 W | 44.4 dB | 44.4 dB |
+| spot, 400 W | 43.4 dB | 4.8 dB before, 43.4 dB after |
+| sun, 1.5 | 11.7 dB, a quarter of Cycles' mean | the same |
+
+**The spot.** Blender's scene delegate (`source/blender/io/usd/hydra/
+light.cc`) adds the cone as `UsdLuxTokens->inputsShapingConeAngle`, in
+degrees, half the spot size; UsdImaging gives it as
+`HdLightTokens->shapingConeAngle`. The light read only the second, so through
+the add-on a spot had no cone. `Light.cpp` now asks for a parameter under its
+Hydra name and then under `inputs:` and that name (`paramOf`). Checked in
+Blender 5.3.0 with the add-on built from this tree; there is no test of its
+own, since UsdImaging cannot hand a delegate a parameter under the `inputs:`
+name.
+
+**The sun, not changed.** Blender writes a sun's strength divided by four,
+both to USD and to Hydra, with the comment "Unclear why, but approximately
+matches Karma" (Blender PR 109795); its USD importer multiplies by four
+again. UsdLux makes a normalized DistantLight's intensity the illuminance in
+lux, which is how athenea reads it, so a Blender sun reaches athenea at a
+quarter of what Cycles draws. Whether the add-on should undo Blender's factor
+is the user's decision, open.

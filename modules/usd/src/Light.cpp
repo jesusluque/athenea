@@ -1,6 +1,7 @@
 // Copyright (c) 2026 jesus luque.
 #include "Light.h"
 
+#include <pxr/base/tf/stringUtils.h>
 #include <pxr/imaging/hd/instancer.h>
 
 #include <cmath>
@@ -21,8 +22,21 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 namespace {
 
+/// A light parameter by Hydra's name, or by UsdLux's `inputs:` name where
+/// the scene delegate gives it so: Blender's (source/blender/io/usd/hydra/
+/// light.cc) hands a spot's cone over as `inputs:shaping:cone:angle`, and
+/// a cone read under `shaping:cone:angle` alone was no cone at all -- the
+/// spot lit the whole floor, ten times Cycles' light.
+VtValue paramOf(HdSceneDelegate* delegate, const SdfPath& id, const TfToken& name) {
+    VtValue value = delegate->GetLightParamValue(id, name);
+    if (value.IsEmpty() && !TfStringStartsWith(name.GetString(), "inputs:")) {
+        value = delegate->GetLightParamValue(id, TfToken("inputs:" + name.GetString()));
+    }
+    return value;
+}
+
 float floatOf(HdSceneDelegate* delegate, const SdfPath& id, const TfToken& name, float fallback) {
-    const VtValue value = delegate->GetLightParamValue(id, name);
+    const VtValue value = paramOf(delegate, id, name);
     if (value.IsHolding<float>()) return value.UncheckedGet<float>();
     if (value.IsHolding<double>()) return static_cast<float>(value.UncheckedGet<double>());
     if (value.IsHolding<int>()) return static_cast<float>(value.UncheckedGet<int>());
@@ -30,7 +44,7 @@ float floatOf(HdSceneDelegate* delegate, const SdfPath& id, const TfToken& name,
 }
 
 bool boolOf(HdSceneDelegate* delegate, const SdfPath& id, const TfToken& name, bool fallback) {
-    const VtValue value = delegate->GetLightParamValue(id, name);
+    const VtValue value = paramOf(delegate, id, name);
     if (value.IsHolding<bool>()) return value.UncheckedGet<bool>();
     if (value.IsHolding<int>()) return value.UncheckedGet<int>() != 0;
     return fallback;
@@ -123,7 +137,7 @@ void HdAtheneaLight::Sync(HdSceneDelegate* sceneDelegate, HdRenderParam* renderP
     // the prim's transform: what Storm does, and what a dome rotated about
     // the stage's up axis still turns about.
     if (lamp.kind == athenea::light::LightKind::Dome) {
-        const VtValue offset = sceneDelegate->GetLightParamValue(id, HdLightTokens->domeOffset);
+        const VtValue offset = paramOf(sceneDelegate, id, HdLightTokens->domeOffset);
         if (offset.IsHolding<GfMatrix4d>()) {
             lamp.lightToWorld = lamp.lightToWorld * athenea::usd::fromUsd(offset.UncheckedGet<GfMatrix4d>());
         }
@@ -146,7 +160,7 @@ void HdAtheneaLight::Sync(HdSceneDelegate* sceneDelegate, HdRenderParam* renderP
             }
         }
     }
-    const VtValue colour = sceneDelegate->GetLightParamValue(id, HdLightTokens->color);
+    const VtValue colour = paramOf(sceneDelegate, id, HdLightTokens->color);
     if (colour.IsHolding<GfVec3f>()) {
         const GfVec3f& c = colour.UncheckedGet<GfVec3f>();
         lamp.colour[0] = c[0];
@@ -168,18 +182,18 @@ void HdAtheneaLight::Sync(HdSceneDelegate* sceneDelegate, HdRenderParam* renderP
     lamp.shadow = boolOf(sceneDelegate, id, HdLightTokens->shadowEnable, true);
     // The rest of ShadowAPI, as UsdLux authors it.
     {
-        const VtValue colour = sceneDelegate->GetLightParamValue(id, HdLightTokens->shadowColor);
+        const VtValue colour = paramOf(sceneDelegate, id, HdLightTokens->shadowColor);
         if (colour.IsHolding<GfVec3f>()) {
             const GfVec3f c = colour.UncheckedGet<GfVec3f>();
             lamp.shadowColour[0] = c[0];
             lamp.shadowColour[1] = c[1];
             lamp.shadowColour[2] = c[2];
         }
-        const VtValue distance = sceneDelegate->GetLightParamValue(id, HdLightTokens->shadowDistance);
+        const VtValue distance = paramOf(sceneDelegate, id, HdLightTokens->shadowDistance);
         if (distance.IsHolding<float>()) lamp.shadowDistance = distance.UncheckedGet<float>();
-        const VtValue falloff = sceneDelegate->GetLightParamValue(id, HdLightTokens->shadowFalloff);
+        const VtValue falloff = paramOf(sceneDelegate, id, HdLightTokens->shadowFalloff);
         if (falloff.IsHolding<float>()) lamp.shadowFalloff = falloff.UncheckedGet<float>();
-        const VtValue gamma = sceneDelegate->GetLightParamValue(id, HdLightTokens->shadowFalloffGamma);
+        const VtValue gamma = paramOf(sceneDelegate, id, HdLightTokens->shadowFalloffGamma);
         if (gamma.IsHolding<float>()) lamp.shadowFalloffGamma = gamma.UncheckedGet<float>();
     }
     lamp.coneAngle = floatOf(sceneDelegate, id, HdLightTokens->shapingConeAngle, 0.0F) * degrees;
@@ -187,7 +201,7 @@ void HdAtheneaLight::Sync(HdSceneDelegate* sceneDelegate, HdRenderParam* renderP
     // UsdLux's IES shaping: the file, resolved as the dome's image is; the
     // engine reads it once per path.
     {
-        const VtValue ies = sceneDelegate->GetLightParamValue(id, HdLightTokens->shapingIesFile);
+        const VtValue ies = paramOf(sceneDelegate, id, HdLightTokens->shapingIesFile);
         if (ies.IsHolding<SdfAssetPath>()) {
             const SdfAssetPath& asset = ies.UncheckedGet<SdfAssetPath>();
             lamp.iesFile = !asset.GetResolvedPath().empty() ? asset.GetResolvedPath() : asset.GetAssetPath();
@@ -196,7 +210,7 @@ void HdAtheneaLight::Sync(HdSceneDelegate* sceneDelegate, HdRenderParam* renderP
         lamp.iesNormalize = boolOf(sceneDelegate, id, HdLightTokens->shapingIesNormalize, false);
     }
     const auto tokenOf = [&](const TfToken& name) -> std::string {
-        const VtValue value = sceneDelegate->GetLightParamValue(id, name);
+        const VtValue value = paramOf(sceneDelegate, id, name);
         if (value.IsHolding<TfToken>()) return value.UncheckedGet<TfToken>().GetString();
         if (value.IsHolding<std::string>()) return value.UncheckedGet<std::string>();
         return {};
@@ -209,7 +223,7 @@ void HdAtheneaLight::Sync(HdSceneDelegate* sceneDelegate, HdRenderParam* renderP
         lamp.group = tokenOf(TfToken("ri:light:lightGroup"));
     }
     if (lamp.kind == athenea::light::LightKind::Dome) {
-        const VtValue file = sceneDelegate->GetLightParamValue(id, HdLightTokens->textureFile);
+        const VtValue file = paramOf(sceneDelegate, id, HdLightTokens->textureFile);
         if (file.IsHolding<SdfAssetPath>()) {
             const SdfAssetPath& asset = file.UncheckedGet<SdfAssetPath>();
             lamp.texture = !asset.GetResolvedPath().empty() ? asset.GetResolvedPath() : asset.GetAssetPath();

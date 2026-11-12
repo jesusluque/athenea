@@ -8,6 +8,12 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **Blender**: a spot light in the Athenea add-on has its cone. Blender's
+  Hydra scene delegate gives the cone as `inputs:shaping:cone:angle`, and
+  hdAthenea read only `shaping:cone:angle`, so the spot lit everything round
+  it (ten times Cycles' light on the floor); every light parameter is now read
+  under either name. A spot alone in Blender 5.3.0 reads 43.4 dB against
+  Cycles, where it read 4.8.
 - **Windows: Vulkan draws by default.** `render`, `bench`, `stage`, `view`,
   `lights` and the Hydra delegate open Vulkan, then CUDA, then D3D12: Vulkan
   has inline ray queries, and the path tracer took half CUDA's time on the
