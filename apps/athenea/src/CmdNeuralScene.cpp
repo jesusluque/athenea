@@ -88,6 +88,7 @@ struct SceneOptions {
     float                    spread = 1.3F;
     std::string              views;
     float                    repaint = 0.0F;
+    std::string              framesDir;
     float                    refine = 2.0F;
 };
 
@@ -602,14 +603,35 @@ int runLook(const SceneOptions& o) {
 /// A PIECE MADE FROM A FRAME. Any renderer's frame -- its colour, and its depth as an EXR's Z -- through a
 /// camera of the manifest's: a gaussian a pixel whose surface the scene, drawn through that camera, does
 /// not already hold. The frame's own size is the look's.
-int runDiscover(const SceneOptions& o) {
-    const std::filesystem::path directory = o.directory;
+int runDiscover(const SceneOptions& all) {
+    const std::filesystem::path directory = all.directory;
     io::NeuralScene scene;
     if (std::filesystem::exists(directory / "scene.json")) {
         auto read = io::readNeuralScene(directory);
         if (!read) return report(read.error());
         scene = std::move(*read);
     }
+    auto device = gpu::Device::create();
+    if (!device) return report(device.error());
+    gpu::ShaderLibrary library(*device);
+    auto loader = scene::CloudLoader::create(library);
+    if (!loader) return report(loader.error());
+    auto raster = render::TileRasterizer::create(library);
+    if (!raster) return report(raster.error());
+    auto discovery = render::Discovery::create(library);
+    if (!discovery) return report(discovery.error());
+    // The scene as it is known, on the device: read once, and kept from one look to the next.
+    std::vector<std::unique_ptr<scene::GpuSplats>> clouds;
+    std::vector<render::SplatInstance> instances;
+    for (const io::NeuralScenePiece& piece : scene.pieces) {
+        auto cloud = loadPiece(library, *loader, *discovery, directory, piece);
+        if (!cloud) return report(cloud.error());
+        clouds.push_back(std::make_unique<scene::GpuSplats>(std::move(*cloud)));
+        instances.push_back(render::SplatInstance{clouds.back().get(), render::Mat4::identity(), {}});
+    }
+    // ONE LOOK: a frame, the camera it was drawn through, and when.
+    const auto oneLook = [&](const SceneOptions& o) -> int {
+    const auto began = std::chrono::steady_clock::now();
     // A scene that starts with a look has nothing but what the look's command says of it.
     if (scene.name.empty()) scene.name = directory.stem().string();
     if (!o.name.empty()) scene.name = o.name;
@@ -674,30 +696,12 @@ int runDiscover(const SceneOptions& o) {
         }
         std::memcpy(&depth[k], &z->words[k], sizeof(float));
     }
-    auto device = gpu::Device::create();
-    if (!device) return report(device.error());
-    gpu::ShaderLibrary library(*device);
-    auto loader = scene::CloudLoader::create(library);
-    if (!loader) return report(loader.error());
-    auto raster = render::TileRasterizer::create(library);
-    if (!raster) return report(raster.error());
-    auto discovery = render::Discovery::create(library);
-    if (!discovery) return report(discovery.error());
     auto frameColour = gpu::Buffer::fromSpan<std::array<float, 4>>(
         **device, std::span<const std::array<float, 4>>(colour), "discover.frame");
     if (!frameColour) return report(frameColour.error());
     auto frameDepth = gpu::Buffer::fromSpan<float>(**device, std::span<const float>(depth), "discover.depth");
     if (!frameDepth) return report(frameDepth.error());
 
-    // The scene as it is known, through the look's camera.
-    std::vector<std::unique_ptr<scene::GpuSplats>> clouds;
-    std::vector<render::SplatInstance> instances;
-    for (const io::NeuralScenePiece& piece : scene.pieces) {
-        auto cloud = loadPiece(library, *loader, *discovery, directory, piece);
-        if (!cloud) return report(cloud.error());
-        clouds.push_back(std::make_unique<scene::GpuSplats>(std::move(*cloud)));
-        instances.push_back(render::SplatInstance{clouds.back().get(), render::Mat4::identity(), {}});
-    }
     render::RenderSettings settings;
     settings.width = width;
     settings.height = height;
@@ -878,8 +882,10 @@ int runDiscover(const SceneOptions& o) {
     if (!hdr) return report(hdr.error());
     auto codes = render::compareImages(library, again.colour, *frameColour, width, height);
     if (!codes) return report(codes.error());
-    out("piece %s, %u gaussians; the scene through that camera against the frame: relMSE %.5f, p99 %u, max %u\n",
-        o.id.c_str(), piece.gaussians, hdr->relMse, codes->p99, codes->max);
+    out("piece %s, %u gaussians; the scene through that camera against the frame: relMSE %.5f, p99 %u, max %u; the "
+        "look took %.2f s\n",
+        o.id.c_str(), piece.gaussians, hdr->relMse, codes->p99, codes->max,
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count());
     if (!o.output.empty()) {
         auto colourBack = again.colour.readAll<float>(**device);
         if (!colourBack) return report(colourBack.error());
@@ -887,6 +893,50 @@ int runDiscover(const SceneOptions& o) {
         if (!depthBack) return report(depthBack.error());
         if (auto w = io::writeExr(o.output, width, height, *colourBack, *depthBack); !w) return report(w.error());
         out("wrote %s\n", o.output.c_str());
+    }
+    return 0;
+    };
+    if (all.views.empty()) {
+        return oneLook(all);
+    }
+    // SEVERAL LOOKS, the scene on the device throughout: a file of views as `athenea stage --cameras` takes
+    // one, each with its frame NAME.exr, each a piece `look_NAME` at a time one after the last's.
+    std::ifstream in(all.views);
+    if (!in) {
+        err("cannot open %s\n", all.views.c_str());
+        return kExitFailure;
+    }
+    const std::filesystem::path beside =
+        all.framesDir.empty() ? std::filesystem::path(all.views).parent_path() : std::filesystem::path(all.framesDir);
+    double time = all.time >= 0.0 ? all.time : 0.0;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        std::istringstream words(line);
+        std::string name;
+        double e[3];
+        double t[3];
+        if (!(words >> name >> e[0] >> e[1] >> e[2] >> t[0] >> t[1] >> t[2])) {
+            continue;
+        }
+        SceneOptions one = all;
+        one.frame = (beside / (name + ".exr")).string();
+        one.id = "look_" + name;
+        one.camera = name;
+        one.eye = {e[0], e[1], e[2]};
+        one.target = {t[0], t[1], t[2]};
+        double u[3];
+        if (words >> u[0] >> u[1] >> u[2]) {
+            one.up = {u[0], u[1], u[2]};
+        }
+        one.time = time;
+        one.output.clear();
+        if (const int code = oneLook(one); code != 0) {
+            return code;
+        }
+        time += 1.0;
     }
     return 0;
 }
@@ -1169,6 +1219,8 @@ void addNeuralScene(CLI::App& app) {
 
     CLI::App* discover = cmd->add_subcommand("discover", "a piece made from a frame: a gaussian a pixel the scene did not already hold");
     discover->add_option("scene", o.directory, "the scene's directory")->required();
+    discover->add_option("--views", o.views, "several looks in one run, the scene kept on the device: a file of views, NAME EX EY EZ TX TY TZ [UX UY UZ] a line, each with its frame NAME.exr and made the piece look_NAME");
+    discover->add_option("--frames", o.framesDir, "--views: where the frames are (default: beside the file)");
     discover->add_option("--frame", o.frame, "any renderer's frame through that camera: an EXR with R, G, B and its depth as Z");
     discover->add_option("--id", o.id, "the new piece's name");
     discover->add_option("--camera", o.camera, "the view the frame was drawn through: one of the manifest's, or the name --eye and --target are kept under");

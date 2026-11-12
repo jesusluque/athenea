@@ -21615,3 +21615,19 @@ drawn once more against the frame. The path tracer took about a minute for each 
 
 - The look itself, apart from the files: the scene kept on the device from one look to the next, which is most of
   those seconds.
+
+## Several looks in one run: 0.4 s a look (12 Nov)
+
+`neural-scene discover --views` takes a file of views, as `athenea stage --cameras` does, each with its frame, and
+keeps the scene on the device from one look to the next: the pieces are read once, and each look's new piece joins
+them as it is made. The same three Sponza frames of 960 x 540 as the section before, Metal: the same shares held
+(0%, 67.2%, 80.7%) and the same gaussians made (518 400, 169 843, 99 929), and a look takes 0.38, 0.40 and 0.49 s
+where a run each took 5.2, 5.1 and 4.4. The whole run is 4.8 s, most of it starting.
+
+So a look is about a hundred-and-fiftieth of the path tracer's minute for the frame it is given, and what is left
+of it is the frame read, the piece written as a PLY and read again, and the scene drawn through the frame's camera
+up to nine times.
+
+### Not done
+
+- The new piece taken from the device rather than written and read back.

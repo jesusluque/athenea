@@ -418,6 +418,7 @@ athenea neural-scene info   hall.aths
 | `--discovered` | `render` | flag | off | only the gaussians the looks have found: the scene as it is known. A piece no look has been taken of is not drawn |
 | `--up-to` | `render` | integer | `0` | `--discovered`: only the looks up to this one, counted from one in the order of `snapshots`; `0` is all of them |
 | `--camera`, `--time` | `look` | name, number | —, — | a view of the manifest's and when; the pair is the look's snapshot, and a look taken again is the same one |
+| `--views`, `--frames` | `discover` | path, directory | —, beside the file | several looks in one run, the scene kept on the device from one to the next: a file of views, `NAME EX EY EZ TX TY TZ [UX UY UZ]` a line (`athenea stage --cameras`' own), each with its frame `NAME.exr` and made the piece `look_NAME`, at times one after the last's from `--time` (0 where not given). In place of `--frame`, `--id` and `--camera` |
 | `--frame` | `discover` | path | — | the frame: an EXR with `R`, `G`, `B` (linear light) and `Z`, the depth along the view; its size is the look's |
 | `--id`, `--camera`, `--time` | `discover` | | —, —, — | the new piece's name, the view the frame was drawn through and when. The view is one of the manifest's, or `--eye`, `--target`, `--up`, `--focal` kept under that name; the focal length is over a 24.576 mm aperture, as `athenea stage`'s |
 | `--tolerance` | `discover` | share | `0.03` | a pixel's surface is already held where the scene's depth through that camera is within this share of the frame's |
