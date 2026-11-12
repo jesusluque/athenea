@@ -414,6 +414,7 @@ athenea neural-scene info   hall.aths
 | `--view-smooth`, `--split` | `fit` | | `0`, off | as `athenea neural-fit`'s (§2.3.2) |
 | `--camera` | `render` | name | the manifest's first | or `--eye` and `--target` (with `--up`, `--focal`) for a view of its own |
 | `--harmonics` | `render` | flag | off | every piece by its harmonics |
+| `--views` | `render` | path | — | a walk: a file of views, `NAME EX EY EZ TX TY TZ [UX UY UZ]` a line (`athenea stage --cameras`' own), each written as `<-o>_NAME.exr` from the scene loaded once; `--focal` is every view's. Prints a frame's time, the least and the mean, the clock waiting for the device |
 | `--discovered` | `render` | flag | off | only the gaussians the looks have found: the scene as it is known. A piece no look has been taken of is not drawn |
 | `--up-to` | `render` | integer | `0` | `--discovered`: only the looks up to this one, counted from one in the order of `snapshots`; `0` is all of them |
 | `--camera`, `--time` | `look` | name, number | —, — | a view of the manifest's and when; the pair is the look's snapshot, and a look taken again is the same one |

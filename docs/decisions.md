@@ -21294,3 +21294,18 @@ same (0.086 to 0.121 held out). The step and its option were written and are rem
 - That fit, understood: one piece of one look first, then layers.
 - A surface found twice kept once: later looks add beside what is there where depths differ by more than 3%, and
   the scene keeps both.
+
+## The found scene drawn: a frame's time, against the frames it was found from (12 Nov)
+
+`athenea neural-scene render --views` walks a file of views through a scene loaded once. The Sponza found from ten
+frames, 2 346 951 gaussians drawn by their first harmonic, 140 views down the atrium at 1280 x 720 on Metal: 22.1
+ms a frame at least and 43.8 on average, the clock waiting for the device. The frames it was found from took the
+path tracer about a minute each at 960 x 540 (128 paths a pixel and a denoise; timed by the files' own times, not
+by a clock in the engine), so a view of what is known costs some thousandth of the frame that found it -- and
+shows nothing where no look reached, which the walk makes plain.
+
+### Not done
+
+- The same walk timed on CUDA, and at the sizes a set uses.
+- The found scene's cost brought down: ten layers of gaussians a pixel wide are many more than the surface needs
+  from any one view, and none has a level of detail.

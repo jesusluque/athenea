@@ -20,6 +20,8 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <memory>
 #include <optional>
 #include <string>
@@ -83,6 +85,7 @@ struct SceneOptions {
     std::string              frame;
     float                    tolerance = 0.03F;
     float                    spread = 0.8F;
+    std::string              views;
 };
 
 bool sizeOf(const std::string& text, uint32_t& width, uint32_t& height) {
@@ -830,6 +833,65 @@ int runRender(const SceneOptions& o) {
         }
         return best;
     };
+    if (!o.views.empty()) {
+        // A WALK: every view of a file through the scene loaded once, each written beside the others.
+        std::ifstream in(o.views);
+        if (!in) {
+            err("cannot open %s\n", o.views.c_str());
+            return kExitFailure;
+        }
+        if (o.output.empty()) {
+            err("--views wants -o, a prefix for the frames\n");
+            return kExitFailure;
+        }
+        const std::vector<render::SplatInstance>& drawnAs = o.harmonics ? byHarmonics : byLatents;
+        render::RenderSettings waited = settings;
+        waited.timeStages = true;
+        std::string line;
+        uint32_t frames = 0;
+        double least = 1.0e30;
+        double sum = 0.0;
+        while (std::getline(in, line)) {
+            if (line.empty() || line[0] == '#') {
+                continue;
+            }
+            std::istringstream words(line);
+            std::string name;
+            double e[3];
+            double t[3];
+            if (!(words >> name >> e[0] >> e[1] >> e[2] >> t[0] >> t[1] >> t[2])) {
+                continue;
+            }
+            render::Vec3 up = upOf(*scene);
+            double u[3];
+            if (words >> u[0] >> u[1] >> u[2]) {
+                up = {u[0], u[1], u[2]};
+            }
+            render::Camera view = render::Camera::lookingAt({e[0], e[1], e[2]}, {t[0], t[1], t[2]}, up);
+            view.lens.focal = o.focal > 0.0 ? o.focal : 35.0;
+            render::RenderTargets frame;
+            auto stats = raster->render(view, drawnAs, waited, frame);
+            if (!stats) return report(stats.error());
+            least = std::min(least, stats->totalMs);
+            sum += stats->totalMs;
+            ++frames;
+            auto colour = frame.colour.readAll<float>(**device);
+            if (!colour) return report(colour.error());
+            auto depth = frame.depth.readAll<float>(**device);
+            if (!depth) return report(depth.error());
+            if (auto w = io::writeExr(o.output + "_" + name + ".exr", width, height, *colour, *depth); !w) {
+                return report(w.error());
+            }
+        }
+        uint64_t held = 0;
+        for (const auto& cloud : clouds) {
+            held += cloud->count;
+        }
+        out("%s: %u frames of %ux%u, %llu gaussians: %.2f ms a frame at least, %.2f ms on average\n",
+            scene->name.c_str(), frames, width, height, static_cast<unsigned long long>(held), least,
+            frames > 0 ? sum / frames : 0.0);
+        return 0;
+    }
     const bool drawHarmonics = o.harmonics || o.compare;
     const bool drawLatents = !o.harmonics || o.compare;
     double harmonicsMs = 0.0;
@@ -941,6 +1003,7 @@ void addNeuralScene(CLI::App& app) {
     render->add_option("--focal", o.focal, "mm");
     render->add_option("--size", o.size, "WIDTHxHEIGHT");
     render->add_option("-o,--output", o.output, "an EXR; with --compare, <stem>_harmonics.exr and <stem>_latents.exr");
+    render->add_option("--views", o.views, "a walk: a file of views, NAME EX EY EZ TX TY TZ [UX UY UZ] a line, each written as <-o>_NAME.exr from the scene loaded once");
     render->add_flag("--harmonics", o.harmonics, "every piece by its harmonics, whatever appearance it has");
     render->add_flag("--discovered", o.discovered, "only the gaussians the looks have found (neural-scene look): the scene as it is known");
     render->add_option("--up-to", o.upTo, "--discovered: only the looks up to this one, counted from one (0: all)");
