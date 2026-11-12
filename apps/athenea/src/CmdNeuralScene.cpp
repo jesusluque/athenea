@@ -1054,6 +1054,13 @@ int runRender(const SceneOptions& o) {
     }
     out("%s: %zu pieces, %llu gaussians, %u drawn by their latents\n", scene->name.c_str(), clouds.size(),
         static_cast<unsigned long long>(total), fitted);
+    {
+        // HOW MUCH OF THE VIEW THE SCENE HOLDS: the frame's cover, which is its alpha -- and the alpha of the
+        // EXR written is the mask of it, for whoever renders or fills the rest.
+        auto cover = render::imageStats(library, (drawLatents ? learnt : plain).colour, width, height);
+        if (!cover) return report(cover.error());
+        out("the scene holds %.1f%% of this view; the rest is what no piece covers\n", 100.0 * cover->mean[3]);
+    }
     if (o.compare) {
         auto hdr = render::compareHdr(library, learnt.colour, plain.colour, width, height);
         if (!hdr) return report(hdr.error());

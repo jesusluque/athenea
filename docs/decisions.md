@@ -21514,3 +21514,20 @@ standing.
 ### Not done
 
 - A piece's file written without what is gone, once enough is.
+
+## What a view still wants: the scene's cover as the mask of what is known (12 Nov)
+
+`athenea neural-scene render` prints how much of its view the scene holds -- the frame's mean cover -- and the
+alpha of the EXR it writes is that cover a pixel. That is the other half of a look: before a renderer draws a
+frame, or another system fills a world, the scene says where it already has something from there and where it
+has nothing. Nothing is computed for it; it is the alpha the blend makes.
+
+Sponza found from ten frames, from views no look took: 81.2%, 95.8%, 89.0% and 91.8% along the walk the looks were
+taken on, and 58.4% from the upper floor, where none went. So a frame from a new place on the walk wants a tenth
+to a fifth of its pixels from a renderer, and the rest is there in some thirty milliseconds.
+
+### Not done
+
+- That saving had: a renderer given the mask and drawing only where it is empty. `athenea stage` draws whole
+  frames.
+- Cover that says how well and not only whether: a pixel held by gaussians a metre wide counts as held.
