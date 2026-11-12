@@ -103,6 +103,12 @@ struct PathParams {
     // that reaches the same light through the same glass is weighed against
     // it (glassPasses); 0: glass stops a shadow ray as anything does.
     uint glassShadows;
+    // HOW FAR A RAY LEAVES A SURFACE THAT IS NO CROSSING (`athenea:rayMargin`),
+    // as a share of how far the position is from the origin: off along the
+    // normal and along the ray by it, with a TMin as long. A thousandth by
+    // default, which is two centimetres at twenty metres: at a concave join
+    // nearer than that the ray starts past the wall it should have met.
+    float leave;
     // A BAKE SEEN FROM ONE PLACE (BakePoints::toward): 1, a gaussian facing
     // the point looks from within `towardRadius` of it, its polish kept.
     uint  bakeToward;
@@ -257,8 +263,8 @@ float3 shadowWalk(float3 p, float3 n, float3 wi, float distance, uint shadowCate
     const float scale = max(1.0, length(p));
     const float3 away = dot(n, wi) < 0.0 ? -n : n;
     RayDesc ray;
-    ray.Origin = p + (away + wi) * (1.0e-3 * scale);
-    ray.TMin = 1.0e-3 * scale;
+    ray.Origin = p + (away + wi) * (path.leave * scale);
+    ray.TMin = path.leave * scale;
     // AIMED AT THE POINT IT ENDS AT, `p + wi * distance`, from the origin it
     // actually leaves: the origin stands a millimetre off p, across the ray
     // as well as along it, and a ray sent along `wi` from there for
@@ -449,8 +455,8 @@ float3 shadowWalk(float3 p, float3 n, float3 wi, float distance, uint shadowCate
     const float scale = max(1.0, length(p));
     const float3 away = dot(n, wi) < 0.0 ? -n : n;
     RayDesc ray;
-    ray.Origin = p + (away + wi) * (1.0e-3 * scale);
-    ray.TMin = 1.0e-3 * scale;
+    ray.Origin = p + (away + wi) * (path.leave * scale);
+    ray.TMin = path.leave * scale;
     // AIMED AT THE POINT IT ENDS AT, `p + wi * distance`, from the origin it
     // actually leaves: the origin stands a millimetre off p, across the ray
     // as well as along it, and a ray sent along `wi` from there for
@@ -561,9 +567,9 @@ float splatVisibility(float3 p, float3 n, float3 wi, float distance) {
     const float scale = max(1.0, length(p));
     const float3 away = dot(n, wi) < 0.0 ? -n : n;
     AtheneaRay ray;
-    ray.Origin = p + (away + wi) * (1.0e-3 * scale);
+    ray.Origin = p + (away + wi) * (path.leave * scale);
     ray.Direction = wi;
-    ray.TMin = 1.0e-3 * scale;
+    ray.TMin = path.leave * scale;
     ray.TMax = max(distance - ray.TMin, 0.0);
     if (ray.TMax <= ray.TMin) {
         return 1.0;
@@ -1344,8 +1350,8 @@ bool glassCarriesWeight(Shaded sh, float3 wi) {
 float pathThrough(float3 p, float3 n, float3 wi, uint mask) {
     const float scale = max(1.0, length(p));
     const float3 away = dot(n, wi) < 0.0 ? -n : n;
-    float3 origin = p + (away + wi) * (1.0e-3 * scale);
-    float tMin = 1.0e-3 * scale;
+    float3 origin = p + (away + wi) * (path.leave * scale);
+    float tMin = path.leave * scale;
     float through = 1.0;
     for (uint passes = 0; passes < 8u; ++passes) {
         const PathHit hit = traceNearestFrom(origin, wi, tMin, mask, false);
@@ -1943,7 +1949,7 @@ float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crosse
     float transmittance = 1.0;
     if (kVolumes && (light.flags & kLightShadow) != 0) {
         uint2 rng = mediumSeed(pixel, sample, bounce, 21u);
-        transmittance = mediumTransmittanceAny(sh.inputs.positionWorld, ls.wi, 1.0e-3 * max(1.0, length(sh.inputs.positionWorld)),
+        transmittance = mediumTransmittanceAny(sh.inputs.positionWorld, ls.wi, path.leave * max(1.0, length(sh.inputs.positionWorld)),
                                                ls.distance, rng);
     }
     const float density = ls.pdf * choice.probability * (1.0 - share);
@@ -2602,7 +2608,7 @@ R"(
                             if (kVolumes) {
                                 uint2 lightRng = mediumSeed(tid, sample, bounce, 27u);
                                 throughMedia = mediumTransmittanceAny(cur.inputs.positionWorld, lp.wi,
-                                                                      1.0e-3 * max(1.0, length(cur.inputs.positionWorld)),
+                                                                      path.leave * max(1.0, length(cur.inputs.positionWorld)),
                                                                       lp.distance - shortOf, lightRng);
                             }
                             lightScale = throughput * f * glassThrough * weight * throughSplats * throughMedia / lp.pdf;
@@ -2794,7 +2800,7 @@ const char* kBodyRest = R"(                const float3 np = cur.inputs.normalWo
             const bool crossing = through || entersGlass(cur, ms.wi);
             const float scale = max(1.0, length(p));
             const float margin = crossing ? rayMargin(max(length(p), length(p - cur.inputs.viewPosition)))
-                                          : 1.0e-3 * scale;
+                                          : path.leave * scale;
             if (crossing) {
                 o = leaveSurface(p, cur.geometricNormal, ms.wi, margin);
             } else {
@@ -3455,6 +3461,7 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         cursor["path"]["mis"].setData(uint32_t{settings.mis ? 1u : 0u});
         cursor["path"]["shadowCutouts"].setData(uint32_t{frame.cutouts ? 1u : 0u});
         cursor["path"]["glassShadows"].setData(uint32_t{settings.glassShadows && frame.glass ? 1u : 0u});
+        cursor["path"]["leave"].setData(settings.rayMargin);
         cursor["path"]["bakeSplit"].setData(uint32_t{bake != nullptr && bake->split ? 1u : 0u});
         cursor["path"]["bakeMaterial"].setData(uint32_t{bake != nullptr && bake->transfer && bake->material ? 1u : 0u});
         const bool toward = bake != nullptr && bake->toward && !bake->transfer;

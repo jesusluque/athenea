@@ -237,6 +237,7 @@ void HdAtheneaRenderPass::_Execute(HdRenderPassStateSharedPtr const& state, TfTo
         _engine->setVolumeFilter(_delegate->GetVolumeFilter());
         _engine->setEmissionLevels(_delegate->GetLightLevels());
         _engine->setGlassShadows(_delegate->GetGlassShadows());
+        _engine->setRayMargin(_delegate->GetRayMargin());
         _engine->setPathError(_delegate->GetPathError());
         _engine->setMotionBuckets(_delegate->GetDisableMotionBlur() ? 1u : _delegate->GetMotionBuckets());
     }

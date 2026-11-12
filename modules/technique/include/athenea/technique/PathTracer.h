@@ -65,6 +65,12 @@ struct PathSettings {
     /// False: glass stops a shadow ray, and a lamp behind its lens lights
     /// only what the material's rays find through it.
     bool     glassShadows = true;
+    /// How far a ray that crosses nothing leaves its surface, as a share of
+    /// the position's distance from the origin (`athenea:rayMargin`): along the
+    /// normal and along the ray, with a TMin as long. A thousandth lets light
+    /// through the concave joins of a scene twenty metres across in
+    /// centimetres (Sponza: bright lines where a wall meets its floor).
+    float    rayMargin = 1.0e-3F;
 };
 
 /// How much of a frame has converged, for the adaptive gate: pixels the

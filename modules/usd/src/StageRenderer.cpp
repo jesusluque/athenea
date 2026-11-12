@@ -1387,6 +1387,9 @@ void StageRenderer::setGlassShadows(bool glass) {
 void StageRenderer::setPathAdaptive(bool adaptive) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:pathAdaptive"), VtValue(adaptive));
 }
+void StageRenderer::setRayMargin(float margin) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:rayMargin"), VtValue(margin));
+}
 void StageRenderer::setPathError(float error) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:pathError"), VtValue(error));
 }

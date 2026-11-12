@@ -567,6 +567,8 @@ public:
     /// Let the path tracer's shadow rays through glass whose transmission
     /// is a delta, tinted (technique::PathSettings::glassShadows). On by default.
     void setGlassShadows(bool glass);
+    /// How far the path tracer's rays leave a surface (technique::PathSettings::rayMargin).
+    void setRayMargin(float margin);
     void setPathError(float error);
 
     /// How many paths a pixel the path traced frame on screen has gathered,
@@ -932,6 +934,7 @@ private:
     std::atomic<bool>                         pathAdaptive_{false};
     std::atomic<bool>                         pathMis_{true};
     std::atomic<bool>                         glassShadows_{true};
+    std::atomic<float>                        rayMargin_{1.0e-3F};
     std::atomic<bool>                         domeVisible_{true};
     std::atomic<bool>                         screenSpaceReflections_{false};
     std::atomic<uint32_t>                     meshAntialias_{0};
@@ -986,6 +989,7 @@ private:
         bool         adaptive = false;
         bool         mis = true;
         bool         glassShadows = true;
+        float        rayMargin = 1.0e-3F;
         bool         cameraMoves = false;
         render::Mat4 cameraStart = render::Mat4::identity();
         render::Mat4 cameraEnd = render::Mat4::identity();
@@ -1012,7 +1016,7 @@ private:
                    lensRadius == o.lensRadius && focusDistance == o.focusDistance &&
                    distortionK1 == o.distortionK1 && distortionK2 == o.distortionK2 && width == o.width &&
                    height == o.height && samples == o.samples && bounces == o.bounces && adaptive == o.adaptive && mis == o.mis &&
-                   glassShadows == o.glassShadows &&
+                   glassShadows == o.glassShadows && rayMargin == o.rayMargin &&
                    error == o.error && revision == o.revision && tags == o.tags && traced == o.traced;
         }
     };

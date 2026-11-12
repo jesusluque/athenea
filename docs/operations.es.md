@@ -616,6 +616,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--path-samples` | entero | `1` | rt: caminos por píxel en cada pasada |
 | `--path-bounces` | entero | `1` | rt: rebotes tras el primer impacto; atravesar un vidrio (entrar en él, salir de él, dentro de él) no es uno, hasta 8 por camino |
 | `--path-total` | entero | `1` | rt: caminos por píxel hasta los que se dibuja |
+| `--ray-margin` | float | el de `athenea:rayMargin` | rt: cuánto se separa un rayo de una superficie, como fracción de su distancia al origen (`athenea:rayMargin`) |
 | `--denoise` | flag | apagado | rt: denoise cuando alcanza el total |
 | `--default-lights` | flag | apagado | un dome y un sol en la capa de sesión, para una escena sin luces |
 | `--shutter` | `ABRE:CIERRA` | sin poner | en frames; solo para una cámara hecha con `--eye` |
@@ -2316,6 +2317,7 @@ en un panel; el segundo se lee donde se encuentre y no sale.
 | `athenea:meshAntialias` | int | `0` | raster: los bordes de las mallas se resuelven de 4, 8 o 16 muestras por píxel, un número intermedio redondeado hacia arriba; 0 y 1 dibujan una muestra por píxel (§4.3, *Bordes de malla antialiasados*) |
 | `athenea:splatView` | int | `0` | el raster: un parámetro de las gaussianas dibujado en lugar de su luz, mezclado por su opacidad -- 1 albedo, 2 roughness (la que lee el especular), 3 metallic, 4 transmission, 5 ior (`ior - 1`, un gris), 6 normal (del mundo, `n / 2 + 1/2`), 7 opacidad, 8 tamaño (el eje mayor, una rampa de azul a 10 µm a rojo a 10 cm, una década cada cuarto), 9 visibilidad del cielo (el cielo visto por el transfer ponderado por el coseno, 1 sin nada delante), 10 rebote (la mitad indirecta bajo un cielo blanco), 11 celdas abiertas (la fracción de direcciones de un transfer TX que salen de la escena), 12 emisión, 13 campo reflejado (su media bajo un cielo blanco), 14 la luz que lleva la nube, 15 la roughness propia del material (0 donde no la lleva); una nube que no se reilumina muestra su luz, su opacidad y su tamaño y nada más. 0 dibuja la luz |
 | `athenea:glassShadows` | bool | `true` | rt y sus bakes: el rayo de sombra de una luz sigue a través de hasta 4 caras de vidrio cuya transmisión es una delta (una pared fina; un sólido de rugosidad especular constante por debajo de 0.03), teñido por cada una; apagado, el vidrio lo detiene |
+| `athenea:rayMargin` | float | `1e-3` | rt y sus bakes: cuánto se separa de su superficie un rayo que no cruza nada, como fracción de la distancia de la posición al origen (a lo largo de la normal y a lo largo del rayo, con un TMin igual de largo), de 1e-6 a 0.1. Una escena en centímetros o lejos de su origen pide menos: con el valor por defecto, a 2000 unidades, la luz pasa por toda junta cóncava a menos de 2 unidades (Sponza: `2e-5`) |
 | `athenea:denoise` | bool | `false` | denoise al terminar de reunir |
 | `athenea:motionBuckets` | int | `4` | rt: rodajas del obturador, de 1 a 8 |
 | `athenea:antialias` | bool | `true` | un desplazamiento subpíxel por pasada |

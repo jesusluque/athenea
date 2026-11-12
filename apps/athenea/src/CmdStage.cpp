@@ -184,6 +184,7 @@ void addStage(CLI::App& app) {
         std::vector<std::string> variants;
         std::vector<std::string> splatOverrides;
         uint32_t lightSamples = 1;
+        float rayMargin = 0.0F;
         std::string volumeFilter;
         uint32_t meshLightSamples = 0;
         bool     noMeshLights = false;
@@ -215,6 +216,7 @@ void addStage(CLI::App& app) {
     cmd->add_option("--path-samples", o->pathSamples, "rt: paths a pixel each pass");
     cmd->add_option("--path-bounces", o->pathBounces, "rt: bounces after the first hit");
     cmd->add_option("--path-total", o->pathTotal, "rt: paths a pixel the image is drawn until it holds");
+    cmd->add_option("--ray-margin", o->rayMargin, "rt: how far a ray leaves a surface, as a share of its distance from the origin");
     cmd->add_flag("--denoise", o->denoise, "rt: denoise the image once it holds its total (OIDN)");
     cmd->add_flag("--default-lights", o->defaultLights,
                   "a dome and a sun in the session layer, for a stage that brings no lights "
@@ -333,6 +335,7 @@ void addStage(CLI::App& app) {
         (*renderer)->setPathSamples(o->pathSamples);
         (*renderer)->setPathBounces(o->pathBounces);
         (*renderer)->setPathTotal(o->pathTotal);
+        if (o->rayMargin > 0.0F) (*renderer)->setRayMargin(o->rayMargin);
         (*renderer)->setDenoise(o->denoise);
         (*renderer)->setMotionBuckets(o->motionBuckets);
         if (!o->shutter.empty()) {

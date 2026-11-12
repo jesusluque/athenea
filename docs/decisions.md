@@ -21726,3 +21726,35 @@ the path tracer: the worst view (23.7 dB) is covered 74%, one covered 54% is 34.
 Cover is the mask of what a renderer need not draw; it is not a measure of how well the rest is drawn. The three
 views under 27 dB are the first of the walk, close to the wall behind the first camera, where what is covered was
 found from far.
+
+## A ray's margin is the frame's to say (12 Nov)
+
+The user saw strange lines in Sponza and asked for another renderer beside it. Blender's Cycles, on the same USD
+from the same camera with a sky of the same colour, has none of them: the path tracer drew a bright line wherever
+a wall meets its floor, round every column's foot and along the mouldings of the door. The frames the found Sponza
+was made from and measured against all carry them.
+
+The cause is how far a ray leaves its surface. One that crosses nothing starts off it by a thousandth of how far
+the position is from the origin, along the normal and along the ray, with a TMin as long (`shadowWalk`,
+`pathThrough`, `splatVisibility`, the bounce): the millimetre a bake's point needs in a scene of metres at its
+origin. Sponza is in centimetres and reaches two thousand of them, so there it is two centimetres and two more: at
+a concave join every ray towards the next wall starts past it, and what it finds is the dome. A pixel on the line
+read 0.031 where its neighbours read 0.002, with the wall's own depth -- a lit surface, not a miss.
+
+`PathSettings::rayMargin` (`athenea:rayMargin`, `athenea stage --ray-margin`) is that share, a thousandth by
+default so that no frame changes. At 2e-5 Sponza's lines are gone and the frame is Cycles' but for its tone. The
+slit round the door and the lattice of the window stay: they are gaps in the asset, and Cycles shows the sky
+through them as well.
+
+`[margin]` (tests/usd/test_ray_margin.cpp): a closed box of six walls two thousand units from the origin under a
+dome of 1. Its inside reads 0.00670 on average with the default and 0.000195 at 2e-5, 34 times less.
+
+### Not done
+
+- The default itself. A ray from a traced hit needs a hair (`rayMargin()`, 1e-5) and only a bake's point or a
+  gaussian's the millimetre, and the share should not grow with the distance from the origin at all: it is every
+  scene's leak twenty metres out, not Sponza's. That is release-0.5's code and its frames' to re-measure.
+- What is left at 2e-5: the pixels on a join itself.
+- Sponza's lanterns, blue in Cycles (a blue glass of opacity 0.6 round an emitting bulb) and dark here; and the
+  tone, warmer in Cycles, whose importer's units for the sun are not this engine's.
+- The found Sponza's frames drawn again without the lines, and its numbers with them.

@@ -151,6 +151,9 @@ public:
     /// "athenea:glassShadows": the path tracer's shadow rays pass glass whose
     /// transmission is a delta, tinted (true, the default).
     [[nodiscard]] bool GetGlassShadows() const;
+    /// "athenea:rayMargin": how far the path tracer's rays leave a surface, as a
+    /// share of the position's distance from the origin (1e-3, the default).
+    [[nodiscard]] float GetRayMargin() const;
     [[nodiscard]] float GetPathError() const;
     /// `athenea:visibility`: "automatic" (default), "raster", "rays" or "bvh".
     [[nodiscard]] athenea::usd::MeshVisibility GetMeshVisibility() const;

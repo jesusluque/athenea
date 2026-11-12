@@ -605,6 +605,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--path-samples` | integer | `1` | rt: paths a pixel each pass |
 | `--path-bounces` | integer | `1` | rt: bounces after the first hit; going through a glass (into it, out of it, inside it) is not one, up to 8 a path |
 | `--path-total` | integer | `1` | rt: paths a pixel the image is drawn until it holds |
+| `--ray-margin` | float | `athenea:rayMargin`'s | rt: how far a ray leaves a surface, as a share of its distance from the origin (`athenea:rayMargin`) |
 | `--denoise` | flag | off | rt: denoise once the total is held |
 | `--default-lights` | flag | off | a dome and a sun in the session layer, for a stage with none |
 | `--shutter` | `OPEN:CLOSE` | unset | in frames; only for a camera made by `--eye` |
@@ -2250,6 +2251,7 @@ found and does not.
 | `athenea:meshAntialias` | int | `0` | raster: the meshes' edges resolved from 4, 8 or 16 samples a pixel, a count in between rounded up; 0 and 1 draw one sample a pixel (§4.3, *Mesh edges antialiased*) |
 | `athenea:splatView` | int | `0` | the raster: a parameter of the gaussians drawn in place of their light, blended by their opacity -- 1 albedo, 2 roughness (as the specular reads it), 3 metallic, 4 transmission, 5 ior (`ior - 1`, a grey), 6 normal (world, `n / 2 + 1/2`), 7 opacity, 8 size (the largest axis, a ramp from blue at 10 µm to red at 10 cm, a decade a quarter), 9 sky visibility (the transfer's cosine-weighted sky seen, 1 unoccluded), 10 bounce (the indirect half under a white sky), 11 open cells (the share of a TX transfer's directions that leave the scene), 12 emission, 13 reflected field (its mean under a white sky), 14 the light the cloud carries, 15 the material's own roughness (0 where not carried); a cloud that is not relit shows its light, opacity and size and nothing else. 0 draws the light |
 | `athenea:glassShadows` | bool | `true` | rt and its bakes: a light's shadow ray goes on through up to 4 faces of glass whose transmission is a delta (a thin wall; a solid of constant specular roughness under 0.03), tinted by each; off, glass stops it |
+| `athenea:rayMargin` | float | `1e-3` | rt and its bakes: how far a ray that crosses nothing leaves its surface, as a share of the position's distance from the origin (along the normal and along the ray, with a TMin as long), 1e-6 to 0.1. A scene in centimetres or far from its origin wants less: at the default, 2000 units out, light passes every concave join nearer than 2 units (Sponza: `2e-5`) |
 | `athenea:denoise` | bool | `false` | denoise once gathered |
 | `athenea:motionBuckets` | int | `4` | rt: shutter slices, 1 to 8 |
 | `athenea:antialias` | bool | `true` | a sub-pixel offset per pass |

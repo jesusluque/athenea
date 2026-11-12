@@ -525,6 +525,10 @@ public:
     /// (`athenea:glassShadows`, on by default): a lamp behind its lens lights
     /// what stands in front by next event estimation. Off: glass stops them.
     void setGlassShadows(bool glass);
+    /// How far the path tracer's rays leave a surface that is no crossing, as a
+    /// share of the position's distance from the origin (`athenea:rayMargin`,
+    /// 1e-3 by default): smaller for a scene far from its origin or in small units.
+    void setRayMargin(float margin);
     /// athenea:domeVisible: false leaves the background transparent.
     void setDomeVisible(bool visible);
     /// athenea:screenSpaceReflections: the meshes that reflect show what the
