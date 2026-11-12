@@ -366,8 +366,8 @@ int run(const NeuralFitOptions& o) {
     if (!fit) return report(fit.error());
     auto cloud = scene::loadSplatFile(*loader, o.splats, o.degree);
     if (!cloud) return report(cloud.error());
-    if (o.split && (!o.load.empty() || !o.save.empty())) {
-        err("--split is not in a .athn yet: neither --load nor --save\n");
+    if (o.split && !o.load.empty()) {
+        err("--split with --load: an appearance is loaded as it was saved\n");
         return kExitFailure;
     }
     auto neural = render::makeNeuralCloud(library, *cloud, 1, o.relight, o.split);
@@ -886,6 +886,7 @@ int run(const NeuralFitOptions& o) {
         file.stride = render::kNeuralStride;
         file.wordsEach = render::kNeuralWords;
         file.lit = neural->lit;
+        file.split = neural->split;
         if (neural->shadowed) {
             out("note: a shadowed appearance is written as a lit one; what reaches a gaussian is the frame's to give\n");
         }

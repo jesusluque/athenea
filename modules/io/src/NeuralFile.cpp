@@ -23,7 +23,8 @@ Result<void> writeNeural(const std::filesystem::path& path, const NeuralFile& fi
     }
     const std::array<uint32_t, 6> header{kVersion,       file.count,
                                          file.stride,    file.wordsEach,
-                                         static_cast<uint32_t>(file.weights.size()), file.lit ? 1u : 0u};
+                                         static_cast<uint32_t>(file.weights.size()),
+                                         (file.lit ? 1u : 0u) | (file.split ? 2u : 0u)};
     out.write(kMagic.data(), kMagic.size());
     out.write(reinterpret_cast<const char*>(header.data()), sizeof(header));
     out.write(reinterpret_cast<const char*>(file.latent.data()),
@@ -57,6 +58,7 @@ Result<NeuralFile> readNeural(const std::filesystem::path& path) {
     file.stride = header[2];
     file.wordsEach = header[3];
     file.lit = (header[5] & 1u) != 0;
+    file.split = (header[5] & 2u) != 0;
     // Sizes a header can state are held to what a cloud can be before anything is allocated by them.
     if (file.wordsEach == 0 || file.wordsEach > 64 || file.stride > file.wordsEach * 2 || header[4] > (1u << 20)) {
         return Error(ErrorCode::InvalidArgument, path.string() + ": its header's sizes are not a neural appearance's");

@@ -384,8 +384,10 @@ TEST_CASE("a lit neural cloud learns how its gaussians answer a light, and is re
 }
 
 #include <filesystem>
+#include <fstream>
 
 #include "athenea/io/NeuralFile.h"
+#include "athenea/io/NeuralScene.h"
 
 TEST_CASE("a neural appearance written and read draws what it drew", "[render][gpu][neural][file]") {
     ATHENEA_REQUIRE_GPU(gpu);
@@ -717,4 +719,127 @@ TEST_CASE("a split neural cloud starts as one network's does, and its two networ
     }
     std::printf("  split fit: relMSE %.5f at the first step, %.5f at the four hundredth\n", first, last);
     CHECK(last < first * 0.7);
+}
+
+TEST_CASE("a neural scene's manifest written and read is the scene, and a split appearance says it is one",
+          "[render][neural][scene]") {
+    const std::filesystem::path directory = std::filesystem::temp_directory_path() / "athenea_test_scene.aths";
+    std::filesystem::remove_all(directory);
+    io::NeuralScene scene;
+    scene.name = "hall";
+    scene.upAxis = "Z";
+    scene.metersPerUnit = 0.01;
+    scene.source = "hall.usda";
+    scene.licence = "CC BY 4.0";
+    io::NeuralScenePiece floor;
+    floor.id = "floor1";
+    floor.prim = "/root/floor1";
+    floor.cloud = "pieces/floor1.usda";
+    floor.gaussians = 1234;
+    floor.boundsMin = {-1.0F, -2.0F, 0.0F};
+    floor.boundsMax = {3.0F, 4.0F, 5.0F};
+    floor.transform[3] = 7.5;
+    floor.appearance = "pieces/floor1.athn";
+    floor.split = true;
+    floor.revision = 3;
+    floor.movedAt = 1;
+    floor.paintedAt = 3;
+    floor.origin = "discovered";
+    floor.foundBy = "door";
+    floor.foundAt = 12.5;
+    io::NeuralSceneFit fit;
+    fit.steps = 3000;
+    fit.against = "harmonics";
+    fit.relMse = 0.00042;
+    fit.p99 = 6.5;
+    fit.max = 31;
+    floor.fit = fit;
+    io::NeuralScenePiece prop;
+    prop.id = "prop";
+    prop.cloud = "pieces/prop.ply";
+    prop.gaussians = 10;
+    prop.boundsMin = {-9.0F, 0.0F, 0.0F};
+    prop.boundsMax = {0.0F, 1.0F, 1.0F};
+    prop.isStatic = false;
+    scene.pieces = {floor, prop};
+    scene.lights.push_back({"sun", "distant", {0.0F, 0.6F, 0.8F}, {3.0F, 2.9F, 2.6F}});
+    scene.cameras.push_back({"door", {8.0, 0.0, 1.7}, {0.0, 0.0, 2.0}, {0.0, 0.0, 1.0}, 24.0});
+    scene.snapshots.push_back({12.5, "door", {"floor1"}});
+    REQUIRE(io::writeNeuralScene(directory, scene));
+    CHECK(std::filesystem::is_directory(directory / "pieces"));
+
+    auto read = io::readNeuralScene(directory);
+    if (!read) FAIL(read.error().toString());
+    CHECK(read->name == "hall");
+    CHECK(read->upAxis == "Z");
+    CHECK(read->metersPerUnit == 0.01);
+    CHECK(read->licence == "CC BY 4.0");
+    REQUIRE(read->pieces.size() == 2);
+    const io::NeuralScenePiece& a = read->pieces[0];
+    CHECK(a.id == "floor1");
+    CHECK(a.prim == "/root/floor1");
+    CHECK(a.gaussians == 1234);
+    CHECK(a.boundsMax[2] == 5.0F);
+    CHECK(a.transform[3] == 7.5);
+    CHECK(a.appearance == "pieces/floor1.athn");
+    CHECK(a.split);
+    CHECK(!a.lit);
+    CHECK(a.revision == 3);
+    CHECK(a.movedAt == 1);
+    CHECK(a.paintedAt == 3);
+    CHECK(a.origin == "discovered");
+    CHECK(a.foundBy == "door");
+    CHECK(a.foundAt == 12.5);
+    CHECK(a.isStatic);
+    REQUIRE(a.fit);
+    CHECK(a.fit->steps == 3000);
+    CHECK(a.fit->against == "harmonics");
+    CHECK(a.fit->max == 31);
+    const io::NeuralScenePiece& b = read->pieces[1];
+    CHECK(b.appearance.empty());
+    CHECK(!b.fit);
+    CHECK(!b.isStatic);
+    CHECK(b.origin == "converted");
+    REQUIRE(read->snapshots.size() == 1);
+    CHECK(read->snapshots[0].time == 12.5);
+    CHECK(read->snapshots[0].pieces == std::vector<std::string>{"floor1"});
+    // The scene's box is the box round its pieces'.
+    std::array<float, 3> low{};
+    std::array<float, 3> high{};
+    read->bounds(low, high);
+    CHECK(low[0] == -9.0F);
+    CHECK(high[1] == 4.0F);
+    REQUIRE(read->lights.size() == 1);
+    CHECK(read->lights[0].kind == "distant");
+    CHECK(read->lights[0].towards[2] == 0.8F);
+    REQUIRE(read->cameras.size() == 1);
+    CHECK(read->cameras[0].name == "door");
+    CHECK(read->cameras[0].focal == 24.0);
+    CHECK(read->piece("prop") != nullptr);
+    CHECK(read->piece("none") == nullptr);
+
+    // A file that is not one, and a version this does not read, are refused with a reason.
+    {
+        std::ofstream other(directory / "scene.json", std::ios::trunc);
+        other << "{\"format\": \"athenea-neural-scene\", \"version\": 99}";
+    }
+    auto newer = io::readNeuralScene(directory);
+    CHECK(!newer);
+
+    // A split appearance: two networks' weights, and the flag that says so.
+    io::NeuralFile file;
+    file.count = 2;
+    file.stride = render::kNeuralStride;
+    file.wordsEach = render::kNeuralWords;
+    file.split = true;
+    file.latent.assign(size_t{2} * render::kNeuralWords, 7u);
+    file.weights.assign(size_t{render::kNeuralWeights} * 2, 0.25F);
+    const std::filesystem::path path = directory / "pieces" / "floor1.athn";
+    REQUIRE(io::writeNeural(path, file));
+    auto back = io::readNeural(path);
+    if (!back) FAIL(back.error().toString());
+    CHECK(back->split);
+    CHECK(!back->lit);
+    CHECK(back->weights.size() == size_t{render::kNeuralWeights} * 2);
+    std::filesystem::remove_all(directory);
 }

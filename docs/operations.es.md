@@ -285,7 +285,7 @@ frames para mirar.
 | `--rate-weights` | número | `0.004` | para la red |
 | `--rate-decay` | número | `1` | a cuánto han caído los tres rates en el último paso, como factor, paso a paso; `0.1` es lo que pide un fit largo |
 | `--view-smooth` | número | `0` | con cuánta fuerza se sujeta el color de cada gaussiana vista un grado más allá a su color, como múltiplo de lo que pesa el error de un píxel; `0` no lo sujeta y ahorra la segunda evaluación. `64` bajó el shimmer del color 1,6 veces en el peón sin coste medido de calidad |
-| `--split` | flag | off | dos redes de la misma forma en vez de una: a la primera nunca se le dice la vista, así que lo que dice de una gaussiana es lo mismo desde cualquier cámara, y la segunda da lo que añade la vista. 2016 pesos donde una red son 1008, dos evaluaciones por gaussiana, y todavía no está en un `.athn` (ni `--save` ni `--load`) |
+| `--split` | flag | off | dos redes de la misma forma en vez de una: a la primera nunca se le dice la vista, así que lo que dice de una gaussiana es lo mismo desde cualquier cámara, y la segunda da lo que añade la vista. 2016 pesos donde una red son 1008, dos evaluaciones por gaussiana, y se guarda así en un `.athn` (`--save`); `--load` toma una apariencia como se guardó |
 | `--reached` | `ray` o `map` | — | `--shadows`: a la nube neural se le da además lo que llega a cada gaussiana desde la luz, y su color es su respuesta por eso. `ray`: la transmitancia que encuentra el shadow ray del motor, así que cada frame dibujado con ella traza esos rayos. `map`: leída del shadow map de la nube desde el sol, construido sin ningún rayo; lo que la nube debe ser sigue siendo lo de los rayos |
 | `--map-side` | entero | `2048` | `--reached map`: los texels por lado del shadow map |
 | `--map-coefficients` | 1, 3, 5 o 7 | `7` | `--reached map`: la profundidad óptica total del mapa y sus pares de Fourier |
@@ -374,6 +374,55 @@ imagen. Las últimas líneas son el tiempo de un frame con y sin la pared,
 y el de un frame quieto: la cámara y la nube como estaban y la pared mostrando
 otra imagen, que conserva la geometría del frame anterior y rehace solo colores y
 blend, comparado con el frame de esa misma imagen dibujado entero.
+
+### 2.3.4 `athenea neural-scene` — una escena guardada por piezas
+
+Una escena demasiado grande para convertirla, ajustarla o tenerla como una sola nube se guarda como un directorio,
+`<nombre>.aths` (§8.2): un manifest y, por pieza, sus gaussianas y la apariencia
+neural con la que se dibujan. Una pieza es lo que se convierte y se ajusta por
+su cuenta -- una planta de un edificio, un objeto -- y cada una tiene su propia red.
+
+```sh
+athenea mesh2splat stage.usda --prim /root/floor1 -o floor1_gs.usda --no-camera
+athenea neural-scene add    hall.aths --id floor1 --cloud floor1_gs.usda --prim /root/floor1 --up-axis Z
+athenea neural-scene camera hall.aths --name door --eye 8 0 1.7 --target 0 0 2
+athenea neural-scene fit    hall.aths --steps 3000
+athenea neural-scene render hall.aths --camera door --compare -o door.exr
+athenea neural-scene info   hall.aths
+```
+
+| Subcomando | Qué hace |
+|---|---|
+| `add` | copia la nube de una pieza dentro de la escena (`pieces/<id>.<ext>`), la sube una vez para contarla y tomar sus bounds, y escribe el manifest; una pieza con el mismo `--id` se sustituye, su revision sube y su apariencia se descarta, por ser de otras gaussianas. El primer `add` crea el directorio |
+| `camera` | una vista con nombre en el manifest; una con el mismo nombre se sustituye |
+| `fit` | los harmonics de cada pieza aprendidos por un latente por gaussiana y la red propia de la pieza, una pieza cada vez; escribe `pieces/<id>.athn` y las medidas en el manifest tras cada pieza, así que un fit que se para conserva las piezas que terminó |
+| `render` | todas las piezas desde una vista, cada una con su apariencia donde la tiene y con sus harmonics donde no |
+| `info` | el manifest, leído; sin dispositivo |
+
+| Opción | De | Valor | Por defecto | Notas |
+|---|---|---|---|---|
+| `--id` | `add` | nombre | — | letras, dígitos, `_` y `-`: es el nombre de un fichero |
+| `--cloud` | `add` | ruta | — | un ParticleField de USD (`athenea mesh2splat`) o un `.ply`, `.splat`, `.spz`, `.sog` |
+| `--prim` | `add` | ruta | — | de dónde salió la pieza en el stage de origen; se anota, no se lee |
+| `--name`, `--up-axis`, `--meters-per-unit`, `--source`, `--licence` | `add` | | el nombre del directorio, `Y`, `1`, —, — | los de la escena; cualquier `add` puede fijarlos |
+| `--origin` | `add` | `converted`, `discovered` o `generated` | `converted` | de dónde salió la pieza: geometría convertida entera, lo que vio una cámara, o lo que rellenó otro sistema |
+| `--found-by`, `--time` | `add` | nombre, número | —, — | la cámara que encontró la pieza y cuándo; con `--time` la pieza entra en el snapshot de la escena de ese tiempo y esa cámara |
+| `--name`, `--eye`, `--target`, `--up`, `--focal` | `camera` | | —, —, —, el up de la escena, `35` | |
+| `--piece` | `fit` | id | todas las piezas | repetible |
+| `--steps` | `fit` | entero | `3000` | por pieza |
+| `--size` | `fit`, `render` | `WIDTHxHEIGHT` | `960x540` | |
+| `--held-out` | `fit` | entero | `8` | cámaras desde las que se mide una pieza y nunca se ajusta |
+| `--rate-decay` | `fit` | número | `0.1` | |
+| `--view-smooth`, `--split` | `fit` | | `0`, off | como los de `athenea neural-fit` (§2.3.2) |
+| `--camera` | `render` | nombre | la primera del manifest | o `--eye` y `--target` (con `--up`, `--focal`) para una vista propia |
+| `--harmonics` | `render` | flag | off | todas las piezas con sus harmonics |
+| `--compare` | `render` | flag | off | de las dos maneras: los latentes contra los harmonics (las medidas de `athenea compare`) y el tiempo de un frame con cada uno, el menor de doce |
+| `-o`, `--output` | `render` | ruta | — | un EXR; con `--compare`, `<stem>_harmonics.exr` y `<stem>_latents.exr` |
+
+Una pieza se ajusta desde dentro de la escena: el ojo de cada cámara en algún punto de la
+caja de la escena, una décima hacia dentro de sus paredes, mirando a algún punto de la caja
+de la pieza con una lente de 20 mm. Desde ahí se ve un edificio; un objeto sobre una
+mesa se ajusta mejor con `athenea neural-fit`, cuyas cámaras se ponen a su alrededor.
 
 ### 2.4 `athenea convert` — un fichero de splats a USD, o a un `.athc`
 
@@ -3467,8 +3516,41 @@ lee `athenea render --neural`: los colores de una nube como un latente por gauss
 y una red, junto al fichero de la nube y de ella gaussiana por gaussiana, en
 su orden (no nombra ninguna nube; se comprueba el número). Little endian: `ATHN`, seis
 uint32 -- versión (1), gaussianas, números por gaussiana (11), palabras por gaussiana (6),
-pesos (1008), flags (bit 0: iluminada) -- luego los latentes como halves, dos por uint32
-y por tanto 24 bytes por gaussiana, y luego los pesos como float32.
+pesos (1008, o 2016 para dos redes), flags (bit 0: iluminada; bit 1: split, los pesos de
+dos redes, a la primera nunca se le dice la vista) -- luego los latentes como
+halves, dos por uint32 y por tanto 24 bytes por gaussiana, y luego los pesos como float32.
+
+**Una escena neural, `.aths`.** Un directorio: lo que escribe y lee `athenea neural-scene`
+(§2.3.4). `scene.json` es el manifest y todas sus rutas son
+relativas al directorio, así que una escena se mueve como se mueve un directorio.
+
+```
+<name>.aths/
+  scene.json               el manifest
+  pieces/<id>.usda|…       las gaussianas de una pieza: un ParticleField de USD o un fichero de splats
+  pieces/<id>.athn         su apariencia neural, una vez ajustada
+```
+
+| Clave de `scene.json` | Valor |
+|---|---|
+| `format`, `version` | `"athenea-neural-scene"`, `1`; un lector rechaza otra versión |
+| `name`, `upAxis`, `metersPerUnit` | el nombre de la escena; `"Y"` o `"Z"`; metros por unidad |
+| `source` | `stage`: de qué se convirtieron las piezas; `licence`: qué pide a quien lo use |
+| `bounds` | `min`, `max`: la caja que envuelve las de todas las piezas, escrita y no leída |
+| `pieces[]` | `id`; `prim` (de dónde salió); `cloud` (su fichero); `gaussians`; `bounds`; `transform` (objeto a mundo, dieciséis números por filas); `revision`, `movedAt`, `paintedAt`; `static`; `origin`; y, una vez ajustada, `appearance` |
+| `pieces[].origin` | `kind`: `"converted"` (de geometría, entera), `"discovered"` (las gaussianas que vio una cámara) o `"generated"` (rellenada por otro sistema); `camera` y `time`: qué la encontró y cuándo |
+| `pieces[].appearance` | `file` (su `.athn`); `lit`; `split`; `fit`: `steps`, `against` (`"harmonics"`), `relMSE`, `p99`, `max` como los midió el dispositivo desde las cámaras held-out |
+| `lights[]` | `name`, `kind` (`"distant"` o `"dome"`), `towards`, `radiance`: bajo qué se hicieron las piezas; se anota, y todavía no lo lee nada |
+| `cameras[]` | `name`, `eye`, `target`, `up`, `focal` (mm) |
+| `snapshots[]` | `time`, `camera`, `pieces`: una mirada a la escena y las piezas que añadió o cambió; la escena en un tiempo son las piezas de los snapshots hasta él |
+
+`revision` sube cada vez que se escriben las gaussianas de una pieza o su apariencia,
+y `static` dice que sus gaussianas no se mueven de un frame a otro: lo que un
+renderer guarda de una pieza lo guarda mientras la revision se mantenga. `movedAt` y
+`paintedAt` son las revisions en las que se movió por última vez y en la que cambió por última vez
+aquello de lo que está hecha: un fit sube solo `paintedAt`, unas gaussianas nuevas suben las dos.
+Un manifest sin estas claves se lee como convertido, movido y pintado en su
+revision, y sin snapshots.
 
 **Imágenes que se escriben.** OpenEXR, lineal premultiplicado, con la fila de
 abajo primero dentro del motor y escrito con la de arriba primero como quiere
@@ -3528,6 +3610,7 @@ TX con skinning, de surfels y en niveles de detalle es una sola nube.
 | `athenea bench` | nada; los tiempos por la salida estándar |
 | `athenea lift` | el EXR de `-o`: el frame de `--eye` con el key del matte, y su profundidad |
 | `athenea neural-fit` | las medidas por la salida estándar; con `--save`, un `.athn`; con `-o`, frames EXR |
+| `athenea neural-scene` | un directorio `.aths`: `scene.json`, las nubes de las piezas copiadas dentro, un `.athn` por pieza ajustada; `render -o`, frames EXR |
 | `athenea convert` | una escena USD, o un `.athc` |
 | `athenea stage` | un EXR; o, con `--render-settings`, uno por producto |
 | `athenea view` | nada, o un EXR con `--snapshot` |

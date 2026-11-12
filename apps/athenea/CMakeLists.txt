@@ -7,6 +7,7 @@ add_executable(athenea
     src/CmdLift.cpp
     src/CmdNeuralFit.cpp
     src/CmdWallFit.cpp
+    src/CmdNeuralScene.cpp
     src/CmdStage.cpp
     src/CmdDecimate.cpp
     src/CmdMigrate.cpp

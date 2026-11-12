@@ -6,7 +6,8 @@
 // words arrive here packed by the device and leave for it as they were read;
 // this frames them and nothing else.
 //
-//   "ATHN", version, gaussians, halves a gaussian, words a gaussian, weights, flags (bit 0: lit)
+//   "ATHN", version, gaussians, halves a gaussian, words a gaussian, weights, flags (bit 0: lit;
+//   bit 1: split -- two networks' weights, the first never told the view)
 //   then gaussians * words-a-gaussian uint32 (two halves a word, low first)
 //   then the weights, float32
 //
@@ -27,6 +28,7 @@ struct NeuralFile {
     uint32_t              stride = 0;           ///< halves a gaussian
     uint32_t              wordsEach = 0;        ///< uint32 a gaussian: (stride + 1) / 2
     bool                  lit = false;
+    bool                  split = false;        ///< `weights` holds two networks
     std::vector<uint32_t> latent;               ///< count * wordsEach
     std::vector<float>    weights;
 };

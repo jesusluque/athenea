@@ -21106,3 +21106,49 @@ change shape from bake to bake, which is left as it is.
 - The lights a car carries (its lamps emit in every bake, so they scale with the sum of the wall).
 - The grid's weights held smooth over the wall, and a grid in a file.
 - CUDA for the car; Metal for the pawn's grid.
+
+## A neural scene: a directory of pieces under a manifest (12 Nov)
+
+A building is not one cloud. It is too large to convert, to fit or to hold at once, parts of it change and most do
+not, and what it is drawn by is fitted to the part. So a scene is kept in pieces: `<name>.aths` is a directory
+with a manifest, `scene.json`, and a piece's gaussians and neural appearance beside it (`io/NeuralScene.h`;
+`athenea neural-scene add | camera | fit | render | info`). What was decided, and why:
+
+- **A directory and a JSON manifest**, not one binary. The pieces are files other tools already write and read (a
+  USD ParticleField, a `.ply`, a `.athn`), a piece is replaced by replacing a file, and the manifest is small,
+  read by a person and merged by a version control. Paths are relative to the directory, so it moves as one.
+- **A network a piece.** A piece is fitted alone and loaded alone, and a network is a thousand numbers; sharing
+  one over a scene would tie every piece's fit to every other's. Nothing stops two pieces naming one file.
+- **The reader and the writer compute nothing.** Counts and bounds are what the device said when the piece was
+  added, the measures what it said when the piece was fitted.
+- **What changed, and what kind of change.** `revision` goes up whenever a piece is written; `movedAt` and
+  `paintedAt` are the revisions at which it last moved and at which what it is made of last changed, since the
+  two ask different work again of a renderer (the section on the matt part kept; the one on the still frame).
+  `static` says its gaussians do not move from frame to frame.
+- **Where a piece came from.** `origin` is converted (from geometry, whole), discovered (the gaussians one camera
+  saw at one time, placed in the world) or generated (filled in by another system), and `snapshots` is the
+  scene's history, each a time, a camera and the pieces it brought. This is room made for a scene that is found
+  a look at a time rather than converted once -- a render as a discovery of the world and not a final picture --
+  and nothing fills it yet: every piece today is converted.
+- **Keys are read with defaults**, so a manifest written before a key existed still loads; the version rises only
+  when an older reader would draw the scene wrong.
+- **A piece is fitted from inside the scene**: eyes in the scene's box, a tenth in from its walls, looking at
+  points of the piece's box through a 20 mm lens, each from an additive sequence that fills its box evenly. Round
+  an object's centre, where `neural-fit` stands, is outside a building looking at the back of its walls.
+
+`.athn` gains a flag for a split cloud (bit 1), its weights then two networks'; `athenea neural-fit --split
+--save` writes one.
+
+Run end to end on CUDA with two small pieces: one fitted with two networks and drawn by its latents beside one
+drawn by its harmonics, in one frame.
+
+### Not done
+
+- A building. Intel's Sponza is converted a floor a piece (395 to 399 thousand gaussians a floor, 4.6 minutes
+  each, most of it reading a 436 MB stage) and not yet fitted: with no bake a floor's harmonics are its albedo
+  alone, and the bake fell over for want of memory while another job held fifteen of the machine's 24 GB -- with
+  a segmentation fault after the engine's own out-of-memory warning, which is a fault of its own.
+- A render discovered into pieces: the step from a camera's frame to the gaussians it saw.
+- Pieces fitted to pictures rather than to their own harmonics, which wants every piece in the frame at once.
+- The scene's lights read by anything; a piece's transform other than identity drawn by `fit`.
+- Pieces loaded as a camera needs them. `render` loads them all.

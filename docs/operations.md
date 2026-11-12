@@ -281,7 +281,7 @@ three frames to look at.
 | `--rate-weights` | number | `0.004` | for the network |
 | `--rate-decay` | number | `1` | what the three rates have fallen to by the last step, as a factor, step by step; `0.1` is what a long fit wants |
 | `--view-smooth` | number | `0` | how hard each gaussian's colour seen a degree off is held to its colour, as a multiple of what a pixel's error weighs; `0` does not hold it and saves the second evaluation. `64` took the colour's shimmer down 1.6 times on the pawn at no measured cost in quality |
-| `--split` | flag | off | two networks of the same shape rather than one: the first is never told the view, so what it says of a gaussian is the same from every camera, and the second gives what the view adds. 2016 weights where one network is 1008, two evaluations a gaussian, and not in a `.athn` yet (neither `--save` nor `--load`) |
+| `--split` | flag | off | two networks of the same shape rather than one: the first is never told the view, so what it says of a gaussian is the same from every camera, and the second gives what the view adds. 2016 weights where one network is 1008, two evaluations a gaussian, and saved in a `.athn` as such (`--save`); `--load` takes an appearance as it was saved |
 | `--reached` | `ray` or `map` | — | `--shadows`: the neural cloud is also given what reaches each gaussian from the light, and its colour is its answer times that. `ray`: the transmittance the engine's shadow ray finds, so every frame by it casts those rays. `map`: read from the cloud's shadow map from the sun, built with no ray; what the cloud should be is still the rays' |
 | `--map-side` | integer | `2048` | `--reached map`: the shadow map's texels a side |
 | `--map-coefficients` | 1, 3, 5 or 7 | `7` | `--reached map`: the map's total optical depth and its Fourier pairs |
@@ -370,6 +370,55 @@ picture's texels. The last lines are a frame's time with and without the wall,
 and a still frame's: the camera and the cloud as they were and the wall showing
 another picture, which keeps the last frame's geometry and redoes colours and
 blend alone, held against the same picture's frame drawn whole.
+
+### 2.3.4 `athenea neural-scene` — a scene kept in pieces
+
+A scene too large to convert, fit or hold as one cloud is kept as a directory,
+`<name>.aths` (§8.2): a manifest and, a piece, its gaussians and the neural
+appearance they are drawn by. A piece is whatever is converted and fitted on
+its own -- a floor of a building, a prop -- and each has its own network.
+
+```sh
+athenea mesh2splat stage.usda --prim /root/floor1 -o floor1_gs.usda --no-camera
+athenea neural-scene add    hall.aths --id floor1 --cloud floor1_gs.usda --prim /root/floor1 --up-axis Z
+athenea neural-scene camera hall.aths --name door --eye 8 0 1.7 --target 0 0 2
+athenea neural-scene fit    hall.aths --steps 3000
+athenea neural-scene render hall.aths --camera door --compare -o door.exr
+athenea neural-scene info   hall.aths
+```
+
+| Subcommand | What it does |
+|---|---|
+| `add` | copies a piece's cloud into the scene (`pieces/<id>.<ext>`), uploads it once to count it and take its bounds, and writes the manifest; a piece of the same `--id` is replaced, its revision goes up and its appearance is dropped, being of other gaussians. The first `add` makes the directory |
+| `camera` | a named view in the manifest; one of the same name is replaced |
+| `fit` | each piece's harmonics learnt by a latent a gaussian and the piece's own network, a piece at a time; writes `pieces/<id>.athn` and the measures into the manifest after each piece, so a fit that stops keeps the pieces it finished |
+| `render` | every piece from one view, each by its appearance where it has one and by its harmonics where it has none |
+| `info` | the manifest, read; no device |
+
+| Option | Of | Value | Default | Notes |
+|---|---|---|---|---|
+| `--id` | `add` | name | — | letters, digits, `_` and `-`: it is a file's name |
+| `--cloud` | `add` | path | — | a USD ParticleField (`athenea mesh2splat`) or a `.ply`, `.splat`, `.spz`, `.sog` |
+| `--prim` | `add` | path | — | where the piece came from in the source stage; recorded, not read |
+| `--name`, `--up-axis`, `--meters-per-unit`, `--source`, `--licence` | `add` | | the directory's stem, `Y`, `1`, —, — | the scene's own; any `add` may set them |
+| `--origin` | `add` | `converted`, `discovered` or `generated` | `converted` | where the piece came from: geometry converted whole, what a camera saw, or what another system filled in |
+| `--found-by`, `--time` | `add` | name, number | —, — | the camera that found the piece and when; with `--time` the piece joins the scene's snapshot of that time and camera |
+| `--name`, `--eye`, `--target`, `--up`, `--focal` | `camera` | | —, —, —, the scene's up, `35` | |
+| `--piece` | `fit` | id | every piece | repeatable |
+| `--steps` | `fit` | integer | `3000` | a piece |
+| `--size` | `fit`, `render` | `WIDTHxHEIGHT` | `960x540` | |
+| `--held-out` | `fit` | integer | `8` | cameras a piece is measured from and never fitted from |
+| `--rate-decay` | `fit` | number | `0.1` | |
+| `--view-smooth`, `--split` | `fit` | | `0`, off | as `athenea neural-fit`'s (§2.3.2) |
+| `--camera` | `render` | name | the manifest's first | or `--eye` and `--target` (with `--up`, `--focal`) for a view of its own |
+| `--harmonics` | `render` | flag | off | every piece by its harmonics |
+| `--compare` | `render` | flag | off | both ways: the latents against the harmonics (`athenea compare`'s measures) and a frame's time by each, the least of twelve |
+| `-o`, `--output` | `render` | path | — | an EXR; with `--compare`, `<stem>_harmonics.exr` and `<stem>_latents.exr` |
+
+A piece is fitted from inside the scene: each camera's eye somewhere in the
+scene's box, a tenth in from its walls, looking at somewhere in the piece's own
+box through a 20 mm lens. That is where a building is seen from; an object on a
+table is better fitted by `athenea neural-fit`, whose cameras stand round it.
 
 ### 2.4 `athenea convert` — a splat file into USD, or into a `.athc`
 
@@ -3357,8 +3406,41 @@ codec string and `hvcC` record built from that record's VPS, SPS and PPS
 one network, beside the cloud's own file and of it gaussian for gaussian, in
 its order (it names no cloud; the count is checked). Little endian: `ATHN`, six
 uint32 -- version (1), gaussians, numbers a gaussian (11), words a gaussian (6),
-weights (1008), flags (bit 0: lit) -- then the latents as halves, two a uint32
-and so 24 bytes a gaussian, then the weights as float32.
+weights (1008, or 2016 for two networks), flags (bit 0: lit; bit 1: split, two
+networks' weights, the first never told the view) -- then the latents as
+halves, two a uint32 and so 24 bytes a gaussian, then the weights as float32.
+
+**A neural scene, `.aths`.** A directory: what `athenea neural-scene` writes
+and reads (§2.3.4). `scene.json` is the manifest and every path in it is
+relative to the directory, so a scene moves as a directory does.
+
+```
+<name>.aths/
+  scene.json               the manifest
+  pieces/<id>.usda|…       a piece's gaussians: a USD ParticleField or a splat file
+  pieces/<id>.athn         its neural appearance, once fitted
+```
+
+| Key of `scene.json` | Value |
+|---|---|
+| `format`, `version` | `"athenea-neural-scene"`, `1`; a reader refuses another version |
+| `name`, `upAxis`, `metersPerUnit` | the scene's name; `"Y"` or `"Z"`; metres a unit |
+| `source` | `stage`: what the pieces were converted from; `licence`: what it asks of whoever uses it |
+| `bounds` | `min`, `max`: the box round every piece's, written and not read |
+| `pieces[]` | `id`; `prim` (where it came from); `cloud` (its file); `gaussians`; `bounds`; `transform` (object to world, sixteen numbers row major); `revision`, `movedAt`, `paintedAt`; `static`; `origin`; and, once fitted, `appearance` |
+| `pieces[].origin` | `kind`: `"converted"` (from geometry, whole), `"discovered"` (the gaussians a camera saw) or `"generated"` (filled in by another system); `camera` and `time`: what found it and when |
+| `pieces[].appearance` | `file` (its `.athn`); `lit`; `split`; `fit`: `steps`, `against` (`"harmonics"`), `relMSE`, `p99`, `max` as the device measured them from the held-out cameras |
+| `lights[]` | `name`, `kind` (`"distant"` or `"dome"`), `towards`, `radiance`: what the pieces were made under; recorded, and read by nothing yet |
+| `cameras[]` | `name`, `eye`, `target`, `up`, `focal` (mm) |
+| `snapshots[]` | `time`, `camera`, `pieces`: one look at the scene and the pieces it added or changed; the scene at a time is the pieces of the snapshots up to it |
+
+`revision` goes up each time a piece's gaussians or its appearance are written,
+and `static` says its gaussians do not move from frame to frame: what a
+renderer keeps of a piece it keeps while the revision stands. `movedAt` and
+`paintedAt` are the revisions at which it last moved and at which what it is
+made of last changed: a fit raises `paintedAt` alone, new gaussians raise both.
+A manifest without these keys reads as converted, moved and painted at its
+revision, and with no snapshots.
 
 **Images written.** OpenEXR, linear premultiplied, bottom row first inside the
 engine and written top row first as the format wants. A frame is half by
@@ -3417,6 +3499,7 @@ surfels in levels of detail is one cloud.
 | `athenea bench` | nothing; timings on standard output |
 | `athenea lift` | the EXR of `-o`: the `--eye` frame keyed by the matte, and its depth |
 | `athenea neural-fit` | measures on standard output; with `--save`, a `.athn`; with `-o`, EXR frames |
+| `athenea neural-scene` | a `.aths` directory: `scene.json`, the pieces' clouds copied in, a `.athn` a fitted piece; `render -o`, EXR frames |
 | `athenea convert` | a USD stage, or a `.athc` |
 | `athenea stage` | one EXR; or, with `--render-settings`, one per product |
 | `athenea view` | nothing, or one EXR with `--snapshot` |

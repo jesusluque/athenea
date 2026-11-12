@@ -206,6 +206,13 @@ each measured):
   The clouds a fit learns from are one mesh's under one light each and must
   stay gaussian for gaussian: `scene::CloudLoader::keepFaint` keeps the
   records a bake emptied in their place.
+- **A neural scene** (`io/NeuralScene.h`, `apps/athenea/src/CmdNeuralScene.cpp`):
+  a directory of pieces, each its gaussians and its own neural appearance,
+  under a manifest (`scene.json`) that the reader and the writer frame and do
+  not compute. To add something a scene holds -- a wall's reads, a light's
+  shadow field -- give the piece or the scene a key in `NeuralScene`'s
+  structs, read it with a default so that older manifests still load, and
+  raise `kVersion` only when an older reader would draw the scene wrong.
 
 A kernel that adds to `shaders/athenea/neural/neural_appearance.slang` adds to
 both passes: the forward one and, by hand, the backward one beside it, and

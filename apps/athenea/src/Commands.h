@@ -41,6 +41,7 @@ void addCompare(CLI::App& app);
 void addLift(CLI::App& app);
 void addNeuralFit(CLI::App& app);
 void addWallFit(CLI::App& app);
+void addNeuralScene(CLI::App& app);
 void addRender(CLI::App& app);
 void addBench(CLI::App& app);
 void addConvert(CLI::App& app);

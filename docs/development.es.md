@@ -212,6 +212,13 @@ cada una):
   Las nubes de las que aprende un fit son las de una malla bajo una luz cada una y deben
   seguir gaussiana por gaussiana: `scene::CloudLoader::keepFaint` conserva en su sitio
   los registros que un bake vació.
+- **Una escena neural** (`io/NeuralScene.h`, `apps/athenea/src/CmdNeuralScene.cpp`):
+  un directorio de piezas, cada una con sus gaussianas y su propia apariencia neural,
+  bajo un manifest (`scene.json`) que el lector y el escritor enmarcan y no
+  calculan. Para añadir algo que guarde una escena -- las lecturas de una pared, el
+  campo de sombra de una luz -- se da a la pieza o a la escena una clave en los structs de
+  `NeuralScene`, se lee con un valor por defecto para que los manifests antiguos sigan cargando, y
+  se sube `kVersion` solo cuando un lector antiguo dibujaría mal la escena.
 
 Un kernel que añade algo a `shaders/athenea/neural/neural_appearance.slang` lo añade a
 las dos pasadas: la forward y, a mano, la backward junto a ella, y las diferencias

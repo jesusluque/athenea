@@ -133,7 +133,7 @@ Result<void> NeuralCloud::touch(gpu::Device& device, uint32_t first, uint32_t to
 }
 
 Result<std::vector<float>> readNeuralWeights(gpu::ShaderLibrary& library, const NeuralCloud& neural) {
-    std::vector<float> weights(kNeuralWeights);
+    std::vector<float> weights(neural.weightCount());
     ATHENEA_TRY(neural.weights.read(library.device(), 0, weights.size() * sizeof(float), weights.data()));
     return weights;
 }
@@ -141,7 +141,8 @@ Result<std::vector<float>> readNeuralWeights(gpu::ShaderLibrary& library, const 
 Result<NeuralCloud> neuralCloudFrom(gpu::ShaderLibrary& library, uint32_t count,
                                     std::span<const uint32_t> latentWords, std::span<const float> weights,
                                     bool lit) {
-    if (latentWords.size() != uint64_t{count} * kNeuralWords || weights.size() != kNeuralWeights) {
+    const bool split = weights.size() == size_t{kNeuralWeights} * 2;
+    if (latentWords.size() != uint64_t{count} * kNeuralWords || (weights.size() != kNeuralWeights && !split)) {
         return Error(ErrorCode::InvalidArgument,
                      "a neural appearance of other sizes than this engine's: " + std::to_string(weights.size()) +
                          " weights where it has " + std::to_string(kNeuralWeights));
@@ -150,6 +151,7 @@ Result<NeuralCloud> neuralCloudFrom(gpu::ShaderLibrary& library, uint32_t count,
     NeuralCloud neural;
     neural.count = count;
     neural.lit = lit;
+    neural.split = split;
     auto latent = made(device, uint64_t{count} * kNeuralStride * sizeof(float), sizeof(float), "neural.latent");
     if (!latent) return std::move(latent).error();
     auto held = made(device, weights.size_bytes(), sizeof(float), "neural.weights", weights.data());

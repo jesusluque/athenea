@@ -43,6 +43,7 @@ int main(int argc, char** argv) {
     athenea::cli::addLift(app);
     athenea::cli::addNeuralFit(app);
     athenea::cli::addWallFit(app);
+    athenea::cli::addNeuralScene(app);
     athenea::cli::addConvert(app);
     athenea::cli::addDecimate(app);
     athenea::cli::addMigrate(app);
