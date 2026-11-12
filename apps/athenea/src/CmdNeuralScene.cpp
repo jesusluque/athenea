@@ -84,12 +84,12 @@ struct SceneOptions {
     unsigned                 upTo = 0;
     float                    threshold = 0.05F;
     std::string              frame;
-    float                    tolerance = 0.03F;
-    float                    spread = 1.3F;
+    float                    tolerance = 0.06F;
+    float                    spread = 1.0F;
     std::string              views;
     float                    repaint = 0.0F;
     std::string              framesDir;
-    float                    refine = 2.0F;
+    float                    refine = 1.5F;
 };
 
 bool sizeOf(const std::string& text, uint32_t& width, uint32_t& height) {

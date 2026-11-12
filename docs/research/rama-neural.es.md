@@ -249,6 +249,9 @@ Cada punto con su medida y contra qué. El detalle está en `docs/decisions.md`,
   (`discover --views`); el frame del path tracer del que sale costó alrededor de un minuto.
 - Sponza entero desde diez frames, en una ejecución: 8,45 s (los diez frames costaron al path tracer unos diez
   minutos).
+- Los parámetros de `discover` se barrieron midiendo en vistas que ninguna mirada tomó (lo que importa), no en cómo
+  vuelve cada frame por su cámara: disco de 1,0 px, refinado 1,5 y tolerancia 0,06 dan 36,0 y 31,1 dB en Sponza
+  (antes 35,4 y 29,2), con 6,4 millones de gaussianas y la escena descubierta en 13,5 s.
 - Corrección de tiempos: los recorridos se cronometraron escribiendo sus frames a disco, y eso los inflaba. Sin
   escribir, el Sponza de 5,7 millones de gaussianas va a 15,5 ms por frame como mínimo (26,1 de media) a 1280 × 720,
   18,4 (30,2) a 1920 × 1080 y 36,2 (52,5) a 3840 × 2160, en Metal.

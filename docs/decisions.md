@@ -21647,3 +21647,50 @@ nothing that was measured -- the two held-out views 34.61 and 28.62 dB where the
 through its own camera the same to the third figure -- for twice the time a look (0.6 to 1.2 s where 0.4 to 0.6).
 On a thing against black it did help the look's own frame (the pawn, relMSE 0.107 to 0.075), which the next look
 does anyway. Not in the code.
+
+## discover's settings, measured where it counts: views no look took (12 Nov)
+
+The width of a found gaussian was chosen by how a look's own frame comes back through its own camera, and that
+measure is the wrong one: it rewards cover, and a wider disc covers. What a found scene is for is the views nobody
+looked from. With looks in one run a scene is found in seconds, so the settings were swept on the seven Sponza
+frames of 1440 x 810 against the path tracer from the two cameras that took no look (960 x 540):
+
+| a disc | `--refine` | `--tolerance` | standing | view A: PSNR, SSIM | view B: PSNR, SSIM |
+|---|---|---|---|---|---|
+| 1.6 px | 2 | 0.03 | 5.63 M | 34.52 dB, 0.902 | 28.30 dB, 0.852 |
+| 1.3 (as it was) | 2 | 0.03 | 5.70 M | 35.35, 0.912 | 29.19, 0.874 |
+| 1.15 | 2 | 0.03 | 5.74 M | 35.76, 0.916 | 29.72, 0.882 |
+| 1.0 | 2 | 0.03 | 5.79 M | 36.03, 0.915 | 30.07, 0.888 |
+| 0.85 | 2 | 0.03 | 5.96 M | 35.99, 0.909 | 30.68, 0.889 |
+| 0.7 | 2 | 0.03 | 6.26 M | 35.46, 0.890 | 30.73, 0.882 |
+| 1.3 | 0 | 0.03 | 4.56 M | 35.37, 0.914 | 28.21, 0.850 |
+| 1.3 | 1.5 | 0.03 | 6.35 M | 35.38, 0.913 | 29.52, 0.877 |
+| 1.3 | 3 | 0.03 | 4.81 M | 35.30, 0.912 | 28.21, 0.851 |
+| 1.3 | 2 | 0.015 | 5.70 M | 35.37, 0.913 | 29.19, 0.874 |
+| 1.3 | 2 | 0.06 | 5.70 M | 35.37, 0.912 | 29.61, 0.876 |
+| 1.0 | 1.5 | 0.03 | 6.38 M | 36.04, 0.915 | 30.53, 0.893 |
+| 1.0 | 2 | 0.06 | 5.79 M | 36.02, 0.914 | 30.50, 0.890 |
+| **1.0** | **1.5** | **0.06** | 6.38 M | **36.03, 0.913** | **31.11, 0.895** |
+| 0.85 | 1.5 | 0.06 | 6.46 M | 35.97, 0.905 | 31.36, 0.895 |
+
+The defaults are now a disc of one pixel, refining at 1.5 and a tolerance of 0.06: 0.7 dB and 1.9 dB over what
+they were. A narrower disc is sharper from elsewhere and leaves more gaps; refining sooner and holding a surface
+within a wider depth both help the view that sees from near what was found from far.
+
+Two cautions. Two views are little to choose three settings on, and they are of one building. And the relative
+error went the other way: relMSE 0.0160 and 0.0299 for the chosen settings against 0.0083 and 0.0246 at 1.3 --
+that measure is over the level of the frame, which in Sponza is nearly black, and a gap between discs is a pixel
+of nothing where there should be little. PSNR and SSIM, of the frame as it is shown, are what the defaults follow.
+
+The scene as it now stands, seven frames: found in 13.5 s, 7 310 842 gaussians made and 6 384 158 standing, and
+the walk only timed, on Metal: 16.6 ms a frame at least (28.0 on average) at 1280 x 720, 19.3 (32.4) at
+1920 x 1080 and 33.8 (54.4) at 3840 x 2160.
+
+The sections above on a moved statue, on the edge of depth and on refining were measured at the settings they
+name, not at these.
+
+### Not done
+
+- The sweep on more views and another scene, and the settings chosen by the scene (the pawn against black wanted
+  0.8 by the other measure).
+- The moved statue and the same-frame-again share at the new defaults.
