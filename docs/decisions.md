@@ -21846,15 +21846,16 @@ against the path tracer from the fourteen cameras that took none (960 x 540):
 | | PSNR: mean, least | SSIM: mean | on the disk |
 |---|---|---|---|
 | `discover`, from the same looks' frames (no lines) | 33.50, 23.85 dB | 0.884 | 1.7 GB |
-| `shoot` | 33.05, 23.47 dB | 0.892 | 0.96 GB |
+| `shoot`, the stage's maps other than colour at 1024 | 33.05, 23.47 dB | 0.892 | 0.96 GB |
+| `shoot`, every map whole, frames stored and the device freed | 32.94, 23.17 dB | 0.883 | 0.96 GB |
 
-As close, by fewer bytes: 0.45 dB under and 0.008 of SSIM over. It is not the gain the plan hoped the surface's
+As close, by fewer bytes: half a decibel under and the same SSIM (6.02 million gaussians standing). It is not the gain the plan hoped the surface's
 own normal and material would bring, and the worst view is where it was. Laying the disc by the shading normal
 rather than the triangle's cost 0.04 of SSIM (0.848 to 0.892, at 16 paths); how far a disc is stretched matters
-little (a least facing of 0.15, 0.3, 0.5: 33.00, 32.63, 32.69 dB at 16 paths). The shoot's stage was a copy of
-Sponza with its normal, roughness and metalness maps at 1024, the base colours as they are: with every map at
-4096 the stage and the scene did not fit the device together, which is what the frames stored and the device
-freed are for. A first look of a view is in 1 to 2.5 s after the first, whose 30 to 60 s are the stage's load.
+little (a least facing of 0.15, 0.3, 0.5: 33.00, 32.63, 32.69 dB at 16 paths). With every map at 4096 the stage and the scene found so far did not fit the device together -- the shoot
+stopped at its fifth view -- and the second row is a copy of Sponza with its normal, roughness and metalness maps
+at 1024; with each frame stored and the scene off the device between views, the third row is the stage whole:
+seven frames, no view short of memory, twelve pieces read back for the last and three left on the disk. A first look of a view is in 1 to 2.5 s after the first, whose 30 to 60 s are the stage's load.
 
 `[shoot]` (tests/render/test_neural_mlp.cpp): a look from twice as far makes gaussians 2.41 times as wide (the
 far look sees more of the cloud near edge on), a look at cells of four pixels a sixteenth as many and 3.96
@@ -21874,7 +21875,6 @@ pane makes two gaussians a pixel. And the piece's file and the manifest's new ke
 - **A pane refined.** A pane and what is behind it are held by a later look and never made finer, nor taken
   out when the glass moves: the scene's depth goes past them.
 - **What a lens hides.** Nothing is made of where a solid's bent rays end.
-- **The first views again with every map whole**, now that the scene leaves the device between views.
 - **Which pieces a view reads** is by their boxes, and a look's box is most of what its camera saw: in a
   building's inside nearly every piece meets nearly every frustum. Pieces cut by place rather than by look
   would be read by need.

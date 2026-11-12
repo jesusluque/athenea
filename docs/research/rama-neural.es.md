@@ -312,3 +312,44 @@ athenea neural-scene info sponza.aths
 
 El `A` de `vista.exr` es la máscara de lo que la escena conoce desde ahí. Un frame posterior con algo movido o
 repintado se añade con el mismo `discover` (`--repaint 0.3` para cambios de color con la cámara quieta).
+
+## 14. El render da gaussianas (12 de noviembre, tarde)
+
+Petición del usuario: que el resultado del render sean gaussianas en world space, de tamaño proporcional a la
+distancia a cámara; que se descubran conforme se renderiza; corregir los defectos del edificio; que la escena sea
+acumulativa con referencias de tiempo; que las gaussianas se generen según el material (hay transmisión y se
+puede refractar); que el PNG/EXR sea un postproceso; y que cada frame se almacene y libere la GPU.
+
+- **Las líneas blancas de Sponza eran del path tracer.** Comparado con Blender Cycles sobre el mismo USD y la misma
+  cámara: Cycles no las tiene. Un rayo que no cruza nada salía de su superficie 1e-3 × la distancia al origen
+  (2 cm aquí, más otros 2 de TMin) y en cada junta cóncava nacía ya al otro lado de la pared vecina. `--ray-margin`
+  (`athenea:rayMargin`), default sin cambio; con 2e-5 desaparecen. Todos los frames de las secciones 11 a 13
+  las llevaban. Test `[margin]`: una caja cerrada a 2000 unidades lee 0,0067 por dentro con el default y 0,0002
+  con 2e-5 (34× menos).
+- **`athenea neural-scene shoot`**: un stage USD path traced hacia dentro de un `.aths`. Sin imagen.
+  - *Tamaño*: σ = el píxel a su distancia; al doble de distancia, 2,41× de ancho medido (test `[shoot]`).
+  - *Progresivo*: miradas en celdas de 8, 4, 2 y 1 píxeles cuando cada celda tiene los caminos que tendrá un
+    píxel al final. En la sala de prueba hay escena dibujable a los 3,7 s de un frame de 42,5 s; en Sponza, 1 a
+    2,5 s por vista tras la primera.
+  - *Por material*: el path tracer da, además del color, la normal del triángulo, la de shading, metal,
+    roughness, transmisión, índice, si es lámina, y lo que hay detrás donde la superficie deja pasar la vista.
+    Una lámina de vidrio es una gaussiana de vidrio y lo de detrás va aparte, sin pintar la imagen en el vidrio;
+    un sólido de vidrio conserva su imagen y dice su índice.
+  - *Tiempo*: cada mirada es un snapshot (tiempo del stage, cámara, caminos, huella, reloj). Nada se borra:
+    `render --at T`, `--snapshot N`, `--frame N`.
+  - *Almacenado y GPU libre*: cada frame va a disco y al manifest; la escena sale de la GPU al acabar la vista y
+    la siguiente relee solo las piezas que toca su frustum.
+  - *Imagen como postproceso*: `neural-scene render -o x.png|x.exr`.
+- **El edificio, medido** (14 vistas que ninguna mirada tomó, contra el path tracer): `discover` 33,50 dB / SSIM
+  0,884 / 1,7 GB; `shoot` 32,94 dB / SSIM 0,883 / 0,96 GB con el stage entero (33,05 / 0,892 con los mapas que no
+  son de color a 1K). Empate con la mitad de disco, no mejora: la peor vista sigue en 23,2 dB. Con las texturas
+  a 4K el stage y la escena no cabían juntos en la GPU hasta que cada frame se almacenó y la escena se descargó
+  entre vistas. Orientar el disco por la normal de shading en vez de la del triángulo costaba 0,04 de
+  SSIM.
+- **Vidrio, medido**: el segundo frame de la sala, sacado de la escena, 29,6 dB / SSIM 0,962 contra el path
+  tracer donde la escena cubre.
+
+Lo que no está: la refracción dibujada con el ray tracer de gaussianas (el registro lleva transmisión, índice,
+lámina y tinte, pero falta darle la pieza como nube con su índice); la luz de detrás del vidrio medida por el path
+tracer en vez de dividida (hoy lleva dentro lo que el vidrio refleja); renderizar solo lo que la escena no tiene;
+mover en vez de retirar y rehacer; el default del margen del rayo, que es de release-0.5 (backlog NEU14).
