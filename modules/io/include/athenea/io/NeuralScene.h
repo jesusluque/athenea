@@ -12,6 +12,8 @@
 //     pieces/<id>.usda|.usdc|…   a piece's gaussians (a USD ParticleField as
 //                                athenea mesh2splat writes one, or a splat file)
 //     pieces/<id>.athn           its neural appearance (NeuralFile.h), once fitted
+//     pieces/<id>.seen           which look first saw each gaussian: a uint32 a gaussian, little
+//                                endian, the snapshot's place in `snapshots` counted from one, 0 for none
 //
 // Every path in the manifest is relative to the directory, so a scene moves
 // as a directory does. The manifest is read and written here and nothing is
@@ -80,6 +82,10 @@ struct NeuralScenePiece {
     std::string            origin = "converted";
     std::string            foundBy;
     double                 foundAt = 0.0;
+    /// What the looks have found of it: its `.seen`, relative to the scene
+    /// (empty: no look has been taken), and how many gaussians that is.
+    std::string            seen;
+    uint32_t               discovered = 0;
     std::optional<NeuralSceneFit> fit;
 };
 
@@ -123,6 +129,10 @@ struct NeuralScene {
     /// The box round every piece's own, as the manifest has them.
     void bounds(std::array<float, 3>& min, std::array<float, 3>& max) const;
 };
+
+/// A piece's `.seen`: `count` uint32, as they are.
+[[nodiscard]] Result<std::vector<uint32_t>> readSeen(const std::filesystem::path& path, uint32_t count);
+[[nodiscard]] Result<void> writeSeen(const std::filesystem::path& path, const std::vector<uint32_t>& seen);
 
 /// `directory`/scene.json.
 [[nodiscard]] Result<NeuralScene> readNeuralScene(const std::filesystem::path& directory);

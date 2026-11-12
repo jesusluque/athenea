@@ -393,6 +393,7 @@ athenea neural-scene info   hall.aths
 | `camera` | a named view in the manifest; one of the same name is replaced |
 | `fit` | each piece's harmonics learnt by a latent a gaussian and the piece's own network, a piece at a time; writes `pieces/<id>.athn` and the measures into the manifest after each piece, so a fit that stops keeps the pieces it finished |
 | `render` | every piece from one view, each by its appearance where it has one and by its harmonics where it has none |
+| `look` | one camera's look at one time: the frame is drawn and every gaussian that gave it something is found, stamped with this look where no look had seen it. Writes `pieces/<id>.seen` and the look into the manifest's `snapshots`, and prints how many gaussians it saw, how many were new and how many the scene already held |
 | `info` | the manifest, read; no device |
 
 | Option | Of | Value | Default | Notes |
@@ -412,6 +413,10 @@ athenea neural-scene info   hall.aths
 | `--view-smooth`, `--split` | `fit` | | `0`, off | as `athenea neural-fit`'s (§2.3.2) |
 | `--camera` | `render` | name | the manifest's first | or `--eye` and `--target` (with `--up`, `--focal`) for a view of its own |
 | `--harmonics` | `render` | flag | off | every piece by its harmonics |
+| `--discovered` | `render` | flag | off | only the gaussians the looks have found: the scene as it is known. A piece no look has been taken of is not drawn |
+| `--up-to` | `render` | integer | `0` | `--discovered`: only the looks up to this one, counted from one in the order of `snapshots`; `0` is all of them |
+| `--camera`, `--time` | `look` | name, number | —, — | a view of the manifest's and when; the pair is the look's snapshot, and a look taken again is the same one |
+| `--threshold` | `look` | pixels | `0.05` | how much a gaussian gives the frame to count as seen: its blending weight summed over its pixels |
 | `--compare` | `render` | flag | off | both ways: the latents against the harmonics (`athenea compare`'s measures) and a frame's time by each, the least of twelve |
 | `-o`, `--output` | `render` | path | — | an EXR; with `--compare`, `<stem>_harmonics.exr` and `<stem>_latents.exr` |
 
@@ -3419,7 +3424,11 @@ relative to the directory, so a scene moves as a directory does.
   scene.json               the manifest
   pieces/<id>.usda|…       a piece's gaussians: a USD ParticleField or a splat file
   pieces/<id>.athn         its neural appearance, once fitted
+  pieces/<id>.seen         which look first saw each gaussian
 ```
+
+A `.seen` is a uint32 a gaussian, little endian and nothing else: the place in
+`snapshots`, counted from one, of the look that first saw it, 0 where none has.
 
 | Key of `scene.json` | Value |
 |---|---|
@@ -3428,6 +3437,7 @@ relative to the directory, so a scene moves as a directory does.
 | `source` | `stage`: what the pieces were converted from; `licence`: what it asks of whoever uses it |
 | `bounds` | `min`, `max`: the box round every piece's, written and not read |
 | `pieces[]` | `id`; `prim` (where it came from); `cloud` (its file); `gaussians`; `bounds`; `transform` (object to world, sixteen numbers row major); `revision`, `movedAt`, `paintedAt`; `static`; `origin`; and, once fitted, `appearance` |
+| `pieces[].seen`, `discovered` | its `.seen` and how many gaussians the looks have found; absent until a look is taken |
 | `pieces[].origin` | `kind`: `"converted"` (from geometry, whole), `"discovered"` (the gaussians a camera saw) or `"generated"` (filled in by another system); `camera` and `time`: what found it and when |
 | `pieces[].appearance` | `file` (its `.athn`); `lit`; `split`; `fit`: `steps`, `against` (`"harmonics"`), `relMSE`, `p99`, `max` as the device measured them from the held-out cameras |
 | `lights[]` | `name`, `kind` (`"distant"` or `"dome"`), `towards`, `radiance`: what the pieces were made under; recorded, and read by nothing yet |

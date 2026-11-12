@@ -57,6 +57,29 @@ void NeuralScene::bounds(std::array<float, 3>& min, std::array<float, 3>& max) c
     }
 }
 
+Result<std::vector<uint32_t>> readSeen(const std::filesystem::path& path, uint32_t count) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        return Error(ErrorCode::NotFound, "cannot open " + path.string());
+    }
+    std::vector<uint32_t> seen(count);
+    in.read(reinterpret_cast<char*>(seen.data()), static_cast<std::streamsize>(seen.size() * sizeof(uint32_t)));
+    if (!in || in.peek() != std::ifstream::traits_type::eof()) {
+        return Error(ErrorCode::InvalidArgument,
+                     path.string() + " is not a record of " + std::to_string(count) + " gaussians");
+    }
+    return seen;
+}
+
+Result<void> writeSeen(const std::filesystem::path& path, const std::vector<uint32_t>& seen) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(seen.data()), static_cast<std::streamsize>(seen.size() * sizeof(uint32_t)));
+    if (!out) {
+        return Error(ErrorCode::IoFailure, "cannot write " + path.string());
+    }
+    return ok();
+}
+
 Result<NeuralScene> readNeuralScene(const std::filesystem::path& directory) {
     const std::filesystem::path path = directory / "scene.json";
     std::ifstream in(path);
@@ -95,6 +118,8 @@ Result<NeuralScene> readNeuralScene(const std::filesystem::path& directory) {
             into(from, "transform", p.transform);
             p.revision = from.value("revision", 1u);
             p.isStatic = from.value("static", true);
+            p.seen = from.value("seen", std::string{});
+            p.discovered = from.value("discovered", 0u);
             p.movedAt = from.value("movedAt", p.revision);
             p.paintedAt = from.value("paintedAt", p.revision);
             if (const auto origin = from.find("origin"); origin != from.end() && origin->is_object()) {
@@ -187,6 +212,10 @@ Result<void> writeNeuralScene(const std::filesystem::path& directory, const Neur
         piece["transform"] = listOf(p.transform);
         piece["revision"] = p.revision;
         piece["static"] = p.isStatic;
+        if (!p.seen.empty()) {
+            piece["seen"] = p.seen;
+            piece["discovered"] = p.discovered;
+        }
         piece["movedAt"] = p.movedAt;
         piece["paintedAt"] = p.paintedAt;
         piece["origin"] = {{"kind", p.origin}, {"camera", p.foundBy}, {"time", p.foundAt}};

@@ -213,6 +213,10 @@ each measured):
   shadow field -- give the piece or the scene a key in `NeuralScene`'s
   structs, read it with a default so that older manifests still load, and
   raise `kVersion` only when an older reader would draw the scene wrong.
+  `render/Discovery.h` (`shaders/athenea/neural/scene_discover.slang`) is what
+  a look is made of: it stamps the gaussians a frame's contributions say were
+  seen, counts them, and hands back a piece with the unseen ones given no
+  opacity, which is how the scene as it is known is drawn.
 
 A kernel that adds to `shaders/athenea/neural/neural_appearance.slang` adds to
 both passes: the forward one and, by hand, the backward one beside it, and

@@ -6,6 +6,7 @@
 //   camera  a named view kept in the manifest
 //   fit     each piece's harmonics learnt by its own latents and network
 //   render  the whole scene from a view, by the latents or by the harmonics
+//   look    one camera's look at one time: which gaussians it found
 //   info    what the manifest holds
 //
 // A piece is fitted alone -- its cloud, its appearance, the device's memory
@@ -30,6 +31,7 @@
 #include "athenea/io/Exr.h"
 #include "athenea/io/NeuralFile.h"
 #include "athenea/io/NeuralScene.h"
+#include "athenea/render/Discovery.h"
 #include "athenea/render/NeuralAppearance.h"
 #include "athenea/render/NeuralFit.h"
 #include "athenea/render/ReferenceRenderer.h"
@@ -72,6 +74,9 @@ struct SceneOptions {
     std::string              output;
     bool                     harmonics = false;
     bool                     compare = false;
+    bool                     discovered = false;
+    unsigned                 upTo = 0;
+    float                    threshold = 0.05F;
 };
 
 bool sizeOf(const std::string& text, uint32_t& width, uint32_t& height) {
@@ -235,6 +240,9 @@ int runInfo(const SceneOptions& o) {
     for (const io::NeuralScenePiece& p : scene->pieces) {
         out("  piece %s: %u gaussians, %s, revision %u (moved at %u, painted at %u), %s", p.id.c_str(), p.gaussians,
             p.origin.c_str(), p.revision, p.movedAt, p.paintedAt, p.isStatic ? "static" : "moving");
+        if (!p.seen.empty()) {
+            out(", %u found by the looks", p.discovered);
+        }
         if (p.appearance.empty()) {
             out(", by its harmonics\n");
         } else if (p.fit) {
@@ -405,35 +413,55 @@ int runFit(const SceneOptions& o) {
     return 0;
 }
 
-int runRender(const SceneOptions& o) {
+/// The view a command asks for: one of its own (--eye, --target) or one the manifest names.
+std::optional<render::Camera> viewOf(const SceneOptions& o, const io::NeuralScene& scene) {
+    render::Camera camera;
+    if (o.eye.size() == 3 && o.target.size() == 3) {
+        const render::Vec3 up = o.up.size() == 3 ? render::Vec3{o.up[0], o.up[1], o.up[2]} : upOf(scene);
+        camera = render::Camera::lookingAt({o.eye[0], o.eye[1], o.eye[2]}, {o.target[0], o.target[1], o.target[2]}, up);
+        camera.lens.focal = o.focal > 0.0 ? o.focal : 35.0;
+        return camera;
+    }
+    for (const io::NeuralSceneCamera& c : scene.cameras) {
+        if (o.camera.empty() || c.name == o.camera) {
+            camera = render::Camera::lookingAt({c.eye[0], c.eye[1], c.eye[2]}, {c.target[0], c.target[1], c.target[2]},
+                                               {c.up[0], c.up[1], c.up[2]});
+            camera.lens.focal = o.focal > 0.0 ? o.focal : c.focal;
+            return camera;
+        }
+    }
+    err("the scene has no camera %s: --eye and --target, or neural-scene camera\n", o.camera.c_str());
+    return std::nullopt;
+}
+
+/// ONE LOOK. A camera of the manifest's at a time: the frame is drawn, and every gaussian that gave it
+/// something is found -- stamped with this look where no look had seen it. What the look says is how
+/// much of what it saw the scene already held, which is what the next frame does not have to find again.
+int runLook(const SceneOptions& o) {
     uint32_t width = 0;
     uint32_t height = 0;
     if (!sizeOf(o.size, width, height)) return kExitFailure;
     const std::filesystem::path directory = o.directory;
     auto scene = io::readNeuralScene(directory);
     if (!scene) return report(scene.error());
-    render::Camera camera;
-    if (o.eye.size() == 3 && o.target.size() == 3) {
-        const render::Vec3 up = o.up.size() == 3 ? render::Vec3{o.up[0], o.up[1], o.up[2]} : upOf(*scene);
-        camera = render::Camera::lookingAt({o.eye[0], o.eye[1], o.eye[2]}, {o.target[0], o.target[1], o.target[2]}, up);
-        camera.lens.focal = o.focal > 0.0 ? o.focal : 35.0;
-    } else {
-        const io::NeuralSceneCamera* named = nullptr;
-        for (const io::NeuralSceneCamera& c : scene->cameras) {
-            if (o.camera.empty() || c.name == o.camera) {
-                named = &c;
-                break;
-            }
-        }
-        if (named == nullptr) {
-            err("the scene has no camera %s: --eye and --target, or neural-scene camera\n", o.camera.c_str());
-            return kExitFailure;
-        }
-        camera = render::Camera::lookingAt({named->eye[0], named->eye[1], named->eye[2]},
-                                           {named->target[0], named->target[1], named->target[2]},
-                                           {named->up[0], named->up[1], named->up[2]});
-        camera.lens.focal = o.focal > 0.0 ? o.focal : named->focal;
+    if (o.camera.empty() || o.time < 0.0) {
+        err("a look wants --camera, one of the manifest's, and --time\n");
+        return kExitFailure;
     }
+    const auto camera = viewOf(o, *scene);
+    if (!camera) return kExitFailure;
+    // The look's place in the scene's history is what its gaussians are stamped with.
+    size_t at = scene->snapshots.size();
+    for (size_t k = 0; k < scene->snapshots.size(); ++k) {
+        if (scene->snapshots[k].time == o.time && scene->snapshots[k].camera == o.camera) {
+            at = k;
+        }
+    }
+    if (at == scene->snapshots.size()) {
+        scene->snapshots.push_back({o.time, o.camera, {}});
+    }
+    const uint32_t stamp = static_cast<uint32_t>(at) + 1;
+
     auto device = gpu::Device::create();
     if (!device) return report(device.error());
     gpu::ShaderLibrary library(*device);
@@ -441,6 +469,124 @@ int runRender(const SceneOptions& o) {
     if (!loader) return report(loader.error());
     auto raster = render::TileRasterizer::create(library);
     if (!raster) return report(raster.error());
+    auto discovery = render::Discovery::create(library);
+    if (!discovery) return report(discovery.error());
+
+    std::vector<std::unique_ptr<scene::GpuSplats>> clouds;
+    std::vector<std::unique_ptr<render::NeuralCloud>> looks;
+    std::vector<gpu::Buffer> records;
+    std::vector<render::SplatInstance> instances;
+    uint32_t slots = 0;
+    for (const io::NeuralScenePiece& piece : scene->pieces) {
+        auto cloud = load(library, *loader, directory / piece.cloud);
+        if (!cloud) return report(cloud.error());
+        clouds.push_back(std::make_unique<scene::GpuSplats>(std::move(*cloud)));
+        const uint32_t count = clouds.back()->count;
+        std::vector<uint32_t> held;
+        if (!piece.seen.empty()) {
+            auto read = io::readSeen(directory / piece.seen, count);
+            if (!read) return report(read.error());
+            held = std::move(*read);
+        }
+        auto record = discovery->record(count, held);
+        if (!record) return report(record.error());
+        records.push_back(*record);
+        render::Mat4 place;
+        for (size_t k = 0; k < 16; ++k) {
+            place.m[k] = piece.transform[k];
+        }
+        render::SplatInstance instance{clouds.back().get(), place, {}};
+        looks.emplace_back();
+        if (!piece.appearance.empty()) {
+            auto file = io::readNeural(directory / piece.appearance);
+            if (!file) return report(file.error());
+            auto neural = render::neuralCloudFrom(library, file->count, file->latent, file->weights, file->lit);
+            if (!neural) return report(neural.error());
+            looks.back() = std::make_unique<render::NeuralCloud>(std::move(*neural));
+            instance.neural = looks.back().get();
+        }
+        instances.push_back(instance);
+        slots += count;
+    }
+    auto given = discovery->zeros(slots);
+    if (!given) return report(given.error());
+    render::RenderSettings settings;
+    settings.width = width;
+    settings.height = height;
+    settings.contribution = &*given;
+    settings.contributionMode = 1;
+    render::RenderTargets frame;
+    auto drawn = raster->render(*camera, instances, settings, frame);
+    if (!drawn) return report(drawn.error());
+
+    uint64_t found = 0;
+    uint64_t again = 0;
+    uint64_t known = 0;
+    uint64_t total = 0;
+    uint32_t base = 0;
+    io::NeuralSceneSnapshot& snapshot = scene->snapshots[at];
+    for (size_t k = 0; k < scene->pieces.size(); ++k) {
+        io::NeuralScenePiece& piece = scene->pieces[k];
+        const uint32_t count = clouds[k]->count;
+        auto counted = discovery->mark(*given, base, records[k], count, stamp, o.threshold);
+        if (!counted) return report(counted.error());
+        auto holds = discovery->known(records[k], count, 0xFFFFFFFFu);
+        if (!holds) return report(holds.error());
+        auto seen = records[k].readAll<uint32_t>(**device);
+        if (!seen) return report(seen.error());
+        seen->resize(count);
+        piece.seen = "pieces/" + piece.id + ".seen";
+        if (auto written = io::writeSeen(directory / piece.seen, *seen); !written) return report(written.error());
+        piece.discovered = *holds;
+        if (counted->found > 0 && std::find(snapshot.pieces.begin(), snapshot.pieces.end(), piece.id) == snapshot.pieces.end()) {
+            snapshot.pieces.push_back(piece.id);
+        }
+        out("  piece %s: %u found, %u the scene already held; it now holds %u of %u\n", piece.id.c_str(), counted->found,
+            counted->again, *holds, count);
+        found += counted->found;
+        again += counted->again;
+        known += *holds;
+        total += count;
+        base += count;
+    }
+    if (auto written = io::writeNeuralScene(directory, *scene); !written) return report(written.error());
+    const uint64_t saw = found + again;
+    out("look %u (%s at %g): saw %llu gaussians, %llu new and %llu the scene already held (%.1f%%); the scene now "
+        "holds %llu of %llu (%.1f%%)\n",
+        stamp, o.camera.c_str(), o.time, static_cast<unsigned long long>(saw), static_cast<unsigned long long>(found),
+        static_cast<unsigned long long>(again), saw > 0 ? 100.0 * static_cast<double>(again) / static_cast<double>(saw) : 0.0,
+        static_cast<unsigned long long>(known), static_cast<unsigned long long>(total),
+        total > 0 ? 100.0 * static_cast<double>(known) / static_cast<double>(total) : 0.0);
+    if (!o.output.empty()) {
+        auto colour = frame.colour.readAll<float>(**device);
+        if (!colour) return report(colour.error());
+        auto depth = frame.depth.readAll<float>(**device);
+        if (!depth) return report(depth.error());
+        if (auto w = io::writeExr(o.output, width, height, *colour, *depth); !w) return report(w.error());
+        out("wrote %s\n", o.output.c_str());
+    }
+    return 0;
+}
+
+int runRender(const SceneOptions& o) {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    if (!sizeOf(o.size, width, height)) return kExitFailure;
+    const std::filesystem::path directory = o.directory;
+    auto scene = io::readNeuralScene(directory);
+    if (!scene) return report(scene.error());
+    const auto view = viewOf(o, *scene);
+    if (!view) return kExitFailure;
+    const render::Camera camera = *view;
+    auto device = gpu::Device::create();
+    if (!device) return report(device.error());
+    gpu::ShaderLibrary library(*device);
+    auto loader = scene::CloudLoader::create(library);
+    if (!loader) return report(loader.error());
+    auto raster = render::TileRasterizer::create(library);
+    if (!raster) return report(raster.error());
+    auto discovery = render::Discovery::create(library);
+    if (!discovery) return report(discovery.error());
 
     // Every piece on the device, and its appearance where it has one.
     std::vector<std::unique_ptr<scene::GpuSplats>> clouds;
@@ -451,6 +597,20 @@ int runRender(const SceneOptions& o) {
     for (const io::NeuralScenePiece& piece : scene->pieces) {
         auto cloud = load(library, *loader, directory / piece.cloud);
         if (!cloud) return report(cloud.error());
+        if (o.discovered) {
+            // THE SCENE AS IT IS KNOWN: only what the looks found, up to one of them. A piece no look
+            // has been taken of is not drawn at all.
+            if (piece.seen.empty()) {
+                continue;
+            }
+            auto held = io::readSeen(directory / piece.seen, cloud->count);
+            if (!held) return report(held.error());
+            auto record = discovery->record(cloud->count, *held);
+            if (!record) return report(record.error());
+            auto known = discovery->masked(*cloud, *record, o.upTo == 0 ? 0xFFFFFFFFu : o.upTo);
+            if (!known) return report(known.error());
+            cloud = std::move(known);
+        }
         clouds.push_back(std::make_unique<scene::GpuSplats>(std::move(*cloud)));
         render::Mat4 place;
         for (size_t k = 0; k < 16; ++k) {
@@ -604,8 +764,19 @@ void addNeuralScene(CLI::App& app) {
     render->add_option("--size", o.size, "WIDTHxHEIGHT");
     render->add_option("-o,--output", o.output, "an EXR; with --compare, <stem>_harmonics.exr and <stem>_latents.exr");
     render->add_flag("--harmonics", o.harmonics, "every piece by its harmonics, whatever appearance it has");
+    render->add_flag("--discovered", o.discovered, "only the gaussians the looks have found (neural-scene look): the scene as it is known");
+    render->add_option("--up-to", o.upTo, "--discovered: only the looks up to this one, counted from one (0: all)");
     render->add_flag("--compare", o.compare, "both ways: the latents against the harmonics, and a frame's time by each");
     run(render, options, runRender);
+
+    CLI::App* look = cmd->add_subcommand("look", "one camera's look at one time: which gaussians it found, and how many the scene already held");
+    look->add_option("scene", o.directory, "the scene's directory")->required();
+    look->add_option("--camera", o.camera, "a view of the manifest's");
+    look->add_option("--time", o.time, "when: with the camera, the look's snapshot");
+    look->add_option("--size", o.size, "WIDTHxHEIGHT of the look's frame");
+    look->add_option("--threshold", o.threshold, "how much of a pixel a gaussian gives the frame to count as seen");
+    look->add_option("-o,--output", o.output, "the look's frame, an EXR");
+    run(look, options, runLook);
 
     CLI::App* info = cmd->add_subcommand("info", "what the manifest holds");
     info->add_option("scene", o.directory, "the scene's directory")->required();

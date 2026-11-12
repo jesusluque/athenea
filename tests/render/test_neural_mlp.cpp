@@ -208,6 +208,7 @@ TEST_CASE("a cloud drawn from its latents starts as its own first harmonic draws
 
 #include "athenea/render/NeuralFit.h"
 #include "athenea/render/NeuralWall.h"
+#include "athenea/render/Discovery.h"
 
 TEST_CASE("a cloud's harmonics are learnt by its latents, from frames of itself", "[render][gpu][neural][fit]") {
     ATHENEA_REQUIRE_GPU(gpu);
@@ -842,4 +843,73 @@ TEST_CASE("a neural scene's manifest written and read is the scene, and a split 
     CHECK(!back->lit);
     CHECK(back->weights.size() == size_t{render::kNeuralWeights} * 2);
     std::filesystem::remove_all(directory);
+}
+
+TEST_CASE("a look finds the gaussians its frame is made of, a second look from there finds none, and the scene "
+          "drawn as it is known is that look's frame",
+          "[render][gpu][neural][scene][look]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto discovery = render::Discovery::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!discovery) FAIL(discovery.error().toString());
+    test::CloudBuilder builder = test::randomCloud(6000, 21, 0.02F, 0.12F);
+    auto cloud = loader->upload(builder.raw, 3);
+    REQUIRE(cloud);
+    const render::SplatInstance instance{&*cloud, render::Mat4::identity()};
+    const render::Camera front = render::Camera::lookingAt({0.5, 0.5, 6.0}, {0.0, 0.0, 0.0});
+    const render::Camera back = render::Camera::lookingAt({-0.5, 0.3, -6.0}, {0.0, 0.0, 0.0});
+    auto seen = discovery->record(cloud->count);
+    REQUIRE(seen);
+
+    const auto look = [&](const render::Camera& camera, uint32_t stamp, render::RenderTargets& frame) {
+        auto given = discovery->zeros(cloud->count);
+        REQUIRE(given);
+        render::RenderSettings settings;
+        settings.width = 320;
+        settings.height = 240;
+        settings.contribution = &*given;
+        settings.contributionMode = 1;
+        REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&instance, 1), settings, frame));
+        auto counted = discovery->mark(*given, 0, *seen, cloud->count, stamp, 0.05F);
+        REQUIRE(counted);
+        return *counted;
+    };
+    render::RenderTargets first, again, other;
+    const render::LookCount one = look(front, 1, first);
+    const render::LookCount two = look(front, 2, again);
+    const render::LookCount three = look(back, 3, other);
+    auto afterOne = discovery->known(*seen, cloud->count, 1);
+    auto afterAll = discovery->known(*seen, cloud->count, 0xFFFFFFFFu);
+    REQUIRE(afterOne);
+    REQUIRE(afterAll);
+    std::printf("  looks: %u found, then %u found and %u held, then from behind %u found and %u held; the scene holds "
+                "%u then %u of %u\n",
+                one.found, two.found, two.again, three.found, three.again, *afterOne, *afterAll, cloud->count);
+    CHECK(one.found > 100);
+    CHECK(one.again == 0);
+    // The same look again finds nothing new, and what it sees is what the first found.
+    CHECK(two.found == 0);
+    CHECK(two.again == one.found);
+    // Nothing that look stamped is the first look's any less.
+    CHECK(*afterOne == one.found);
+    CHECK(*afterAll == one.found + three.found);
+    CHECK(*afterAll <= cloud->count);
+
+    // The scene as the first look knew it, from where it looked: its own frame, but for the gaussians
+    // that gave it less than counts as seen.
+    auto known = discovery->masked(*cloud, *seen, 1);
+    REQUIRE(known);
+    const render::SplatInstance knownInstance{&*known, render::Mat4::identity()};
+    render::RenderSettings settings;
+    settings.width = 320;
+    settings.height = 240;
+    render::RenderTargets drawn;
+    REQUIRE(raster->render(front, std::span<const render::SplatInstance>(&knownInstance, 1), settings, drawn));
+    auto same = render::compareImages(*gpu->library, drawn.colour, first.colour, settings.width, settings.height);
+    REQUIRE(same);
+    std::printf("  the scene as the first look knew it against that look's frame: p99 %u, max %u\n", same->p99, same->max);
+    CHECK(same->p99 <= 4);
 }

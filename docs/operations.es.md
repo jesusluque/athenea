@@ -397,6 +397,7 @@ athenea neural-scene info   hall.aths
 | `camera` | una vista con nombre en el manifest; una con el mismo nombre se sustituye |
 | `fit` | los harmonics de cada pieza aprendidos por un latente por gaussiana y la red propia de la pieza, una pieza cada vez; escribe `pieces/<id>.athn` y las medidas en el manifest tras cada pieza, así que un fit que se para conserva las piezas que terminó |
 | `render` | todas las piezas desde una vista, cada una con su apariencia donde la tiene y con sus harmonics donde no |
+| `look` | la mirada de una cámara en un tiempo: se dibuja el frame y cada gaussiana que le dio algo queda encontrada, sellada con esta mirada donde ninguna la había visto. Escribe `pieces/<id>.seen` y la mirada en los `snapshots` del manifest, e imprime cuántas gaussianas vio, cuántas eran nuevas y cuántas tenía ya la escena |
 | `info` | el manifest, leído; sin dispositivo |
 
 | Opción | De | Valor | Por defecto | Notas |
@@ -416,6 +417,10 @@ athenea neural-scene info   hall.aths
 | `--view-smooth`, `--split` | `fit` | | `0`, off | como los de `athenea neural-fit` (§2.3.2) |
 | `--camera` | `render` | nombre | la primera del manifest | o `--eye` y `--target` (con `--up`, `--focal`) para una vista propia |
 | `--harmonics` | `render` | flag | off | todas las piezas con sus harmonics |
+| `--discovered` | `render` | flag | off | solo las gaussianas que han encontrado las miradas: la escena tal como se conoce. Una pieza de la que no se ha tomado ninguna mirada no se dibuja |
+| `--up-to` | `render` | entero | `0` | `--discovered`: solo las miradas hasta esta, contadas desde uno en el orden de `snapshots`; `0` son todas |
+| `--camera`, `--time` | `look` | nombre, número | —, — | una vista del manifest y cuándo; el par es el snapshot de la mirada, y una mirada repetida es la misma |
+| `--threshold` | `look` | píxeles | `0.05` | cuánto da una gaussiana al frame para contar como vista: su peso de blend sumado sobre sus píxeles |
 | `--compare` | `render` | flag | off | de las dos maneras: los latentes contra los harmonics (las medidas de `athenea compare`) y el tiempo de un frame con cada uno, el menor de doce |
 | `-o`, `--output` | `render` | ruta | — | un EXR; con `--compare`, `<stem>_harmonics.exr` y `<stem>_latents.exr` |
 
@@ -3529,7 +3534,11 @@ relativas al directorio, así que una escena se mueve como se mueve un directori
   scene.json               el manifest
   pieces/<id>.usda|…       las gaussianas de una pieza: un ParticleField de USD o un fichero de splats
   pieces/<id>.athn         su apariencia neural, una vez ajustada
+  pieces/<id>.seen         qué mirada vio primero cada gaussiana
 ```
+
+Un `.seen` es un uint32 por gaussiana, little endian y nada más: el puesto en
+`snapshots`, contado desde uno, de la mirada que la vio primero, 0 donde ninguna.
 
 | Clave de `scene.json` | Valor |
 |---|---|
@@ -3538,6 +3547,7 @@ relativas al directorio, así que una escena se mueve como se mueve un directori
 | `source` | `stage`: de qué se convirtieron las piezas; `licence`: qué pide a quien lo use |
 | `bounds` | `min`, `max`: la caja que envuelve las de todas las piezas, escrita y no leída |
 | `pieces[]` | `id`; `prim` (de dónde salió); `cloud` (su fichero); `gaussians`; `bounds`; `transform` (objeto a mundo, dieciséis números por filas); `revision`, `movedAt`, `paintedAt`; `static`; `origin`; y, una vez ajustada, `appearance` |
+| `pieces[].seen`, `discovered` | su `.seen` y cuántas gaussianas han encontrado las miradas; ausentes hasta que se toma una mirada |
 | `pieces[].origin` | `kind`: `"converted"` (de geometría, entera), `"discovered"` (las gaussianas que vio una cámara) o `"generated"` (rellenada por otro sistema); `camera` y `time`: qué la encontró y cuándo |
 | `pieces[].appearance` | `file` (su `.athn`); `lit`; `split`; `fit`: `steps`, `against` (`"harmonics"`), `relMSE`, `p99`, `max` como los midió el dispositivo desde las cámaras held-out |
 | `lights[]` | `name`, `kind` (`"distant"` o `"dome"`), `towards`, `radiance`: bajo qué se hicieron las piezas; se anota, y todavía no lo lee nada |

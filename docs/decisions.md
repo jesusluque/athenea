@@ -21152,3 +21152,60 @@ drawn by its harmonics, in one frame.
 - Pieces fitted to pictures rather than to their own harmonics, which wants every piece in the frame at once.
 - The scene's lights read by anything; a piece's transform other than identity drawn by `fit`.
 - Pieces loaded as a camera needs them. `render` loads them all.
+
+## A look: what one camera found at one time (12 Nov)
+
+A render is treated as a final picture. It can be kept as something else: one camera's look at the world at one
+time, whose yield is which gaussians it saw, added to a scene that is known a look at a time. The next look then
+has to find only what the ones before could not see, and a renderer -- or another system that fills what no
+camera has seen -- is told exactly what is known and what is not.
+
+`athenea neural-scene look` is that step over a scene's pieces (`render/Discovery.h`,
+`shaders/athenea/neural/scene_discover.slang`). The look's frame is drawn with the blend summing what each
+gaussian gave it (`RenderSettings::contribution`, mode 1: blending weight over its pixels, in 1/4096 of a pixel);
+a gaussian that gave at least `--threshold` (0.05 of a pixel) is seen, and one no look had seen is stamped with
+the look's place in the scene's `snapshots`. A piece's record is its `.seen`, a uint32 a gaussian. `neural-scene
+render --discovered --up-to N` draws the scene as it was known after look N: a piece's gaussians that no look had
+found are given no opacity (their positions' fourth number), the piece otherwise the same buffers.
+
+The clay pawn on its floor, 99 792 gaussians, 960 x 540, CUDA:
+
+| look | saw | new | the scene already held | the scene holds |
+|---|---|---|---|---|
+| 1, from the front | 67 025 | 67 025 | 0% | 67.2% |
+| 2, the same camera later | 67 025 | 0 | 100% | 67.2% |
+| 3, from the side | 66 154 | 13 845 | 79.1% | 81.0% |
+| 4, from behind | 67 989 | 12 614 | 81.4% | 93.7% |
+
+Two floors of Intel's Sponza, 793 965 gaussians, 1920 x 1080, Metal, a camera walking down the atrium, turning
+round, then going upstairs:
+
+| look | saw | new | the scene already held | the scene holds |
+|---|---|---|---|---|
+| 1 | 59 711 | 59 711 | 0% | 7.5% |
+| 2, five metres on | 36 562 | 4 160 | 88.6% | 8.0% |
+| 3, four metres on | 13 349 | 1 382 | 89.6% | 8.2% |
+| 4, turned round | 37 226 | 37 177 | 0.1% | 12.9% |
+| 5, upstairs | 44 038 | 19 457 | 55.8% | 15.4% |
+
+A camera that moves on finds a tenth of what it sees; one that turns round finds all of it; and five looks into a
+building know a sixth of it. That last number is the room there is for whatever fills the rest.
+
+What this is not yet. The looks are taken of a scene that was converted whole, so a look selects among gaussians
+that exist; it does not make them from the frame. Every look still draws its whole frame, so the share the scene
+already held is a measure of what could be saved and not a saving. And a gaussian that is known is not checked
+for having changed since: that is what a piece's `movedAt` and `paintedAt` are for, and nothing compares them to
+a look yet.
+
+The Sponza frames themselves are not worth showing: its ground floor is missing (below), the floors are converted
+at 19 cm a gaussian, and with no bake they are albedo with no light.
+
+### Not done
+
+- Gaussians made from a look's frame (its depth and its trace), which is the step that turns a renderer's output
+  into the scene.
+- A look that draws only what it does not know, and reuses the rest: tiles no unknown gaussian touches.
+- A known gaussian checked against its piece's stamps.
+- What is not known, written for another system to fill: today it is the zeros of a `.seen`.
+- Sponza's ground floor (`mesh2splat` stops with "the output picture is on the heap, not on the device" on its
+  first mesh, twice, while two floors with the same material convert), a bake, and a density worth looking at.
