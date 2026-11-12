@@ -982,10 +982,6 @@ int runRender(const SceneOptions& o) {
             err("cannot open %s\n", o.views.c_str());
             return kExitFailure;
         }
-        if (o.output.empty()) {
-            err("--views wants -o, a prefix for the frames\n");
-            return kExitFailure;
-        }
         const std::vector<render::SplatInstance>& drawnAs = o.harmonics ? byHarmonics : byLatents;
         render::RenderSettings waited = settings;
         waited.timeStages = true;
@@ -1017,12 +1013,15 @@ int runRender(const SceneOptions& o) {
             least = std::min(least, stats->totalMs);
             sum += stats->totalMs;
             ++frames;
-            auto colour = frame.colour.readAll<float>(**device);
-            if (!colour) return report(colour.error());
-            auto depth = frame.depth.readAll<float>(**device);
-            if (!depth) return report(depth.error());
-            if (auto w = io::writeExr(o.output + "_" + name + ".exr", width, height, *colour, *depth); !w) {
-                return report(w.error());
+            // Written only where a prefix is given: a walk that is only timed leaves nothing on the disk.
+            if (!o.output.empty()) {
+                auto colour = frame.colour.readAll<float>(**device);
+                if (!colour) return report(colour.error());
+                auto depth = frame.depth.readAll<float>(**device);
+                if (!depth) return report(depth.error());
+                if (auto w = io::writeExr(o.output + "_" + name + ".exr", width, height, *colour, *depth); !w) {
+                    return report(w.error());
+                }
             }
         }
         uint64_t held = 0;

@@ -418,7 +418,7 @@ athenea neural-scene info   hall.aths
 | `--view-smooth`, `--split` | `fit` | | `0`, off | como los de `athenea neural-fit` (§2.3.2) |
 | `--camera` | `render` | nombre | la primera del manifest | o `--eye` y `--target` (con `--up`, `--focal`) para una vista propia |
 | `--harmonics` | `render` | flag | off | todas las piezas con sus harmonics |
-| `--views` | `render` | ruta | — | un recorrido: un fichero de vistas, `NAME EX EY EZ TX TY TZ [UX UY UZ]` por línea (el de `athenea stage --cameras`), cada una escrita como `<-o>_NAME.exr` con la escena cargada una vez; `--focal` es la de todas. Imprime el tiempo de un frame, el menor y el medio, con el reloj esperando al dispositivo |
+| `--views` | `render` | ruta | — | un recorrido: un fichero de vistas, `NAME EX EY EZ TX TY TZ [UX UY UZ]` por línea (el de `athenea stage --cameras`), cada una escrita como `<-o>_NAME.exr` con la escena cargada una vez; `--focal` es la de todas. Imprime el tiempo de un frame, el menor y el medio, con el reloj esperando al dispositivo. Sin `-o` no se escribe nada y el recorrido solo se cronometra: un frame de 3840 x 2160 son unos 60 MB, y un recorrido de ellos llena un disco |
 | `--discovered` | `render` | flag | off | solo las gaussianas que han encontrado las miradas: la escena tal como se conoce. Una pieza de la que no se ha tomado ninguna mirada no se dibuja |
 | `--up-to` | `render` | entero | `0` | `--discovered`: solo las miradas hasta esta, contadas desde uno en el orden de `snapshots`; `0` son todas |
 | `--camera`, `--time` | `look` | nombre, número | —, — | una vista del manifest y cuándo; el par es el snapshot de la mirada, y una mirada repetida es la misma |

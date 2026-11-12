@@ -245,6 +245,9 @@ Cada punto con su medida y contra qué. El detalle está en `docs/decisions.md`,
   35,4 y 29,2 dB, con 5,7 millones de gaussianas y el recorrido a 25 ms por frame como mínimo (40 de media).
 - El Sponza descubierto se recorre a 22 ms por frame como mínimo (44 de media) a 1280 × 720, con 2,35 millones de
   gaussianas; cada frame del path tracer del que salió tardó alrededor de un minuto.
+- Corrección de tiempos: los recorridos se cronometraron escribiendo sus frames a disco, y eso los inflaba. Sin
+  escribir, el Sponza de 5,7 millones de gaussianas va a 15,5 ms por frame como mínimo (26,1 de media) a 1280 × 720,
+  18,4 (30,2) a 1920 × 1080 y 36,2 (52,5) a 3840 × 2160, en Metal.
 
 **Lo que se intentó y no sirvió**
 - Sujetar cada lectura de la pared a su posición inicial (`--prior`): no mejora; retirado del código.
@@ -255,3 +258,6 @@ Cada punto con su medida y contra qué. El detalle está en `docs/decisions.md`,
 - Convertir Sponza con bake en esta máquina: no cupo en memoria mientras otros trabajos ocupaban 15 de 24 GB.
 
 Assets usados: Khronos CarConcept (CC BY 4.0) e Intel Sponza (CC BY 4.0, Frank Meinl y Anton Kaplanyan).
+
+**Incidente.** Cronometrando ese recorrido en CUDA se escribieron los frames a 4K dentro de WSL en ixwin y se llenó
+el disco D:, con lo que la distribución dejó de arrancar. `render --views` ya no necesita escribir para cronometrar.

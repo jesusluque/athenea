@@ -21577,3 +21577,28 @@ given as what it is.
 **A regression run**, Metal, with everything above in: `athenea_scene_tests` 10 of 10 cases, `athenea_technique_tests`
 64 of 64, `athenea_render_tests` 65 of 68 -- the three that fail being the posed cloud's refit and flatten's two,
 which fail the same way in release 0.5 (its CHANGELOG lists them). The whole `ctest` was not run again.
+
+## A walk only timed, and the walk's times given again (12 Nov)
+
+`neural-scene render --views` without `-o` writes nothing. It had to write its frames to be timed, and a walk of
+140 frames at 3840 x 2160 is nine gigabytes of them: run inside WSL on the Windows machine, with the disk that
+holds its image nearly full, it filled the disk and the distribution stopped mounting. That is an operator's
+mistake -- no look at the space first -- and the command should not have asked for it.
+
+It also made the times wrong. The clock is the frame's own, but a frame drawn while the last one is being read
+back and written is not a frame drawn alone. The Sponza found from seven frames of 1440 x 810, 6 158 927 gaussians
+made and 5 697 463 standing, the same 140 views, Metal:
+
+| | written as it goes | only timed |
+|---|---|---|
+| 1280 x 720: least, mean | 25.3, 39.6 ms | 15.5, 26.1 ms |
+| 1920 x 1080 | 37.6, 73.6 ms | 18.4, 30.2 ms |
+| 3840 x 2160 | 136.3, 657.6 ms | 36.2, 52.5 ms |
+
+The second column is the scene's. Every walk time in the sections above (22 to 44 ms, 23 to 31, 25 to 37, 24 to
+35 at 1280 x 720) was taken written as it went and is that much too long; they are left as measured and are
+corrected by this table's ratio, not re-run.
+
+### Not done
+
+- The walk on CUDA: it was what filled the disk, and has no time.
