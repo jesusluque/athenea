@@ -527,8 +527,8 @@ library's own licence files with it as well.
 | [Boost](https://www.boost.org/) (through OpenVDB) | 1.82.0 | Boost Software License 1.0 | the Boost authors |
 | [Open Image Denoise](https://github.com/RenderKit/oidn) | 2.5.1 | Apache-2.0 (text in `LICENSE`; see its `third-party-programs.txt`) | Intel Corporation |
 | [OpenColorIO](https://github.com/AcademySoftwareFoundation/OpenColorIO) | 2.5.2 | BSD 3-Clause (below; see its `THIRD-PARTY.md`) | Copyright Contributors to the OpenColorIO Project. |
-| [libwebp](https://chromium.googlesource.com/webm/libwebp) | the system's | BSD 3-Clause (below) | Copyright (c) 2010, Google Inc. |
-| [Zstandard](https://github.com/facebook/zstd) | the system's | BSD 3-Clause (below) | Copyright (c) Meta Platforms, Inc. and affiliates. |
+| [libwebp](https://chromium.googlesource.com/webm/libwebp) | the system's, or 1.5.0 built in (Windows) | BSD 3-Clause (below) | Copyright (c) 2010, Google Inc. |
+| [Zstandard](https://github.com/facebook/zstd) | the system's, or 1.5.7 built in (Windows) | BSD 3-Clause (below) | Copyright (c) Meta Platforms, Inc. and affiliates. |
 | [zlib](https://zlib.net/) | the system's | zlib | Jean-loup Gailly and Mark Adler |
 
 NanoVDB's `PNanoVDB.h` is copied by the build into its shader directory and

@@ -8,6 +8,11 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **Windows reads `.spz` and `.sog`.** The 0.5.0 package was built without
+  zstd and libwebp and refused both. Where the system has neither, CMake now
+  fetches zstd 1.5.7 and libwebp 1.5.0 and builds them as static libraries
+  (`ATHENEA_FETCH_CODECS`, on by default), so a package carries no more files.
+  Mac and Linux keep the system's.
 - **Blender**: a spot light in the Athenea add-on has its cone. Blender's
   Hydra scene delegate gives the cone as `inputs:shaping:cone:angle`, and
   hdAthenea read only `shaping:cone:angle`, so the spot lit everything round

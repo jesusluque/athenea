@@ -216,6 +216,52 @@ if(NOT TARGET nlohmann_json::nlohmann_json)
     FetchContent_MakeAvailable(nlohmann_json)
 endif()
 
+# zstd (SPZ, third_party/spz) and libwebp (SOG, modules/io): the system's
+# where it has them, Homebrew's on a Mac and the distribution's on Linux.
+# Where it has neither -- Windows, where the 0.5.0 package was built without
+# them and refused every .spz and .sog -- they are fetched and built here as
+# static libraries, so a package carries nothing more. The lookups below are
+# the ones third_party/spz and modules/io make; their cached results are what
+# those read.
+option(ATHENEA_FETCH_CODECS "build zstd and libwebp from source when the system has none" ON)
+find_path(ATHENEA_ZSTD_INCLUDE zstd.h HINTS /opt/homebrew/opt/zstd/include /usr/local/opt/zstd/include)
+find_library(ATHENEA_ZSTD_LIB zstd HINTS /opt/homebrew/opt/zstd/lib /usr/local/opt/zstd/lib)
+if(ATHENEA_FETCH_CODECS AND NOT (ATHENEA_ZSTD_INCLUDE AND ATHENEA_ZSTD_LIB))
+    FetchContent_Declare(zstd
+        URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+        SOURCE_SUBDIR build/cmake
+        SYSTEM)
+    set(ZSTD_BUILD_PROGRAMS OFF CACHE INTERNAL "")
+    set(ZSTD_BUILD_TESTS OFF CACHE INTERNAL "")
+    set(ZSTD_BUILD_SHARED OFF CACHE INTERNAL "")
+    set(ZSTD_BUILD_STATIC ON CACHE INTERNAL "")
+    set(ZSTD_LEGACY_SUPPORT OFF CACHE INTERNAL "")
+    FetchContent_MakeAvailable(zstd)
+    set_target_properties(libzstd_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    set(ATHENEA_ZSTD_INCLUDE "${zstd_SOURCE_DIR}/lib" CACHE PATH "zstd.h, from the fetched zstd" FORCE)
+    set(ATHENEA_ZSTD_LIB libzstd_static CACHE STRING "the fetched zstd's static library target" FORCE)
+    message(STATUS "zstd: built from source (1.5.7)")
+endif()
+find_path(ATHENEA_WEBP_INCLUDE webp/decode.h HINTS /opt/homebrew/opt/webp/include /usr/local/opt/webp/include)
+find_library(ATHENEA_WEBP_LIB webp HINTS /opt/homebrew/opt/webp/lib /usr/local/opt/webp/lib)
+if(ATHENEA_FETCH_CODECS AND NOT (ATHENEA_WEBP_INCLUDE AND ATHENEA_WEBP_LIB))
+    FetchContent_Declare(libwebp
+        URL https://github.com/webmproject/libwebp/archive/refs/tags/v1.5.0.tar.gz
+        SYSTEM)
+    foreach(tool ANIM_UTILS CWEBP DWEBP GIF2WEBP IMG2WEBP VWEBP WEBPINFO WEBPMUX EXTRAS LIBWEBPMUX)
+        set(WEBP_BUILD_${tool} OFF CACHE INTERNAL "")
+    endforeach()
+    FetchContent_MakeAvailable(libwebp)
+    foreach(target webp sharpyuv webpdecoder)
+        if(TARGET ${target})
+            set_target_properties(${target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+        endif()
+    endforeach()
+    set(ATHENEA_WEBP_INCLUDE "${libwebp_SOURCE_DIR}/src" CACHE PATH "webp/decode.h, from the fetched libwebp" FORCE)
+    set(ATHENEA_WEBP_LIB webp CACHE STRING "the fetched libwebp's library target" FORCE)
+    message(STATUS "libwebp: built from source (1.5.0)")
+endif()
+
 # tinyexr writes the renders. Its own miniz, compiled here, so EXR's zip
 # compression needs nothing from the system.
 FetchContent_Declare(tinyexr

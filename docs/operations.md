@@ -99,10 +99,10 @@ Everything here is found at configure time, and the effect is felt at run time.
 |---|---|
 | OpenColorIO | the OCIO view transform. AgX and ACES 2.0 still work, and `--ocio-*` is refused. |
 | Open Image Denoise | `--denoise` and `athenea:denoise` do nothing; a path traced frame stays as it gathered. |
-| libwebp | `.sog` clouds are refused when read. |
+| libwebp | Nothing by default: where the system has none it is fetched and built as a static library (1.5.0, `ATHENEA_FETCH_CODECS`, on by default). With the option off, `.sog` clouds are refused when read. |
 | OpenVDB | `.vdb` volume fields are refused when read. The path tracer still needs NanoVDB's `nanovdb/PNanoVDB.h`, header-only: a USD prefix without it names a directory holding it with `-DATHENEA_NANOVDB_INCLUDE=<dir>`, or the configure warns that the path tracer's kernels will not compile. |
 | OptiX headers (CUDA) | ray tracing by pipeline on CUDA; inline ray queries still work, so most of the engine does. |
-| zstd | `.spz` clouds are refused, with `this build reads no .spz`. |
+| zstd | Nothing by default: fetched and built like libwebp (1.5.7). With `ATHENEA_FETCH_CODECS=OFF`, `.spz` clouds are refused, with `this build reads no .spz`. |
 
 ### 1.4 Metal and CUDA
 
