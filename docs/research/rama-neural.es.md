@@ -234,6 +234,9 @@ Cada punto con su medida y contra qué. El detalle está en `docs/decisions.md`,
 - `discover` también retira: donde un frame nuevo ve a través de lo que la escena tenía (algo que se movió), las
   gaussianas de ese sitio se sellan como idas, capa a capa. Con un peón que se mueve 32 cm entre dos frames, el
   63,7 % de la escena se conserva, se retiran 43 066 gaussianas y se crean 44 306.
+- `discover --repaint`: una superficie que sigue donde estaba y ha cambiado de color (una luz que gira) se retira
+  y se rehace. Con las mismas superficies bajo otro sol, la escena conserva el 82,1 % y queda a relMSE 0,096 del
+  frame nuevo; sin ello conserva el 99,9 % con los colores viejos y queda a 0,137. Falsos positivos: 1,9 %.
 - El Sponza descubierto se recorre a 22 ms por frame como mínimo (44 de media) a 1280 × 720, con 2,35 millones de
   gaussianas; cada frame del path tracer del que salió tardó alrededor de un minuto.
 

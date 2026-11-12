@@ -133,7 +133,7 @@ Result<uint32_t> Discovery::known(const gpu::Buffer& seen, uint32_t count, uint3
 
 Result<FrameLook> Discovery::fromFrame(const gpu::Buffer& colour, const gpu::Buffer& depth, uint32_t width,
                                        uint32_t height, const Projection& projection, const gpu::Buffer* knownColour,
-                                       const gpu::Buffer* knownDepth, float tolerance, float spread) {
+                                       const gpu::Buffer* knownDepth, float tolerance, float spread, float repaint) {
     gpu::Device& device = library_->device();
     const uint32_t pixels = width * height;
     auto valid = words(device, pixels, 4, "frame.valid");
@@ -172,6 +172,7 @@ Result<FrameLook> Discovery::fromFrame(const gpu::Buffer& colour, const gpu::Buf
             p[kRows[k]].setData(static_cast<float>(viewToWorld.at(k / 4, k % 4)));
         }
         p["hasKnown"].setData(uint32_t{hasKnown ? 1u : 0u});
+        p["repaint"].setData(repaint);
     };
     {
         gpu::CommandBatch batch(device);
@@ -219,7 +220,8 @@ Result<FrameLook> Discovery::fromFrame(const gpu::Buffer& colour, const gpu::Buf
 
 Result<gpu::Buffer> Discovery::seenThrough(const gpu::Buffer& colour, const gpu::Buffer& depth, uint32_t width,
                                            uint32_t height, const gpu::Buffer& knownColour,
-                                           const gpu::Buffer& knownDepth, float tolerance, uint32_t& pixels) {
+                                           const gpu::Buffer& knownDepth, float tolerance, uint32_t& pixels,
+                                           float repaint, uint32_t* repainted) {
     gpu::Device& device = library_->device();
     gpu::BufferDesc desc;
     desc.bytes = std::max<uint64_t>(uint64_t{width} * height, 4) * sizeof(float);
@@ -250,11 +252,15 @@ Result<gpu::Buffer> Discovery::seenThrough(const gpu::Buffer& colour, const gpu:
         p["height"].setData(height);
         p["tolerance"].setData(tolerance);
         p["hasKnown"].setData(uint32_t{1});
+        p["repaint"].setData(repaint);
     });
     ATHENEA_TRY(batch.submit(true));
     std::array<uint32_t, 4> read{};
     ATHENEA_TRY(counters_.read(device, 0, sizeof(read), read.data()));
     pixels = read[2];
+    if (repainted != nullptr) {
+        *repainted = read[3];
+    }
     return *mask;
 }
 

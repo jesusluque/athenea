@@ -74,15 +74,19 @@ public:
     [[nodiscard]] Result<FrameLook> fromFrame(const gpu::Buffer& colour, const gpu::Buffer& depth, uint32_t width,
                                               uint32_t height, const Projection& projection,
                                               const gpu::Buffer* knownColour, const gpu::Buffer* knownDepth,
-                                              float tolerance = 0.03F, float spread = 0.8F);
+                                              float tolerance = 0.03F, float spread = 0.8F, float repaint = 0.0F);
 
     /// WHERE A FRAME SEES THROUGH THE SCENE: a float a pixel, 1 where the scene
     /// drawn through the frame's camera (`knownColour`, `knownDepth`) has a
     /// surface nearer than the frame's own by more than `tolerance`, or
-    /// something where the frame has nothing. `pixels` is how many.
+    /// something where the frame has nothing. `pixels` is how many. With
+    /// `repaint`, also where the scene's surface is at the frame's depth and
+    /// its colour is off the frame's by more than that share (`repainted`
+    /// counts those): what is there is to be taken out and made again.
     [[nodiscard]] Result<gpu::Buffer> seenThrough(const gpu::Buffer& colour, const gpu::Buffer& depth, uint32_t width,
                                                   uint32_t height, const gpu::Buffer& knownColour,
-                                                  const gpu::Buffer& knownDepth, float tolerance, uint32_t& pixels);
+                                                  const gpu::Buffer& knownDepth, float tolerance, uint32_t& pixels,
+                                                  float repaint = 0.0F, uint32_t* repainted = nullptr);
 
     /// The gaussians of one piece that a frame saw through: `lifted` is that
     /// mask carried to the scene's gaussians by the blend (SplatLift.h's

@@ -21349,3 +21349,59 @@ geometry is told by.
   prim a pixel belongs to).
 - A change of colour with no change of depth, still held as it was.
 - Gaussians behind what a frame sees, which no look from that side can find gone.
+
+## A surface that is where it was and is another colour (12 Nov)
+
+Held by depth alone, a scene keeps the colours of the look that found it: a light that turns between two frames
+leaves the old frame's shading on every surface the new one sees. `neural-scene discover --repaint` holds a
+surface by its colour as well. Where the scene, through the frame's camera, is at the frame's depth and its colour
+(taken off its cover) is off the frame's by more than the share given, in any channel, against the brighter of
+the two plus a fiftieth, the pixel is not held: it joins the mask of what is taken out, and makes a gaussian of
+the frame's colour.
+
+One pawn on its floor baked under two suns, the same surfaces through the same camera, 960 x 540, CUDA:
+
+| | `--repaint 0` | `--repaint 0.3` |
+|---|---|---|
+| the second sun's frame: the scene already held | 99.9% | 82.1% |
+| pixels found repainted | — | 34 594 |
+| gaussians taken out, made | 150, 183 | 33 939, 33 967 |
+| the scene through that camera against the new frame, relMSE | 0.137 | 0.096 |
+| its p99 | 214 | 99 |
+
+With it the scene is as close to the new frame as a first look is to its own (0.096), and four fifths of it were
+not touched: the part of the picture the light did not change. Off by default, since what a frame is off its own
+scene by is also a difference of colour: the same frame looked at again finds 3630 pixels repainted at 0.3 that
+were not, 1.9% of its surfaces, and remakes them.
+
+### Not done
+
+- A colour that changed because the eye moved, told from one that changed in the world: from another camera a
+  highlight is a repaint. Only frames through one camera, or of matt things, are safe with this.
+- The share chosen from what the scene is off its own frame by, rather than given.
+- A surface repainted in place: its gaussians are taken out and made again, where their colour alone could be
+  written.
+
+## A statue moved in Sponza: what a second look holds of a building (12 Nov)
+
+The building with a statue 1.8 m tall on its floor, path traced twice through one camera with the statue two
+metres apart, 960 x 540, Metal:
+
+| look | the scene already held | seen through | taken out | made |
+|---|---|---|---|---|
+| T0, from nothing | 0% | — | — | 518 400 |
+| the same frame again | 96.3% | 18 964 pixels | 25 093 | 19 082 |
+| T1, the statue moved | 95.8% | 16 470 pixels | 15 283 | 21 819 |
+
+After both frames the scene has the statue where the second frame has it and not where the first did, and the
+second look held 95.8% of the frame. But the same frame looked at again is itself not held at 3.7% of its pixels:
+at every edge of depth -- an arch against the wall behind it -- the nearer surface's discs reach a pixel past the
+edge, the scene's depth there is between the two, and the frame is taken to see through. So of the four in a
+hundred that the second look remade, most are that and not the statue, which is some hundred pixels wide. In a
+building a look's own noise at its edges of depth is as large as a thing moving in it. That is what is to be
+mended before the share held means what it should.
+
+### Not done
+
+- An edge of depth held: the scene's depth at a pixel taken from its nearest heavy gaussian (the trace has it)
+  rather than from the blend's mean, and the rim's discs kept inside their surface.

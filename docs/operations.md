@@ -421,6 +421,7 @@ athenea neural-scene info   hall.aths
 | `--frame` | `discover` | path | — | the frame: an EXR with `R`, `G`, `B` (linear light) and `Z`, the depth along the view; its size is the look's |
 | `--id`, `--camera`, `--time` | `discover` | | —, —, — | the new piece's name, the view the frame was drawn through and when. The view is one of the manifest's, or `--eye`, `--target`, `--up`, `--focal` kept under that name; the focal length is over a 24.576 mm aperture, as `athenea stage`'s |
 | `--tolerance` | `discover` | share | `0.03` | a pixel's surface is already held where the scene's depth through that camera is within this share of the frame's |
+| `--repaint` | `discover` | share | `0` | a surface the scene holds at the frame's depth whose colour is off the frame's by more than this share of the brighter of the two is taken out and made again from the frame; `0` holds a surface by its depth alone. `0.3` is past what a found scene is off its own frame by |
 | `--spread` | `discover` | pixels | `0.8` | a gaussian's standard deviation, in pixels at its own depth; half that at a surface's rim. Wider closes the gaps between gaussians and paints past silhouettes |
 | `--name`, `--up-axis`, `--meters-per-unit`, `--source`, `--licence` | `discover` | | | the scene's own, as `add`'s |
 | `--threshold` | `look` | pixels | `0.05` | how much a gaussian gives the frame to count as seen: its blending weight summed over its pixels |

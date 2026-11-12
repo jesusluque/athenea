@@ -87,6 +87,7 @@ struct SceneOptions {
     float                    tolerance = 0.03F;
     float                    spread = 0.8F;
     std::string              views;
+    float                    repaint = 0.0F;
 };
 
 bool sizeOf(const std::string& text, uint32_t& width, uint32_t& height) {
@@ -718,19 +719,22 @@ int runDiscover(const SceneOptions& o) {
         // Layer by layer: what stood in front is taken out, what it hid is then in the scene's frame, and
         // the frame may see through that too. Until it sees through nothing more, a few times at most.
         uint32_t firstThrough = 0;
+        uint32_t firstRepainted = 0;
         uint32_t taken = 0;
         uint32_t passes = 0;
         std::vector<gpu::Buffer> records(scene.pieces.size());
         std::vector<uint32_t> newly(scene.pieces.size(), 0);
         for (; passes < 8; ++passes) {
             uint32_t through = 0;
+            uint32_t repainted = 0;
             auto mask = discovery->seenThrough(*frameColour, *frameDepth, width, height, known.colour, known.depth,
-                                               o.tolerance, through);
+                                               o.tolerance, through, o.repaint, &repainted);
             if (!mask) return report(mask.error());
             if (passes == 0) {
                 firstThrough = through;
+                firstRepainted = repainted;
             }
-            if (through == 0) {
+            if (through + repainted == 0) {
                 break;
             }
             uint32_t slots = 0;
@@ -792,13 +796,13 @@ int runDiscover(const SceneOptions& o) {
             ++piece.revision;
             piece.movedAt = piece.revision;
         }
-        out("the frame sees through the scene at %u pixels; %u gaussians taken out in %u passes\n", firstThrough, taken,
-            passes);
+        out("the frame sees through the scene at %u pixels and finds %u repainted; %u gaussians taken out in %u passes\n",
+            firstThrough, firstRepainted, taken, passes);
     }
     const render::Projection projection = render::projectionFor(*camera, width, height);
     auto look = discovery->fromFrame(*frameColour, *frameDepth, width, height, projection,
                                      instances.empty() ? nullptr : &known.colour,
-                                     instances.empty() ? nullptr : &known.depth, o.tolerance, o.spread);
+                                     instances.empty() ? nullptr : &known.depth, o.tolerance, o.spread, o.repaint);
     if (!look) return report(look.error());
     out("%s through %s at %g: %u of its %zu pixels hold a surface; the scene already held %u of them (%.1f%%); %u "
         "gaussians made\n",
@@ -1147,6 +1151,7 @@ void addNeuralScene(CLI::App& app) {
     discover->add_option("--licence", o.licence, "what the source asks of whoever uses it");
     discover->add_option("--time", o.time, "when: with the camera, the look's snapshot");
     discover->add_option("--tolerance", o.tolerance, "a pixel is already held where the scene's depth is within this share of the frame's");
+    discover->add_option("--repaint", o.repaint, "a surface the scene holds whose colour is off the frame's by more than this share is taken out and made again (0: held by its depth alone)");
     discover->add_option("--spread", o.spread, "a gaussian's standard deviation, in pixels at its depth");
     discover->add_option("-o,--output", o.output, "the scene after the look through that camera, an EXR");
     run(discover, options, runDiscover);

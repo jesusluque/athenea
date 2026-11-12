@@ -26,7 +26,12 @@ struct FrameParams {
     float r0x; float r0y; float r0z; float r0w;   // view to world, three rows
     float r1x; float r1y; float r1z; float r1w;
     float r2x; float r2y; float r2z; float r2w;
-    uint  hasKnown; uint pad0; uint pad1; uint pad2;
+    uint  hasKnown;
+    /// REPAINTED: a surface the scene holds at the frame's depth whose colour is no longer the frame's --
+    /// by more than this share of the brighter of the two -- is not held: what is there is taken out and
+    /// made again from the frame. 0: a surface is held by its depth alone.
+    float repaint;
+    uint pad1; uint pad2;
 };
 
 StructuredBuffer<float4>   colour;       // the frame: linear light, premultiplied
@@ -37,7 +42,7 @@ RWStructuredBuffer<uint>   valid;        // a pixel: it makes a gaussian
 StructuredBuffer<uint>     validRead;
 StructuredBuffer<uint>     dest;         // its place among those that do
 RWStructuredBuffer<float>  records;
-RWStructuredBuffer<uint>   counters;     // pixels with a surface, pixels the scene already held, pixels seen through
+RWStructuredBuffer<uint>   counters;     // pixels with a surface, held by the scene, seen through, repainted
 RWStructuredBuffer<float>  seenThrough;  // a pixel: the frame sees past what the scene has there
 ConstantBuffer<FrameParams> params;
 
@@ -55,6 +60,18 @@ float3 toWorld(float3 v) {
 float3 turnToWorld(float3 v) {
     return float3(dot(float3(params.r0x, params.r0y, params.r0z), v), dot(float3(params.r1x, params.r1y, params.r1z), v),
                   dot(float3(params.r2x, params.r2y, params.r2z), v));
+}
+
+/// Whether the scene's colour at a pixel is no longer the frame's.
+bool repainted(uint at) {
+    if (!(params.repaint > 0.0)) {
+        return false;
+    }
+    const float4 held = knownColour[at];
+    const float3 was = held.rgb / max(held.a, 1.0e-3);   // the scene's colour where it covers
+    const float3 now = colour[at].rgb;
+    const float3 off = abs(now - was) / (max(now, was) + 0.02);
+    return max(off.x, max(off.y, off.z)) > params.repaint;
 }
 
 float depthAt(int x, int y) {
@@ -78,7 +95,7 @@ void frameValid(uint3 tid: SV_DispatchThreadID) {
         InterlockedAdd(counters[0], 1u);
         if (params.hasKnown != 0) {
             const float held = knownDepth[at];
-            if (knownColour[at].a > 0.5 && abs(held - z) <= params.tolerance * z) {
+            if (knownColour[at].a > 0.5 && abs(held - z) <= params.tolerance * z && !repainted(at)) {
                 makes = false;
                 InterlockedAdd(counters[1], 1u);
             }
@@ -104,9 +121,15 @@ void frameSeenThrough(uint3 tid: SV_DispatchThreadID) {
                       knownDepth[at] < z * (1.0 - params.tolerance);
     // A frame with nothing at a pixel where the scene has something sees through it too.
     const bool empty = !(z > 0.0) && colour[at].a < 0.5 && knownColour[at].a > 0.5;
-    seenThrough[at] = (past || empty) ? 1.0 : 0.0;
+    // And a surface that is where it was and is another colour is taken out to be made again.
+    const bool again = z > 0.0 && colour[at].a > 0.5 && knownColour[at].a > 0.5 &&
+                       abs(knownDepth[at] - z) <= params.tolerance * z && repainted(at);
+    seenThrough[at] = (past || empty || again) ? 1.0 : 0.0;
     if (past || empty) {
         InterlockedAdd(counters[2], 1u);
+    }
+    if (again) {
+        InterlockedAdd(counters[3], 1u);
     }
 }
 
