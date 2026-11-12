@@ -21637,3 +21637,13 @@ up to nine times.
 The ten frames of 960 x 540 through `discover --views`, Metal: 8.45 s for the run, each look 0.39 to 0.64 s, and
 the scene the same gaussian for gaussian as when each look was a run of its own (2 978 177 made). The ten frames
 took the path tracer some ten minutes.
+
+## A look that trims itself: tried, and not kept (12 Nov)
+
+A second look from the same place takes out what the first painted past its surfaces' rims, so a look was made to
+do that to itself: after its piece is made, the same frame is held against the scene once more and what it sees
+through is taken out. On Sponza's ten frames it took out six to thirteen thousand gaussians a look and changed
+nothing that was measured -- the two held-out views 34.61 and 28.62 dB where they were 34.64 and 28.59, each look
+through its own camera the same to the third figure -- for twice the time a look (0.6 to 1.2 s where 0.4 to 0.6).
+On a thing against black it did help the look's own frame (the pawn, relMSE 0.107 to 0.075), which the next look
+does anyway. Not in the code.
