@@ -21631,3 +21631,9 @@ up to nine times.
 ### Not done
 
 - The new piece taken from the device rather than written and read back.
+
+## Sponza from ten frames in one run: 8.5 seconds (12 Nov)
+
+The ten frames of 960 x 540 through `discover --views`, Metal: 8.45 s for the run, each look 0.39 to 0.64 s, and
+the scene the same gaussian for gaussian as when each look was a run of its own (2 978 177 made). The ten frames
+took the path tracer some ten minutes.

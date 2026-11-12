@@ -247,6 +247,8 @@ Cada punto con su medida y contra qué. El detalle está en `docs/decisions.md`,
   gaussianas; cada frame del path tracer del que salió tardó alrededor de un minuto.
 - Una mirada (`discover`) cuesta 0,4 a 0,5 s por frame de 960 × 540 con la escena ya en la GPU
   (`discover --views`); el frame del path tracer del que sale costó alrededor de un minuto.
+- Sponza entero desde diez frames, en una ejecución: 8,45 s (los diez frames costaron al path tracer unos diez
+  minutos).
 - Corrección de tiempos: los recorridos se cronometraron escribiendo sus frames a disco, y eso los inflaba. Sin
   escribir, el Sponza de 5,7 millones de gaussianas va a 15,5 ms por frame como mínimo (26,1 de media) a 1280 × 720,
   18,4 (30,2) a 1920 × 1080 y 36,2 (52,5) a 3840 × 2160, en Metal.
