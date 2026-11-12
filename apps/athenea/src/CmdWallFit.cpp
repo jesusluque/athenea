@@ -10,6 +10,8 @@
 // from cameras it never stood at, the frame they should be summed from the
 // baked clouds.
 #include <algorithm>
+#include <array>
+#include <cstring>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -53,6 +55,8 @@ struct WallFitOptions {
     float               rateLevel = 1.0e-2F;
     float               rateGain = 1.0e-2F;
     float               rateDecay = 0.1F;
+    int                 grid = -1;        ///< a weight a texel of this level of the wall, in place of reads
+    std::string         show;             ///< an EXR the wall shows once fitted: W x H times a power of two
     bool                frozen = false;
     unsigned            wholeEvery = 1;   ///< one step in this many is a whole picture, a colour a texel; 0: none is
     std::string         output;
@@ -75,6 +79,8 @@ int run(const WallFitOptions& o) {
     gpu::ShaderLibrary library(*device);
     auto loader = scene::CloudLoader::create(library);
     if (!loader) return report(loader.error());
+    // The clouds are one mesh's gaussians under one light each, and must stay gaussian for gaussian.
+    loader->keepFaint(true);
     auto raster = render::TileRasterizer::create(library);
     if (!raster) return report(raster.error());
     auto wall = render::NeuralWall::create(library);
@@ -151,7 +157,7 @@ int run(const WallFitOptions& o) {
     // A frozen fit reads the whole wall's mean and moves only its gain: what a wall with no picture would be.
     const float startLevel = o.frozen ? 64.0F : o.startLevel;
     {
-        auto started = wall->start(cloud, rect, o.lobes, wide, high, images, startLevel, o.startGain);
+        auto started = wall->start(cloud, rect, o.lobes, wide, high, images, startLevel, o.startGain, o.grid);
         if (!started) return report(started.error());
     }
     for (uint32_t k = 0; k < texels; ++k) {
@@ -270,8 +276,9 @@ int run(const WallFitOptions& o) {
         return m;
     };
 
-    out("%u gaussians before a wall of %u x %u texels, %u read%s a gaussian%s\n", cloud.count, wide, high, o.lobes,
-        o.lobes == 1 ? "" : "s", o.frozen ? ", frozen on the wall's mean" : "");
+    out("%u gaussians before a wall of %u x %u texels, %u numbers a gaussian (%s)%s\n", cloud.count, wide, high,
+        wall->stride(), wall->cells() != 0 ? "a grid" : o.lobes == 1 ? "one read" : "reads",
+        o.frozen ? ", frozen on the wall's mean" : "");
     auto before = measure({}, nullptr);
     if (!before) return report(before.error());
     out("before: relMSE %.5f, p99 %.1f, max %u (whole pictures, held-out cameras, against the baked clouds summed)\n",
@@ -370,10 +377,60 @@ int run(const WallFitOptions& o) {
     if (!wholeFrame) return report(wholeFrame.error());
     auto same = render::compareImages(library, stillFrame.colour, ours.colour, settings.width, settings.height);
     if (!same) return report(same.error());
+    const auto afterStill = [&]() -> int {
+        if (o.show.empty()) {
+            return 0;
+        }
+        // A PICTURE OF ITS OWN, finer than the fit: the wall made that many levels finer, the reads as
+        // they were learnt. What the frame should be is still the baked clouds summed, times the picture
+        // brought down to the fit's texels.
+        auto picture = io::readExr(o.show);
+        if (!picture) return report(picture.error());
+        uint32_t levels = 0;
+        while ((wide << levels) < picture->width && levels < 8) {
+            ++levels;
+        }
+        if ((wide << levels) != picture->width || (high << levels) != picture->height) {
+            err("%s is %u x %u: the wall is %u x %u texels, and its picture that times a power of two\n", o.show.c_str(),
+                picture->width, picture->height, wide, high);
+            return kExitFailure;
+        }
+        std::vector<std::array<float, 4>> rows(size_t{picture->width} * picture->height);
+        std::memcpy(rows.data(), picture->rgba.data(), rows.size() * sizeof(rows[0]));
+        auto texelsOf = gpu::Buffer::fromSpan<std::array<float, 4>>(
+            **device, std::span<const std::array<float, 4>>(rows), "wall.shown");
+        if (!texelsOf) return report(texelsOf.error());
+        if (auto made = wall->finer(levels, 1); !made) return report(made.error());
+        if (auto made = wall->picture(0, *texelsOf); !made) return report(made.error());
+        wall->show(0);
+        Measure m;
+        for (uint32_t k = 0; k < o.heldOut; ++k) {
+            const render::Camera from = cameraAt(k, 0.5);
+            if (auto all = shouldBe(from, 0); !all) return report(all.error());
+            auto drawn = raster->render(from, std::span<const render::SplatInstance>(&student, 1), settings, ours);
+            if (!drawn) return report(drawn.error());
+            if (auto c = compare(m, 1.0 / o.heldOut); !c) return report(c.error());
+            if (!o.output.empty() && k < 3) {
+                auto depth = ours.depth.readAll<float>(**device);
+                if (!depth) return report(depth.error());
+                for (const auto& [what, buffer] : {std::pair<const char*, const gpu::Buffer*>{"picture", &summed},
+                                                   std::pair<const char*, const gpu::Buffer*>{"wall", &ours.colour}}) {
+                    auto colour = buffer->readAll<float>(**device);
+                    if (!colour) return report(colour.error());
+                    const std::string path = o.output + "_shown" + std::to_string(k) + "_" + what + ".exr";
+                    if (auto w = io::writeExr(path, settings.width, settings.height, *colour, *depth); !w) return report(w.error());
+                    out("wrote %s\n", path.c_str());
+                }
+            }
+        }
+        out("showing %s (%u x %u, %u levels finer than the fit): relMSE %.5f, p99 %.1f, max %u\n", o.show.c_str(),
+            picture->width, picture->height, levels, m.relMse, m.p99, m.max);
+        return 0;
+    };
     out("a still frame, the wall's picture another each time: %.2f ms (%u of 40 kept the last frame's geometry); "
         "against that picture's frame drawn whole: max %u code values\n",
         leastStill, kept, same->max);
-    return 0;
+    return afterStill();
 }
 
 }   // namespace
@@ -402,6 +459,8 @@ void addWallFit(CLI::App& app) {
     cmd->add_option("--rate-gain", o.rateGain, "Adam's rate for the log of a read's gain");
     cmd->add_option("--rate-decay", o.rateDecay, "what the rates have fallen to by the last step, as a factor");
     cmd->add_option("--whole-every", o.wholeEvery, "one step in this many is fitted to a whole picture, a colour a texel, rather than to one texel (0: none)");
+    cmd->add_option("--grid", o.grid, "in place of reads, a weight for each texel of this level of the wall (0: its own texels, 1: half as many a side) and a gain a channel");
+    cmd->add_option("--show", o.show, "an EXR the fitted wall then shows: the wall's texels times a power of two a side");
     cmd->add_flag("--frozen", o.frozen, "every read is the whole wall's mean and only its gain is learnt: the wall with no picture");
     cmd->add_option("-o,--output", o.output, "a prefix: <prefix>_<picture>_picture.exr and _wall.exr, the first held-out camera's");
     cmd->callback([options] {

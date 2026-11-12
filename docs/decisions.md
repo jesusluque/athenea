@@ -21041,3 +21041,68 @@ is most of a frame and the saving is the same four milliseconds, a smaller share
 - Several still cameras in one rasteriser (a set of buffers a camera).
 - Clouds drawn by their harmonics, relit ones, and frames with meshes under the splats.
 - CUDA.
+
+## A grid of weights over the wall, a picture finer than the fit, and a car (12 Nov)
+
+**The seams were not seams.** The section on the wall's reads blames what its frames show on neighbouring
+gaussians learning alone. Holding each read to where it started (a prior on u and v, weights 0.3, 3 and 30) moved
+nothing -- relMSE 0.00547, 0.00537, 0.00602 on the pawn against 0.00548 unheld -- and the frames with and without
+it show the same thing, which is not a seam: a hard edge across the pawn's sphere where the path tracer has a soft
+fall. What a matt thing takes from a wall is most of the wall, more from one side than the other, and a read or two
+of a mip chain is not that shape. The prior is not in the code.
+
+**A grid.** With `--grid L` a gaussian keeps, in place of reads, a weight for each texel of level L of the wall's
+pictures and a gain a channel, all as logs; its colour is the gain times the sum of weight times texel. The clay
+pawn before its 8 x 4 wall, 2000 steps on an RTX 3070, pictures and cameras the fit never saw, and then the wall
+showing a picture of its own (below):
+
+| what a gaussian keeps | numbers | relMSE | p99 | max | showing Sponza |
+|---|---|---|---|---|---|
+| two reads | 12 | 0.00548 | 27.7 | 143 | 0.00773 |
+| a grid of 4 x 2 | 11 | 0.00293 | 17.1 | 75 | 0.00571 |
+| a grid of 8 x 4 | 35 | 0.00228 | 15.8 | 61 | 0.00362 |
+
+At the same size the grid is 1.9 times less error than the reads and its worst pixel half theirs; the whole row,
+which is the most anything without the view in it can say at this wall, is 2.4 times less. A frame costs the same
+(7.03 ms against 6.97 without the wall).
+
+**A picture finer than the fit** (`--show`, `NeuralWall::finer`). A wall is fitted at few texels because each is a
+bake, and shows pictures of thousands. The reads and the grid are in the wall's own coordinates, so the pictures'
+pyramid is simply given more levels below the fit's, and a level a read learnt counts from the fit's. What the
+frame should be is still the baked clouds summed, times the picture brought down to the fit's texels -- so a
+picture's detail finer than a texel of the fit is not in what it is measured against. The picture shown here is
+Intel's Sponza (CC BY 4.0, Frank Meinl and Anton Kaplanyan) path traced by the engine at 128 x 64: a render of a
+scene as what the wall shows, which is what a wall on a set is.
+
+**A car, and what the wall cannot do.** The Khronos concept car (CC BY 4.0; carmine metallic paint under a coat,
+glass, chrome), 299 404 gaussians on a matt floor, a wall of 6 x 3 texels eight metres by three beside it, baked
+eighteen times. 2000 steps on Metal:
+
+| what a gaussian keeps | numbers | relMSE | p99 | max | showing Sponza |
+|---|---|---|---|---|---|
+| a gain on the wall's mean | 3 | 0.0821 | 128 | 234 | 0.0618 |
+| a grid of 3 x 1 | 6 | 0.0363 | 119 | 222 | 0.0686 |
+| two reads | 12 | 0.0273 | 117 | 243 | 0.0501 |
+| a grid of 6 x 3 | 21 | 0.0212 | 115 | 228 | 0.0221 |
+
+The whole row is four times less error than no picture and still a p99 of 115 code values, on a white wall as on
+any other: a tenth of the pawn's accuracy with everything a gaussian can be told that has no eye in it. The car's
+paint is a mirror under a coat, the bakes hold its light as harmonics of the view, and none of these keeps a
+number for where the eye is. That is the limit this section finds, and it is the one the section on the reads
+listed as not done.
+
+A still frame of the car is 3.25 to 3.40 ms against 6.8 to 7.4 drawn whole, the same frame to the code value.
+
+**Records a bake emptied.** A bake leaves some gaussians with no opacity and no size (267 of the car's), and one
+more under some lights than under others; the loader dropped them, and the clouds of one mesh then held different
+gaussians at one index. `scene::CloudLoader::keepFaint` keeps every record whose position is finite, in its place
+and drawn by nothing; `wall-fit` loads with it. Off everywhere else. About 1200 of the car's gaussians (0.4%) also
+change shape from bake to bake, which is left as it is.
+
+### Not done
+
+- A part that turns with the eye: a read whose place on the wall is the mirror of the view about the gaussian's
+  normal, beside the grid. The car asks for it.
+- The lights a car carries (its lamps emit in every bake, so they scale with the sum of the wall).
+- The grid's weights held smooth over the wall, and a grid in a file.
+- CUDA for the car; Metal for the pawn's grid.

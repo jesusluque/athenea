@@ -358,6 +358,8 @@ is. Every texel wants its cloud, and every cloud the same gaussians.
 | `--rate-gain` | number | `0.01` | for the log of its gain |
 | `--rate-decay` | number | `0.1` | what the rates have fallen to by the last step |
 | `--whole-every` | integer | `1` | one step in this many is fitted to a whole picture -- a colour a texel, a colour a block, a few texels lit -- whose frame is every texel's cloud drawn and summed, so it costs a frame a texel; the others to one texel alone. `0`: single texels only |
+| `--grid` | integer | — | in place of reads, a weight for each texel of this level of the wall and a gain a channel: `0` the wall's own texels, `1` half as many a side. What a matt thing wants; `--lobes` is then not read |
+| `--show` | path | — | an EXR the fitted wall then shows, the wall's texels times a power of two a side (a wall of 8 x 4 shows 128 x 64): the reads or the grid stay as fitted and read a finer picture. Measured as the others are, and with `-o` written as `<prefix>_shown0..2_picture.exr` and `_wall.exr` |
 | `--frozen` | flag | off | every read is the whole wall's mean and only its gain is learnt: the wall as a light with no picture, to compare against |
 | `-o`, `--output` | prefix | — | `<prefix>_<picture>_picture.exr` and `_wall.exr` for ramp, checker, random, window and white, from the first held-out camera |
 

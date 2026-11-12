@@ -205,6 +205,13 @@ cada una):
   `NeuralWall::step` ajusta las lecturas por las derivadas de la propia lectura, con el
   blend llevando el error de vuelta como hace para una apariencia neural.
   `athenea wall-fit` es su comando.
+  En vez de lecturas una gaussiana puede guardar un grid: un peso por texel de un nivel
+  grueso de la pared y una ganancia por canal (el `gridLevel` de `NeuralWall::start`),
+  que es la forma de lo que toma una cosa mate. Una pared ajustada se hace más fina
+  (`NeuralWall::finer`) para mostrar imágenes de la resolución real de la pared.
+  Las nubes de las que aprende un fit son las de una malla bajo una luz cada una y deben
+  seguir gaussiana por gaussiana: `scene::CloudLoader::keepFaint` conserva en su sitio
+  los registros que un bake vació.
 
 Un kernel que añade algo a `shaders/athenea/neural/neural_appearance.slang` lo añade a
 las dos pasadas: la forward y, a mano, la backward junto a ella, y las diferencias

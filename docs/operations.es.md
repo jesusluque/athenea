@@ -362,6 +362,8 @@ texel. Cada texel pide su nube, y todas las nubes las mismas gaussianas.
 | `--rate-gain` | número | `0.01` | para el logaritmo de su ganancia |
 | `--rate-decay` | número | `0.1` | a cuánto han caído los rates en el último step |
 | `--whole-every` | entero | `1` | uno de cada tantos steps se ajusta a una imagen completa -- un color por texel, un color por bloque, unos pocos texels encendidos -- cuyo frame es la nube de cada texel dibujada y sumada, así que cuesta un frame por texel; los demás a un texel solo. `0`: solo texels sueltos |
+| `--grid` | entero | — | en vez de lecturas, un peso por cada texel de este nivel de la pared y una ganancia por canal: `0` los texels de la propia pared, `1` la mitad por lado. Lo que pide una cosa mate; `--lobes` entonces no se lee |
+| `--show` | ruta | — | un EXR que la pared ajustada muestra después, los texels de la pared por una potencia de dos por lado (una pared de 8 x 4 muestra 128 x 64): las lecturas o el grid quedan como se ajustaron y leen una imagen más fina. Se mide como las demás, y con `-o` se escribe como `<prefijo>_shown0..2_picture.exr` y `_wall.exr` |
 | `--frozen` | flag | off | cada lectura es la media de toda la pared y solo se aprende su ganancia: la pared como una luz sin imagen, para comparar |
 | `-o`, `--output` | prefijo | — | `<prefijo>_<imagen>_picture.exr` y `_wall.exr` para ramp, checker, random, window y white, desde la primera cámara held-out |
 

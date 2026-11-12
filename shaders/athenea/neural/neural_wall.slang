@@ -58,6 +58,17 @@ struct NeuralWallParams {
     float  tintR; float tintG; float tintB;   // neuralWallAccumulate: what the frame is multiplied by
     uint   texel;       // neuralWallAccumulate: or, with `byTexel`, the picture's texel that says so
     uint   byTexel;
+    /// THE PICTURES FINER THAN THE FIT. The reads were learnt on a wall of few texels and the wall
+    /// shows pictures of this many levels more: a read's level counts from the fit's own, and the
+    /// fit's texels are this level of a picture's pyramid.
+    uint   finer;
+    /// A GRID IN PLACE OF READS. What a matt thing takes from a wall is most of the wall, more from
+    /// here and less from there, and no read or two of a mip chain is that shape. With `cells` not
+    /// zero a gaussian keeps instead a weight a cell of a coarse level of the wall's pictures
+    /// (`gridLevel` above the fit's own, `cells` texels) and one gain a channel: `cells + 3`
+    /// numbers, all as their logs, and its colour is gain * sum of weight * that level's texel.
+    uint   cells;
+    uint   gridLevel;
 };
 
 StructuredBuffer<float4>           positions;
@@ -135,7 +146,7 @@ WallRead wallLevelRead(uint image, uint level, float u, float v) {
 /// of the pyramid, and its derivatives in all three.
 WallRead wallRead(uint image, float u, float v, float level) {
     const float top = float(params.levels - 1);
-    const float l = clamp(level, 0.0, top);
+    const float l = clamp(level + float(params.finer), 0.0, top);
     const uint below = uint(floor(l));
     const uint above = min(below + 1, params.levels - 1);
     const float t = l - float(below);
@@ -182,6 +193,18 @@ void neuralWallInit(uint3 tid: SV_DispatchThreadID) {
     const float3 on = hit - params.centre;
     const float u = saturate(dot(on, params.axisU) / (2.0 * params.halfU) + 0.5);
     const float v = saturate(dot(on, params.axisV) / (2.0 * params.halfV) + 0.5);
+    if (params.cells != 0) {
+        // A grid starts as the wall's mean: every cell the same, and the gain what a read's would be.
+        const uint first = i * (params.cells + 3);
+        for (uint c = 0; c < params.cells; ++c) {
+            made[first + c] = log(1.0 / float(params.cells));
+        }
+        const float start = log(max(params.startGain, 1.0e-6));
+        made[first + params.cells] = start;
+        made[first + params.cells + 1] = start;
+        made[first + params.cells + 2] = start;
+        return;
+    }
     for (uint lobe = 0; lobe < params.lobes; ++lobe) {
         const uint at = (i * params.lobes + lobe) * kWallLobe;
         const float du = lobe == 0 ? 0.0 : (hash01(i * 2654435761u + lobe * 97u) - 0.5) * 0.5;
@@ -297,6 +320,17 @@ void neuralWallShade(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     float3 sum = float3(0.0);
+    if (params.cells != 0) {
+        const uint row = i * (params.cells + 3);
+        const uint first = params.image * wallTexels() + wallOffset(params.finer + params.gridLevel);
+        for (uint c = 0; c < params.cells; ++c) {
+            sum += exp(wallLatent[row + c]) * wallImage[first + c].rgb;
+        }
+        sum *= exp(float3(wallLatent[row + params.cells], wallLatent[row + params.cells + 1],
+                          wallLatent[row + params.cells + 2]));
+        proj[slot].colour.xyz += sum;
+        return;
+    }
     for (uint lobe = 0; lobe < params.lobes; ++lobe) {
         const uint at = (i * params.lobes + lobe) * kWallLobe;
         const float3 gain = exp(float3(wallLatent[at + 3], wallLatent[at + 4], wallLatent[at + 5]));
@@ -340,6 +374,30 @@ void neuralWallBackward(uint3 tid: SV_DispatchThreadID) {
     const int3 summed = int3(int(colourGrad[slot * 4]), int(colourGrad[slot * 4 + 1]), int(colourGrad[slot * 4 + 2]));
     const bool seen = any(summed != int3(0));
     const float3 pulled = float3(summed) / kColourGradScale;
+    if (params.cells != 0) {
+        const uint row = i * (params.cells + 3);
+        if (!seen) {
+            for (uint k = 0; k < params.cells + 3; ++k) {
+                gradient[row + k] = 0.0;
+            }
+            return;
+        }
+        const uint first = params.image * wallTexels() + wallOffset(params.finer + params.gridLevel);
+        const float3 gain = exp(float3(wallLatent[row + params.cells], wallLatent[row + params.cells + 1],
+                                       wallLatent[row + params.cells + 2]));
+        float3 sum = float3(0.0);
+        for (uint c = 0; c < params.cells; ++c) {
+            const float w = exp(wallLatent[row + c]);
+            const float3 texel = wallImage[first + c].rgb;
+            sum += w * texel;
+            // Each is kept as its log: its own derivative is the weight's times the weight.
+            gradient[row + c] = dot(pulled * gain, texel) * w;
+        }
+        gradient[row + params.cells] = pulled.x * gain.x * sum.x;
+        gradient[row + params.cells + 1] = pulled.y * gain.y * sum.y;
+        gradient[row + params.cells + 2] = pulled.z * gain.z * sum.z;
+        return;
+    }
     for (uint lobe = 0; lobe < params.lobes; ++lobe) {
         const uint at = (i * params.lobes + lobe) * kWallLobe;
         if (!seen) {
@@ -374,17 +432,18 @@ void neuralWallAdam(uint3 tid: SV_DispatchThreadID) {
     if (g == 0.0) {
         return;
     }
+    // A grid's numbers are all logs of a gain: the last kind.
+    const uint which = params.cells != 0 ? 3u : i % kWallLobe;
     const float m = params.beta1 * moment1[i] + (1.0 - params.beta1) * g;
     const float v = params.beta2 * moment2[i] + (1.0 - params.beta2) * g * g;
     moment1[i] = m;
     moment2[i] = v;
-    const uint which = i % kWallLobe;
     const float rate = which < 2 ? params.rateUv : which == 2 ? params.rateLevel : params.rateGain;
     float moved = made[i] - rate * (m / params.correction1) / (sqrt(v / params.correction2) + params.epsilon);
     if (which < 2) {
         moved = saturate(moved);
     } else if (which == 2) {
-        moved = clamp(moved, 0.0, float(params.levels - 1));
+        moved = clamp(moved, 0.0, float(params.levels - 1 - params.finer));
     } else {
         moved = clamp(moved, -14.0, 6.0);
     }
@@ -400,7 +459,7 @@ void neuralWallAccumulate(uint3 tid: SV_DispatchThreadID) {
     if (tid.x >= params.frameWidth * params.frameHeight) {
         return;
     }
-    const float3 tint = params.byTexel != 0 ? wallImage[params.image * wallTexels() + params.texel].rgb
+    const float3 tint = params.byTexel != 0 ? wallImage[params.image * wallTexels() + wallOffset(params.finer) + params.texel].rgb
                                             : float3(params.tintR, params.tintG, params.tintB);
     const float4 f = frameIn[tid.x];
     const float4 held = params.count != 0 ? frameOut[tid.x] : float4(0.0);

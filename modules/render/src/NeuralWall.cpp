@@ -86,10 +86,13 @@ void NeuralWall::bind(rhi::ShaderCursor cursor) const {
     p["axisV"].setData(wall_.axisV);
     p["startLevel"].setData(startLevel_);
     p["startGain"].setData(startGain_);
+    p["finer"].setData(finer_);
+    p["cells"].setData(cells_);
+    p["gridLevel"].setData(gridLevel_);
 }
 
 Result<void> NeuralWall::start(const scene::GpuSplats& cloud, const WallRect& wall, uint32_t lobes, uint32_t width,
-                               uint32_t height, uint32_t images, float startLevel, float startGain) {
+                               uint32_t height, uint32_t images, float startLevel, float startGain, int gridLevel) {
     if (cloud.count == 0 || width == 0 || height == 0 || images == 0 || lobes == 0) {
         return Error(ErrorCode::InvalidArgument, "a wall wants gaussians, texels, a picture and a lobe");
     }
@@ -112,7 +115,17 @@ Result<void> NeuralWall::start(const scene::GpuSplats& cloud, const WallRect& wa
     startLevel_ = startLevel < 0.0F ? static_cast<float>(levels_ > 1 ? levels_ - 2 : 0) : startLevel;
     startGain_ = startGain;
     steps_ = 0;
-    const uint64_t numbers = uint64_t{count_} * lobes_ * kWallLobe;
+    finer_ = 0;
+    cells_ = 0;
+    gridLevel_ = 0;
+    if (gridLevel >= 0) {
+        if (static_cast<uint32_t>(gridLevel) >= levels_) {
+            return Error(ErrorCode::InvalidArgument, "the wall's pictures have no such level for a grid");
+        }
+        gridLevel_ = static_cast<uint32_t>(gridLevel);
+        cells_ = std::max(width >> gridLevel_, 1u) * std::max(height >> gridLevel_, 1u);
+    }
+    const uint64_t numbers = uint64_t{count_} * stride();
     const auto assign = [&](gpu::Buffer& into, uint64_t words, uint32_t element, const char* label) -> Result<void> {
         auto made = zeroed(device, words, element, label);
         if (!made) return std::move(made).error();
@@ -138,6 +151,29 @@ Result<void> NeuralWall::start(const scene::GpuSplats& cloud, const WallRect& wa
         cursor["wallLatent"].setBinding(grad_.rhi());
     });
     return batch.submit(true);
+}
+
+Result<void> NeuralWall::finer(uint32_t levels, uint32_t images) {
+    if (count_ == 0 || images == 0 || levels > 8) {
+        return Error(ErrorCode::InvalidArgument, "a wall is made finer once it has reads, by at most eight levels");
+    }
+    width_ <<= levels;
+    height_ <<= levels;
+    finer_ += levels;
+    imageCount_ = images;
+    shown_ = 0;
+    levels_ = 1;
+    texels_ = width_ * height_;
+    for (uint32_t w = width_, h = height_; w > 1 || h > 1;) {
+        w = std::max(w >> 1, 1u);
+        h = std::max(h >> 1, 1u);
+        texels_ += w * h;
+        ++levels_;
+    }
+    auto made = zeroed(library_->device(), uint64_t{texels_} * images * 4, 16, "wall.images");
+    if (!made) return std::move(made).error();
+    images_ = *made;
+    return ok();
 }
 
 Result<void> NeuralWall::pyramid(gpu::CommandBatch& batch, uint32_t image) {
@@ -284,7 +320,7 @@ Result<std::optional<double>> NeuralWall::step(TileRasterizer& rasterizer, const
             cursor["gradient"].setBinding(grad_.rhi());
             cursor["gradientRead"].setBinding(latent_.rhi());
         });
-        const uint32_t numbers = count_ * lobes_ * kWallLobe;
+        const uint32_t numbers = count_ * stride();
         adam_.dispatch(batch, {numbers, 1, 1}, [&](rhi::ShaderCursor cursor) {
             fit(cursor);
             cursor["made"].setBinding(latent_.rhi());

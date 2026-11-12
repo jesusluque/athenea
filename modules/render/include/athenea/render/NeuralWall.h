@@ -53,9 +53,13 @@ public:
     /// `cloud`'s reads of it, `lobes` a gaussian, started where each
     /// gaussian's normal meets the wall: `startLevel` wide (a pyramid level;
     /// negative: the widest but one) and `startGain` strong together.
+    /// `gridLevel` not negative: in place of reads each gaussian keeps a
+    /// weight a texel of that level of the wall's pictures (0: the wall's own
+    /// texels, 1: half as many a side) and a gain a channel -- what a matt
+    /// thing takes from a wall, which is most of it and no read's shape.
     [[nodiscard]] Result<void> start(const scene::GpuSplats& cloud, const WallRect& wall, uint32_t lobes,
                                      uint32_t width, uint32_t height, uint32_t images, float startLevel = -1.0F,
-                                     float startGain = 0.05F);
+                                     float startGain = 0.05F, int gridLevel = -1);
 
     /// Picture `image` written on the device and its pyramid built:
     /// neuralWallPattern's patterns (0: the one texel `argument` lit).
@@ -63,6 +67,13 @@ public:
     /// Picture `image` from `texels` (width x height float4, bottom row
     /// first), and its pyramid: what a wall showing a video is given a frame.
     [[nodiscard]] Result<void> picture(uint32_t image, const gpu::Buffer& texels);
+
+    /// THE WALL'S PICTURES MADE FINER THAN THE FIT: `levels` more levels (each
+    /// twice the texels a side) and `images` pictures, those there were gone.
+    /// The reads stay as they were learnt -- where on the wall, how wide --
+    /// and now read pictures of the wall's real resolution; `accumulate`
+    /// still counts texels as the fit did. Not for fitting on.
+    [[nodiscard]] Result<void> finer(uint32_t levels, uint32_t images);
 
     /// Which picture the wall shows in the frames drawn from here on.
     void show(uint32_t image) noexcept { shown_ = image; }
@@ -88,6 +99,9 @@ public:
 
     [[nodiscard]] uint32_t count() const noexcept { return count_; }
     [[nodiscard]] uint32_t lobes() const noexcept { return lobes_; }
+    /// Numbers a gaussian keeps: six a read, or a grid's cells and three.
+    [[nodiscard]] uint32_t stride() const noexcept { return cells_ != 0 ? cells_ + 3 : lobes_ * kWallLobe; }
+    [[nodiscard]] uint32_t cells() const noexcept { return cells_; }
     [[nodiscard]] uint32_t width() const noexcept { return width_; }
     [[nodiscard]] uint32_t height() const noexcept { return height_; }
     [[nodiscard]] uint32_t levels() const noexcept { return levels_; }
@@ -111,6 +125,9 @@ private:
     uint32_t            texels_ = 0;      ///< a pyramid's
     uint32_t            imageCount_ = 0;
     uint32_t            shown_ = 0;
+    uint32_t            finer_ = 0;
+    uint32_t            cells_ = 0;
+    uint32_t            gridLevel_ = 0;
     uint32_t            steps_ = 0;
     uint32_t            pixels_ = 0;
     float               startLevel_ = 0.0F;
