@@ -288,3 +288,25 @@ En el orden en que lo haría, con lo medido esta noche como razón:
 6. **Peso en disco y en memoria.** Una pieza descubierta es un PLY de 62 floats por gaussiana para 14 que usa, y
    guarda las retiradas; 1,4 GB para Sponza a 1440 × 810.
 7. **CUDA.** Los tests pasan allí, pero el recorrido no tiene tiempo en CUDA (ver el incidente de arriba).
+
+## 13. Cómo repetir el Sponza descubierto
+
+Con el asset en `~/tools/assets/Sponza/main_sponza` (la capa `sponza_lit.usda` añade un sol y un cielo sobre
+`sponza_athenea.usda`, que reconecta los materiales del USD de Intel a sus texturas):
+
+```sh
+# 1. Los frames: el path tracer, con profundidad, por las cámaras de un fichero (NAME EX EY EZ TX TY TZ UX UY UZ).
+athenea stage sponza_lit.usda --cameras views.txt --focal 20 --size 1440x810 \
+    --technique rt --path-total 128 --denoise -o frames/x.exr          # un minuto por frame, frames/NAME.exr
+
+# 2. La escena: una mirada por frame, en una ejecución (13,5 s para siete frames).
+athenea neural-scene discover sponza.aths --views views.txt --frames frames --focal 20 --up-axis Z
+
+# 3. Verla desde donde no miró nadie, y cronometrar un recorrido sin escribir nada.
+athenea neural-scene render sponza.aths --eye 600 -200 900 --target -400 0 300 --focal 20 -o vista.exr
+athenea neural-scene render sponza.aths --views recorrido.txt --focal 20 --size 1920x1080 --harmonics
+athenea neural-scene info sponza.aths
+```
+
+El `A` de `vista.exr` es la máscara de lo que la escena conoce desde ahí. Un frame posterior con algo movido o
+repintado se añade con el mismo `discover` (`--repaint 0.3` para cambios de color con la cámara quieta).

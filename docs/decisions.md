@@ -21694,3 +21694,9 @@ name, not at these.
 - The sweep on more views and another scene, and the settings chosen by the scene (the pawn against black wanted
   0.8 by the other measure).
 - The moved statue and the same-frame-again share at the new defaults.
+
+## The moved statue at the new settings (12 Nov)
+
+Sponza and its statue, the same two frames of 960 x 540, with a disc of one pixel, refining at 1.5 and a tolerance
+of 0.06: the same frame looked at again is held at 98.8% (it was 98.6%), and the frame with the statue moved at
+98.0% (97.8%), 10 379 gaussians made for it. A look takes 0.36 to 0.42 s.
