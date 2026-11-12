@@ -21554,3 +21554,26 @@ that wants a scene whose gaussians are first in the right place.
 
 - Rates that follow the level of what is fitted, for any fit: `neural-fit` has the same rates whatever the cloud's
   brightness.
+
+## Finer looks: Sponza from frames of 1440 x 810, and a regression run (12 Nov)
+
+What limits a found scene from near is how fine the looks were. Seven frames of 1440 x 810 in place of ten of
+960 x 540 (the path tracer, 128 paths a pixel and a denoise), `--refine 2`, discs of 1.3 pixels: 6 158 927
+gaussians made, 5 697 463 standing. Against the path tracer at 960 x 540 from the two cameras that took no look:
+
+| | ten looks of 960 x 540 | seven of 1440 x 810 |
+|---|---|---|
+| view A: PSNR, SSIM | 34.6 dB, 0.905 | 35.4 dB, 0.912 |
+| view B: PSNR, SSIM | 28.6 dB, 0.851 | 29.2 dB, 0.874 |
+| gaussians standing | 2 661 768 | 5 697 463 |
+| the walk, a frame at 1280 x 720: least, mean | 23.8, 35.5 ms | 25.3, 39.6 ms |
+| on disk | 0.7 GB | 1.4 GB |
+
+Better on both views with fewer looks, so the gain is the looks' fineness and not their number; and twice the
+gaussians cost a tenth more a frame, since what a frame costs is what is in view and in its tiles. A look gives
+back its own frame at relMSE 0.002 to 0.010. This is not a clean pair -- seven looks are not the ten -- and is
+given as what it is.
+
+**A regression run**, Metal, with everything above in: `athenea_scene_tests` 10 of 10 cases, `athenea_technique_tests`
+64 of 64, `athenea_render_tests` 65 of 68 -- the three that fail being the posed cloud's refit and flatten's two,
+which fail the same way in release 0.5 (its CHANGELOG lists them). The whole `ctest` was not run again.

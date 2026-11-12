@@ -241,6 +241,8 @@ Cada punto con su medida y contra qué. El detalle está en `docs/decisions.md`,
   que lo pedía, de 27,3 a 28,3 dB, con un 38 % más de gaussianas.
 - El ancho del disco de una gaussiana descubierta se midió en el edificio: 1,3 píxeles da relMSE 0,0059 al volver
   por su cámara, contra 0,0105 con 1,0. Desde dos cámaras que no tomaron ninguna mirada: 34,6 y 28,3 dB.
+- Con miradas más finas (siete frames de 1440 × 810 en vez de diez de 960 × 540) las dos vistas held-out suben a
+  35,4 y 29,2 dB, con 5,7 millones de gaussianas y el recorrido a 25 ms por frame como mínimo (40 de media).
 - El Sponza descubierto se recorre a 22 ms por frame como mínimo (44 de media) a 1280 × 720, con 2,35 millones de
   gaussianas; cada frame del path tracer del que salió tardó alrededor de un minuto.
 
