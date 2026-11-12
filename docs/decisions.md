@@ -21429,3 +21429,31 @@ little closer. The statue's move is now about a third of what the second look re
 
 - The 1.4%: pixels the scene does not cover well enough to be held (its cover is under a half there), which is
   the gap between discs and not an edge.
+
+## How wide a disc: 1.3 pixels, measured on the building (12 Nov)
+
+A found gaussian's width was set on the pawn, where a wider disc paints the black past a silhouette and the
+measure punishes it. A building has no black. Sponza's first look given back through its own camera, and how much
+of the same frame looked at again is taken to be seen through:
+
+| a disc's standard deviation | relMSE | p99 | seen through, the same frame again |
+|---|---|---|---|
+| 0.8 pixels | 0.0198 | 164 | — |
+| 1.0 | 0.0105 | 125 | 1.0% |
+| 1.3 | 0.0059 | 76 | 2.4% |
+| 1.6 | 0.0060 | 48 | 4.1% |
+| 2.0 | 0.0075 | 53 | 7.2% |
+
+1.3 is the default: the frame's error at its least, 1.8 times less than at 1.0, before the noise at edges of depth
+grows faster than the cover closes. (0.8 was measured before the two changes of the section above.)
+
+Sponza found again from the same ten frames at 1.3: 2 151 672 gaussians where 1.0 made 2 346 951 -- wider discs
+cover more of the next look, which then holds more: 80.4%, 7.7%, 48.7%, 89.3%, 60.2%, 52.4%, 70.0%, 83.8% and
+92.4% for the nine after the first. From the two cameras that took no look, against the path tracer's frames:
+relMSE 0.0054 and 0.0256, PSNR 34.4 and 27.3 dB, SSIM 0.90 and 0.82; their mean relMSE is 0.0155 where 1.0 gave
+0.0173. The walk is 22.8 ms a frame at least and 31.1 on average at 1280 x 720.
+
+### Not done
+
+- A width chosen by the scene rather than given: a thing against black wants 0.8, a room 1.3.
+- The second held-out view's 27 dB looked at: whether it is what no look saw, or what was seen badly.

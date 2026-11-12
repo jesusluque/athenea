@@ -85,7 +85,7 @@ struct SceneOptions {
     float                    threshold = 0.05F;
     std::string              frame;
     float                    tolerance = 0.03F;
-    float                    spread = 0.8F;
+    float                    spread = 1.3F;
     std::string              views;
     float                    repaint = 0.0F;
 };

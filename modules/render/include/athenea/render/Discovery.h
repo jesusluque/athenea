@@ -74,7 +74,7 @@ public:
     [[nodiscard]] Result<FrameLook> fromFrame(const gpu::Buffer& colour, const gpu::Buffer& depth, uint32_t width,
                                               uint32_t height, const Projection& projection,
                                               const gpu::Buffer* knownColour, const gpu::Buffer* knownDepth,
-                                              float tolerance = 0.03F, float spread = 0.8F, float repaint = 0.0F);
+                                              float tolerance = 0.03F, float spread = 1.3F, float repaint = 0.0F);
 
     /// WHERE A FRAME SEES THROUGH THE SCENE: a float a pixel, 1 where the scene
     /// drawn through the frame's camera (`knownColour`, `knownDepth`) has a
