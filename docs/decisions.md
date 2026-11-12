@@ -21700,3 +21700,21 @@ name, not at these.
 Sponza and its statue, the same two frames of 960 x 540, with a disc of one pixel, refining at 1.5 and a tolerance
 of 0.06: the same frame looked at again is held at 98.8% (it was 98.6%), and the frame with the statue moved at
 98.0% (97.8%), 10 379 gaussians made for it. A look takes 0.36 to 0.42 s.
+
+## The settings held against fourteen views, not two (12 Nov)
+
+The caution of the section on the sweep, answered. The same seven looks, held against the path tracer's frames
+from fourteen cameras that took none (960 x 540):
+
+| | PSNR: mean, least, most | SSIM: mean, least |
+|---|---|---|
+| a disc of 1.3, refine 2, tolerance 0.03 | 31.46, 23.58, 35.52 dB | 0.8647, 0.7066 |
+| a disc of 1.0, refine 1.5, tolerance 0.06 | 32.03, 23.72, 36.03 dB | 0.8692, 0.7166 |
+
+The new settings are better on the fourteen as on the two, by 0.6 dB on average where the two said 0.7 and 1.9:
+the two were among the views that gained most. And the mean over fourteen, 32 dB, is the number to quote for
+this scene, not the 36 of its best view; the worst, under 24 dB, is a view the seven looks saw little of.
+
+### Not done
+
+- The worst views looked at: how much of each the scene holds, against how far off it is.

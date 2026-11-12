@@ -252,6 +252,8 @@ Cada punto con su medida y contra qué. El detalle está en `docs/decisions.md`,
 - Los parámetros de `discover` se barrieron midiendo en vistas que ninguna mirada tomó (lo que importa), no en cómo
   vuelve cada frame por su cámara: disco de 1,0 px, refinado 1,5 y tolerancia 0,06 dan 36,0 y 31,1 dB en Sponza
   (antes 35,4 y 29,2), con 6,4 millones de gaussianas y la escena descubierta en 13,5 s.
+- La cifra que representa a esta escena es la media sobre catorce vistas que ninguna mirada tomó: 32,0 dB de PSNR
+  y 0,869 de SSIM (la peor, 23,7 dB; la mejor, 36,0). Con los parámetros anteriores, 31,5 dB y 0,865.
 - Corrección de tiempos: los recorridos se cronometraron escribiendo sus frames a disco, y eso los inflaba. Sin
   escribir, el Sponza de 5,7 millones de gaussianas va a 15,5 ms por frame como mínimo (26,1 de media) a 1280 × 720,
   18,4 (30,2) a 1920 × 1080 y 36,2 (52,5) a 3840 × 2160, en Metal.
