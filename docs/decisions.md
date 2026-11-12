@@ -21602,3 +21602,16 @@ corrected by this table's ratio, not re-run.
 ### Not done
 
 - The walk on CUDA: it was what filled the disk, and has no time.
+
+## What a look costs (12 Nov)
+
+`neural-scene discover` run whole on a frame of 960 x 540 of Sponza, Metal, the command timed from outside: 5.2 s
+for the first look (518 400 gaussians made), 5.1 s for the second (169 843), 4.4 s for the third (99 929). That
+is a process started, a device made, the scene's pieces read from their files, the scene drawn through the
+frame's camera up to nine times, the gaussians made and read back, a PLY written and read again, and the scene
+drawn once more against the frame. The path tracer took about a minute for each of those frames.
+
+### Not done
+
+- The look itself, apart from the files: the scene kept on the device from one look to the next, which is most of
+  those seconds.
