@@ -205,7 +205,7 @@ void framePack(uint3 tid: SV_DispatchThreadID) {
     // As wide as the pixel is at its depth, and wider where the surface turns from the eye, so that its
     // neighbours' discs still meet; a tenth as thick.
     const float pixel = z / params.focalX;
-    const float facing = max(dot(normal, towardsEye), 0.25);
+    const float facing = max(dot(normal, towardsEye), 0.5);
     // A pixel at the surface's rim -- a neighbour with nothing in it, or with something far behind or in
     // front -- gets a disc half as wide: a full one would paint what lies beyond the rim.
     const bool rim = !(zl > 0.0 && abs(zl - z) < near) || !(zr > 0.0 && abs(zr - z) < near) ||

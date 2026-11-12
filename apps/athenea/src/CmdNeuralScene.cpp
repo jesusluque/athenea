@@ -700,6 +700,11 @@ int runDiscover(const SceneOptions& o) {
     render::RenderSettings settings;
     settings.width = width;
     settings.height = height;
+    // The scene's depth at a pixel is its first surface's -- where half the pixel is covered -- and not
+    // the mean of everything blended there: at an edge of depth the mean lies between the two surfaces
+    // and is neither, and a frame would be taken to see through what it does not.
+    settings.depth = render::RenderSettings::Depth::Threshold;
+    settings.depthThreshold = 0.5F;
     render::RenderTargets known;
     if (!instances.empty()) {
         auto drawn = raster->render(*camera, instances, settings, known);

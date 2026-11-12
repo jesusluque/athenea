@@ -21405,3 +21405,27 @@ mended before the share held means what it should.
 
 - An edge of depth held: the scene's depth at a pixel taken from its nearest heavy gaussian (the trace has it)
   rather than from the blend's mean, and the rim's discs kept inside their surface.
+
+## The edge of depth, half mended (12 Nov)
+
+Two changes to what the section before found. The scene's depth at a pixel, in `discover`, is its first surface's
+(`RenderSettings::Depth::Threshold`, where half the pixel is covered) and not the blend's mean, which at an edge
+lies between two surfaces and is neither. And a disc on a surface seen edge-on is widened by at most the square
+root of two, not by two: it was those that reached past their surface's rim.
+
+Sponza and its statue again, the same two frames:
+
+| | before | first surface's depth | and narrower discs edge-on |
+|---|---|---|---|
+| the same frame again: seen through | 18 964 pixels | 11 184 | 5 175 |
+| the same frame again: held | 96.3% | 98.2% | 98.6% |
+| T1, the statue moved: held | 95.8% | 97.3% | 97.8% |
+| the first look through its camera against its frame, relMSE | 0.01125 | 0.01125 | 0.01047 |
+
+A look's own noise falls from 3.7% of the frame to 1.0% seen through and 1.4% not held, and the frame comes back a
+little closer. The statue's move is now about a third of what the second look remakes rather than lost in it.
+
+### Not done
+
+- The 1.4%: pixels the scene does not cover well enough to be held (its cover is under a half there), which is
+  the gap between discs and not an edge.
