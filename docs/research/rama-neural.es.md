@@ -261,3 +261,23 @@ Assets usados: Khronos CarConcept (CC BY 4.0) e Intel Sponza (CC BY 4.0, Frank M
 
 **Incidente.** Cronometrando ese recorrido en CUDA se escribieron los frames a 4K dentro de WSL en ixwin y se llenó
 el disco D:, con lo que la distribución dejó de arrancar. `render --views` ya no necesita escribir para cronometrar.
+
+## 12. Por dónde seguir (escena descubierta)
+
+En el orden en que lo haría, con lo medido esta noche como razón:
+
+1. **Movimiento en vez de retirar y rehacer.** Hoy algo que se mueve se quita de donde estaba y se crea donde
+   está (43 mil gaussianas fuera y 44 mil dentro por un peón). Con los motion vectors o el id de prim que ya da
+   el renderer, la pieza se movería y solo se rellenaría lo que destapa.
+2. **Lo que gira con el ojo.** Cada gaussiana descubierta lleva el color de la cámara que la vio. Ajustar el color
+   contra los frames no aportó (menos de un 1 %) porque el error está en la geometría; primero hay que arreglar
+   bordes y cobertura, y después separar la parte mate de la que depende de la vista (el decoder partido ya existe).
+3. **El borde de una superficie.** Es casi todo el p99 de una mirada (60 a 90 code values) y el ruido que hace que
+   el mismo frame repetido se conserve al 98,6 % y no al 100 %.
+4. **Que el renderer dibuje solo lo que falta.** La escena ya dice qué parte de una vista conoce (81 a 96 % en
+   vistas nuevas del recorrido de Sponza); falta un renderer que acepte esa máscara. Es donde está el ahorro.
+5. **Decir lo desconocido a quien lo rellene.** Hoy es el alpha de un render desde una cámara. Falta una forma que
+   no dependa de la cámara (un volumen de ocupación de lo visto) y saber qué consume el sistema que rellena.
+6. **Peso en disco y en memoria.** Una pieza descubierta es un PLY de 62 floats por gaussiana para 14 que usa, y
+   guarda las retiradas; 1,4 GB para Sponza a 1440 × 810.
+7. **CUDA.** Los tests pasan allí, pero el recorrido no tiene tiempo en CUDA (ver el incidente de arriba).
