@@ -21883,3 +21883,23 @@ pane makes two gaussians a pixel. And the piece's file and the manifest's new ke
 - **Emission**, which the record has no field for: an emitter's gaussian carries its light as a colour.
 - **Drawing only what is not held** (the plan's fifth step): the path tracer still draws whole frames.
 - **Motion**: something that moved is still taken out and made again, though the render knows its prim.
+
+## The render's looks on CUDA (12 Nov)
+
+The branch as it stands built in WSL on the RTX 3070 Laptop (`linux-x86_64-release`), by the user's leave to take
+the machine. `[shoot]`, `[discover]`, `[gone]`, `[look]` and `[scene]` pass there with the numbers Metal gives (a
+look from twice as far 2.41 times as wide, cells of four 3.96 times). The room of the section before, shot from
+its two views at 960 x 540 and 64 paths: the second frame is whole 3.2 s after it starts, a look 0.2 to 0.3 s,
+and the scene of 724 754 gaussians drawn at 1920 x 1080 in 11.1 ms a frame at least. The second frame drawn
+again from the scene against the frame `athenea stage` draws there, where the scene covers: PSNR 30.9 dB, SSIM
+0.976.
+
+That is not the comparison Metal's is. This CUDA device has no ray queries -- OptiX's library is not found in
+the WSL distribution -- so the path tracer there traces nothing past the first hit, `[margin]` skips, and
+`pathGuides`' walk through glass (`kTraces`) does not run: the look counts 125 289 pixels that let the eye
+through and makes nothing behind any of them. Every pane keeps its picture, as a lens does.
+
+### Not done
+
+- Glass made as glass on CUDA: it wants ray queries, which is OptiX here or the L4.
+- Sponza shot on CUDA: eight gigabytes do not hold its stage.
