@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -34,7 +35,9 @@
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/io/Exr.h"
 #include "athenea/io/NeuralFile.h"
+#include "athenea/gpu/Texture.h"
 #include "athenea/io/NeuralScene.h"
+#include "athenea/io/Png.h"
 #include "athenea/io/SplatWriters.h"
 #include "athenea/render/Discovery.h"
 #include "athenea/render/NeuralAppearance.h"
@@ -43,7 +46,9 @@
 #include "athenea/render/SplatLift.h"
 #include "athenea/render/TileRasterizer.h"
 #include "athenea/scene/GpuClouds.h"
+#include "athenea/technique/DisplayTransform.h"
 #include "athenea/usd/Export.h"
+#include "athenea/usd/StageRenderer.h"
 
 namespace athenea::cli {
 namespace {
@@ -90,6 +95,22 @@ struct SceneOptions {
     float                    repaint = 0.0F;
     std::string              framesDir;
     float                    refine = 1.5F;
+    // render: the scene as it stood
+    double                   at = -1.0;
+    unsigned                 snapshot = 0;
+    unsigned                 storedFrame = 0;
+    float                    exposure = 0.0F;
+    // shoot
+    std::string              stage;
+    unsigned                 samples = 64;
+    unsigned                 passSamples = 1;
+    unsigned                 bounces = 4;
+    bool                     denoise = false;
+    float                    rayMargin = 0.0F;
+    unsigned                 coarsest = 8;
+    float                    glassOpacity = 0.05F;
+    float                    turned = 0.5F;
+    std::vector<double>      times;
 };
 
 bool sizeOf(const std::string& text, uint32_t& width, uint32_t& height) {
@@ -107,12 +128,32 @@ Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& l
     if (ext == ".usda" || ext == ".usdc" || ext == ".usd") {
         return usd::uploadParticleField(library, loader, path);
     }
+    if (ext == ".athg") {
+        // What a render of the engine's own left: records as render::Discovery lays them out.
+        auto held = io::readGaussians(path);
+        if (!held) return std::move(held).error();
+        if (held->floats != render::kRenderRecord) {
+            return Error::make(ErrorCode::Unsupported, "{}: records of {} floats, and a render's are {}", path.string(),
+                               held->floats, render::kRenderRecord);
+        }
+        io::RawSplats raw;
+        raw.source = path.string();
+        raw.count = held->count;
+        raw.encoding = render::Discovery::renderEncoding();
+        raw.records = std::move(held->records);
+        loader.keepFaint(true);   // a record of what is gone counts every gaussian the file holds
+        auto cloud = loader.upload(raw, 0);
+        loader.keepFaint(false);
+        return cloud;
+    }
     return scene::loadSplatFile(loader, path.string(), 3);
 }
 
 /// A piece as it is drawn: its gaussians, less those a later look found gone.
+/// With `upTo`, as it stood at that snapshot: less only what had gone by then.
 Result<scene::GpuSplats> loadPiece(gpu::ShaderLibrary& library, scene::CloudLoader& loader, render::Discovery& discovery,
-                                   const std::filesystem::path& directory, const io::NeuralScenePiece& piece) {
+                                   const std::filesystem::path& directory, const io::NeuralScenePiece& piece,
+                                   uint32_t upTo = 0) {
     auto cloud = load(library, loader, directory / piece.cloud);
     if (!cloud || piece.gone.empty()) {
         return cloud;
@@ -121,7 +162,90 @@ Result<scene::GpuSplats> loadPiece(gpu::ShaderLibrary& library, scene::CloudLoad
     if (!held) return std::move(held).error();
     auto record = discovery.record(cloud->count, *held);
     if (!record) return std::move(record).error();
-    return discovery.without(*cloud, *record);
+    return discovery.without(*cloud, *record, upTo);
+}
+
+/// A FRAME OF THE SCENE WRITTEN: an EXR as it is (linear, with its depth), or -- `path` ending in .png --
+/// the picture of it, through the standard view transform at `exposure` stops, encoded for an sRGB display
+/// on the device. The picture is what is made of the scene afterwards; the scene is the render.
+Result<void> writeFrame(gpu::ShaderLibrary& library, gpu::Device& device, const render::RenderTargets& targets,
+                        uint32_t width, uint32_t height, const std::string& path, float exposure) {
+    if (std::filesystem::path(path).extension() != ".png") {
+        auto colour = targets.colour.readAll<float>(device);
+        if (!colour) return std::move(colour).error();
+        auto depth = targets.depth.readAll<float>(device);
+        if (!depth) return std::move(depth).error();
+        return io::writeExr(path, width, height, *colour, *depth);
+    }
+    auto display = technique::DisplayTransform::create(library);
+    if (!display) return std::move(display).error();
+    gpu::TextureDesc desc;
+    desc.width = width;
+    desc.height = height;
+    desc.format = rhi::Format::RGBA8Unorm;
+    desc.usage = rhi::TextureUsage::UnorderedAccess | rhi::TextureUsage::ShaderResource | rhi::TextureUsage::CopySource;
+    desc.label = "scene.picture";
+    auto texture = gpu::Texture::create(device, desc);
+    if (!texture) return std::move(texture).error();
+    technique::DisplaySource source;
+    source.kind = technique::DisplaySource::Kind::Colour;
+    source.buffer = &targets.colour;
+    source.width = width;
+    source.height = height;
+    technique::DisplaySettings settings;
+    settings.view = technique::ViewTransform::Standard;
+    settings.display = technique::DisplayEncoding::Srgb;
+    settings.exposure = exposure;
+    {
+        gpu::CommandBatch batch(device);
+        ATHENEA_TRY(display->run(batch, source, settings, texture->rhi(), width, height));
+        ATHENEA_TRY(batch.submit(true));
+    }
+    auto texels = texture->read(device, 0, 0);
+    if (!texels) return std::move(texels).error();
+    return io::writePng(path, width, height,
+                        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(texels->data()), texels->size()));
+}
+
+/// Whether a box may be seen through `projection`: not when its eight corners are all behind the eye, or
+/// all off the same side of the frame. Which pieces are read is the files' bookkeeping; what is drawn of
+/// them the device decides.
+bool boxInView(const std::array<float, 3>& min, const std::array<float, 3>& max, const render::Projection& projection,
+               uint32_t width, uint32_t height) {
+    int behind = 0, left = 0, right = 0, below = 0, above = 0;
+    for (int corner = 0; corner < 8; ++corner) {
+        const double p[3] = {(corner & 1) != 0 ? max[0] : min[0], (corner & 2) != 0 ? max[1] : min[1],
+                             (corner & 4) != 0 ? max[2] : min[2]};
+        double v[3];
+        for (int r = 0; r < 3; ++r) {
+            v[r] = projection.worldToView.at(r, 0) * p[0] + projection.worldToView.at(r, 1) * p[1] +
+                   projection.worldToView.at(r, 2) * p[2] + projection.worldToView.at(r, 3);
+        }
+        if (v[2] <= 0.0) {
+            ++behind;
+            continue;
+        }
+        const double x = v[0] / v[2] * projection.focalX + projection.centreX;
+        const double y = v[1] / v[2] * projection.focalY + projection.centreY;
+        left += x < 0.0 ? 1 : 0;
+        right += x > static_cast<double>(width) ? 1 : 0;
+        below += y < 0.0 ? 1 : 0;
+        above += y > static_cast<double>(height) ? 1 : 0;
+    }
+    // A corner behind the eye says nothing of which side the box is off: only a box wholly in front is
+    // judged by its sides.
+    return behind != 8 && (behind != 0 || (left != 8 && right != 8 && below != 8 && above != 8));
+}
+
+/// The last snapshot taken by time `at`, counted from one; 0 where none was.
+uint32_t snapshotAt(const io::NeuralScene& scene, double at) {
+    uint32_t last = 0;
+    for (size_t k = 0; k < scene.snapshots.size(); ++k) {
+        if (scene.snapshots[k].time <= at) {
+            last = static_cast<uint32_t>(k) + 1;
+        }
+    }
+    return last;
 }
 
 render::Vec3 upOf(const io::NeuralScene& scene) {
@@ -286,6 +410,11 @@ int runInfo(const SceneOptions& o) {
     for (const io::NeuralSceneSnapshot& s : scene->snapshots) {
         out("  snapshot at %g by %s: %zu pieces\n", s.time, s.camera.empty() ? "no camera" : s.camera.c_str(),
             s.pieces.size());
+    }
+    for (size_t k = 0; k < scene->frames.size(); ++k) {
+        const io::NeuralSceneFrame& f = scene->frames[k];
+        out("  frame %zu at %g by %s: %ux%u, %u paths a pixel, snapshots %u to %u, %.1f s, taken %s\n", k + 1, f.time,
+            f.camera.c_str(), f.width, f.height, f.samples, f.firstSnapshot, f.lastSnapshot, f.seconds, f.taken.c_str());
     }
     for (const io::NeuralSceneCamera& c : scene->cameras) {
         out("  camera %s: from (%.3f %.3f %.3f) at (%.3f %.3f %.3f), %g mm\n", c.name.c_str(), c.eye[0], c.eye[1],
@@ -941,13 +1070,487 @@ int runDiscover(const SceneOptions& all) {
     return 0;
 }
 
-int runRender(const SceneOptions& o) {
+/// A RENDER WHOSE RESULT IS THE SCENE. A USD stage is path traced through a camera, and what the render
+/// leaves is gaussians, not a picture: each as wide as its pixel is at its distance, each of its
+/// surface's material -- an opaque thing a disc in its surface, a pane the pane itself and, apart, what
+/// is seen through it where the bent ray ends. They are found while the render gathers: a first look at
+/// cells of several pixels as soon as there are paths enough for those, and finer looks over it as the
+/// paths accumulate, each taking out the coarser gaussians it replaces. Every look is a snapshot with
+/// its time, and nothing leaves the disk: the scene accumulates, and `render --at` draws it as it stood.
+/// A picture is what `neural-scene render` makes of the scene afterwards.
+int runShoot(const SceneOptions& all) {
     uint32_t width = 0;
     uint32_t height = 0;
-    if (!sizeOf(o.size, width, height)) return kExitFailure;
+    if (!sizeOf(all.size, width, height)) return kExitFailure;
+    const std::filesystem::path directory = all.directory;
+    io::NeuralScene scene;
+    if (std::filesystem::exists(directory / "scene.json")) {
+        auto read = io::readNeuralScene(directory);
+        if (!read) return report(read.error());
+        scene = std::move(*read);
+    }
+    std::error_code made;
+    std::filesystem::create_directories(directory / "pieces", made);
+    auto renderer = usd::StageRenderer::open(all.stage);
+    if (!renderer) return report(renderer.error());
+    usd::StageRenderer& stage = **renderer;
+    stage.setPathSamples(std::max(all.passSamples, 1u));
+    stage.setPathTotal(std::max(all.samples, 1u));
+    stage.setPathBounces(all.bounces);
+    stage.setDenoise(all.denoise);
+    if (all.rayMargin > 0.0F) stage.setRayMargin(all.rayMargin);
+    // The path tracer's planes beside the picture: what each pixel's surface is made of.
+    stage.requestOutputs({"material"});
+    gpu::Device& device = stage.device();
+    gpu::ShaderLibrary& library = stage.library();
+    auto loader = scene::CloudLoader::create(library);
+    if (!loader) return report(loader.error());
+    auto raster = render::TileRasterizer::create(library);
+    if (!raster) return report(raster.error());
+    auto discovery = render::Discovery::create(library);
+    if (!discovery) return report(discovery.error());
+    if (scene.name.empty()) scene.name = directory.stem().string();
+    if (!all.name.empty()) scene.name = all.name;
+    scene.upAxis = !all.upAxis.empty() ? all.upAxis : std::string(1, stage.upAxis());
+    if (all.metersPerUnit > 0.0) scene.metersPerUnit = all.metersPerUnit;
+    if (scene.source.empty()) scene.source = all.source.empty() ? all.stage : all.source;
+    if (!all.licence.empty()) scene.licence = all.licence;
+
+    // THE SCENE IS ON THE DISK, AND THE DEVICE HOLDS WHAT A VIEW SEES OF IT. Each look's gaussians are
+    // written as they are made, and when a view is done everything of the scene leaves the device; the
+    // next view reads back only the pieces whose boxes its frustum meets. So what a shoot can hold is
+    // not bounded by the device, which also holds the stage being rendered -- Sponza's textures alone are
+    // two thirds of it.
+    std::vector<std::unique_ptr<scene::GpuSplats>> clouds;
+    std::vector<render::SplatInstance> instances;
+    std::vector<size_t> pieceOf;             // an instance's piece in the manifest
+    std::vector<gpu::Buffer> gone;           // its record, once one is needed
+    const auto loadInView = [&](const render::Camera& camera) -> Result<uint32_t> {
+        const render::Projection projection = render::projectionFor(camera, width, height);
+        uint32_t skipped = 0;
+        for (size_t k = 0; k < scene.pieces.size(); ++k) {
+            const io::NeuralScenePiece& piece = scene.pieces[k];
+            if (piece.removed != 0 && piece.removed >= piece.gaussians) {
+                continue;   // nothing of it stands
+            }
+            if (!boxInView(piece.boundsMin, piece.boundsMax, projection, width, height)) {
+                ++skipped;
+                continue;
+            }
+            auto cloud = loadPiece(library, *loader, *discovery, directory, piece);
+            if (!cloud) return std::move(cloud).error();
+            clouds.push_back(std::make_unique<scene::GpuSplats>(std::move(*cloud)));
+            instances.push_back(render::SplatInstance{clouds.back().get(), render::Mat4::identity(), {}});
+            pieceOf.push_back(k);
+            gone.emplace_back();
+        }
+        return skipped;
+    };
+    const auto release = [&] {
+        instances.clear();
+        clouds.clear();
+        pieceOf.clear();
+        gone.clear();
+    };
+    const auto clock = [] {
+        const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        char text[32];
+        std::strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&now));
+        return std::string(text);
+    };
+
+    // ONE LOOK AT ONE FOOTPRINT: the render as it stands on the device, taken into the scene.
+    const auto takeLook = [&](const render::Camera& camera, const std::string& name, double time, uint32_t footprint,
+                              uint32_t samples, bool last, uint32_t frameFirst) -> int {
+        const auto began = std::chrono::steady_clock::now();
+        auto colourOf = stage.displaySource("color");
+        auto depthOf = stage.displaySource("depth");
+        auto planesOf = stage.displaySource("material");
+        if (!colourOf) return report(colourOf.error());
+        if (!depthOf) return report(depthOf.error());
+        if (!planesOf) return report(planesOf.error());
+        if (colourOf->buffer == nullptr || depthOf->buffer == nullptr || planesOf->buffer == nullptr) {
+            err("the render left no colour, depth or material planes: neural-scene shoot wants a path traced stage of meshes\n");
+            return kExitFailure;
+        }
+        const gpu::Buffer& frameColour = *colourOf->buffer;
+        const gpu::Buffer& frameDepth = *depthOf->buffer;
+        const gpu::Buffer& planes = *planesOf->buffer;
+        scene.snapshots.push_back({time, name, {}, samples, footprint, clock()});
+        const uint32_t stamp = static_cast<uint32_t>(scene.snapshots.size());
+
+        render::RenderSettings settings;
+        settings.width = width;
+        settings.height = height;
+        settings.depth = render::RenderSettings::Depth::Threshold;
+        settings.depthThreshold = 0.5F;
+        // Where the scene begins: a pane's own depth, which the depth above goes past.
+        render::RenderSettings beginning = settings;
+        beginning.depthThreshold = 0.4F * all.glassOpacity;   // under the least a pane covers
+        render::RenderTargets known;
+        render::RenderTargets knownFirst;
+        render::RenderTargets knownSize;
+        std::vector<std::unique_ptr<render::NeuralCloud>> sized;
+        const auto drawKnown = [&]() -> Result<void> {
+            auto drawn = raster->render(camera, instances, settings, known);
+            if (!drawn) return std::move(drawn).error();
+            auto first = raster->render(camera, instances, beginning, knownFirst);
+            if (!first) return std::move(first).error();
+            sized.clear();
+            std::vector<render::SplatInstance> bySize;
+            for (size_t k = 0; k < clouds.size(); ++k) {
+                auto size = discovery->sizes(*clouds[k]);
+                if (!size) return std::move(size).error();
+                sized.push_back(std::make_unique<render::NeuralCloud>(std::move(*size)));
+                render::SplatInstance instance = instances[k];
+                instance.neural = sized.back().get();
+                bySize.push_back(instance);
+            }
+            auto sizes = raster->render(camera, bySize, settings, knownSize);
+            if (!sizes) return std::move(sizes).error();
+            // The clouds of sizes are as large as the scene's own and wanted for that one frame.
+            sized.clear();
+            return ok();
+        };
+        const render::Projection projection = render::projectionFor(camera, width, height);
+        const float disc = all.spread * static_cast<float>(footprint);
+        uint32_t taken = 0;
+        uint32_t firstThrough = 0;
+        uint32_t firstAgain = 0;
+        if (!instances.empty()) {
+            if (auto drawn = drawKnown(); !drawn) return report(drawn.error());
+            // What the render sees through, and what it would make finer, is taken out first, layer by layer.
+            std::vector<uint32_t> newly(instances.size(), 0);
+            for (uint32_t pass = 0; pass < 8; ++pass) {
+                uint32_t through = 0;
+                uint32_t again = 0;
+                auto mask = discovery->seenThrough(frameColour, frameDepth, width, height, known.colour, known.depth,
+                                                   all.tolerance, through, all.repaint, &again, &knownSize.colour,
+                                                   all.refine, &projection, disc);
+                if (!mask) return report(mask.error());
+                if (pass == 0) {
+                    firstThrough = through;
+                    firstAgain = again;
+                }
+                if (through + again == 0) {
+                    break;
+                }
+                uint32_t slots = 0;
+                for (const auto& cloud : clouds) {
+                    slots += cloud->count;
+                }
+                // THE MASK IS CARRIED TWICE. Whole, to this frame's own earlier looks: the coarse discs a finer
+                // look replaces, glass's pictures among them. And struck where the render's surface lets
+                // the eye through, to everything older: nothing found before is taken out through glass,
+                // where the scene's depth is not the surface's and the mask would reach the pane and all
+                // that is seen through it (a look from a second side took the floor behind a pane out).
+                uint32_t now = 0;
+                for (int older = 0; older < 2; ++older) {
+                if (older == 1) {
+                    if (auto spared = discovery->sparePanes(*mask, planes, width, height); !spared) return report(spared.error());
+                }
+                auto lift = render::makeSplatLift(device, slots);
+                if (!lift) return report(lift.error());
+                render::RenderSettings carrying = settings;
+                render::liftWhileBlending(carrying, *lift, *mask);
+                render::RenderTargets carried;
+                auto lifted = raster->render(camera, instances, carrying, carried);
+                if (!lifted) return report(lifted.error());
+                uint32_t base = 0;
+                for (size_t k = 0; k < instances.size(); ++k) {
+                    const io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
+                    const uint32_t count = clouds[k]->count;
+                    if ((piece.foundIn >= frameFirst) != (older == 0)) {
+                        base += count;
+                        continue;
+                    }
+                    if (!gone[k].valid()) {
+                        std::vector<uint32_t> held;
+                        if (!piece.gone.empty()) {
+                            auto read = io::readSeen(directory / piece.gone, count);
+                            if (!read) return report(read.error());
+                            held = std::move(*read);
+                        }
+                        auto record = discovery->record(count, held);
+                        if (!record) return report(record.error());
+                        gone[k] = *record;
+                    }
+                    auto marked = discovery->markGone(lift->sums, base, gone[k], count, stamp, 0.05F, clouds[k].get(),
+                                                      &projection, all.refine * disc);
+                    if (!marked) return report(marked.error());
+                    if (*marked > 0) {
+                        auto kept = discovery->without(*clouds[k], gone[k]);
+                        if (!kept) return report(kept.error());
+                        *clouds[k] = std::move(*kept);
+                        newly[k] += *marked;
+                        now += *marked;
+                    }
+                    base += count;
+                }
+                }
+                if (now == 0) {
+                    break;
+                }
+                taken += now;
+                if (auto again2 = drawKnown(); !again2) return report(again2.error());
+            }
+            for (size_t k = 0; k < instances.size(); ++k) {
+                if (newly[k] == 0) {
+                    continue;
+                }
+                io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
+                auto words = gone[k].readAll<uint32_t>(device);
+                if (!words) return report(words.error());
+                words->resize(clouds[k]->count);
+                piece.gone = "pieces/" + piece.id + ".gone";
+                if (auto written = io::writeSeen(directory / piece.gone, *words); !written) return report(written.error());
+                piece.removed += newly[k];
+                ++piece.revision;
+                piece.movedAt = piece.revision;
+            }
+            // A piece nothing stands of leaves the device: a coarse look's, once the finer one is in. The
+            // disk keeps it, with the stamp each of its gaussians went at.
+            for (size_t k = instances.size(); k-- > 0;) {
+                const io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
+                if (piece.removed >= piece.gaussians) {
+                    instances.erase(instances.begin() + static_cast<std::ptrdiff_t>(k));
+                    clouds.erase(clouds.begin() + static_cast<std::ptrdiff_t>(k));
+                    pieceOf.erase(pieceOf.begin() + static_cast<std::ptrdiff_t>(k));
+                    gone.erase(gone.begin() + static_cast<std::ptrdiff_t>(k));
+                }
+            }
+            sized.clear();
+            known = {};
+            knownFirst = {};
+            knownSize = {};
+            if (!instances.empty()) {
+                if (auto drawn = drawKnown(); !drawn) return report(drawn.error());
+            }
+        }
+        render::KnownScene held;
+        if (!instances.empty()) {
+            held.colour = &known.colour;
+            held.depth = &known.depth;
+            held.first = &knownFirst.depth;
+            held.size = &knownSize.colour;
+        }
+        render::RenderLookSettings how;
+        how.tolerance = all.tolerance;
+        how.spread = all.spread;
+        how.repaint = all.repaint;
+        how.refine = all.refine;
+        how.footprint = footprint;
+        how.glassOpacity = all.glassOpacity;
+        how.turned = all.turned;
+        // Glass is made as glass by the view's last look; the coarse ones before it carry its picture.
+        how.panes = last;
+        auto look = discovery->fromRender(frameColour, frameDepth, planes, width, height, projection, held, how);
+        if (!look) return report(look.error());
+        std::string id;
+        if (look->made > 0) {
+            char label[96];
+            std::snprintf(label, sizeof(label), "%s_t%g_f%u_s%u", name.c_str(), time, footprint, stamp);
+            id = label;
+            const std::string kept = "pieces/" + id + ".athg";
+            auto floats = look->records.readAll<float>(device);
+            if (!floats) return report(floats.error());
+            if (auto written = io::writeGaussians(directory / kept, look->made, render::kRenderRecord, *floats); !written) {
+                return report(written.error());
+            }
+            // The piece is drawn from the records the device already holds.
+            loader->keepFaint(true);
+            auto cloud = loader->upload(look->records, look->made, render::Discovery::renderEncoding(), kept, 0);
+            loader->keepFaint(false);
+            if (!cloud) return report(cloud.error());
+            io::NeuralScenePiece piece;
+            piece.id = id;
+            piece.cloud = kept;
+            piece.prim = all.stage;
+            piece.gaussians = cloud->count;
+            piece.boundsMin = cloud->bounds.min;
+            piece.boundsMax = cloud->bounds.max;
+            piece.origin = "discovered";
+            piece.foundBy = name;
+            piece.foundAt = time;
+            piece.foundIn = stamp;
+            piece.footprint = footprint;
+            scene.pieces.push_back(piece);
+            scene.snapshots.back().pieces.push_back(id);
+            clouds.push_back(std::make_unique<scene::GpuSplats>(std::move(*cloud)));
+            instances.push_back(render::SplatInstance{clouds.back().get(), render::Mat4::identity(), {}});
+            pieceOf.push_back(scene.pieces.size() - 1);
+            gone.emplace_back();
+        }
+        if (auto written = io::writeNeuralScene(directory, scene); !written) return report(written.error());
+        out("  %s at %g, %u paths a pixel, cells of %u: %u hold a surface, the scene held %u (%.1f%%), %u let the eye "
+            "through; %u gaussians made (%u of them behind glass), %u taken out (seen through at %u pixels, finer at "
+            "%u); %.2f s\n",
+            name.c_str(), time, samples, footprint, look->surfaces, look->held,
+            look->surfaces > 0 ? 100.0 * look->held / look->surfaces : 0.0, look->panes, look->made, look->behind,
+            taken, firstThrough, firstAgain,
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count());
+        return 0;
+    };
+
+    // ONE VIEW AT ONE TIME: drawn a pass at a time, and looked at as it gathers.
+    const auto shootView = [&](const render::Camera& camera, const std::string& name, double time) -> int {
+        const auto began = std::chrono::steady_clock::now();
+        auto outOfView = loadInView(camera);
+        if (!outOfView) return report(outOfView.error());
+        const size_t read = instances.size();
+        // The footprints, coarsest first, and the paths a pixel each waits for: as many a cell as the
+        // last has a pixel.
+        std::vector<std::pair<uint32_t, uint32_t>> levels;
+        for (uint32_t footprint = std::max(all.coarsest, 1u); footprint >= 1; footprint /= 2) {
+            const uint32_t wants = std::max<uint32_t>(all.samples / (footprint * footprint), 1);
+            if (levels.empty() || wants > levels.back().second || footprint == 1) {
+                if (!levels.empty() && wants <= levels.back().second) {
+                    levels.pop_back();   // the finer look is no later: the coarser one is not taken
+                }
+                levels.emplace_back(footprint, wants);
+            }
+            if (footprint == 1) {
+                break;
+            }
+        }
+        size_t next = 0;
+        double firstAt = 0.0;
+        const uint32_t firstSnapshot = static_cast<uint32_t>(scene.snapshots.size()) + 1;
+        for (uint32_t pass = 0; pass < 65536 && next < levels.size(); ++pass) {
+            if (auto drawn = stage.draw(camera, time, width, height, "rt"); !drawn) return report(drawn.error());
+            const uint32_t has = stage.pathAccumulated();
+            const bool whole = stage.pathConverged();
+            // The last look waits for the frame to be whole (and denoised, where that was asked).
+            while (next < levels.size() &&
+                   (next + 1 == levels.size() ? whole : has >= levels[next].second)) {
+                if (const int code = takeLook(camera, name, time, levels[next].first, has, next + 1 == levels.size(),
+                                              firstSnapshot);
+                    code != 0) {
+                    return code;
+                }
+                if (next == 0) {
+                    firstAt = std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count();
+                }
+                ++next;
+            }
+            if (whole) {
+                break;
+            }
+        }
+        uint32_t standing = 0;
+        for (const io::NeuralScenePiece& piece : scene.pieces) {
+            standing += piece.gaussians - std::min(piece.removed, piece.gaussians);
+        }
+        // The frame is stored: what it took, by which camera and when, and the snapshots that are its looks.
+        io::NeuralSceneFrame frame;
+        frame.time = time;
+        frame.camera = name;
+        frame.width = width;
+        frame.height = height;
+        frame.samples = stage.pathAccumulated();
+        frame.firstSnapshot = firstSnapshot;
+        frame.lastSnapshot = static_cast<uint32_t>(scene.snapshots.size());
+        frame.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count();
+        frame.taken = clock();
+        scene.frames.push_back(frame);
+        if (auto written = io::writeNeuralScene(directory, scene); !written) return report(written.error());
+        release();
+        out("%s at %g: frame %zu, a scene to draw after %.1f s and the whole look after %.1f s; %u gaussians stand in "
+            "%zu pieces, %zu snapshots; %zu pieces were read for this view and %u left on the disk, and the device "
+            "is free of the scene again\n",
+            name.c_str(), time, scene.frames.size(), firstAt, frame.seconds, standing, scene.pieces.size(),
+            scene.snapshots.size(), read, *outOfView);
+        return 0;
+    };
+
+    std::vector<double> times = all.times;
+    if (times.empty()) {
+        times.push_back(all.time >= 0.0 ? all.time : 0.0);
+    }
+    const auto keepCamera = [&](const std::string& name, const std::array<double, 3>& eye,
+                                const std::array<double, 3>& target, const render::Vec3& up, double focal) {
+        io::NeuralSceneCamera named;
+        named.name = name;
+        named.eye = eye;
+        named.target = target;
+        named.up = {up.x, up.y, up.z};
+        named.focal = focal;
+        std::erase_if(scene.cameras, [&](const io::NeuralSceneCamera& c) { return c.name == named.name; });
+        scene.cameras.push_back(named);
+    };
+    const double focal = all.focal > 0.0 ? all.focal : 35.0;
+    for (const double time : times) {
+        if (!all.views.empty()) {
+            std::ifstream in(all.views);
+            if (!in) {
+                err("cannot open %s\n", all.views.c_str());
+                return kExitFailure;
+            }
+            std::string line;
+            while (std::getline(in, line)) {
+                if (line.empty() || line[0] == '#') {
+                    continue;
+                }
+                std::istringstream words(line);
+                std::string name;
+                double e[3];
+                double t[3];
+                if (!(words >> name >> e[0] >> e[1] >> e[2] >> t[0] >> t[1] >> t[2])) {
+                    continue;
+                }
+                render::Vec3 up = upOf(scene);
+                double u[3];
+                if (words >> u[0] >> u[1] >> u[2]) {
+                    up = {u[0], u[1], u[2]};
+                }
+                render::Camera camera = render::Camera::lookingAt({e[0], e[1], e[2]}, {t[0], t[1], t[2]}, up);
+                camera.lens.focal = focal;
+                keepCamera(name, {e[0], e[1], e[2]}, {t[0], t[1], t[2]}, up, focal);
+                if (const int code = shootView(camera, name, time); code != 0) {
+                    return code;
+                }
+            }
+            continue;
+        }
+        if (all.eye.size() != 3 || all.target.size() != 3) {
+            err("neural-scene shoot wants a view: --eye and --target, or --views\n");
+            return kExitFailure;
+        }
+        const render::Vec3 up = all.up.size() == 3 ? render::Vec3{all.up[0], all.up[1], all.up[2]} : upOf(scene);
+        render::Camera camera = render::Camera::lookingAt({all.eye[0], all.eye[1], all.eye[2]},
+                                                          {all.target[0], all.target[1], all.target[2]}, up);
+        camera.lens.focal = focal;
+        const std::string name = all.camera.empty() ? "camera" : all.camera;
+        keepCamera(name, {all.eye[0], all.eye[1], all.eye[2]}, {all.target[0], all.target[1], all.target[2]}, up, focal);
+        if (const int code = shootView(camera, name, time); code != 0) {
+            return code;
+        }
+    }
+    return 0;
+}
+
+int runRender(const SceneOptions& given) {
+    SceneOptions o = given;
     const std::filesystem::path directory = o.directory;
     auto scene = io::readNeuralScene(directory);
     if (!scene) return report(scene.error());
+    if (o.storedFrame != 0) {
+        // A FRAME THE SCENE STORED, drawn again: through its camera, at its size, from the scene as it stood
+        // when the frame's last look was in.
+        if (o.storedFrame > scene->frames.size()) {
+            err("the scene stores %zu frames\n", scene->frames.size());
+            return kExitFailure;
+        }
+        const io::NeuralSceneFrame& frame = scene->frames[o.storedFrame - 1];
+        o.camera = frame.camera;
+        o.eye.clear();
+        o.target.clear();
+        o.size = std::to_string(frame.width) + "x" + std::to_string(frame.height);
+        o.snapshot = frame.lastSnapshot;
+    }
+    uint32_t width = 0;
+    uint32_t height = 0;
+    if (!sizeOf(o.size, width, height)) return kExitFailure;
     const auto view = viewOf(o, *scene);
     if (!view) return kExitFailure;
     const render::Camera camera = *view;
@@ -967,8 +1570,27 @@ int runRender(const SceneOptions& o) {
     std::vector<render::SplatInstance> byHarmonics;
     std::vector<render::SplatInstance> byLatents;
     uint32_t fitted = 0;
+    // THE SCENE AS IT STOOD (--at a time, --snapshot one of the manifest's): the pieces in by then, less
+    // the gaussians gone by then.
+    const uint32_t asOf = o.snapshot != 0 ? o.snapshot : o.at >= 0.0 ? snapshotAt(*scene, o.at) : 0u;
+    if ((o.snapshot != 0 || o.at >= 0.0) && asOf == 0) {
+        err("the scene has no snapshot by time %g\n", o.at);
+        return kExitFailure;
+    }
     for (const io::NeuralScenePiece& piece : scene->pieces) {
-        auto cloud = loadPiece(library, *loader, *discovery, directory, piece);
+        if (asOf != 0 && piece.foundIn > asOf) {
+            continue;
+        }
+        // Nothing of it stands: every gaussian it held has gone.
+        if (asOf == 0 && piece.removed != 0 && piece.removed >= piece.gaussians) {
+            continue;
+        }
+        // One view of a found scene reads the pieces its frustum meets, and no others.
+        if (o.views.empty() && piece.origin == "discovered" &&
+            !boxInView(piece.boundsMin, piece.boundsMax, render::projectionFor(camera, width, height), width, height)) {
+            continue;
+        }
+        auto cloud = loadPiece(library, *loader, *discovery, directory, piece, asOf);
         if (!cloud) return report(cloud.error());
         if (o.discovered) {
             // THE SCENE AS IT IS KNOWN: only what the looks found, up to one of them. A piece no look
@@ -1065,11 +1687,12 @@ int runRender(const SceneOptions& o) {
             ++frames;
             // Written only where a prefix is given: a walk that is only timed leaves nothing on the disk.
             if (!o.output.empty()) {
-                auto colour = frame.colour.readAll<float>(**device);
-                if (!colour) return report(colour.error());
-                auto depth = frame.depth.readAll<float>(**device);
-                if (!depth) return report(depth.error());
-                if (auto w = io::writeExr(o.output + "_" + name + ".exr", width, height, *colour, *depth); !w) {
+                // A prefix ending in .png writes pictures, <stem>_NAME.png.
+                const std::filesystem::path given = o.output;
+                const bool picture = given.extension() == ".png";
+                const std::string to = (picture ? (given.parent_path() / given.stem()).string() : o.output) + "_" +
+                                       name + (picture ? ".png" : ".exr");
+                if (auto w = writeFrame(library, **device, frame, width, height, to, o.exposure); !w) {
                     return report(w.error());
                 }
             }
@@ -1121,11 +1744,7 @@ int runRender(const SceneOptions& o) {
     }
     if (!o.output.empty()) {
         const auto write = [&](const render::RenderTargets& targets, const std::string& path) -> Result<void> {
-            auto colour = targets.colour.readAll<float>(**device);
-            if (!colour) return std::move(colour).error();
-            auto depth = targets.depth.readAll<float>(**device);
-            if (!depth) return std::move(depth).error();
-            ATHENEA_TRY(io::writeExr(path, width, height, *colour, *depth));
+            ATHENEA_TRY(writeFrame(library, **device, targets, width, height, path, o.exposure));
             out("wrote %s\n", path.c_str());
             return ok();
         };
@@ -1205,6 +1824,10 @@ void addNeuralScene(CLI::App& app) {
     render->add_flag("--harmonics", o.harmonics, "every piece by its harmonics, whatever appearance it has");
     render->add_flag("--discovered", o.discovered, "only the gaussians the looks have found (neural-scene look): the scene as it is known");
     render->add_option("--up-to", o.upTo, "--discovered: only the looks up to this one, counted from one (0: all)");
+    render->add_option("--at", o.at, "the scene as it stood at this time: the pieces found by then, less what had gone by then");
+    render->add_option("--exposure", o.exposure, "-o a .png: stops over the scene's light");
+    render->add_option("--frame", o.storedFrame, "a frame the scene stored (neural-scene shoot), counted from one: its camera, its size, the scene as it stood then");
+    render->add_option("--snapshot", o.snapshot, "the same by a snapshot of the manifest's, counted from one");
     render->add_flag("--compare", o.compare, "both ways: the latents against the harmonics, and a frame's time by each");
     run(render, options, runRender);
 
@@ -1240,6 +1863,37 @@ void addNeuralScene(CLI::App& app) {
     discover->add_option("--spread", o.spread, "a gaussian's standard deviation, in pixels at its depth");
     discover->add_option("-o,--output", o.output, "the scene after the look through that camera, an EXR");
     run(discover, options, runDiscover);
+
+    CLI::App* shoot = cmd->add_subcommand("shoot", "a USD stage path traced into the scene: the render's result is gaussians, found as it gathers");
+    shoot->add_option("stage", o.stage, "the USD stage")->required();
+    shoot->add_option("scene", o.directory, "the scene's directory (made, or added to)")->required();
+    shoot->add_option("--views", o.views, "the views: a file, NAME EX EY EZ TX TY TZ [UX UY UZ] a line");
+    shoot->add_option("--camera", o.camera, "the name --eye and --target are kept under");
+    shoot->add_option("--eye", o.eye, "one view: x y z (with --target)")->expected(3);
+    shoot->add_option("--target", o.target, "x y z")->expected(3);
+    shoot->add_option("--up", o.up, "x y z")->expected(3);
+    shoot->add_option("--focal", o.focal, "mm, over a 24.576 mm aperture");
+    shoot->add_option("--size", o.size, "WIDTHxHEIGHT of the render");
+    shoot->add_option("--time", o.time, "the stage's time code");
+    shoot->add_option("--times", o.times, "several time codes, each shot through every view in turn");
+    shoot->add_option("--samples", o.samples, "paths a pixel the render gathers");
+    shoot->add_option("--pass-samples", o.passSamples, "paths a pixel each pass");
+    shoot->add_option("--bounces", o.bounces, "bounces after the first hit");
+    shoot->add_flag("--denoise", o.denoise, "denoise the whole frame before its last look");
+    shoot->add_option("--ray-margin", o.rayMargin, "athenea:rayMargin");
+    shoot->add_option("--coarsest", o.coarsest, "pixels a side of the first look's cells (a power of two; 1: one look, when the frame is whole)");
+    shoot->add_option("--spread", o.spread, "a gaussian's standard deviation, in cells at its depth");
+    shoot->add_option("--tolerance", o.tolerance, "a surface is already held where the scene's depth is within this share of the render's");
+    shoot->add_option("--refine", o.refine, "a surface held with gaussians more than this many times as wide as this look's is made again, finer");
+    shoot->add_option("--repaint", o.repaint, "a surface held whose colour is off the render's by more than this share is made again (0: held by its depth alone)");
+    shoot->add_option("--turned", o.turned, "the least a disc's facing is taken as: it is stretched along the surface's fall by no more than 1 over this");
+    shoot->add_option("--glass-opacity", o.glassOpacity, "the least a pane covers of what is behind it, however clear");
+    shoot->add_option("--name", o.name, "the scene's name");
+    shoot->add_option("--up-axis", o.upAxis, "Y or Z (default: the stage's)");
+    shoot->add_option("--meters-per-unit", o.metersPerUnit, "the scene's unit, in metres");
+    shoot->add_option("--source", o.source, "what the stage is");
+    shoot->add_option("--licence", o.licence, "what the source asks of whoever uses it");
+    run(shoot, options, runShoot);
 
     CLI::App* info = cmd->add_subcommand("info", "what the manifest holds");
     info->add_option("scene", o.directory, "the scene's directory")->required();

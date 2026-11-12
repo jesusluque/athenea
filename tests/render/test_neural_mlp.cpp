@@ -1062,3 +1062,184 @@ TEST_CASE("what a frame sees through is taken out of the scene", "[render][gpu][
                 *marked, cloud->count, before->mean[3], now->mean[3]);
     CHECK(now->mean[3] < before->mean[3] * 0.2);
 }
+
+namespace {
+
+/// The path tracer's planes (technique::PathAux) for a frame of `pixels`, each plane one value all over:
+/// no normal (a disc then faces the eye), a matt surface of row 1, and -- with `pane` -- one that lets
+/// everything through, with `behind` standing behind every pixel and half the light lost on the way.
+gpu::Buffer planesOf(gpu::Device& device, uint32_t pixels, bool pane, std::array<float, 3> behind = {}) {
+    std::vector<std::array<float, 4>> planes(size_t{pixels} * 8, std::array<float, 4>{0.0F, 0.0F, 0.0F, 0.0F});
+    const auto fill = [&](uint32_t plane, std::array<float, 4> value) {
+        std::fill(planes.begin() + size_t{plane} * pixels, planes.begin() + size_t{plane + 1} * pixels, value);
+    };
+    fill(2, {0.0F, 1.0F, pane ? 1.0F : 0.0F, 1.0F});
+    fill(3, {1.0F, 1.0F, 1.0F, 1.0F});
+    if (pane) {
+        fill(4, {behind[0], behind[1], behind[2], 1.0F});
+        fill(5, {0.5F, 0.5F, 0.5F, 1.0F});
+        fill(6, {1.0F, 1.0F, 1.0F, 1.0F});
+    }
+    auto made = gpu::Buffer::fromSpan<std::array<float, 4>>(device, std::span<const std::array<float, 4>>(planes),
+                                                            "test.planes");
+    REQUIRE(made);
+    return std::move(*made);
+}
+
+}   // namespace
+
+TEST_CASE("a render's look makes a gaussian a cell of its surface's material, as wide as the cell is at its distance",
+          "[render][gpu][neural][scene][shoot]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto discovery = render::Discovery::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!discovery) FAIL(discovery.error().toString());
+    test::CloudBuilder builder = test::randomCloud(6000, 21, 0.05F, 0.2F);
+    auto cloud = loader->upload(builder.raw, 3);
+    REQUIRE(cloud);
+    const render::SplatInstance instance{&*cloud, render::Mat4::identity()};
+    render::RenderSettings settings;
+    settings.width = 320;
+    settings.height = 240;
+    settings.depth = render::RenderSettings::Depth::Threshold;
+    settings.depthThreshold = 0.5F;
+    const uint32_t pixels = settings.width * settings.height;
+    const gpu::Buffer matt = planesOf(*gpu->device, pixels, false);
+
+    // The mean size of the gaussians a frame is made of, where it is covered: the cloud drawn by its sizes.
+    const auto meanSize = [&](const scene::GpuSplats& made, const render::Camera& from) {
+        auto sized = discovery->sizes(made);
+        REQUIRE(sized);
+        render::SplatInstance bySize{&made, render::Mat4::identity()};
+        bySize.neural = &*sized;
+        render::RenderTargets drawn;
+        REQUIRE(raster->render(from, std::span<const render::SplatInstance>(&bySize, 1), settings, drawn));
+        auto stats = render::imageStats(*gpu->library, drawn.colour, settings.width, settings.height, 0, 0,
+                                        settings.width, settings.height);
+        REQUIRE(stats);
+        return std::pair<double, double>{stats->mean[0] / std::max(stats->mean[3], 1.0e-6), stats->mean[3]};
+    };
+    const auto lookFrom = [&](double distance, uint32_t footprint, render::RenderLook& look, render::RenderTargets& frame) {
+        const render::Camera camera = render::Camera::lookingAt({0.0, 0.0, distance}, {0.0, 0.0, 0.0});
+        REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&instance, 1), settings, frame));
+        render::RenderLookSettings how;
+        how.footprint = footprint;
+        auto made = discovery->fromRender(frame.colour, frame.depth, matt, settings.width, settings.height,
+                                          render::projectionFor(camera, settings.width, settings.height), {}, how);
+        if (!made) FAIL(made.error().toString());
+        look = std::move(*made);
+        return camera;
+    };
+    const auto uploaded = [&](const render::RenderLook& look) {
+        loader->keepFaint(true);
+        auto made = loader->upload(look.records, look.made, render::Discovery::renderEncoding(), "test", 0);
+        loader->keepFaint(false);
+        if (!made) FAIL(made.error().toString());
+        REQUIRE(made->count == look.made);
+        return std::move(*made);
+    };
+
+    render::RenderLook near;
+    render::RenderTargets nearFrame;
+    const render::Camera nearCamera = lookFrom(6.0, 1, near, nearFrame);
+    CHECK(near.surfaces > 1000);
+    CHECK(near.made == near.surfaces);
+    CHECK(near.held == 0);
+    CHECK(near.behind == 0);
+    const scene::GpuSplats nearCloud = uploaded(near);
+    const auto [nearSize, nearCover] = meanSize(nearCloud, nearCamera);
+    auto frameStats = render::imageStats(*gpu->library, nearFrame.colour, settings.width, settings.height, 0, 0,
+                                         settings.width, settings.height);
+    REQUIRE(frameStats);
+
+    // TWICE AS FAR, TWICE AS WIDE: the same thing looked at from twice the distance.
+    render::RenderLook far;
+    render::RenderTargets farFrame;
+    const render::Camera farCamera = lookFrom(12.0, 1, far, farFrame);
+    const scene::GpuSplats farCloud = uploaded(far);
+    const auto [farSize, farCover] = meanSize(farCloud, farCamera);
+
+    // A LOOK AT CELLS OF FOUR PIXELS: a sixteenth of the gaussians, four times as wide.
+    render::RenderLook coarse;
+    render::RenderTargets coarseFrame;
+    lookFrom(6.0, 4, coarse, coarseFrame);
+    const scene::GpuSplats coarseCloud = uploaded(coarse);
+    const auto [coarseSize, coarseCover] = meanSize(coarseCloud, nearCamera);
+
+    std::printf("  a look from 6: %u gaussians of mean size %.5f covering %.3f of the frame (the frame itself %.3f); from "
+                "12: %u of %.5f (%.2f times); at cells of 4 pixels: %u of %.5f (%.2f times), covering %.3f\n",
+                near.made, nearSize, nearCover, frameStats->mean[3], far.made, farSize, farSize / nearSize, coarse.made,
+                coarseSize, coarseSize / nearSize, coarseCover);
+    CHECK(nearCover > 0.8 * frameStats->mean[3]);
+    CHECK(farSize / nearSize > 1.7);
+    CHECK(farSize / nearSize < 2.6);   // the far look also sees the cloud's far side more nearly edge on
+    CHECK(coarse.made * 8 < near.made);
+    CHECK(coarseSize / nearSize > 3.0);
+    CHECK(coarseSize / nearSize < 5.0);
+    CHECK(coarseCover > 0.7 * frameStats->mean[3]);
+
+    // Against itself as what is known, nothing is made.
+    render::KnownScene known;
+    known.colour = &nearFrame.colour;
+    known.depth = &nearFrame.depth;
+    auto again = discovery->fromRender(nearFrame.colour, nearFrame.depth, matt, settings.width, settings.height,
+                                       render::projectionFor(nearCamera, settings.width, settings.height), known, {});
+    if (!again) FAIL(again.error().toString());
+    CHECK(again->held == again->surfaces);
+    CHECK(again->made == 0);
+
+    // A PANE: the same frame with every pixel letting the eye through to one place behind. Two gaussians a
+    // pixel -- the pane, and what is seen through it -- and the pane's own carry no picture.
+    const gpu::Buffer pane = planesOf(*gpu->device, pixels, true, {0.0F, 0.0F, -3.0F});
+    auto through = discovery->fromRender(nearFrame.colour, nearFrame.depth, pane, settings.width, settings.height,
+                                         render::projectionFor(nearCamera, settings.width, settings.height), {}, {});
+    if (!through) FAIL(through.error().toString());
+    std::printf("  the same frame as a pane: %u surfaces, %u let the eye through, %u gaussians made, %u of them behind\n",
+                through->surfaces, through->panes, through->made, through->behind);
+    CHECK(through->panes == through->surfaces);
+    CHECK(through->behind == through->surfaces);
+    CHECK(through->made == 2 * through->surfaces);
+}
+
+TEST_CASE("a piece's gaussians are written and read as they are, and a scene says when each snapshot was",
+          "[render][neural][scene][shoot]") {
+    const std::filesystem::path directory = std::filesystem::temp_directory_path() / "athenea-tests" / "shoot.aths";
+    std::filesystem::create_directories(directory / "pieces");
+    std::vector<float> records(size_t{5} * render::kRenderRecord);
+    for (size_t k = 0; k < records.size(); ++k) {
+        records[k] = static_cast<float>(k);
+    }
+    REQUIRE(io::writeGaussians(directory / "pieces/a.athg", 5, render::kRenderRecord, records));
+    auto read = io::readGaussians(directory / "pieces/a.athg");
+    if (!read) FAIL(read.error().toString());
+    CHECK(read->count == 5);
+    CHECK(read->floats == render::kRenderRecord);
+    CHECK(read->records == records);
+
+    io::NeuralScene scene;
+    scene.name = "shoot";
+    io::NeuralScenePiece piece;
+    piece.id = "a";
+    piece.cloud = "pieces/a.athg";
+    piece.gaussians = 5;
+    piece.origin = "discovered";
+    piece.foundIn = 2;
+    piece.footprint = 4;
+    scene.pieces.push_back(piece);
+    scene.snapshots.push_back({0.0, "camera", {}, 4, 8, "2026-11-12T12:00:00Z"});
+    scene.snapshots.push_back({0.0, "camera", {"a"}, 16, 4, "2026-11-12T12:00:05Z"});
+    REQUIRE(io::writeNeuralScene(directory, scene));
+    auto back = io::readNeuralScene(directory);
+    if (!back) FAIL(back.error().toString());
+    REQUIRE(back->pieces.size() == 1);
+    CHECK(back->pieces[0].foundIn == 2);
+    CHECK(back->pieces[0].footprint == 4);
+    REQUIRE(back->snapshots.size() == 2);
+    CHECK(back->snapshots[0].samples == 4);
+    CHECK(back->snapshots[0].footprint == 8);
+    CHECK(back->snapshots[1].taken == "2026-11-12T12:00:05Z");
+    CHECK(back->snapshots[1].pieces == std::vector<std::string>{"a"});
+}

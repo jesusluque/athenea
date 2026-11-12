@@ -20,7 +20,7 @@ struct DiscoverParams {
     uint stamp;       // the look: what a gaussian found by it is stamped with
     uint threshold;   // in 1/4096 of a pixel
     uint upTo;        // discoverMask, discoverCount: the last look that counts
-    uint drop;        // discoverMask: 1, and `seenRead` is a record of what is gone: those are what is not drawn
+    uint drop;        // discoverMask: 1, and `seenRead` is a record of what is gone: those are what is not drawn (with `upTo`, those gone by that look)
     // discoverGone: a gaussian wider than `coarse` times its depth along the view (the row `viewZ` gives
     // it; 0: not asked) is coarser than the look that flagged its pixels, and goes on a fifth of its
     // weight rather than on most of it.
@@ -133,6 +133,8 @@ void discoverMask(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const float4 p = positions[i];
-    const bool known = params.drop != 0 ? seenRead[i] == 0u : (seenRead[i] != 0u && seenRead[i] <= params.upTo);
+    // A record of what is gone, with a last look: what went after it still stands.
+    const bool known = params.drop != 0 ? (seenRead[i] == 0u || (params.upTo != 0u && seenRead[i] > params.upTo))
+                                        : (seenRead[i] != 0u && seenRead[i] <= params.upTo);
     positionsOut[i] = float4(p.xyz, known ? p.w : 0.0);
 }

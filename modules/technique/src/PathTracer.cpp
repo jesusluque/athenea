@@ -597,7 +597,7 @@ float splatVisibility(float3 p, float3 n, float3 wi, float distance) { return 1.
 /// and the guides' buffer no longer competes for the 31 Metal binds with a
 /// cloud's shadows.
 const char* kAux = R"(
-RWStructuredBuffer<float4> aux;   // the albedo's plane, then the normal's
+RWStructuredBuffer<float4> aux;   // the albedo's plane, the normal's, and four of what the surface is made of (PathAux)
 )";
 
 /// Baking: the first hit of every path comes from a ray a caller wrote down,
@@ -3182,6 +3182,89 @@ void pathGuides(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
     }
     aux[at] = albedo;
     aux[pixels + at] = normal;
+    // WHAT THE SURFACE IS MADE OF, for whoever makes something of the frame
+    // other than a picture (render::Discovery: a gaussian a pixel, of the
+    // pixel's material): the metal's share, the roughness and how much goes
+    // through; the material's row, whether it is a sheet, and its index.
+    float4 made = float4(0.0);
+    float4 row = float4(0.0);
+    // AND WHAT STANDS BEHIND IT WHERE IT LETS THE EYE THROUGH: the first
+    // surface that does not, along the pixel's own ray bent at each face as
+    // a path's is, and what the faces crossed let through between them. The
+    // pixel's colour is that surface's seen through this one; a gaussian made
+    // of the pixel at this one's depth would carry a picture of the other.
+    float4 behind = float4(0.0);
+    float4 passed = float4(0.0);
+    float4 tint = float4(0.0);   // what this surface itself lets through a crossing, before Fresnel
+    float4 flat = float4(0.0);   // the triangle's own normal, world, facing the eye: where the surface is, whatever a normal map says
+    if (sh.valid) {
+        flat = float4(dot(sh.geometricNormal, sh.toEye) < 0.0 ? -sh.geometricNormal : sh.geometricNormal, 1.0);
+        const MaterialRecord m = materials[materialRowOf(found.s)];
+        const MaterialSample ms = materialSampleOf(sh.stack, false);
+        const bool transmits = (m.flags & kMaterialTransmits) != 0u;
+        const bool sheer = sh.transparent && sh.stack.opacity < 1.0;
+        const float3 firstTint = transmits ? transmissionTint(m) : sheer ? float3(1.0 - sh.stack.opacity) : float3(0.0);
+        const bool thin = (m.flags & kMaterialThinGlass) != 0u || !transmits;
+        made = float4(ms.metallic, ms.roughnessSeen > 0.0 ? ms.roughness : 1.0, max(firstTint.x, max(firstTint.y, firstTint.z)), 1.0);
+        tint = float4(firstTint, 1.0);
+        row = float4(float(materialRowOf(found.s) + 1u), transmits && !thin ? 0.0 : 1.0, transmits ? transmissionIndex(m) : 1.0, 1.0);
+        if (kTraces && (transmits || sheer)) {
+            const uint mask = sampleMask(tid, 0u);
+            float3 through = float3(1.0);
+            // Along the way the eye looks at it: `toEye`, which every route to a first hit fills; a hit read
+            // from the visibility buffer has no `eye` of its own, and a ray sent on from the world's origin
+            // found what stands behind glass somewhere off to its side.
+            float3 d = -sh.toEye;
+            Found cur = found;
+            for (uint face = 0; face < 8u; ++face) {
+                const MaterialRecord mc = materials[materialRowOf(cur.s)];
+                const bool lets = (mc.flags & kMaterialTransmits) != 0u;
+                if (face > 0u && !lets) {
+                    // Sheer rows past the first are taken as solid: what one
+                    // lets through is its opacity's, which only shading it says.
+                    behind = float4(cur.positionWorld, 1.0);
+                    passed = float4(through, 1.0);
+                    break;
+                }
+                float3 n = normalize(applyRows(toWorld, cur.s.geometricNormal, 0.0));
+                const bool entering = dot(n, d) < 0.0;
+                n = entering ? n : -n;
+                float3 on = d;
+                if (lets) {
+                    const float index = transmissionIndex(mc);
+                    const bool sheet = (mc.flags & kMaterialThinGlass) != 0u;
+                    const float cosine = abs(dot(n, d));
+                    const float R = index > 1.001 ? fresnelDielectric(max(cosine, 1.0e-3), index) : 0.0;
+                    through *= transmissionTint(mc) * (1.0 - (sheet ? 2.0 * R / (1.0 + R) : R));
+                    if (!sheet && index > 1.001) {
+                        const float eta = entering ? 1.0 / index : index;
+                        const float k = 1.0 - eta * eta * (1.0 - cosine * cosine);
+                        if (k < 0.0) {
+                            break;   // turned back whole inside the glass: nothing behind by this ray
+                        }
+                        on = normalize(eta * d + (eta * cosine - sqrt(k)) * n);
+                    }
+                } else {
+                    through *= firstTint;
+                }
+                const float3 p = cur.positionWorld;
+                const float margin = rayMargin(max(length(p), cur.depth));
+                const float3 from = p - n * margin;
+                const PathHit hit = traceNearestFrom(from, on, margin, mask, false);
+                cur = foundHit(hit, from, on);
+                d = on;
+                if (!cur.valid) {
+                    break;   // the sky, which is no surface to make anything of
+                }
+            }
+        }
+    }
+    aux[2u * pixels + at] = made;
+    aux[3u * pixels + at] = row;
+    aux[4u * pixels + at] = behind;
+    aux[5u * pixels + at] = passed;
+    aux[6u * pixels + at] = tint;
+    aux[7u * pixels + at] = flat;
 }
 )";
 
@@ -3400,7 +3483,7 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
     }
     if (aux != nullptr && (aux->width != width || aux->height != height || !aux->valid())) {
         gpu::BufferDesc desc;
-        desc.bytes = pixels * 16 * 2;
+        desc.bytes = pixels * 16 * PathAux::kPlanes;
         desc.elementBytes = 16;
         desc.label = "path.aux";
         auto planes = gpu::Buffer::create(*device_, desc);

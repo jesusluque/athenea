@@ -219,6 +219,17 @@ each measured):
   opacity, which is how the scene as it is known is drawn. `Discovery::fromFrame`
   (`scene_frame.slang`) makes gaussians from a frame's colour and depth, a
   disc a pixel the scene does not already hold, as the records of a 3DGS PLY.
+  `Discovery::fromRender` (`scene_render.slang`) is the same look taken by the
+  engine's own path tracer, which hands it more than a picture: the planes of
+  `technique::PathAux` (`pathGuides` in `PathTracer.cpp`) -- the surface's
+  normal, what it is made of, and where it lets the eye through what stands
+  behind it. Its records are its own (`Discovery::renderEncoding`, 26 floats)
+  and stay on the device. To give a gaussian something more of its surface,
+  write it in `pathGuides` into a plane (raise `PathAux::kPlanes`), read it in
+  `renderPack`, and give the record a field: one `io::SplatEncoding` names
+  where the loader has a use for it, or one after those, which only the file
+  keeps. `athenea neural-scene shoot` (`CmdNeuralScene.cpp`) is the loop: a
+  pass of the render at a time, and a look whenever a footprint's paths are in.
 
 A kernel that adds to `shaders/athenea/neural/neural_appearance.slang` adds to
 both passes: the forward one and, by hand, the backward one beside it, and

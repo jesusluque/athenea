@@ -385,6 +385,11 @@ athenea neural-scene camera hall.aths --name door --eye 8 0 1.7 --target 0 0 2
 athenea neural-scene fit    hall.aths --steps 3000
 athenea neural-scene render hall.aths --camera door --compare -o door.exr
 athenea neural-scene info   hall.aths
+
+# A render whose result is the scene, found as it gathers; the picture is made of it afterwards.
+athenea neural-scene shoot  stage.usda hall.aths --views views.txt --focal 20 --samples 64 --denoise
+athenea neural-scene render hall.aths --camera door -o door.png          # or .exr
+athenea neural-scene render hall.aths --camera door --at 0 -o then.png   # the scene as it stood
 ```
 
 | Subcommand | What it does |
@@ -395,6 +400,7 @@ athenea neural-scene info   hall.aths
 | `render` | every piece from one view, each by its appearance where it has one and by its harmonics where it has none. Prints how much of the view the scene holds -- the frame's mean cover -- and the EXR's `A` is that cover a pixel: the mask of what is known from there, for whoever renders or fills the rest |
 | `look` | one camera's look at one time: the frame is drawn and every gaussian that gave it something is found, stamped with this look where no look had seen it. Writes `pieces/<id>.seen` and the look into the manifest's `snapshots`, and prints how many gaussians it saw, how many were new and how many the scene already held |
 | `discover` | a piece made from a frame: any renderer's frame through a known camera, an EXR with `R`, `G`, `B` and its view depth as `Z`, becomes a gaussian a pixel -- a disc in the pixel's surface, in the world -- for every pixel whose surface the scene, drawn through that camera, does not already hold. Writes `pieces/<id>.ply`, the piece (`origin` discovered) and the look's snapshot; prints how much of the frame the scene already held, and the scene through that camera against the frame. It makes the scene where there is none. Before it adds, it takes out: where the scene has a surface nearer than the frame's, or something where the frame has nothing, what stood there has moved or gone, and the gaussians most of whose weight fell on those pixels are stamped gone (`pieces/<id>.gone`) and drawn by nothing after |
+| `shoot` | a USD stage path traced into the scene: the render's result is gaussians and no picture. Each is as wide as its pixel is at its distance (twice as far, twice as wide), a disc in its surface stretched only along the way the surface falls from the eye, and of its surface's material: an opaque thing carries its metal's share and its roughness; a surface that lets the eye through gives two gaussians -- the pane itself, thin of opacity, with its transmission, its index and whether it is a sheet, and where the bent ray ends what is seen through it, with the light it sent before the glass tinted it. They are found while the render gathers: a first look at cells of `--coarsest` pixels a side as soon as each cell has the paths a pixel will end with, then finer looks, each taking out the coarser gaussians it replaces; the last waits for the frame to be whole (and denoised). Every look is a snapshot with its time, its paths and its footprint, and its gaussians a piece `pieces/<view>_t<time>_f<footprint>_s<snapshot>.athg`. What a look sees through -- something that moved -- is stamped gone as `discover` does, and nothing leaves the disk. Each frame is stored as it is made (`frames[]` in the manifest), and when a view is done the scene leaves the device: the next view reads back only the pieces whose boxes its frustum meets, so a scene is not bounded by the device's memory, which also holds the stage |
 | `info` | the manifest, read; no device |
 
 | Option | Of | Value | Default | Notes |
@@ -417,6 +423,19 @@ athenea neural-scene info   hall.aths
 | `--views` | `render` | path | — | a walk: a file of views, `NAME EX EY EZ TX TY TZ [UX UY UZ]` a line (`athenea stage --cameras`' own), each written as `<-o>_NAME.exr` from the scene loaded once; `--focal` is every view's. Prints a frame's time, the least and the mean, the clock waiting for the device. Without `-o` nothing is written and the walk is only timed: a frame of 3840 x 2160 is some 60 MB, and a walk of them fills a disk |
 | `--discovered` | `render` | flag | off | only the gaussians the looks have found: the scene as it is known. A piece no look has been taken of is not drawn |
 | `--up-to` | `render` | integer | `0` | `--discovered`: only the looks up to this one, counted from one in the order of `snapshots`; `0` is all of them |
+| `--at`, `--snapshot` | `render` | time, integer | —, — | the scene as it stood: at a time, the last snapshot taken by then; or a snapshot of the manifest's, counted from one. The pieces that had come in by it, less the gaussians that had gone by it. Without either, the scene as it stands now |
+| `--frame` | `render` | integer | — | a frame the scene stored (`shoot`), counted from one: drawn again through its camera, at its size, from the scene as it stood when its last look was in. In place of `--camera`, `--size` and `--snapshot` |
+| `--exposure` | `render` | stops | `0` | `-o` a `.png`: over the scene's light, before the standard view transform |
+| `stage`, `scene` | `shoot` | paths | — | the USD stage, and the scene's directory: made, or added to |
+| `--views`; `--eye`, `--target`, `--up`, `--camera` | `shoot` | | — | the views, a file of `NAME EX EY EZ TX TY TZ [UX UY UZ]` a line; or one view and the name it is kept under (`camera`) |
+| `--focal`, `--size` | `shoot` | mm, `WIDTHxHEIGHT` | `35`, `960x540` | over a 24.576 mm aperture, as `athenea stage`'s |
+| `--time`, `--times` | `shoot` | time codes | `0` | the stage's time; several are shot one after another through every view, each look finding what the last left and taking out what moved |
+| `--samples`, `--pass-samples`, `--bounces`, `--denoise`, `--ray-margin` | `shoot` | | `64`, `1`, `4`, off, `athenea:rayMargin`'s | the path tracer's: paths a pixel in all and a pass, bounces, whether the whole frame is denoised before its last look, and how far a ray leaves a surface (§3) |
+| `--coarsest` | `shoot` | pixels | `8` | the side of the first look's cells, a power of two; the looks go on at half of it down to one pixel. A look at cells of `f` waits for `samples / f²` paths a pixel, so every look's gaussians hold as many paths. `1`: one look, when the frame is whole |
+| `--spread`, `--tolerance`, `--refine`, `--repaint` | `shoot` | | `1`, `0.06`, `1.5`, `0` | as `discover`'s, a disc's width in cells of the look |
+| `--turned` | `shoot` | 0..1 | `0.5` | the least a disc's facing is taken as: a disc is stretched along the way its surface falls from the eye by one over its facing, and by no more than one over this |
+| `--glass-opacity` | `shoot` | 0..1 | `0.05` | the least a pane covers of what is behind it, however clear. A pane covers what its darkest channel takes of the light through it, and is coloured by what the others keep over that, so that blended over the gaussian behind it gives the look's pixel back |
+| `--name`, `--up-axis`, `--meters-per-unit`, `--source`, `--licence` | `shoot` | | the directory's stem, the stage's, `1`, the stage, — | the scene's own |
 | `--camera`, `--time` | `look` | name, number | —, — | a view of the manifest's and when; the pair is the look's snapshot, and a look taken again is the same one |
 | `--views`, `--frames` | `discover` | path, directory | —, beside the file | several looks in one run, the scene kept on the device from one to the next: a file of views, `NAME EX EY EZ TX TY TZ [UX UY UZ]` a line (`athenea stage --cameras`' own), each with its frame `NAME.exr` and made the piece `look_NAME`, at times one after the last's from `--time` (0 where not given). In place of `--frame`, `--id` and `--camera` |
 | `--frame` | `discover` | path | — | the frame: an EXR with `R`, `G`, `B` (linear light) and `Z`, the depth along the view; its size is the look's |
@@ -428,7 +447,7 @@ athenea neural-scene info   hall.aths
 | `--name`, `--up-axis`, `--meters-per-unit`, `--source`, `--licence` | `discover` | | | the scene's own, as `add`'s |
 | `--threshold` | `look` | pixels | `0.05` | how much a gaussian gives the frame to count as seen: its blending weight summed over its pixels |
 | `--compare` | `render` | flag | off | both ways: the latents against the harmonics (`athenea compare`'s measures) and a frame's time by each, the least of twelve |
-| `-o`, `--output` | `render` | path | — | an EXR; with `--compare`, `<stem>_harmonics.exr` and `<stem>_latents.exr` |
+| `-o`, `--output` | `render` | path | — | an EXR (linear, with its depth), or a `.png`: the picture, through the standard view transform, for an sRGB display; with `--compare`, `<stem>_harmonics.exr` and `<stem>_latents.exr`; with `--views`, a prefix, and one ending in `.png` writes `<stem>_NAME.png` |
 
 A piece is fitted from inside the scene: each camera's eye somewhere in the
 scene's box, a tenth in from its walls, looking at somewhere in the piece's own
@@ -3438,6 +3457,7 @@ relative to the directory, so a scene moves as a directory does.
   pieces/<id>.athn         its neural appearance, once fitted
   pieces/<id>.seen         which look first saw each gaussian
   pieces/<id>.gone         which look found each gaussian gone
+  pieces/<id>.athg         the gaussians a render of the engine's own left (neural-scene shoot)
 ```
 
 A `.seen` is a uint32 a gaussian, little endian and nothing else: the place in
@@ -3446,20 +3466,35 @@ A `.gone` is the same for the look that saw through where the gaussian was, 0
 while it stands; every command draws a piece without the gaussians its `.gone`
 stamps.
 
+A `.athg` is sixteen bytes -- `ATHG`, a version (1), how many gaussians and how
+many floats each, uint32 little endian -- and then the records, float32. A
+render's record is 26 floats: the position (3), the opacity's logit, the
+scales' logs (3), the rotation (w x y z), the first harmonic as a capture
+keeps a colour (3), the surface's normal in the world (3), the metal's share,
+the roughness, the transmission, and then the material's row in the frame that
+made it plus one (0 for what was seen through glass), its index of refraction,
+1 for a sheet with no inside, and what it lets through one crossing (r g b).
+
+The scene is kept, not replaced: a look adds pieces and stamps what it found
+gone, and nothing is taken off the disk. So the scene as it stood at a
+snapshot is the pieces whose `origin.snapshot` is no later, less the gaussians
+whose `.gone` stamp is no later (`neural-scene render --at`, `--snapshot`).
+
 | Key of `scene.json` | Value |
 |---|---|
-| `format`, `version` | `"athenea-neural-scene"`, `1`; a reader refuses another version |
+| `format`, `version` | `"athenea-neural-scene"`, `2`; version 1 is read as it is (2 added `origin.snapshot`, `origin.footprint`, a snapshot's `samples`, `footprint`, `taken`, and `frames`), and a reader refuses any other |
 | `name`, `upAxis`, `metersPerUnit` | the scene's name; `"Y"` or `"Z"`; metres a unit |
 | `source` | `stage`: what the pieces were converted from; `licence`: what it asks of whoever uses it |
 | `bounds` | `min`, `max`: the box round every piece's, written and not read |
 | `pieces[]` | `id`; `prim` (where it came from); `cloud` (its file); `gaussians`; `bounds`; `transform` (object to world, sixteen numbers row major); `revision`, `movedAt`, `paintedAt`; `static`; `origin`; and, once fitted, `appearance` |
 | `pieces[].gone`, `removed` | its `.gone` and how many gaussians later looks saw through; absent until one does. Taking gaussians out raises the piece's `revision` and `movedAt` |
 | `pieces[].seen`, `discovered` | its `.seen` and how many gaussians the looks have found; absent until a look is taken |
-| `pieces[].origin` | `kind`: `"converted"` (from geometry, whole), `"discovered"` (the gaussians a camera saw) or `"generated"` (filled in by another system); `camera` and `time`: what found it and when |
+| `pieces[].origin` | `kind`: `"converted"` (from geometry, whole), `"discovered"` (the gaussians a camera saw) or `"generated"` (filled in by another system); `camera` and `time`: what found it and when; `snapshot`: the snapshot it came in at, counted from one (absent: it was there before any look); `footprint`: the side in pixels of the cell each of its gaussians was made of (a render's) |
 | `pieces[].appearance` | `file` (its `.athn`); `lit`; `split`; `fit`: `steps`, `against` (`"harmonics"`), `relMSE`, `p99`, `max` as the device measured them from the held-out cameras |
 | `lights[]` | `name`, `kind` (`"distant"` or `"dome"`), `towards`, `radiance`: what the pieces were made under; recorded, and read by nothing yet |
 | `cameras[]` | `name`, `eye`, `target`, `up`, `focal` (mm) |
-| `snapshots[]` | `time`, `camera`, `pieces`: one look at the scene and the pieces it added or changed; the scene at a time is the pieces of the snapshots up to it |
+| `frames[]` | a frame a render took into the scene: `time`, `camera`, `width`, `height`, `samples` (paths a pixel), `firstSnapshot` and `lastSnapshot` (its looks, counted from one), `seconds`, `taken`. `neural-scene render --frame` draws one again |
+| `snapshots[]` | `time`, `camera`, `pieces`: one look at the scene and the pieces it added or changed; the scene at a time is the pieces of the snapshots up to it. A look taken while its render gathered also has `samples` (the paths a pixel it had), `footprint` (the side of its cells) and `taken` (when, by the clock, ISO 8601) |
 
 `revision` goes up each time a piece's gaussians or its appearance are written,
 and `static` says its gaussians do not move from frame to frame: what a
@@ -3472,7 +3507,8 @@ revision, and with no snapshots.
 **Images written.** OpenEXR, linear premultiplied, bottom row first inside the
 engine and written top row first as the format wants. A frame is half by
 default with a `Z` channel; a render product's channels follow its vars, and a
-Cryptomatte layer is always float. PNG is written only as the MCP preview.
+Cryptomatte layer is always float. PNG is written as the MCP preview and by
+`athenea neural-scene render -o x.png`.
 
 ### 8.2.1 Kinds of gaussians
 
@@ -3526,7 +3562,7 @@ surfels in levels of detail is one cloud.
 | `athenea bench` | nothing; timings on standard output |
 | `athenea lift` | the EXR of `-o`: the `--eye` frame keyed by the matte, and its depth |
 | `athenea neural-fit` | measures on standard output; with `--save`, a `.athn`; with `-o`, EXR frames |
-| `athenea neural-scene` | a `.aths` directory: `scene.json`, the pieces' clouds copied in, a `.athn` a fitted piece; `render -o`, EXR frames |
+| `athenea neural-scene` | a `.aths` directory: `scene.json`, the pieces' clouds copied in, a `.athn` a fitted piece, a `.athg` a look of `shoot`'s; `render -o`, EXR frames or PNG pictures |
 | `athenea convert` | a USD stage, or a `.athc` |
 | `athenea stage` | one EXR; or, with `--render-settings`, one per product |
 | `athenea view` | nothing, or one EXR with `--snapshot` |

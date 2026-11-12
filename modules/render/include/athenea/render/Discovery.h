@@ -17,6 +17,7 @@
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/gpu/algo/PrefixSum.h"
+#include "athenea/io/RawSplats.h"
 #include "athenea/render/Camera.h"
 #include "athenea/render/NeuralAppearance.h"
 #include "athenea/scene/GpuClouds.h"
@@ -40,6 +41,50 @@ struct FrameLook {
 
 /// scene_frame.slang's kFrameRecord: INRIA's 62 floats a gaussian.
 inline constexpr uint32_t kFrameRecord = 62;
+
+/// scene_render.slang's kRenderRecord: what a gaussian made by the engine's
+/// own render keeps -- its disc, its colour, the way its surface faced and
+/// what it is made of (`Discovery::renderEncoding`), and after those the
+/// material's row in the frame that made it, its index, whether it is a
+/// sheet, and what it lets through a crossing.
+inline constexpr uint32_t kRenderRecord = 26;
+inline constexpr uint32_t kRenderRecordRow = 20;
+inline constexpr uint32_t kRenderRecordIndex = 21;
+inline constexpr uint32_t kRenderRecordSheet = 22;
+inline constexpr uint32_t kRenderRecordTint = 23;   ///< r g b: what the surface lets through one crossing
+
+/// The scene as it is known, drawn through the look's camera.
+struct KnownScene {
+    const gpu::Buffer* colour = nullptr;   ///< float4 a pixel
+    const gpu::Buffer* depth = nullptr;    ///< view z where the scene is all but opaque
+    const gpu::Buffer* first = nullptr;    ///< view z where it begins (a pane's own depth); null: `depth`
+    const gpu::Buffer* size = nullptr;     ///< the scene drawn by `Discovery::sizes`; null: nothing is refined
+};
+
+/// How a render's look is taken (scene_render.slang).
+struct RenderLookSettings {
+    float    tolerance = 0.06F;     ///< a surface is held where the scene's depth is within this share of its own
+    float    spread = 1.0F;         ///< a disc's standard deviation, in footprints at its own depth
+    float    repaint = 0.0F;        ///< scene_frame.slang's: a held surface off the frame's colour by this share is made again
+    float    refine = 0.0F;         ///< and one held by gaussians this many times as wide as the look's
+    uint32_t footprint = 1;         ///< pixels a side of the cell one gaussian is made of
+    float    glassOpacity = 0.05F;  ///< the least a pane covers of what is behind it, however clear
+    float    turned = 0.5F;         ///< the least a disc's facing is taken as: it is stretched by no more than 1 / this
+    /// A surface that lets the eye through made as a pane and what stands
+    /// behind it; false, as a disc carrying its pixel like any other -- what
+    /// a look at coarse cells takes, which a finer one then replaces whole.
+    bool     panes = true;
+};
+
+/// What a render left in the scene.
+struct RenderLook {
+    uint32_t    surfaces = 0;   ///< cells that hold a surface
+    uint32_t    held = 0;       ///< of those, the ones the scene already had
+    uint32_t    panes = 0;      ///< cells whose surface lets the eye through
+    uint32_t    behind = 0;     ///< gaussians made of what stands behind one
+    uint32_t    made = 0;       ///< gaussians made, in all
+    gpu::Buffer records;        ///< `made` records of kRenderRecord floats, on the device
+};
 
 class Discovery {
 public:
@@ -78,6 +123,27 @@ public:
                                               float tolerance = 0.06F, float spread = 1.0F, float repaint = 0.0F,
                                               const gpu::Buffer* knownSize = nullptr, float refine = 0.0F);
 
+    /// GAUSSIANS MADE BY THE ENGINE'S OWN RENDER (scene_render.slang): the
+    /// frame's `colour` and `depth` with the path tracer's planes `aux`
+    /// (technique::PathAux::planes, each width x height) -- the surface's
+    /// normal, what it is made of, and what stands behind where it lets the
+    /// eye through. One gaussian a cell of `footprint` pixels a side that the
+    /// scene does not hold, of its surface's material; and where the surface
+    /// is a pane, the pane and what is seen through it apart. The records
+    /// stay on the device (`renderEncoding` says how they are laid out).
+    [[nodiscard]] Result<RenderLook> fromRender(const gpu::Buffer& colour, const gpu::Buffer& depth,
+                                                const gpu::Buffer& aux, uint32_t width, uint32_t height,
+                                                const Projection& projection, const KnownScene& known,
+                                                const RenderLookSettings& settings);
+
+    /// `mask` (seenThrough's, width x height) struck where the render's
+    /// surface lets the eye through (`aux`'s planes): nothing is taken out of
+    /// the scene through glass, whose depth is not the scene's there.
+    [[nodiscard]] Result<void> sparePanes(gpu::Buffer& mask, const gpu::Buffer& aux, uint32_t width, uint32_t height);
+
+    /// How a record of `fromRender`'s is laid out, for scene::CloudLoader.
+    [[nodiscard]] static io::SplatEncoding renderEncoding();
+
     /// WHERE A FRAME SEES THROUGH THE SCENE: a float a pixel, 1 where the scene
     /// drawn through the frame's camera (`knownColour`, `knownDepth`) has a
     /// surface nearer than the frame's own by more than `tolerance`, or
@@ -105,8 +171,10 @@ public:
                                             const Projection* projection = nullptr, float coarse = 0.0F);
 
     /// A piece without the gaussians its record `gone` stamps: the same
-    /// cloud, those given no opacity.
-    [[nodiscard]] Result<scene::GpuSplats> without(const scene::GpuSplats& cloud, const gpu::Buffer& gone);
+    /// cloud, those given no opacity. With `upTo`, only those stamped by a
+    /// look up to that one: the piece as it stood then.
+    [[nodiscard]] Result<scene::GpuSplats> without(const scene::GpuSplats& cloud, const gpu::Buffer& gone,
+                                                   uint32_t upTo = 0);
 
     /// HOW COARSE A PIECE IS, AS SOMETHING TO DRAW IT BY: a neural cloud whose
     /// colour is each gaussian's largest standard deviation. A frame drawn by
@@ -122,6 +190,7 @@ private:
 
     gpu::ShaderLibrary* library_ = nullptr;
     gpu::ComputeKernel  clear_, mark_, count_, mask_, gone_, sizes_, frameValid_, framePack_, frameThrough_;
+    gpu::ComputeKernel  renderValid_, renderPack_, renderSpare_;
     std::optional<gpu::PrefixSum> prefix_;
     gpu::Buffer         counters_, spareWords_, spareFloats_;
 };

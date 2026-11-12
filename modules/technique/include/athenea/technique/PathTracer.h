@@ -85,14 +85,27 @@ struct PathProgress {
 /// frame, since they do not depend on the sample.
 /// One buffer of two planes, the albedo's first, the normal's after it,
 /// written by a kernel of their own before the paths.
+/// And six planes after them of what the first hit is made of, for whoever
+/// makes something of a frame other than a picture (render::Discovery):
+/// `material` (the metal's share, the roughness, how much goes through),
+/// `materialRow` (the row + 1, whether it is a sheet, its index), and where
+/// the eye is let through `throughPosition` (the first surface behind that
+/// lets nothing through, world, along the pixel's ray bent at every face;
+/// w 0 where there is none), `throughTint` (what the faces crossed let
+/// through between them), `transmissionColour` (what this surface lets
+/// through one crossing, before Fresnel) and, last, the triangle's own normal
+/// (world, facing the eye): where the surface lies, whatever a normal map says.
 struct PathAux {
-    gpu::Buffer planes;   ///< float4 a pixel, twice: the lobes' directional albedo at the view direction, then the shading normal, unit, facing the eye
+    static constexpr uint32_t kPlanes = 8;
+    gpu::Buffer planes;   ///< float4 a pixel, kPlanes times: the lobes' directional albedo at the view direction, then the shading normal, unit, facing the eye, then the four above
     uint32_t    width = 0;
     uint32_t    height = 0;
     [[nodiscard]] bool valid() const noexcept { return planes.valid(); }
     /// Where the normal's plane starts, in float4 entries (and in bytes).
     [[nodiscard]] uint64_t normalOffset() const noexcept { return uint64_t{width} * height; }
     [[nodiscard]] uint64_t normalOffsetBytes() const noexcept { return normalOffset() * 16; }
+    /// Where plane `plane` starts, in float4 entries.
+    [[nodiscard]] uint64_t planeOffset(uint32_t plane) const noexcept { return uint64_t{plane} * width * height; }
 };
 
 /// Where a bake starts from: one ray a point, and the grid they are dispatched

@@ -2323,6 +2323,17 @@ Result<technique::DisplaySource> StageRenderer::displaySource(const std::string&
     } else if (aov == "Neye" || aov == "normal") {
         source.kind = aov == "Neye" ? AovKind::EyeNormal : AovKind::WorldNormal;
         shown.kind = technique::DisplaySource::Kind::Vector;
+    } else if (aov == "albedo" || aov == "shadingNormal" || aov == "material" || aov == "materialRow" ||
+               aov == "throughPosition" || aov == "throughTint" || aov == "transmissionColour") {
+        // The path tracer's planes (technique::PathAux), a float4 a pixel.
+        source.kind = aov == "albedo"            ? AovKind::Albedo
+                      : aov == "shadingNormal"   ? AovKind::ShadingNormal
+                      : aov == "material"        ? AovKind::Material
+                      : aov == "materialRow"     ? AovKind::MaterialRow
+                      : aov == "throughPosition" ? AovKind::ThroughPosition
+                      : aov == "throughTint"     ? AovKind::ThroughTint
+                                                 : AovKind::TransmissionColour;
+        shown.kind = technique::DisplaySource::Kind::Vector;
     } else {
         return Error::make(ErrorCode::InvalidArgument, "no display for AOV '{}'", aov);
     }

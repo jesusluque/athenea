@@ -80,6 +80,45 @@ Result<void> writeSeen(const std::filesystem::path& path, const std::vector<uint
     return ok();
 }
 
+Result<GaussianRecords> readGaussians(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        return Error(ErrorCode::NotFound, "cannot open " + path.string());
+    }
+    std::array<uint32_t, 4> header{};
+    in.read(reinterpret_cast<char*>(header.data()), sizeof(header));
+    if (!in || header[0] != 0x47485441U || header[1] != 1U || header[3] == 0U) {   // "ATHG"
+        return Error(ErrorCode::InvalidArgument, path.string() + " is not a piece's gaussians (ATHG, version 1)");
+    }
+    GaussianRecords held;
+    held.count = header[2];
+    held.floats = header[3];
+    held.records.resize(size_t{held.count} * held.floats);
+    in.read(reinterpret_cast<char*>(held.records.data()),
+            static_cast<std::streamsize>(held.records.size() * sizeof(float)));
+    if (!in) {
+        return Error(ErrorCode::InvalidArgument,
+                     path.string() + " ends before its " + std::to_string(held.count) + " gaussians");
+    }
+    return held;
+}
+
+Result<void> writeGaussians(const std::filesystem::path& path, uint32_t count, uint32_t floats,
+                            std::span<const float> records) {
+    if (records.size() < size_t{count} * floats) {
+        return Error(ErrorCode::InvalidArgument, "fewer floats than " + std::to_string(count) + " gaussians hold");
+    }
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    const std::array<uint32_t, 4> header{0x47485441U, 1U, count, floats};
+    out.write(reinterpret_cast<const char*>(header.data()), sizeof(header));
+    out.write(reinterpret_cast<const char*>(records.data()),
+              static_cast<std::streamsize>(size_t{count} * floats * sizeof(float)));
+    if (!out) {
+        return Error(ErrorCode::IoFailure, "cannot write " + path.string());
+    }
+    return ok();
+}
+
 Result<NeuralScene> readNeuralScene(const std::filesystem::path& directory) {
     const std::filesystem::path path = directory / "scene.json";
     std::ifstream in(path);
@@ -91,7 +130,7 @@ Result<NeuralScene> readNeuralScene(const std::filesystem::path& directory) {
         return Error(ErrorCode::InvalidArgument, path.string() + " is not a neural scene's manifest");
     }
     const uint32_t version = root.value("version", 0u);
-    if (version != NeuralScene::kVersion) {
+    if (version != NeuralScene::kVersion && version != 1u) {
         return Error(ErrorCode::Unsupported, path.string() + " is version " + std::to_string(version) +
                                                  " of a neural scene; this reads " +
                                                  std::to_string(NeuralScene::kVersion));
@@ -128,6 +167,8 @@ Result<NeuralScene> readNeuralScene(const std::filesystem::path& directory) {
                 p.origin = origin->value("kind", std::string{"converted"});
                 p.foundBy = origin->value("camera", std::string{});
                 p.foundAt = origin->value("time", 0.0);
+                p.foundIn = origin->value("snapshot", 0u);
+                p.footprint = origin->value("footprint", 0u);
             }
             if (const auto look = from.find("appearance"); look != from.end() && look->is_object()) {
                 p.appearance = look->value("file", std::string{});
@@ -175,12 +216,30 @@ Result<NeuralScene> readNeuralScene(const std::filesystem::path& directory) {
             NeuralSceneSnapshot s;
             s.time = from.value("time", 0.0);
             s.camera = from.value("camera", std::string{});
+            s.samples = from.value("samples", 0u);
+            s.footprint = from.value("footprint", 0u);
+            s.taken = from.value("taken", std::string{});
             if (const auto pieces = from.find("pieces"); pieces != from.end() && pieces->is_array()) {
                 for (const Json& id : *pieces) {
                     s.pieces.push_back(id.get<std::string>());
                 }
             }
             scene.snapshots.push_back(std::move(s));
+        }
+    }
+    if (const auto frames = root.find("frames"); frames != root.end() && frames->is_array()) {
+        for (const Json& from : *frames) {
+            NeuralSceneFrame f;
+            f.time = from.value("time", 0.0);
+            f.camera = from.value("camera", std::string{});
+            f.width = from.value("width", 0u);
+            f.height = from.value("height", 0u);
+            f.samples = from.value("samples", 0u);
+            f.firstSnapshot = from.value("firstSnapshot", 0u);
+            f.lastSnapshot = from.value("lastSnapshot", 0u);
+            f.seconds = from.value("seconds", 0.0);
+            f.taken = from.value("taken", std::string{});
+            scene.frames.push_back(std::move(f));
         }
     }
     return scene;
@@ -225,6 +284,8 @@ Result<void> writeNeuralScene(const std::filesystem::path& directory, const Neur
         piece["movedAt"] = p.movedAt;
         piece["paintedAt"] = p.paintedAt;
         piece["origin"] = {{"kind", p.origin}, {"camera", p.foundBy}, {"time", p.foundAt}};
+        if (p.foundIn != 0) piece["origin"]["snapshot"] = p.foundIn;
+        if (p.footprint != 0) piece["origin"]["footprint"] = p.footprint;
         if (!p.appearance.empty()) {
             Json look = {{"file", p.appearance}, {"lit", p.lit}, {"split", p.split}};
             if (p.fit) {
@@ -253,7 +314,19 @@ Result<void> writeNeuralScene(const std::filesystem::path& directory, const Neur
     }
     root["snapshots"] = Json::array();
     for (const NeuralSceneSnapshot& s : scene.snapshots) {
-        root["snapshots"].push_back({{"time", s.time}, {"camera", s.camera}, {"pieces", s.pieces}});
+        Json snapshot = {{"time", s.time}, {"camera", s.camera}, {"pieces", s.pieces}};
+        if (s.samples != 0) snapshot["samples"] = s.samples;
+        if (s.footprint != 0) snapshot["footprint"] = s.footprint;
+        if (!s.taken.empty()) snapshot["taken"] = s.taken;
+        root["snapshots"].push_back(std::move(snapshot));
+    }
+    if (!scene.frames.empty()) {
+        root["frames"] = Json::array();
+        for (const NeuralSceneFrame& f : scene.frames) {
+            root["frames"].push_back({{"time", f.time}, {"camera", f.camera}, {"width", f.width}, {"height", f.height},
+                                      {"samples", f.samples}, {"firstSnapshot", f.firstSnapshot},
+                                      {"lastSnapshot", f.lastSnapshot}, {"seconds", f.seconds}, {"taken", f.taken}});
+        }
     }
     const std::filesystem::path path = directory / "scene.json";
     std::ofstream out(path, std::ios::trunc);

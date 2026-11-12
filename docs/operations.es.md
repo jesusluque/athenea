@@ -389,6 +389,11 @@ athenea neural-scene camera hall.aths --name door --eye 8 0 1.7 --target 0 0 2
 athenea neural-scene fit    hall.aths --steps 3000
 athenea neural-scene render hall.aths --camera door --compare -o door.exr
 athenea neural-scene info   hall.aths
+
+# Un render cuyo resultado es la escena, encontrada mientras reúne caminos; la imagen se hace de ella después.
+athenea neural-scene shoot  stage.usda hall.aths --views views.txt --focal 20 --samples 64 --denoise
+athenea neural-scene render hall.aths --camera door -o door.png          # o .exr
+athenea neural-scene render hall.aths --camera door --at 0 -o then.png   # la escena como estaba
 ```
 
 | Subcomando | Qué hace |
@@ -399,6 +404,7 @@ athenea neural-scene info   hall.aths
 | `render` | todas las piezas desde una vista, cada una con su apariencia donde la tiene y con sus harmonics donde no. Imprime cuánto de la vista tiene la escena -- la cobertura media del frame -- y el `A` del EXR es esa cobertura por píxel: la máscara de lo que se conoce desde ahí, para quien renderice o rellene el resto |
 | `look` | la mirada de una cámara en un tiempo: se dibuja el frame y cada gaussiana que le dio algo queda encontrada, sellada con esta mirada donde ninguna la había visto. Escribe `pieces/<id>.seen` y la mirada en los `snapshots` del manifest, e imprime cuántas gaussianas vio, cuántas eran nuevas y cuántas tenía ya la escena |
 | `discover` | una pieza hecha de un frame: el frame de cualquier renderer por una cámara conocida, un EXR con `R`, `G`, `B` y su profundidad de vista como `Z`, se convierte en una gaussiana por píxel -- un disco en la superficie del píxel, en el mundo -- por cada píxel cuya superficie la escena, dibujada por esa cámara, no tiene ya. Escribe `pieces/<id>.ply`, la pieza (`origin` discovered) y el snapshot de la mirada; imprime cuánto del frame tenía ya la escena, y la escena por esa cámara contra el frame. Crea la escena donde no la hay. Antes de añadir, retira: donde la escena tiene una superficie más cerca que la del frame, o algo donde el frame no tiene nada, lo que había allí se ha movido o se ha ido, y las gaussianas cuyo peso cayó en su mayor parte sobre esos píxeles quedan selladas como idas (`pieces/<id>.gone`) y ya no las dibuja nada |
+| `shoot` | un stage USD path traced hacia dentro de la escena: el resultado del render son gaussianas y ninguna imagen. Cada una es tan ancha como su píxel a su distancia (al doble de lejos, el doble de ancha), un disco en su superficie estirado solo en la dirección en que la superficie se aparta del ojo, y del material de su superficie: algo opaco lleva su fracción de metal y su roughness; una superficie que deja pasar la vista da dos gaussianas -- el vidrio mismo, de poca opacidad, con su transmisión, su índice y si es una lámina, y donde acaba el rayo refractado lo que se ve a través, con la luz que envió antes de que el vidrio la tiñera. Se encuentran mientras el render reúne caminos: una primera mirada en celdas de `--coarsest` píxeles de lado en cuanto cada celda tiene los caminos con los que acabará un píxel, luego miradas más finas, cada una retirando las gaussianas más gruesas que sustituye; la última espera a que el frame esté entero (y con denoise). Cada mirada es un snapshot con su tiempo, sus caminos y su huella, y sus gaussianas una pieza `pieces/<vista>_t<tiempo>_f<huella>_s<snapshot>.athg`. Lo que una mirada ve a través -- algo que se movió -- queda sellado como ido igual que en `discover`, y nada sale del disco. Cada frame se almacena según se hace (`frames[]` en el manifest), y al terminar una vista la escena sale del dispositivo: la siguiente vista vuelve a leer solo las piezas cuyas cajas toca su frustum, así que una escena no está limitada por la memoria del dispositivo, que además tiene cargado el stage |
 | `info` | el manifest, leído; sin dispositivo |
 
 | Opción | De | Valor | Por defecto | Notas |
@@ -421,6 +427,19 @@ athenea neural-scene info   hall.aths
 | `--views` | `render` | ruta | — | un recorrido: un fichero de vistas, `NAME EX EY EZ TX TY TZ [UX UY UZ]` por línea (el de `athenea stage --cameras`), cada una escrita como `<-o>_NAME.exr` con la escena cargada una vez; `--focal` es la de todas. Imprime el tiempo de un frame, el menor y el medio, con el reloj esperando al dispositivo. Sin `-o` no se escribe nada y el recorrido solo se cronometra: un frame de 3840 x 2160 son unos 60 MB, y un recorrido de ellos llena un disco |
 | `--discovered` | `render` | flag | off | solo las gaussianas que han encontrado las miradas: la escena tal como se conoce. Una pieza de la que no se ha tomado ninguna mirada no se dibuja |
 | `--up-to` | `render` | entero | `0` | `--discovered`: solo las miradas hasta esta, contadas desde uno en el orden de `snapshots`; `0` son todas |
+| `--at`, `--snapshot` | `render` | tiempo, entero | —, — | la escena como estaba: en un tiempo, el último snapshot tomado hasta entonces; o un snapshot del manifest, contado desde uno. Las piezas que habían entrado hasta él, menos las gaussianas que se habían ido hasta él. Sin ninguno, la escena como está ahora |
+| `--frame` | `render` | entero | — | un frame que la escena almacenó (`shoot`), contado desde uno: se dibuja de nuevo por su cámara, a su tamaño, con la escena como estaba cuando entró su última mirada. En lugar de `--camera`, `--size` y `--snapshot` |
+| `--exposure` | `render` | stops | `0` | `-o` con un `.png`: sobre la luz de la escena, antes del view transform estándar |
+| `stage`, `scene` | `shoot` | rutas | — | el stage USD, y el directorio de la escena: se crea, o se le añade |
+| `--views`; `--eye`, `--target`, `--up`, `--camera` | `shoot` | | — | las vistas, un fichero de `NAME EX EY EZ TX TY TZ [UX UY UZ]` por línea; o una vista y el nombre con el que se guarda (`camera`) |
+| `--focal`, `--size` | `shoot` | mm, `WIDTHxHEIGHT` | `35`, `960x540` | sobre una apertura de 24.576 mm, como la de `athenea stage` |
+| `--time`, `--times` | `shoot` | time codes | `0` | el tiempo del stage; varios se disparan uno tras otro por todas las vistas, cada mirada encontrando lo que dejó la anterior y retirando lo que se movió |
+| `--samples`, `--pass-samples`, `--bounces`, `--denoise`, `--ray-margin` | `shoot` | | `64`, `1`, `4`, apagado, el de `athenea:rayMargin` | los del path tracer: caminos por píxel en total y por pasada, rebotes, si el frame entero pasa por denoise antes de su última mirada, y cuánto se separa un rayo de una superficie (§3) |
+| `--coarsest` | `shoot` | píxeles | `8` | el lado de las celdas de la primera mirada, una potencia de dos; las miradas siguen a la mitad hasta un píxel. Una mirada en celdas de `f` espera a `samples / f²` caminos por píxel, así que las gaussianas de cada mirada reúnen los mismos caminos. `1`: una sola mirada, cuando el frame está entero |
+| `--spread`, `--tolerance`, `--refine`, `--repaint` | `shoot` | | `1`, `0.06`, `1.5`, `0` | como los de `discover`, el ancho de un disco en celdas de la mirada |
+| `--turned` | `shoot` | 0..1 | `0.5` | lo mínimo que se toma como orientación de un disco hacia el ojo: un disco se estira en la dirección en que su superficie se aparta del ojo por uno entre esa orientación, y no más que uno entre este valor |
+| `--glass-opacity` | `shoot` | 0..1 | `0.05` | lo mínimo que un vidrio cubre de lo que tiene detrás, por claro que sea. Un vidrio cubre lo que su canal más oscuro quita a la luz que lo atraviesa, y se colorea con lo que los otros conservan por encima de eso, de modo que mezclado sobre la gaussiana de detrás devuelve el píxel de la mirada |
+| `--name`, `--up-axis`, `--meters-per-unit`, `--source`, `--licence` | `shoot` | | el stem del directorio, el del stage, `1`, el stage, — | los de la escena |
 | `--camera`, `--time` | `look` | nombre, número | —, — | una vista del manifest y cuándo; el par es el snapshot de la mirada, y una mirada repetida es la misma |
 | `--views`, `--frames` | `discover` | ruta, directorio | —, junto al fichero | varias miradas en una ejecución, con la escena en el dispositivo de una a la siguiente: un fichero de vistas, `NAME EX EY EZ TX TY TZ [UX UY UZ]` por línea (el de `athenea stage --cameras`), cada una con su frame `NAME.exr` y convertida en la pieza `look_NAME`, en tiempos uno tras otro desde `--time` (0 donde no se da). En lugar de `--frame`, `--id` y `--camera` |
 | `--frame` | `discover` | ruta | — | el frame: un EXR con `R`, `G`, `B` (luz lineal) y `Z`, la profundidad a lo largo de la vista; su tamaño es el de la mirada |
@@ -432,7 +451,7 @@ athenea neural-scene info   hall.aths
 | `--name`, `--up-axis`, `--meters-per-unit`, `--source`, `--licence` | `discover` | | | los de la escena, como los de `add` |
 | `--threshold` | `look` | píxeles | `0.05` | cuánto da una gaussiana al frame para contar como vista: su peso de blend sumado sobre sus píxeles |
 | `--compare` | `render` | flag | off | de las dos maneras: los latentes contra los harmonics (las medidas de `athenea compare`) y el tiempo de un frame con cada uno, el menor de doce |
-| `-o`, `--output` | `render` | ruta | — | un EXR; con `--compare`, `<stem>_harmonics.exr` y `<stem>_latents.exr` |
+| `-o`, `--output` | `render` | ruta | — | un EXR (lineal, con su profundidad), o un `.png`: la imagen, por el view transform estándar, para un display sRGB; con `--compare`, `<stem>_harmonics.exr` y `<stem>_latents.exr`; con `--views`, un prefijo, y uno acabado en `.png` escribe `<stem>_NAME.png` |
 
 Una pieza se ajusta desde dentro de la escena: el ojo de cada cámara en algún punto de la
 caja de la escena, una décima hacia dentro de sus paredes, mirando a algún punto de la caja
@@ -3548,6 +3567,7 @@ relativas al directorio, así que una escena se mueve como se mueve un directori
   pieces/<id>.athn         su apariencia neural, una vez ajustada
   pieces/<id>.seen         qué mirada vio primero cada gaussiana
   pieces/<id>.gone         qué mirada encontró ida cada gaussiana
+  pieces/<id>.athg         las gaussianas que dejó un render del propio motor (neural-scene shoot)
 ```
 
 Un `.seen` es un uint32 por gaussiana, little endian y nada más: el puesto en
@@ -3556,20 +3576,37 @@ Un `.gone` es lo mismo para la mirada que vio a través de donde estaba la gauss
 mientras sigue en pie; todos los comandos dibujan una pieza sin las gaussianas que su `.gone`
 sella.
 
+Un `.athg` son dieciséis bytes -- `ATHG`, una versión (1), cuántas gaussianas y
+cuántos floats cada una, uint32 little endian -- y después los registros,
+float32. El registro de un render son 26 floats: la posición (3), el logit de
+la opacidad, los logaritmos de las escalas (3), la rotación (w x y z), el primer
+armónico como guarda un color una captura (3), la normal de la superficie en el
+mundo (3), la fracción de metal, la roughness, la transmisión, y después la fila
+del material en el frame que la creó más uno (0 para lo visto a través de
+vidrio), su índice de refracción, 1 para una lámina sin interior, y lo que deja
+pasar en un cruce (r g b).
+
+La escena se conserva, no se sustituye: una mirada añade piezas y sella lo que
+encontró ido, y nada se quita del disco. Así la escena como estaba en un
+snapshot son las piezas cuyo `origin.snapshot` no es posterior, menos las
+gaussianas cuyo sello en `.gone` no es posterior (`neural-scene render --at`,
+`--snapshot`).
+
 | Clave de `scene.json` | Valor |
 |---|---|
-| `format`, `version` | `"athenea-neural-scene"`, `1`; un lector rechaza otra versión |
+| `format`, `version` | `"athenea-neural-scene"`, `2`; la versión 1 se lee tal cual (la 2 añadió `origin.snapshot`, `origin.footprint`, en un snapshot `samples`, `footprint`, `taken`, y `frames`), y un lector rechaza cualquier otra |
 | `name`, `upAxis`, `metersPerUnit` | el nombre de la escena; `"Y"` o `"Z"`; metros por unidad |
 | `source` | `stage`: de qué se convirtieron las piezas; `licence`: qué pide a quien lo use |
 | `bounds` | `min`, `max`: la caja que envuelve las de todas las piezas, escrita y no leída |
 | `pieces[]` | `id`; `prim` (de dónde salió); `cloud` (su fichero); `gaussians`; `bounds`; `transform` (objeto a mundo, dieciséis números por filas); `revision`, `movedAt`, `paintedAt`; `static`; `origin`; y, una vez ajustada, `appearance` |
 | `pieces[].gone`, `removed` | su `.gone` y cuántas gaussianas vieron a través miradas posteriores; ausentes hasta que una lo hace. Retirar gaussianas sube la `revision` y el `movedAt` de la pieza |
 | `pieces[].seen`, `discovered` | su `.seen` y cuántas gaussianas han encontrado las miradas; ausentes hasta que se toma una mirada |
-| `pieces[].origin` | `kind`: `"converted"` (de geometría, entera), `"discovered"` (las gaussianas que vio una cámara) o `"generated"` (rellenada por otro sistema); `camera` y `time`: qué la encontró y cuándo |
+| `pieces[].origin` | `kind`: `"converted"` (de geometría, entera), `"discovered"` (las gaussianas que vio una cámara) o `"generated"` (rellenada por otro sistema); `camera` y `time`: qué la encontró y cuándo; `snapshot`: el snapshot en que entró, contado desde uno (ausente: estaba antes de cualquier mirada); `footprint`: el lado en píxeles de la celda de la que se hizo cada una de sus gaussianas (las de un render) |
 | `pieces[].appearance` | `file` (su `.athn`); `lit`; `split`; `fit`: `steps`, `against` (`"harmonics"`), `relMSE`, `p99`, `max` como los midió el dispositivo desde las cámaras held-out |
 | `lights[]` | `name`, `kind` (`"distant"` o `"dome"`), `towards`, `radiance`: bajo qué se hicieron las piezas; se anota, y todavía no lo lee nada |
 | `cameras[]` | `name`, `eye`, `target`, `up`, `focal` (mm) |
-| `snapshots[]` | `time`, `camera`, `pieces`: una mirada a la escena y las piezas que añadió o cambió; la escena en un tiempo son las piezas de los snapshots hasta él |
+| `frames[]` | un frame que un render metió en la escena: `time`, `camera`, `width`, `height`, `samples` (caminos por píxel), `firstSnapshot` y `lastSnapshot` (sus miradas, contadas desde uno), `seconds`, `taken`. `neural-scene render --frame` lo dibuja de nuevo |
+| `snapshots[]` | `time`, `camera`, `pieces`: una mirada a la escena y las piezas que añadió o cambió; la escena en un tiempo son las piezas de los snapshots hasta él. Una mirada tomada mientras su render reunía caminos tiene además `samples` (los caminos por píxel que tenía), `footprint` (el lado de sus celdas) y `taken` (cuándo, según el reloj, ISO 8601) |
 
 `revision` sube cada vez que se escriben las gaussianas de una pieza o su apariencia,
 y `static` dice que sus gaussianas no se mueven de un frame a otro: lo que un
@@ -3583,7 +3620,8 @@ revision, y sin snapshots.
 abajo primero dentro del motor y escrito con la de arriba primero como quiere
 el formato. Un frame va en media por defecto con un canal `Z`; los canales de
 un producto siguen a sus vars, y una capa Cryptomatte va siempre en float. PNG
-solo se escribe como la vista previa de MCP.
+se escribe como la vista previa de MCP y con
+`athenea neural-scene render -o x.png`.
 
 ### 8.2.1 Tipos de gaussianas
 
@@ -3637,7 +3675,7 @@ TX con skinning, de surfels y en niveles de detalle es una sola nube.
 | `athenea bench` | nada; los tiempos por la salida estándar |
 | `athenea lift` | el EXR de `-o`: el frame de `--eye` con el key del matte, y su profundidad |
 | `athenea neural-fit` | las medidas por la salida estándar; con `--save`, un `.athn`; con `-o`, frames EXR |
-| `athenea neural-scene` | un directorio `.aths`: `scene.json`, las nubes de las piezas copiadas dentro, un `.athn` por pieza ajustada; `render -o`, frames EXR |
+| `athenea neural-scene` | un directorio `.aths`: `scene.json`, las nubes de las piezas copiadas dentro, un `.athn` por pieza ajustada, un `.athg` por mirada de `shoot`; `render -o`, frames EXR o imágenes PNG |
 | `athenea convert` | una escena USD, o un `.athc` |
 | `athenea stage` | un EXR; o, con `--render-settings`, uno por producto |
 | `athenea view` | nada, o un EXR con `--snapshot` |

@@ -873,7 +873,10 @@ HdAovDescriptor HdAtheneaRenderDelegate::GetDefaultAovDescriptor(TfToken const& 
         return HdAovDescriptor(HdFormatInt32, false, VtValue(-1));
     }
     if (name == HdAovTokens->Neye || name == HdAovTokens->normal || name == TfToken("albedo") ||
-        name == TfToken("shadingNormal") || name.GetString().rfind("primvars:", 0) == 0) {
+        name == TfToken("shadingNormal") || name == TfToken("material") || name == TfToken("materialRow") ||
+        name == TfToken("throughPosition") || name == TfToken("throughTint") ||
+        name == TfToken("transmissionColour") ||
+        name.GetString().rfind("primvars:", 0) == 0) {
         return HdAovDescriptor(HdFormatFloat32Vec3, false, VtValue(GfVec3f(0.0F)));
     }
     return HdAovDescriptor();

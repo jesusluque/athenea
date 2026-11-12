@@ -263,6 +263,10 @@ struct AovLayout {
 /// Which image an AOV reads.
 enum class AovKind {
     Colour, Depth, PrimId, InstanceId, ElementId, EyeNormal, WorldNormal, Primvar, Albedo, ShadingNormal, LightGroup,
+    /// What the path tracer's first hit is made of and what stands behind it
+    /// (technique::PathAux): `material`, `materialRow`, `throughPosition`, `throughTint`,
+    /// `transmissionColour`.
+    Material, MaterialRow, ThroughPosition, ThroughTint, TransmissionColour,
     /// A Cryptomatte layer: `AovSource::primvar` is which of them (0, 1, 2),
     /// each a float4 of two (id, coverage) ranks.
     Crypto

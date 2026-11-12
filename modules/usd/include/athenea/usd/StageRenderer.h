@@ -278,7 +278,9 @@ public:
     [[nodiscard]] gpu::ShaderLibrary& library();
 
     /// The last frame's `aov` ("color", "depth", "primId", "instanceId",
-    /// "elementId", "Neye", "normal") as DisplayTransform reads it. An AOV no
+    /// "elementId", "Neye", "normal", and a path traced frame's "albedo",
+    /// "shadingNormal", "material", "materialRow", "throughPosition",
+    /// "throughTint", "transmissionColour": technique::PathAux) as DisplayTransform reads it. An AOV no
     /// mesh drew, or one not requested, has no buffer: it shows as the background.
     [[nodiscard]] Result<technique::DisplaySource> displaySource(const std::string& aov);
 

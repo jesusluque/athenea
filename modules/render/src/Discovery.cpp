@@ -47,6 +47,15 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
         auto through = gpu::ComputeKernel::create(library, "athenea/neural/scene_frame", "frameSeenThrough");
         if (!through) return std::move(through).error();
         d.frameThrough_ = std::move(*through);
+        auto renderValid = gpu::ComputeKernel::create(library, "athenea/neural/scene_render", "renderValid");
+        if (!renderValid) return std::move(renderValid).error();
+        d.renderValid_ = std::move(*renderValid);
+        auto renderPack = gpu::ComputeKernel::create(library, "athenea/neural/scene_render", "renderPack");
+        if (!renderPack) return std::move(renderPack).error();
+        d.renderPack_ = std::move(*renderPack);
+        auto renderSpare = gpu::ComputeKernel::create(library, "athenea/neural/scene_render", "renderSparePanes");
+        if (!renderSpare) return std::move(renderSpare).error();
+        d.renderSpare_ = std::move(*renderSpare);
         auto prefix = gpu::PrefixSum::create(library);
         if (!prefix) return std::move(prefix).error();
         d.prefix_.emplace(std::move(*prefix));
@@ -224,6 +233,155 @@ Result<FrameLook> Discovery::fromFrame(const gpu::Buffer& colour, const gpu::Buf
     return look;
 }
 
+Result<void> Discovery::sparePanes(gpu::Buffer& mask, const gpu::Buffer& aux, uint32_t width, uint32_t height) {
+    gpu::Device& device = library_->device();
+    gpu::CommandBatch batch(device);
+    renderSpare_.dispatch(batch, {width, height, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["colour"].setBinding(spareFloats_.rhi());
+        cursor["depth"].setBinding(spareFloats_.rhi());
+        cursor["aux"].setBinding(aux.rhi());
+        cursor["knownColour"].setBinding(spareFloats_.rhi());
+        cursor["knownDepth"].setBinding(spareFloats_.rhi());
+        cursor["knownFirst"].setBinding(spareFloats_.rhi());
+        cursor["knownSize"].setBinding(spareFloats_.rhi());
+        cursor["made"].setBinding(spareWords_.rhi());
+        cursor["madeRead"].setBinding(spareWords_.rhi());
+        cursor["which"].setBinding(spareWords_.rhi());
+        cursor["whichRead"].setBinding(spareWords_.rhi());
+        cursor["dest"].setBinding(spareWords_.rhi());
+        cursor["records"].setBinding(spareFloats_.rhi());
+        cursor["counters"].setBinding(counters_.rhi());
+        cursor["seenThrough"].setBinding(mask.rhi());
+        cursor["params"]["width"].setData(width);
+        cursor["params"]["height"].setData(height);
+    });
+    return batch.submit(true);
+}
+
+io::SplatEncoding Discovery::renderEncoding() {
+    io::SplatEncoding e;
+    e.floatsPerRecord = kRenderRecord;
+    e.x = 0; e.y = 1; e.z = 2;
+    e.opacity = 3;
+    e.scale0 = 4; e.scale1 = 5; e.scale2 = 6;
+    e.rotW = 7; e.rotX = 8; e.rotY = 9; e.rotZ = 10;
+    e.dc0 = 11; e.dc1 = 12; e.dc2 = 13;
+    e.normal = 14;
+    e.metallic = 17;
+    e.roughness = 18;
+    e.transmission = 19;
+    e.restBase = 0;
+    e.restPerColour = 0;
+    return e;
+}
+
+Result<RenderLook> Discovery::fromRender(const gpu::Buffer& colour, const gpu::Buffer& depth, const gpu::Buffer& aux,
+                                         uint32_t width, uint32_t height, const Projection& projection,
+                                         const KnownScene& known, const RenderLookSettings& settings) {
+    gpu::Device& device = library_->device();
+    const uint32_t footprint = std::max<uint32_t>(settings.footprint, 1);
+    const uint32_t cellsX = (width + footprint - 1) / footprint;
+    const uint32_t cellsY = (height + footprint - 1) / footprint;
+    const uint32_t cells = cellsX * cellsY;
+    auto made = words(device, cells, 4, "render.made");
+    if (!made) return std::move(made).error();
+    auto which = words(device, cells, 4, "render.which");
+    if (!which) return std::move(which).error();
+    auto dest = words(device, cells, 4, "render.dest");
+    if (!dest) return std::move(dest).error();
+    auto total = words(device, 4, 4, "render.total");
+    if (!total) return std::move(total).error();
+    gpu::Buffer records = spareFloats_;
+    const bool hasKnown = known.colour != nullptr && known.depth != nullptr;
+    const Mat4 viewToWorld = aofx::xform::inverseAffine(projection.worldToView);
+    // Every name the module declares; a dispatch names what it writes after.
+    const auto bindLook = [&](rhi::ShaderCursor cursor) {
+        cursor["colour"].setBinding(colour.rhi());
+        cursor["depth"].setBinding(depth.rhi());
+        cursor["aux"].setBinding(aux.rhi());
+        cursor["knownColour"].setBinding(hasKnown ? known.colour->rhi() : colour.rhi());
+        cursor["knownDepth"].setBinding(hasKnown ? known.depth->rhi() : depth.rhi());
+        cursor["knownFirst"].setBinding(hasKnown && known.first != nullptr ? known.first->rhi() : depth.rhi());
+        cursor["knownSize"].setBinding(hasKnown && known.size != nullptr ? known.size->rhi() : colour.rhi());
+        cursor["made"].setBinding(spareWords_.rhi());
+        cursor["madeRead"].setBinding(made->rhi());
+        cursor["which"].setBinding(spareWords_.rhi());
+        cursor["whichRead"].setBinding(which->rhi());
+        cursor["dest"].setBinding(dest->rhi());
+        cursor["records"].setBinding(records.rhi());
+        cursor["counters"].setBinding(counters_.rhi());
+        cursor["seenThrough"].setBinding(spareFloats_.rhi());
+        rhi::ShaderCursor p = cursor["params"];
+        p["width"].setData(width);
+        p["height"].setData(height);
+        p["focalX"].setData(static_cast<float>(projection.focalX));
+        p["focalY"].setData(static_cast<float>(projection.focalY));
+        p["centreX"].setData(static_cast<float>(projection.centreX));
+        p["centreY"].setData(static_cast<float>(projection.centreY));
+        p["tolerance"].setData(settings.tolerance);
+        p["spread"].setData(settings.spread);
+        static const char* const kRows[12] = {"r0x", "r0y", "r0z", "r0w", "r1x", "r1y",
+                                              "r1z", "r1w", "r2x", "r2y", "r2z", "r2w"};
+        static const char* const kBack[12] = {"w0x", "w0y", "w0z", "w0w", "w1x", "w1y",
+                                              "w1z", "w1w", "w2x", "w2y", "w2z", "w2w"};
+        for (int k = 0; k < 12; ++k) {
+            p[kRows[k]].setData(static_cast<float>(viewToWorld.at(k / 4, k % 4)));
+            p[kBack[k]].setData(static_cast<float>(projection.worldToView.at(k / 4, k % 4)));
+        }
+        p["hasKnown"].setData(uint32_t{hasKnown ? 1u : 0u});
+        p["repaint"].setData(settings.repaint);
+        p["refine"].setData(hasKnown && known.size != nullptr ? settings.refine : 0.0F);
+        p["footprint"].setData(footprint);
+        p["glassOpacity"].setData(settings.glassOpacity);
+        p["turned"].setData(settings.turned);
+        p["panes"].setData(uint32_t{settings.panes ? 1u : 0u});
+        p["hasFirst"].setData(uint32_t{hasKnown && known.first != nullptr ? 1u : 0u});
+    };
+    {
+        gpu::CommandBatch batch(device);
+        clear_.dispatch(batch, {4, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            bind(cursor);
+            cursor["cleared"].setBinding(counters_.rhi());
+            cursor["counters"].setBinding(spareWords_.rhi());
+            cursor["params"]["count"].setData(uint32_t{4});
+        });
+        renderValid_.dispatch(batch, {cellsX, cellsY, 1}, [&](rhi::ShaderCursor cursor) {
+            bindLook(cursor);
+            cursor["made"].setBinding(made->rhi());
+            cursor["madeRead"].setBinding(spareWords_.rhi());
+            cursor["which"].setBinding(which->rhi());
+            cursor["whichRead"].setBinding(spareWords_.rhi());
+        });
+        ATHENEA_TRY(prefix_->apply(batch, *made, *dest, *total, cells));
+        ATHENEA_TRY(batch.submit(true));
+    }
+    RenderLook look;
+    std::array<uint32_t, 4> read{};
+    ATHENEA_TRY(counters_.read(device, 0, sizeof(read), read.data()));
+    look.surfaces = read[0];
+    look.held = read[1];
+    look.panes = read[2];
+    look.behind = read[3];
+    ATHENEA_TRY(total->read(device, 0, sizeof(look.made), &look.made));
+    if (look.made == 0) {
+        return look;
+    }
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{look.made} * kRenderRecord * sizeof(float);
+    desc.elementBytes = sizeof(float);
+    desc.label = "render.records";
+    auto held = gpu::Buffer::create(device, desc);
+    if (!held) return std::move(held).error();
+    records = *held;
+    {
+        gpu::CommandBatch batch(device);
+        renderPack_.dispatch(batch, {cellsX, cellsY, 1}, bindLook);
+        ATHENEA_TRY(batch.submit(true));
+    }
+    look.records = std::move(records);
+    return look;
+}
+
 Result<gpu::Buffer> Discovery::seenThrough(const gpu::Buffer& colour, const gpu::Buffer& depth, uint32_t width,
                                            uint32_t height, const gpu::Buffer& knownColour,
                                            const gpu::Buffer& knownDepth, float tolerance, uint32_t& pixels,
@@ -314,7 +472,7 @@ Result<uint32_t> Discovery::markGone(const gpu::Buffer& lifted, uint32_t base, g
     return read[0];
 }
 
-Result<scene::GpuSplats> Discovery::without(const scene::GpuSplats& cloud, const gpu::Buffer& gone) {
+Result<scene::GpuSplats> Discovery::without(const scene::GpuSplats& cloud, const gpu::Buffer& gone, uint32_t upTo) {
     gpu::Device& device = library_->device();
     gpu::BufferDesc desc;
     desc.bytes = std::max<uint64_t>(cloud.count, 1) * 16;
@@ -330,6 +488,7 @@ Result<scene::GpuSplats> Discovery::without(const scene::GpuSplats& cloud, const
         cursor["seenRead"].setBinding(gone.rhi());
         cursor["params"]["count"].setData(cloud.count);
         cursor["params"]["drop"].setData(uint32_t{1});
+        cursor["params"]["upTo"].setData(upTo);
     });
     ATHENEA_TRY(batch.submit(true));
     scene::GpuSplats kept = cloud;

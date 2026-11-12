@@ -21758,3 +21758,128 @@ dome of 1. Its inside reads 0.00670 on average with the default and 0.000195 at 
 - Sponza's lanterns, blue in Cycles (a blue glass of opacity 0.6 round an emitting bulb) and dark here; and the
   tone, warmer in Cycles, whose importer's units for the sun are not this engine's.
 - The found Sponza's frames drawn again without the lines, and its numbers with them.
+
+## A render whose result is gaussians (12 Nov)
+
+The user's turn of the idea: the render's product is the scene -- gaussians in the world, each as wide as its
+pixel is at its distance, found while the render gathers, of their surface's material, kept with the time each
+came and went -- and the PNG or EXR is made of the scene afterwards. `athenea neural-scene shoot` is that, on the
+engine's own path tracer; `neural-scene discover` stays for another renderer's frames.
+
+**What the render gives beside its picture.** `pathGuides`, the kernel that already wrote the denoiser's albedo and
+normal at the camera's hit, writes six planes more into the same buffer (`technique::PathAux`, eight planes):
+the metal's share, the roughness and how much goes through (`materialSampleOf`, the reduction a mesh's conversion
+uses, and the material row's own transmission); the row, whether it is a sheet and its index; and where the
+surface lets the eye through, the first surface behind that does not -- along the pixel's own ray, bent at every
+face as a path's is, up to eight faces -- with what the faces let through between them, and what this face lets
+through a crossing; and the triangle's own normal. No buffer is added to the kernel that traces, which on Metal has none to spare. They are AOVs
+as `albedo` is (`material`, `materialRow`, `throughPosition`, `throughTint`, `transmissionColour`) and a host takes
+them on the device from `StageRenderer::displaySource`.
+
+**A gaussian of its pixel's material** (`scene_render.slang`, `Discovery::fromRender`). The disc lies in the
+triangle -- its own normal, an eighth plane -- and not square to a normal guessed from the depth's differences;
+what the gaussian keeps as its normal is the shading one. It is as wide as its cell is at its distance across the
+way the surface falls from the eye, and that over the facing along it (the facing taken as no less than a half:
+`--turned`), where `discover` grew it both ways by the root, capped at 1.41. Its colour is the mean of its cell's
+pixels that show the same material at the same depth and whose four neighbours do: a pixel a silhouette crosses,
+which the renderer mixed, is left out, and a lone one takes its inner neighbour's. The record is 26 floats where a
+PLY's is 62, and stays on the device: the piece is drawn from the buffer the kernel wrote, and the file
+(`.athg`) is that buffer.
+
+**Glass.** A sheet -- thin walled, or a UsdPreviewSurface's opacity -- is made apart from what it shows: the pane
+with its transmission, tint and index, and at `throughPosition` a gaussian with the pixel's light over what the
+glass kept. Blending covers and cannot multiply, so the pane covers what the glass's darkest channel took and is
+coloured by what the others kept over that; over the gaussian behind, the two give the look's pixel back. Its
+discs overlap -- a pixel lies under 2 pi spread^2 of them -- and each has the opacity that makes the whole cover
+that. A solid is a lens: what it shows is where the bent rays end, and nothing straight behind gives that back
+to a rasteriser. It keeps its picture and says what it is made of (transmission, index, not a sheet). What its
+rays reached is not made: a lens's pixel is of that place only as one eye saw it through two faces, and made
+from it the thing behind was shards of the wrong colour on what the lens hid. Glass that keeps under half of a
+channel -- dark, or met near edge on, where the pixel is mostly what it reflects -- keeps its picture too.
+
+Two things found by looking from a second side. The ray sent on through the glass went from the world's origin
+and not from the eye -- a hit read from the visibility buffer has no `eye` of its own -- so what stood behind a
+pane was made off to its side: `-toEye` is the way. And a second look took out the floor behind a pane: the
+scene's depth goes past a pane, the mask of what the frame sees through reached everything under those pixels,
+and the pane's cover seen aslant passes a half. Nothing found before is now taken out through glass
+(`renderSparePanes`); this frame's own coarse looks still are, by the mask whole.
+
+**Found as the render gathers.** The render is drawn a pass at a time and looked at whenever a footprint's paths
+are in: cells of 8 pixels at a sixty-fourth of the paths, then 4, 2 and 1, so that every look's gaussians hold as
+many paths, the last when the frame is whole and denoised. A finer look takes out the coarser gaussians it
+replaces by the machinery a nearer look already had (`frameSeenThrough`'s `again`, the lift, `discoverGone`).
+Glass is made as glass by the last look alone: the coarse looks carry its picture, since a finer look takes a
+disc out by its depth and the scene's depth does not stop at a pane.
+
+**Kept, with its times.** A look is a snapshot: the stage's time, the camera, the paths a pixel, the footprint,
+the clock. A piece says the snapshot it came in at and each gaussian the one it went at, and nothing leaves the
+disk: `neural-scene render --at T` (or `--snapshot N`) draws the pieces in by then less the gaussians gone by
+then (`discoverMask` with a last look). The manifest is version 2 and reads version 1.
+
+**Each frame stored, and the device left free** (the user's: "lo lógico sería que cada frame se almacene y libere
+la GPU"). The first shoot of Sponza ran out of memory at its fifth view: the stage being rendered holds some
+twelve of the device's eighteen gigabytes in textures, and the shoot kept the whole scene found so far beside it.
+Now a look's gaussians go to the disk as they are made, the frame is written into the manifest (`frames[]`: its
+time, camera, size, paths, the snapshots that are its looks), and when a view is done everything of the scene
+leaves the device. The next view reads back the pieces whose boxes its frustum meets -- eight corners through
+the camera, the files' bookkeeping -- and a piece every gaussian of which has gone is not read at all. What a
+shoot can hold is then the disk's, not the device's. `neural-scene render --frame N` draws a stored frame again:
+its camera, its size, the scene as it stood at its last look; and one view of a found scene reads only the
+pieces in its frustum as well.
+
+**The picture afterwards.** `neural-scene render -o x.png` puts the frame through the display transform on the
+device; `.exr` is the frame as it is.
+
+Measured on Metal (Apple M5 Pro), a room of 8 m with two boxes, a gold ball, a glass ball and a pane of green
+glass, 960 x 540, 64 paths a pixel, four bounces, denoised. The first frame: a scene to draw 3.7 s after the
+shoot starts and the whole look after 42.5 s (the frame alone takes 43 s by `athenea stage`); 8 002, 31 769 and
+127 106 gaussians at cells of 8, 4 and 2, each taken out whole by the next, and 601 334 at one pixel, 92 856 of
+them behind the pane; a look itself 0.01 to 0.5 s. A second frame from the side: the scene already held 59.3% of
+its surfaces and 199 003 gaussians were made, 17 661 behind the pane; one piece was read back for it and the
+device left free after. That second frame drawn again from the scene (`render --frame 2`) against the path
+tracer's, where the scene covers: PSNR 29.6 dB, SSIM 0.962. The pane is a pane from both sides, with the box,
+the ball and the floor behind it where they stand.
+
+**The building.** Sponza, the seven looks of 1440 x 810 at 128 paths, denoised, rays leaving by 2e-5, held
+against the path tracer from the fourteen cameras that took none (960 x 540):
+
+| | PSNR: mean, least | SSIM: mean | on the disk |
+|---|---|---|---|
+| `discover`, from the same looks' frames (no lines) | 33.50, 23.85 dB | 0.884 | 1.7 GB |
+| `shoot` | 33.05, 23.47 dB | 0.892 | 0.96 GB |
+
+As close, by fewer bytes: 0.45 dB under and 0.008 of SSIM over. It is not the gain the plan hoped the surface's
+own normal and material would bring, and the worst view is where it was. Laying the disc by the shading normal
+rather than the triangle's cost 0.04 of SSIM (0.848 to 0.892, at 16 paths); how far a disc is stretched matters
+little (a least facing of 0.15, 0.3, 0.5: 33.00, 32.63, 32.69 dB at 16 paths). The shoot's stage was a copy of
+Sponza with its normal, roughness and metalness maps at 1024, the base colours as they are: with every map at
+4096 the stage and the scene did not fit the device together, which is what the frames stored and the device
+freed are for. A first look of a view is in 1 to 2.5 s after the first, whose 30 to 60 s are the stage's load.
+
+`[shoot]` (tests/render/test_neural_mlp.cpp): a look from twice as far makes gaussians 2.41 times as wide (the
+far look sees more of the cloud near edge on), a look at cells of four pixels a sixteenth as many and 3.96
+times as wide, both covering the frame; against itself as what is known a look makes nothing; a frame that is all
+pane makes two gaussians a pixel. And the piece's file and the manifest's new keys written and read.
+
+### Not done
+
+- **The light behind glass, measured and not divided out.** The gaussian behind a pane carries the pixel over
+  what the glass kept, so whatever the glass reflected is in it: a wall found through the pane is brighter than
+  the same wall found beside it. The path tracer has the number -- the light a path gathers after it crosses
+  its first surface -- and summing it into a plane of `sum_` would cost no buffer.
+- **Refraction drawn.** The record says transmission, index, sheet and tint; `rt_shade` refracts by a cloud's
+  index and `pbr`. A piece's glass given to the gaussian ray tracer as a cloud of its own with that index is
+  the step from carrying the material to drawing by it.
+- **Reflections.** A mirror's image is a lens's: painted on the surface, right from one eye.
+- **A pane refined.** A pane and what is behind it are held by a later look and never made finer, nor taken
+  out when the glass moves: the scene's depth goes past them.
+- **What a lens hides.** Nothing is made of where a solid's bent rays end.
+- **The first views again with every map whole**, now that the scene leaves the device between views.
+- **Which pieces a view reads** is by their boxes, and a look's box is most of what its camera saw: in a
+  building's inside nearly every piece meets nearly every frustum. Pieces cut by place rather than by look
+  would be read by need.
+- **The material's name.** A gaussian keeps its material's row in the frame that made it, which another frame
+  numbers otherwise; the path the row came from is the engine's to hand over.
+- **Emission**, which the record has no field for: an emitter's gaussian carries its light as a colour.
+- **Drawing only what is not held** (the plan's fifth step): the path tracer still draws whole frames.
+- **Motion**: something that moved is still taken out and made again, though the render knows its prim.

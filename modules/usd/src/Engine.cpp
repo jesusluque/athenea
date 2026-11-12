@@ -2304,6 +2304,18 @@ AovView Engine::aovView(const render::RenderTargets& targets, AovSource aov) con
             view.offset = static_cast<uint32_t>(pathAux_.normalOffset());
         }
         return view;
+    case AovKind::Material:
+    case AovKind::MaterialRow:
+    case AovKind::ThroughPosition:
+    case AovKind::ThroughTint:
+    case AovKind::TransmissionColour:
+        if (pathAuxValid_ && pathAux_.width == targets.width && pathAux_.height == targets.height) {
+            view.buffer = &pathAux_.planes;
+            view.offset = static_cast<uint32_t>(pathAux_.planeOffset(
+                aov.kind == AovKind::Material ? 2u : aov.kind == AovKind::MaterialRow ? 3u
+                : aov.kind == AovKind::ThroughPosition ? 4u : aov.kind == AovKind::ThroughTint ? 5u : 6u));
+        }
+        return view;
     // A light group's plane, one of the frame's in one buffer: the offset
     // addresses it at a stride of one.
     case AovKind::LightGroup:

@@ -15,6 +15,15 @@
 //     pieces/<id>.seen           which look first saw each gaussian: a uint32 a gaussian, little
 //                                endian, the snapshot's place in `snapshots` counted from one, 0 for none
 //     pieces/<id>.gone           which look found each gaussian gone, the same way
+//     pieces/<id>.athg           the gaussians a render of the engine's own left (`neural-scene shoot`):
+//                                "ATHG", a version, how many and how many floats each (four uint32,
+//                                little endian), then the records as render::Discovery lays them out
+//
+// THE SCENE IS KEPT, NOT REPLACED. A look adds a piece and stamps what it
+// found gone; nothing is taken off the disk. A piece says the snapshot it
+// came in at (`foundIn`) and each gaussian the one it went at (`.gone`), and
+// a snapshot says when it was: so the scene as it stood at any time is the
+// pieces in by then less the gaussians gone by then (`neural-scene render --at`).
 //
 // Every path in the manifest is relative to the directory, so a scene moves
 // as a directory does. The manifest is read and written here and nothing is
@@ -42,6 +51,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -92,6 +102,11 @@ struct NeuralScenePiece {
     /// many that is. Those gaussians are drawn by nothing.
     std::string            gone;
     uint32_t               removed = 0;
+    /// The snapshot the piece came in at, counted from one (0: it was there
+    /// before any look), and the side in pixels of the cell each of its
+    /// gaussians was made of (0: not a render's).
+    uint32_t               foundIn = 0;
+    uint32_t               footprint = 0;
     std::optional<NeuralSceneFit> fit;
 };
 
@@ -116,10 +131,35 @@ struct NeuralSceneSnapshot {
     double                   time = 0.0;
     std::string              camera;
     std::vector<std::string> pieces;
+    /// A look taken while its render was still gathering: the paths a pixel
+    /// it had by then and the side of the cells it was taken at (0: a
+    /// finished frame's), and when it was taken, as the clock said (ISO 8601).
+    uint32_t                 samples = 0;
+    uint32_t                 footprint = 0;
+    std::string              taken;
+};
+
+/// A frame a render took into the scene (`neural-scene shoot`): the stage's
+/// time, the camera and the size it was drawn at, the paths a pixel it
+/// gathered, the snapshots that are its looks (the first and the last,
+/// counted from one), how long it took and when. A frame is drawn again from
+/// the scene as it stood at its last snapshot, through its camera.
+struct NeuralSceneFrame {
+    double      time = 0.0;
+    std::string camera;
+    uint32_t    width = 0;
+    uint32_t    height = 0;
+    uint32_t    samples = 0;
+    uint32_t    firstSnapshot = 0;
+    uint32_t    lastSnapshot = 0;
+    double      seconds = 0.0;
+    std::string taken;
 };
 
 struct NeuralScene {
-    static constexpr uint32_t kVersion = 1;
+    /// 2 added a piece's `foundIn` and `footprint` and a snapshot's `samples`,
+    /// `footprint` and `taken`; a version 1 manifest is read as it is.
+    static constexpr uint32_t kVersion = 2;
 
     std::string name;
     std::string upAxis = "Y";             ///< "Y" | "Z"
@@ -130,6 +170,7 @@ struct NeuralScene {
     std::vector<NeuralSceneLight>  lights;
     std::vector<NeuralSceneCamera> cameras;
     std::vector<NeuralSceneSnapshot> snapshots;
+    std::vector<NeuralSceneFrame> frames;
 
     [[nodiscard]] NeuralScenePiece* piece(const std::string& id);
     /// The box round every piece's own, as the manifest has them.
@@ -139,6 +180,16 @@ struct NeuralScene {
 /// A piece's `.seen`: `count` uint32, as they are.
 [[nodiscard]] Result<std::vector<uint32_t>> readSeen(const std::filesystem::path& path, uint32_t count);
 [[nodiscard]] Result<void> writeSeen(const std::filesystem::path& path, const std::vector<uint32_t>& seen);
+
+/// A piece's `.athg`: records of `floats` float32 each, as they are.
+struct GaussianRecords {
+    uint32_t           count = 0;
+    uint32_t           floats = 0;
+    std::vector<float> records;
+};
+[[nodiscard]] Result<GaussianRecords> readGaussians(const std::filesystem::path& path);
+[[nodiscard]] Result<void> writeGaussians(const std::filesystem::path& path, uint32_t count, uint32_t floats,
+                                          std::span<const float> records);
 
 /// `directory`/scene.json.
 [[nodiscard]] Result<NeuralScene> readNeuralScene(const std::filesystem::path& directory);
