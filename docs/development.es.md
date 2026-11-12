@@ -396,7 +396,10 @@ fuera del proceso.
 | `HDX_MSAA_SAMPLE_COUNT` | tiene que ser `1` para el oráculo de Storm; ctest lo pone, y el test falla explicándolo si no |
 
 `ATHENEA_BACKEND` corre toda la suite sobre un backend: `cuda`, `vulkan`, `metal`,
-`d3d12`.
+`d3d12`. Sin ella el dispositivo de un test es el orden de dibujo de la plataforma,
+que en Windows empieza por Vulkan; un dispositivo que vayan a compartir gpe o
+los códecs de NVIDIA se pide con `gpu::DevicePurpose::Shared` (allí CUDA
+primero), como hacen `gpu_host::Context` y los comandos de vídeo.
 
 ### 3.4 Una release
 

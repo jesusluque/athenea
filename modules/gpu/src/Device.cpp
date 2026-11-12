@@ -44,30 +44,44 @@ rhi::DeviceType toRhi(Backend backend) {
     return rhi::DeviceType::Default;
 }
 
-std::vector<Backend> platformPreference() {
+}   // namespace
+
+std::vector<Backend> platformPreference(DevicePurpose purpose) {
 #if defined(ATHENEA_GPE_VULKAN)
     // gpe built for Vulkan: the render device has to be the one gpe can
     // share, and on Vulkan a bake traces with compute and ray queries instead
     // of an OptiX pipeline. Metal stays a Mac's first answer.
+    (void)purpose;
 #if defined(__APPLE__)
     return {Backend::Metal, Backend::Vulkan};
 #else
     return {Backend::Vulkan, Backend::CUDA};
 #endif
 #elif defined(__APPLE__)
+    (void)purpose;
     return {Backend::Metal};
+#elif defined(_WIN32)
+    // To draw, Vulkan first: CUDA has no inline ray query (Slang has no
+    // RayQuery for the CUDA target, and OptiX traces only from its own
+    // programs), so on CUDA the path tracer takes the OptiX pipeline route,
+    // twice Vulkan's time on the Cornell box for the same image
+    // (docs/decisions.md, "Vulkan first on Windows"). CUDA stays a setting
+    // (ATHENEA_BACKEND=cuda, athenea --backend cuda) and is first for a
+    // device gpe or NVENC/NVDEC share, whose backend it is.
+    if (purpose == DevicePurpose::Shared) {
+        return {Backend::CUDA, Backend::Vulkan, Backend::D3D12};
+    }
+    return {Backend::Vulkan, Backend::CUDA, Backend::D3D12};
 #else
-    // CUDA first, on Windows as on Linux: it is the backend gpe shares, so the
-    // render device and the compute engine are one device, and its ray tracing
-    // is OptiX. Vulkan (and D3D12 on Windows) is the answer for a machine
-    // without an NVIDIA card, where gpe has no backend at all.
-#if defined(_WIN32)
-    return {Backend::CUDA, Backend::D3D12, Backend::Vulkan};
-#else
+    // CUDA first on Linux: the backend gpe shares, so the render device and
+    // the compute engine are one device, and its ray tracing is OptiX. Vulkan
+    // is the answer for a machine without an NVIDIA card.
+    (void)purpose;
     return {Backend::CUDA, Backend::Vulkan};
 #endif
-#endif
 }
+
+namespace {
 
 /// Messages from slang-rhi's validation and the drivers, into the engine log.
 class DebugLog final : public rhi::IDebugCallback {
@@ -181,7 +195,7 @@ std::filesystem::path shaderDirectory() {
 }
 
 Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
-    std::vector<Backend> order = desc.backends.empty() ? platformPreference() : desc.backends;
+    std::vector<Backend> order = desc.backends.empty() ? platformPreference(desc.purpose) : desc.backends;
     // ATHENEA_BACKEND=cuda|vulkan|metal|d3d12 (a comma-separated order) chooses
     // for a whole run what a caller left to the platform: how one suite is
     // run once a backend at a time.

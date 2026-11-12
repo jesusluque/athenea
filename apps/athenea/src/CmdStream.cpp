@@ -178,7 +178,7 @@ void addStream(CLI::App& app) {
             throw CLI::RuntimeError(kExitFailure);
         }
         const bool isVideo = fs::path(o->pages).extension() == ".athv";
-        auto device = gpu::Device::create();
+        auto device = gpu::Device::create({.purpose = gpu::DevicePurpose::Shared});   // NVENC/NVDEC share CUDA
         if (!device) cli::fail(device.error());
         gpu::ShaderLibrary library(*device);
         // A video: its frames' time codes and sizes from the file's records;

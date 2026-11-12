@@ -8,6 +8,15 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **Windows: Vulkan draws by default.** `render`, `bench`, `stage`, `view`,
+  `lights` and the Hydra delegate open Vulkan, then CUDA, then D3D12: Vulkan
+  has inline ray queries, and the path tracer took half CUDA's time on the
+  Cornell box with the same image. Commands whose device gpe or the NVIDIA
+  codecs share (`aofx`, `compare`, `mesh2splat`, `vdb2splat`, `flatten`,
+  `lightmap`, `video-*`, `stream`) still open CUDA first. CUDA is the
+  compatibility setting: `ATHENEA_BACKEND=cuda`, or the new
+  `athenea --backend cuda` before the subcommand. `athenea info --backend`
+  takes `d3d12` too.
 - **video-encode**: with geometry in the video (`--geometry-video`), a frame
   is cut into slices by the planes it really has: the check that a whole
   frame fits one picture counted the plain layout's planes (14 at degree 0

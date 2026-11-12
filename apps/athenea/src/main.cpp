@@ -3,6 +3,7 @@
 // athenea: the engine from a terminal. Headless but for `athenea view` -- a render node
 // has no window, and nothing else here opens one.
 #include <filesystem>
+#include <string>
 #include <system_error>
 
 #include <CLI/CLI.hpp>
@@ -30,9 +31,19 @@ int main(int argc, char** argv) {
     app.require_subcommand(1);
     bool verbose = false;
     app.add_flag("-v,--verbose", verbose, "debug logging");
-    app.parse_complete_callback([&verbose] {
+    // The run's GPU backend, as ATHENEA_BACKEND names it (which it sets, so
+    // every device the command opens follows it): cuda is Windows'
+    // compatibility setting now that Vulkan draws there by default.
+    std::string backend;
+    app.add_option("--backend", backend,
+                   "the GPU backend, or a comma-separated order: metal | cuda | vulkan | d3d12 "
+                   "(default: the platform's; sets ATHENEA_BACKEND)");
+    app.parse_complete_callback([&verbose, &backend] {
         if (verbose) {
             athenea::log::setMinimum(athenea::log::Level::Debug);
+        }
+        if (!backend.empty()) {
+            athenea::platform::setEnv("ATHENEA_BACKEND", backend);
         }
     });
 

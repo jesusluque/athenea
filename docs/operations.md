@@ -107,10 +107,18 @@ Everything here is found at configure time, and the effect is felt at run time.
 ### 1.4 Metal and CUDA
 
 The engine opens one device and keeps it. On macOS that is Metal; on Linux it
-is CUDA where a CUDA device is present, else Vulkan (and on Windows CUDA, then
-D3D12, then Vulkan). A build whose gpe is Vulkan's (`GPE_BACKEND_WANTED=Vulkan`)
-tries Vulkan first instead, since AOFX effects -- `mesh2splat` among them --
-run only on the device gpe shares. `ATHENEA_BACKEND` overrides the order.
+is CUDA where a CUDA device is present, else Vulkan. On Windows a command that
+draws -- `render`, `bench`, `stage`, `view`, `lights`, the Hydra delegate in
+Blender and usdview -- opens Vulkan, then CUDA, then D3D12: CUDA has no inline
+ray queries, and the path tracer on it takes the slower OptiX pipeline route
+(`docs/decisions.md`, "Vulkan first on Windows"). A command whose device gpe or
+the NVIDIA codecs share -- `aofx`, `compare`, `mesh2splat`, `vdb2splat`,
+`flatten`, `lightmap`, `video-*`, `stream` -- opens CUDA, then Vulkan, then
+D3D12, since AOFX effects run only on the device gpe shares and NVENC and NVDEC
+take CUDA's. A build whose gpe is Vulkan's (`GPE_BACKEND_WANTED=Vulkan`) tries
+Vulkan first for both. `ATHENEA_BACKEND`, or `athenea --backend` before the
+subcommand, overrides the order for every device the run opens: on Windows,
+`--backend cuda` is the compatibility setting that draws on CUDA as 0.5.0 did.
 
 What differs between them, in practice:
 
@@ -143,11 +151,12 @@ and half its streaming budget), up to four. Each step is a warning naming
 what it gave up. Only a frame that still fails is the command's error.
 
 `-v` (or `--verbose`) before the subcommand turns on debug logging, which goes
-to stderr as well.
+to stderr as well. `--backend <order>` before the subcommand sets
+`ATHENEA_BACKEND` for the run (§1.4).
 
 ## 2. The command line
 
-An invocation is `athenea [-v] <subcommand> [options]`. Every subcommand is listed
+An invocation is `athenea [-v] [--backend <order>] <subcommand> [options]`. Every subcommand is listed
 below with its full option table.
 
 ### 2.1 `athenea info` — the device, and what it can do
@@ -158,7 +167,7 @@ own, and the tag `vX.Y.Z` the build came from when it came from a release
 
 | Option | Value | Default | Notes |
 |---|---|---|---|
-| `--backend` | `metal` \| `cuda` \| `vulkan` | the platform's preference | one backend, not a list |
+| `--backend` | `metal` \| `cuda` \| `vulkan` \| `d3d12` | the platform's preference | one backend, not a list |
 
 Prints the backend and adapter, whether it rasterises, traces rays by pipeline
 and by ray query, whether it has timestamps, half and unified memory, the

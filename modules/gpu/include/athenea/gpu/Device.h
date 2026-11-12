@@ -38,11 +38,30 @@ enum class Backend { Metal, CUDA, Vulkan, D3D12 };
 
 [[nodiscard]] const char* toString(Backend) noexcept;
 
+enum class DevicePurpose;
+
+/// The order a device is opened in when nothing names one: Metal on Apple;
+/// CUDA then Vulkan on Linux; on Windows Vulkan, CUDA, D3D12 to draw and
+/// CUDA, Vulkan, D3D12 for a device gpe or the codecs share.
+[[nodiscard]] std::vector<Backend> platformPreference(DevicePurpose purpose);
+
+/// What a device is opened for, which decides the platform's preference when
+/// a caller names no backend.
+enum class DevicePurpose {
+    /// Drawing: a frame, a stage, a viewer, a host's render delegate. On
+    /// Windows Vulkan first, for its inline ray queries (CUDA has none).
+    Render,
+    /// A device other libraries take as theirs: gpe (the AOFX effects) and the
+    /// NVIDIA codecs share CUDA's context, so CUDA comes first where it is.
+    Shared,
+};
+
 struct DeviceDesc {
-    /// Empty means the platform's preference: Metal on Apple, CUDA then Vulkan
-    /// on Linux, D3D12 then Vulkan on Windows. There is no CPU entry and there
-    /// never will be.
+    /// Empty means the platform's preference for `purpose`
+    /// (`platformPreference`), unless ATHENEA_BACKEND names an order. There is
+    /// no CPU entry and there never will be.
     std::vector<Backend> backends;
+    DevicePurpose        purpose = DevicePurpose::Render;
     /// slang-rhi's own validation layer. Slow; for tests and debugging.
     bool validation = false;
     /// Extra directories searched for `import`ed Slang modules, after the

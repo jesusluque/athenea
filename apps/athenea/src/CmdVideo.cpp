@@ -1234,7 +1234,7 @@ void addVideo(CLI::App& app) {
             first = a;
             last = b;
         }
-        auto device = gpu::Device::create();
+        auto device = gpu::Device::create({.purpose = gpu::DevicePurpose::Shared});   // NVENC/NVDEC share CUDA
         if (!device) cli::fail(device.error());
         gpu::ShaderLibrary library(*device);
         auto loader = scene::CloudLoader::create(library);
@@ -1839,7 +1839,7 @@ void addVideo(CLI::App& app) {
     flick->add_option("--rect", fl->rect, "X0 Y0 X1 Y1: only these pixels (top row 0, x1 and y1 past the last)")
         ->expected(4);
     flick->callback([fl] {
-        auto device = gpu::Device::create();
+        auto device = gpu::Device::create({.purpose = gpu::DevicePurpose::Shared});   // NVENC/NVDEC share CUDA
         if (!device) cli::fail(device.error());
         gpu::ShaderLibrary library(*device);
         auto kernel = gpu::ComputeKernel::create(library, "athenea/scene/video_flicker", "videoFlicker");
@@ -1943,7 +1943,7 @@ void addVideo(CLI::App& app) {
         auto reader = video::AthvReader::open(d->input);
         if (!reader) cli::fail(reader.error());
         const video::AthvHeader& h = (*reader)->header();
-        auto device = gpu::Device::create();
+        auto device = gpu::Device::create({.purpose = gpu::DevicePurpose::Shared});   // NVENC/NVDEC share CUDA
         if (!device) cli::fail(device.error());
         gpu::ShaderLibrary library(*device);
         auto codec = video::PlanesCodec::create(library);

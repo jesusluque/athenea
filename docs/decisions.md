@@ -20326,3 +20326,42 @@ passes (half draws what float draws, p99 0).
   the program and on `PATH`, not beside NVRTC: `athenea.exe` has the builtins
   in its own folder, Blender does not. The engine now puts the package's
   `bin` first on `PATH` when it points `CUDA_PATH` at it.
+
+## Vulkan first on Windows (12 Nov)
+
+**What changed.** On Windows a device opened to draw -- `render`, `bench`,
+`stage`, `view`, `lights`, the Hydra delegate -- tries Vulkan, then CUDA, then
+D3D12; it tried CUDA first. A device that gpe or the NVIDIA codecs share keeps
+CUDA first (`gpu::DevicePurpose::Shared`): `gpu_host::Context` asks for it, so
+`aofx`, `compare`, `mesh2splat`, `vdb2splat`, `flatten` and `lightmap` open
+CUDA as before, and so do `video-*` and `stream`, whose NVENC and NVDEC take
+CUDA's context. CUDA stays a setting: `ATHENEA_BACKEND=cuda`, or
+`athenea --backend cuda` before the subcommand, which sets it for the run.
+Linux keeps CUDA first.
+
+**Why.** CUDA has no inline ray query: Slang has no `RayQuery` for the CUDA
+target and OptiX traces only from its own programs, so the path tracer on CUDA
+takes the OptiX pipeline route. Vulkan traces inline. Measured with the 0.5.0
+package on an RTX 3070 Laptop (Windows), the Cornell box exported by Blender
+5.3, 360x360, 64 paths a pixel in passes of 16, 8 bounces, denoised; two runs
+each with the shader cache warm:
+
+| Backend | Path tracer | Raster | Notes |
+|---|---|---|---|
+| CUDA (OptiX pipeline) | 20.1 / 20.8 s | 4.9 s | |
+| Vulkan (ray query) | 54.8 (cold) / 10.1 s | 4.9 s warm, 17.9 s cold | the same image: PSNR 58.6 dB, SSIM 0.9999 against CUDA's |
+| D3D12 (ray query) | fails | 4.9 s | `OutOfMemory: cannot allocate buffer 'emissive.table' (204 bytes)` |
+
+So Vulkan halves the path tracer's time on this frame and gives the frame
+CUDA gives. The same frame at 720x720, 512 paths a pixel, took 1687 s on CUDA
+against 9 s in Cycles (OptiX, same card): the factor two does not close that
+gap, which is the path tracer's own and is not this change's.
+
+**Not done, found on the way.**
+- D3D12 is not the default although it has ray queries too: its path tracer
+  fails on a tiny buffer (above), it has no denoiser, and on the lights scene
+  (point, spot, rect and sun) a path traced frame ran 11 minutes with the GPU
+  at 0 % and `nvidia-smi` not answering until the process was killed.
+- On Vulkan, the textures scene (an HDRI dome, a sun, image textures and a
+  normal map; 960x540, 128 paths) had not finished after 22 minutes when the
+  machine restarted for an update; not yet explained.

@@ -73,7 +73,12 @@ Context::~Context() {
 }
 
 Result<std::unique_ptr<Context>> Context::create(const ContextDesc& desc) {
-    auto device = gpu::Device::create(desc.device);
+    // gpe adopts the device or there are no effects: where a platform draws
+    // on one backend and gpe has another (Windows: Vulkan to draw, gpe on
+    // CUDA), the context asks for gpe's.
+    gpu::DeviceDesc deviceDesc = desc.device;
+    deviceDesc.purpose = gpu::DevicePurpose::Shared;
+    auto device = gpu::Device::create(deviceDesc);
     if (!device) {
         return std::move(device).error();
     }

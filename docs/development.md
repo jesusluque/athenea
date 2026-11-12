@@ -379,7 +379,10 @@ written out by `ATHENEA_SHADER_DUMP=<dir>`, and compile with `slangc -I shaders 
 | `HDX_MSAA_SAMPLE_COUNT` | must be `1` for the Storm oracle; ctest sets it, and the test fails with an explanation if it is not |
 
 `ATHENEA_BACKEND` runs the whole suite on one backend: `cuda`, `vulkan`, `metal`,
-`d3d12`.
+`d3d12`. Without it a test's device is the platform's drawing order, which on
+Windows starts with Vulkan; a device that gpe or the NVIDIA codecs will share
+is asked for with `gpu::DevicePurpose::Shared` (CUDA first there), as
+`gpu_host::Context` and the video commands do.
 
 ### 3.4 A release
 

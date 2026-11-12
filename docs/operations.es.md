@@ -108,11 +108,20 @@ lo que ve.
 ### 1.4 Metal y CUDA
 
 El motor abre un dispositivo y lo conserva. En macOS es Metal; en Linux es
-CUDA donde hay un dispositivo CUDA, y Vulkan si no (y en Windows CUDA, luego
-D3D12, luego Vulkan). Un build cuyo gpe es el de Vulkan
-(`GPE_BACKEND_WANTED=Vulkan`) prueba Vulkan primero, porque los efectos AOFX
--- `mesh2splat` entre ellos -- sólo corren en el dispositivo que gpe comparte.
-`ATHENEA_BACKEND` manda sobre ese orden.
+CUDA donde hay un dispositivo CUDA, y Vulkan si no. En Windows un comando que
+dibuja -- `render`, `bench`, `stage`, `view`, `lights`, el delegado de Hydra
+en Blender y en usdview -- abre Vulkan, luego CUDA, luego D3D12: CUDA no tiene
+ray queries en línea, y el path tracer toma en él la ruta más lenta del
+pipeline de OptiX (`docs/decisions.md`, "Vulkan first on Windows"). Un comando
+cuyo dispositivo comparten gpe o los códecs de NVIDIA -- `aofx`, `compare`,
+`mesh2splat`, `vdb2splat`, `flatten`, `lightmap`, `video-*`, `stream` -- abre
+CUDA, luego Vulkan, luego D3D12, porque los efectos AOFX sólo corren en el
+dispositivo que gpe comparte y NVENC y NVDEC toman el de CUDA. Un build cuyo
+gpe es el de Vulkan (`GPE_BACKEND_WANTED=Vulkan`) prueba Vulkan primero en los
+dos casos. `ATHENEA_BACKEND`, o `athenea --backend` antes del subcomando, manda
+sobre ese orden en todos los dispositivos que abre la ejecución: en Windows,
+`--backend cuda` es el ajuste de compatibilidad que dibuja en CUDA como hacía
+la 0.5.0.
 
 Lo que cambia entre ellos, en la práctica:
 
@@ -147,11 +156,12 @@ mitad de su presupuesto), hasta cuatro. Cada paso es un aviso que nombra a qué
 renunció. Solo un frame que sigue fallando es el error del comando.
 
 `-v` (o `--verbose`) antes del subcomando enciende el log de depuración, que
-también va a stderr.
+también va a stderr. `--backend <orden>` antes del subcomando fija
+`ATHENEA_BACKEND` para la ejecución (§1.4).
 
 ## 2. La línea de comandos
 
-Una invocación es `athenea [-v] <subcomando> [opciones]`. Cada subcomando está
+Una invocación es `athenea [-v] [--backend <orden>] <subcomando> [opciones]`. Cada subcomando está
 abajo con su tabla completa.
 
 ### 2.1 `athenea info` — el dispositivo, y qué sabe hacer
@@ -162,7 +172,7 @@ versión publicada (`CHANGELOG.md`).
 
 | Opción | Valor | Por defecto | Notas |
 |---|---|---|---|
-| `--backend` | `metal` \| `cuda` \| `vulkan` | la preferencia de la plataforma | un backend, no una lista |
+| `--backend` | `metal` \| `cuda` \| `vulkan` \| `d3d12` | la preferencia de la plataforma | un backend, no una lista |
 
 Imprime el backend y la tarjeta, si rasteriza, si traza rayos por pipeline y
 por ray query, si tiene timestamps, medias y memoria unificada, la versión de

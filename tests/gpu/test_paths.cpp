@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <random>
 #include <string>
+#include <vector>
 
 using namespace athenea;
 
@@ -69,4 +70,32 @@ TEST_CASE("a shaders directory without the engine's tree is not the engine's", "
     const auto deep = tree.make("app/a/b/c/d");
     const std::filesystem::path starts[] = {tree.make("app/MacOS"), deep};
     CHECK(gpu::findShaderDirectory(starts).empty());
+}
+
+TEST_CASE("the platform's backend order: Vulkan draws on Windows, CUDA is shared", "[gpu][paths][backend]") {
+    using gpu::Backend;
+    using gpu::DevicePurpose;
+    const std::vector<Backend> render = gpu::platformPreference(DevicePurpose::Render);
+    const std::vector<Backend> shared = gpu::platformPreference(DevicePurpose::Shared);
+    REQUIRE(!render.empty());
+    REQUIRE(!shared.empty());
+#if defined(__APPLE__)
+    CHECK(render.front() == Backend::Metal);
+    CHECK(shared == render);
+#else
+    if (shared.front() == Backend::Vulkan) {
+        // A build whose gpe is Vulkan's (ATHENEA_GPE_VULKAN): one order for both.
+        CHECK(render == shared);
+    } else {
+#if defined(_WIN32)
+        // Vulkan traces inline; CUDA, the compatibility setting, is what gpe
+        // and the NVIDIA codecs share.
+        CHECK(render == std::vector<Backend>{Backend::Vulkan, Backend::CUDA, Backend::D3D12});
+        CHECK(shared == std::vector<Backend>{Backend::CUDA, Backend::Vulkan, Backend::D3D12});
+#else
+        CHECK(render == std::vector<Backend>{Backend::CUDA, Backend::Vulkan});
+        CHECK(shared == render);
+#endif
+    }
+#endif
 }
