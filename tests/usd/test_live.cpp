@@ -9,6 +9,7 @@
 
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -203,7 +204,7 @@ TEST_CASE("a live stream a stage names is drawn through Hydra a whole epoch at a
     CHECK(mismatched == 0);
     CHECK(ordered);
     CHECK(last == kEpochs);
-    CHECK(__builtin_popcount(seen) >= 3);
+    CHECK(std::popcount(seen) >= 3);
     // Once an epoch is shown, its pages' bounds: the last leaves chunk
     // kEpochs % 3 = 2 out, so chunks 0 and 1, from (0, 0, 0) to (2, 1, 1).
     auto bounds = (*renderer)->bounds();
