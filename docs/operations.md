@@ -394,6 +394,7 @@ athenea neural-scene info   hall.aths
 | `fit` | each piece's harmonics learnt by a latent a gaussian and the piece's own network, a piece at a time; writes `pieces/<id>.athn` and the measures into the manifest after each piece, so a fit that stops keeps the pieces it finished |
 | `render` | every piece from one view, each by its appearance where it has one and by its harmonics where it has none |
 | `look` | one camera's look at one time: the frame is drawn and every gaussian that gave it something is found, stamped with this look where no look had seen it. Writes `pieces/<id>.seen` and the look into the manifest's `snapshots`, and prints how many gaussians it saw, how many were new and how many the scene already held |
+| `discover` | a piece made from a frame: any renderer's frame through a known camera, an EXR with `R`, `G`, `B` and its view depth as `Z`, becomes a gaussian a pixel -- a disc in the pixel's surface, in the world -- for every pixel whose surface the scene, drawn through that camera, does not already hold. Writes `pieces/<id>.ply`, the piece (`origin` discovered) and the look's snapshot; prints how much of the frame the scene already held, and the scene through that camera against the frame. It makes the scene where there is none |
 | `info` | the manifest, read; no device |
 
 | Option | Of | Value | Default | Notes |
@@ -416,6 +417,11 @@ athenea neural-scene info   hall.aths
 | `--discovered` | `render` | flag | off | only the gaussians the looks have found: the scene as it is known. A piece no look has been taken of is not drawn |
 | `--up-to` | `render` | integer | `0` | `--discovered`: only the looks up to this one, counted from one in the order of `snapshots`; `0` is all of them |
 | `--camera`, `--time` | `look` | name, number | —, — | a view of the manifest's and when; the pair is the look's snapshot, and a look taken again is the same one |
+| `--frame` | `discover` | path | — | the frame: an EXR with `R`, `G`, `B` (linear light) and `Z`, the depth along the view; its size is the look's |
+| `--id`, `--camera`, `--time` | `discover` | | —, —, — | the new piece's name, the view the frame was drawn through and when. The view is one of the manifest's, or `--eye`, `--target`, `--up`, `--focal` kept under that name; the focal length is over a 24.576 mm aperture, as `athenea stage`'s |
+| `--tolerance` | `discover` | share | `0.03` | a pixel's surface is already held where the scene's depth through that camera is within this share of the frame's |
+| `--spread` | `discover` | pixels | `0.8` | a gaussian's standard deviation, in pixels at its own depth; half that at a surface's rim. Wider closes the gaps between gaussians and paints past silhouettes |
+| `--name`, `--up-axis`, `--meters-per-unit`, `--source`, `--licence` | `discover` | | | the scene's own, as `add`'s |
 | `--threshold` | `look` | pixels | `0.05` | how much a gaussian gives the frame to count as seen: its blending weight summed over its pixels |
 | `--compare` | `render` | flag | off | both ways: the latents against the harmonics (`athenea compare`'s measures) and a frame's time by each, the least of twelve |
 | `-o`, `--output` | `render` | path | — | an EXR; with `--compare`, `<stem>_harmonics.exr` and `<stem>_latents.exr` |

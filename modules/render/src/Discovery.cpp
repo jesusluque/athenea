@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 
+#include "aofx/Transform.h"
 #include "athenea/gpu/Device.h"
 
 namespace athenea::render {
@@ -34,6 +35,17 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(d.mark_, "discoverMark"));
     ATHENEA_TRY(make(d.count_, "discoverCount"));
     ATHENEA_TRY(make(d.mask_, "discoverMask"));
+    {
+        auto valid = gpu::ComputeKernel::create(library, "athenea/neural/scene_frame", "frameValid");
+        if (!valid) return std::move(valid).error();
+        d.frameValid_ = std::move(*valid);
+        auto pack = gpu::ComputeKernel::create(library, "athenea/neural/scene_frame", "framePack");
+        if (!pack) return std::move(pack).error();
+        d.framePack_ = std::move(*pack);
+        auto prefix = gpu::PrefixSum::create(library);
+        if (!prefix) return std::move(prefix).error();
+        d.prefix_.emplace(std::move(*prefix));
+    }
     auto counters = words(library.device(), 4, 4, "discover.counters");
     if (!counters) return std::move(counters).error();
     d.counters_ = *counters;
@@ -112,6 +124,91 @@ Result<uint32_t> Discovery::known(const gpu::Buffer& seen, uint32_t count, uint3
     std::array<uint32_t, 4> read{};
     ATHENEA_TRY(counters_.read(device, 0, sizeof(read), read.data()));
     return read[2];
+}
+
+Result<FrameLook> Discovery::fromFrame(const gpu::Buffer& colour, const gpu::Buffer& depth, uint32_t width,
+                                       uint32_t height, const Projection& projection, const gpu::Buffer* knownColour,
+                                       const gpu::Buffer* knownDepth, float tolerance, float spread) {
+    gpu::Device& device = library_->device();
+    const uint32_t pixels = width * height;
+    auto valid = words(device, pixels, 4, "frame.valid");
+    if (!valid) return std::move(valid).error();
+    auto dest = words(device, pixels, 4, "frame.dest");
+    if (!dest) return std::move(dest).error();
+    auto total = words(device, 4, 4, "frame.total");
+    if (!total) return std::move(total).error();
+    gpu::Buffer records = spareFloats_;
+    const bool hasKnown = knownColour != nullptr && knownDepth != nullptr;
+    const Mat4 viewToWorld = aofx::xform::inverseAffine(projection.worldToView);
+    // Every name the module declares; a dispatch reads the few it uses.
+    const auto bindFrame = [&](rhi::ShaderCursor cursor) {
+        cursor["colour"].setBinding(colour.rhi());
+        cursor["depth"].setBinding(depth.rhi());
+        cursor["knownColour"].setBinding(hasKnown ? knownColour->rhi() : colour.rhi());
+        cursor["knownDepth"].setBinding(hasKnown ? knownDepth->rhi() : depth.rhi());
+        cursor["valid"].setBinding(spareWords_.rhi());
+        cursor["validRead"].setBinding(valid->rhi());
+        cursor["dest"].setBinding(dest->rhi());
+        cursor["records"].setBinding(records.rhi());
+        cursor["counters"].setBinding(counters_.rhi());
+        rhi::ShaderCursor p = cursor["params"];
+        p["width"].setData(width);
+        p["height"].setData(height);
+        p["focalX"].setData(static_cast<float>(projection.focalX));
+        p["focalY"].setData(static_cast<float>(projection.focalY));
+        p["centreX"].setData(static_cast<float>(projection.centreX));
+        p["centreY"].setData(static_cast<float>(projection.centreY));
+        p["tolerance"].setData(tolerance);
+        p["spread"].setData(spread);
+        static const char* const kRows[12] = {"r0x", "r0y", "r0z", "r0w", "r1x", "r1y",
+                                              "r1z", "r1w", "r2x", "r2y", "r2z", "r2w"};
+        for (int k = 0; k < 12; ++k) {
+            p[kRows[k]].setData(static_cast<float>(viewToWorld.at(k / 4, k % 4)));
+        }
+        p["hasKnown"].setData(uint32_t{hasKnown ? 1u : 0u});
+    };
+    {
+        gpu::CommandBatch batch(device);
+        clear_.dispatch(batch, {4, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            bind(cursor);
+            cursor["cleared"].setBinding(counters_.rhi());
+            cursor["counters"].setBinding(spareWords_.rhi());
+            cursor["params"]["count"].setData(uint32_t{4});
+        });
+        frameValid_.dispatch(batch, {width, height, 1}, [&](rhi::ShaderCursor cursor) {
+            bindFrame(cursor);
+            cursor["valid"].setBinding(valid->rhi());
+            cursor["validRead"].setBinding(spareWords_.rhi());
+        });
+        ATHENEA_TRY(prefix_->apply(batch, *valid, *dest, *total, pixels));
+        ATHENEA_TRY(batch.submit(true));
+    }
+    FrameLook look;
+    std::array<uint32_t, 4> read{};
+    ATHENEA_TRY(counters_.read(device, 0, sizeof(read), read.data()));
+    look.surfaces = read[0];
+    look.held = read[1];
+    ATHENEA_TRY(total->read(device, 0, sizeof(look.made), &look.made));
+    if (look.made == 0) {
+        return look;
+    }
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{look.made} * kFrameRecord * sizeof(float);
+    desc.elementBytes = sizeof(float);
+    desc.label = "frame.records";
+    auto held = gpu::Buffer::create(device, desc);
+    if (!held) return std::move(held).error();
+    records = *held;
+    {
+        gpu::CommandBatch batch(device);
+        framePack_.dispatch(batch, {width, height, 1}, bindFrame);
+        ATHENEA_TRY(batch.submit(true));
+    }
+    auto floats = records.readAll<float>(device);
+    if (!floats) return std::move(floats).error();
+    floats->resize(size_t{look.made} * kFrameRecord);
+    look.records = std::move(*floats);
+    return look;
 }
 
 Result<scene::GpuSplats> Discovery::masked(const scene::GpuSplats& cloud, const gpu::Buffer& seen, uint32_t upTo) {

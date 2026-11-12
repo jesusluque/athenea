@@ -21209,3 +21209,61 @@ at 19 cm a gaussian, and with no bake they are albedo with no light.
 - What is not known, written for another system to fill: today it is the zeros of a `.seen`.
 - Sponza's ground floor (`mesh2splat` stops with "the output picture is on the heap, not on the device" on its
   first mesh, twice, while two floors with the same material convert), a bake, and a density worth looking at.
+
+## Gaussians made from a frame: a render as a discovery of the scene (12 Nov)
+
+The section before this one takes looks at a scene that was converted whole. This is the step it listed first as
+not done: the scene made from the look. `athenea neural-scene discover` takes a frame -- any renderer's, an EXR
+with its colour and its view depth, through a camera that is known -- and leaves a piece of gaussians, one a pixel
+(`Discovery::fromFrame`, `shaders/athenea/neural/scene_frame.slang`): where the pixel's surface is in the world, a
+disc lying in that surface (its normal from its neighbours' depths, where the surface goes on to them) as wide as
+the pixel is at its depth and a tenth as thick, the pixel's colour as its first harmonic. No geometry is
+converted, and what made the frame is not asked.
+
+A later frame adds only what the scene does not hold. The scene as it stands is drawn through the new frame's
+camera, and a pixel whose surface it already has within 3% of the frame's depth makes nothing; which pixels make
+one is a mask, a prefix sum and a pack, all on the device. The piece is written as a 3DGS PLY (62 floats a
+gaussian, 128 MB a frame of 960 x 540), `origin` discovered, with its camera and its time, and the look goes into
+the scene's snapshots.
+
+The clay pawn's own frames (the engine's rasteriser, 960 x 540), from nothing, CUDA:
+
+| frame | pixels with a surface | the scene already held | gaussians made |
+|---|---|---|---|
+| from the front | 189 563 | 0% | 189 563 |
+| the same frame again | 189 563 | 98.7% | 2 427 |
+| from the side | 185 456 | 70.1% | 55 434 |
+| from behind | 189 563 | 76.5% | 44 515 |
+
+Intel's Sponza, the whole mesh path traced by `athenea stage` (128 paths, denoised, a sun and a sky, 960 x 540, a
+minute a frame), Metal -- a building that could not be converted on this machine tonight, found from four frames:
+
+| frame | the scene already held | gaussians made | the scene through its camera against the frame |
+|---|---|---|---|
+| down the atrium | 0% | 518 400 | relMSE 0.0198, p99 164 |
+| five metres on | 65.8% | 177 118 | 0.0145, 121 |
+| turned round | 7.1% | 481 441 | 0.0200, 158 |
+| to one side | 44.3% | 288 490 | 0.0272, 172 |
+
+1 465 449 gaussians, and from a camera that took no look the building stands where the looks saw it and is black
+where none did.
+
+What the measures say and do not. Pixel for pixel the scene made from a frame has the frame's depth and, where it
+is covered, its colour; what is off is the cover (0.90 to 0.99 inside a surface at a standard deviation of 0.7
+pixels, so the frame comes back a tenth darker) and a line a pixel wide at every silhouette, which is most of a
+p99 of 100 to 170 code values and of a PSNR of 29 dB. Wider discs close the cover and paint past the silhouettes
+(relMSE 0.050 at 0.8 pixels, 0.096 at 1.0, 0.161 at 1.2, the rim's discs already halved); 0.8 is kept. "Already
+held" is by depth alone: a surface that is where it was and has changed colour counts as held.
+
+### Not done
+
+- What turns with the eye. A gaussian holds the colour one camera saw, so a highlight is painted where that camera
+  saw it. Fitting the pieces' appearance to several frames is what the neural appearance is for, and wants every
+  piece in a frame at once.
+- A held surface checked for having changed, and replaced where it has.
+- The rim: gaussians for the partly covered pixels of a silhouette, and a cover that reaches one without spill.
+- One gaussian a pixel whatever the surface: a wall a metre away and one thirty metres away get the same count a
+  frame, and looks that overlap at different distances keep the first's density.
+- A lighter piece on disk than a PLY's 62 floats for gaussians that use 14.
+- Depth that is not the view's (a renderer that writes distance along the ray), and frames with no depth at all,
+  which is where a depth model would stand.

@@ -7,6 +7,7 @@
 //   fit     each piece's harmonics learnt by its own latents and network
 //   render  the whole scene from a view, by the latents or by the harmonics
 //   look    one camera's look at one time: which gaussians it found
+//   discover a piece made from a frame: a gaussian a pixel the scene did not hold
 //   info    what the manifest holds
 //
 // A piece is fitted alone -- its cloud, its appearance, the device's memory
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -31,6 +33,7 @@
 #include "athenea/io/Exr.h"
 #include "athenea/io/NeuralFile.h"
 #include "athenea/io/NeuralScene.h"
+#include "athenea/io/SplatWriters.h"
 #include "athenea/render/Discovery.h"
 #include "athenea/render/NeuralAppearance.h"
 #include "athenea/render/NeuralFit.h"
@@ -77,6 +80,9 @@ struct SceneOptions {
     bool                     discovered = false;
     unsigned                 upTo = 0;
     float                    threshold = 0.05F;
+    std::string              frame;
+    float                    tolerance = 0.03F;
+    float                    spread = 0.8F;
 };
 
 bool sizeOf(const std::string& text, uint32_t& width, uint32_t& height) {
@@ -568,6 +574,178 @@ int runLook(const SceneOptions& o) {
     return 0;
 }
 
+/// A PIECE MADE FROM A FRAME. Any renderer's frame -- its colour, and its depth as an EXR's Z -- through a
+/// camera of the manifest's: a gaussian a pixel whose surface the scene, drawn through that camera, does
+/// not already hold. The frame's own size is the look's.
+int runDiscover(const SceneOptions& o) {
+    const std::filesystem::path directory = o.directory;
+    io::NeuralScene scene;
+    if (std::filesystem::exists(directory / "scene.json")) {
+        auto read = io::readNeuralScene(directory);
+        if (!read) return report(read.error());
+        scene = std::move(*read);
+    }
+    // A scene that starts with a look has nothing but what the look's command says of it.
+    if (scene.name.empty()) scene.name = directory.stem().string();
+    if (!o.name.empty()) scene.name = o.name;
+    if (!o.upAxis.empty()) scene.upAxis = o.upAxis;
+    if (o.metersPerUnit > 0.0) scene.metersPerUnit = o.metersPerUnit;
+    if (!o.source.empty()) scene.source = o.source;
+    if (!o.licence.empty()) scene.licence = o.licence;
+    if (o.eye.size() == 3 && o.target.size() == 3 && !o.camera.empty()) {
+        // A view of the look's own is kept under the name it was given.
+        io::NeuralSceneCamera named;
+        named.name = o.camera;
+        named.eye = {o.eye[0], o.eye[1], o.eye[2]};
+        named.target = {o.target[0], o.target[1], o.target[2]};
+        const render::Vec3 up = o.up.size() == 3 ? render::Vec3{o.up[0], o.up[1], o.up[2]} : upOf(scene);
+        named.up = {up.x, up.y, up.z};
+        named.focal = o.focal > 0.0 ? o.focal : 35.0;
+        std::erase_if(scene.cameras, [&](const io::NeuralSceneCamera& c) { return c.name == named.name; });
+        scene.cameras.push_back(named);
+    }
+    if (o.frame.empty() || o.id.empty() || o.camera.empty() || o.time < 0.0) {
+        err("a discovery wants --frame (an EXR with Z), --id, --camera (one of the manifest's) and --time\n");
+        return kExitFailure;
+    }
+    if (scene.piece(o.id) != nullptr) {
+        err("the scene already has a piece %s: a look's piece is its own\n", o.id.c_str());
+        return kExitFailure;
+    }
+    const auto camera = viewOf(o, scene);
+    if (!camera) return kExitFailure;
+    auto channels = io::readExrChannels(o.frame);
+    if (!channels) return report(channels.error());
+    const uint32_t width = channels->width;
+    const uint32_t height = channels->height;
+    const auto channel = [&](const char* name) -> const io::ExrChannelData* {
+        for (const io::ExrChannelData& c : channels->channels) {
+            if (c.name == name) {
+                return &c;
+            }
+        }
+        return nullptr;
+    };
+    const io::ExrChannelData* red = channel("R");
+    const io::ExrChannelData* green = channel("G");
+    const io::ExrChannelData* blue = channel("B");
+    const io::ExrChannelData* alpha = channel("A");
+    const io::ExrChannelData* z = channel("Z");
+    if (red == nullptr || green == nullptr || blue == nullptr || z == nullptr) {
+        err("%s wants R, G, B and Z: a frame with its depth\n", o.frame.c_str());
+        return kExitFailure;
+    }
+    // The channels laid side by side as the device takes a frame: nothing is computed.
+    const size_t pixels = size_t{width} * height;
+    std::vector<std::array<float, 4>> colour(pixels);
+    std::vector<float> depth(pixels);
+    for (size_t k = 0; k < pixels; ++k) {
+        std::memcpy(&colour[k][0], &red->words[k], sizeof(float));
+        std::memcpy(&colour[k][1], &green->words[k], sizeof(float));
+        std::memcpy(&colour[k][2], &blue->words[k], sizeof(float));
+        colour[k][3] = 1.0F;
+        if (alpha != nullptr) {
+            std::memcpy(&colour[k][3], &alpha->words[k], sizeof(float));
+        }
+        std::memcpy(&depth[k], &z->words[k], sizeof(float));
+    }
+    auto device = gpu::Device::create();
+    if (!device) return report(device.error());
+    gpu::ShaderLibrary library(*device);
+    auto loader = scene::CloudLoader::create(library);
+    if (!loader) return report(loader.error());
+    auto raster = render::TileRasterizer::create(library);
+    if (!raster) return report(raster.error());
+    auto discovery = render::Discovery::create(library);
+    if (!discovery) return report(discovery.error());
+    auto frameColour = gpu::Buffer::fromSpan<std::array<float, 4>>(
+        **device, std::span<const std::array<float, 4>>(colour), "discover.frame");
+    if (!frameColour) return report(frameColour.error());
+    auto frameDepth = gpu::Buffer::fromSpan<float>(**device, std::span<const float>(depth), "discover.depth");
+    if (!frameDepth) return report(frameDepth.error());
+
+    // The scene as it is known, through the look's camera.
+    std::vector<std::unique_ptr<scene::GpuSplats>> clouds;
+    std::vector<render::SplatInstance> instances;
+    for (const io::NeuralScenePiece& piece : scene.pieces) {
+        auto cloud = load(library, *loader, directory / piece.cloud);
+        if (!cloud) return report(cloud.error());
+        clouds.push_back(std::make_unique<scene::GpuSplats>(std::move(*cloud)));
+        instances.push_back(render::SplatInstance{clouds.back().get(), render::Mat4::identity(), {}});
+    }
+    render::RenderSettings settings;
+    settings.width = width;
+    settings.height = height;
+    render::RenderTargets known;
+    if (!instances.empty()) {
+        auto drawn = raster->render(*camera, instances, settings, known);
+        if (!drawn) return report(drawn.error());
+    }
+    const render::Projection projection = render::projectionFor(*camera, width, height);
+    auto look = discovery->fromFrame(*frameColour, *frameDepth, width, height, projection,
+                                     instances.empty() ? nullptr : &known.colour,
+                                     instances.empty() ? nullptr : &known.depth, o.tolerance, o.spread);
+    if (!look) return report(look.error());
+    out("%s through %s at %g: %u of its %zu pixels hold a surface; the scene already held %u of them (%.1f%%); %u "
+        "gaussians made\n",
+        o.frame.c_str(), o.camera.c_str(), o.time, look->surfaces, pixels, look->held,
+        look->surfaces > 0 ? 100.0 * look->held / look->surfaces : 0.0, look->made);
+    if (look->made == 0) {
+        return 0;
+    }
+    if (auto made = io::writeNeuralScene(directory, scene); !made) return report(made.error());
+    const std::string kept = "pieces/" + o.id + ".ply";
+    const std::vector<std::vector<float>> chunks{std::move(look->records)};
+    const std::vector<std::string> comments{"athenea neural-scene discover: a gaussian a pixel of " + o.frame};
+    if (auto written = io::writePly3dgs(directory / kept, chunks, comments); !written) return report(written.error());
+    auto cloud = load(library, *loader, directory / kept);
+    if (!cloud) return report(cloud.error());
+    io::NeuralScenePiece piece;
+    piece.id = o.id;
+    piece.cloud = kept;
+    piece.gaussians = cloud->count;
+    piece.boundsMin = cloud->bounds.min;
+    piece.boundsMax = cloud->bounds.max;
+    piece.origin = "discovered";
+    piece.foundBy = o.camera;
+    piece.foundAt = o.time;
+    scene.pieces.push_back(piece);
+    io::NeuralSceneSnapshot* held = nullptr;
+    for (io::NeuralSceneSnapshot& s : scene.snapshots) {
+        if (s.time == o.time && s.camera == o.camera) {
+            held = &s;
+        }
+    }
+    if (held == nullptr) {
+        scene.snapshots.push_back({o.time, o.camera, {}});
+        held = &scene.snapshots.back();
+    }
+    held->pieces.push_back(o.id);
+    if (auto written = io::writeNeuralScene(directory, scene); !written) return report(written.error());
+
+    // THE LOOK GIVEN BACK: the scene with the new piece, through the look's camera, against the frame.
+    clouds.push_back(std::make_unique<scene::GpuSplats>(std::move(*cloud)));
+    instances.push_back(render::SplatInstance{clouds.back().get(), render::Mat4::identity(), {}});
+    render::RenderTargets again;
+    auto drawn = raster->render(*camera, instances, settings, again);
+    if (!drawn) return report(drawn.error());
+    auto hdr = render::compareHdr(library, again.colour, *frameColour, width, height);
+    if (!hdr) return report(hdr.error());
+    auto codes = render::compareImages(library, again.colour, *frameColour, width, height);
+    if (!codes) return report(codes.error());
+    out("piece %s, %u gaussians; the scene through that camera against the frame: relMSE %.5f, p99 %u, max %u\n",
+        o.id.c_str(), piece.gaussians, hdr->relMse, codes->p99, codes->max);
+    if (!o.output.empty()) {
+        auto colourBack = again.colour.readAll<float>(**device);
+        if (!colourBack) return report(colourBack.error());
+        auto depthBack = again.depth.readAll<float>(**device);
+        if (!depthBack) return report(depthBack.error());
+        if (auto w = io::writeExr(o.output, width, height, *colourBack, *depthBack); !w) return report(w.error());
+        out("wrote %s\n", o.output.c_str());
+    }
+    return 0;
+}
+
 int runRender(const SceneOptions& o) {
     uint32_t width = 0;
     uint32_t height = 0;
@@ -777,6 +955,26 @@ void addNeuralScene(CLI::App& app) {
     look->add_option("--threshold", o.threshold, "how much of a pixel a gaussian gives the frame to count as seen");
     look->add_option("-o,--output", o.output, "the look's frame, an EXR");
     run(look, options, runLook);
+
+    CLI::App* discover = cmd->add_subcommand("discover", "a piece made from a frame: a gaussian a pixel the scene did not already hold");
+    discover->add_option("scene", o.directory, "the scene's directory")->required();
+    discover->add_option("--frame", o.frame, "any renderer's frame through that camera: an EXR with R, G, B and its depth as Z");
+    discover->add_option("--id", o.id, "the new piece's name");
+    discover->add_option("--camera", o.camera, "the view the frame was drawn through: one of the manifest's, or the name --eye and --target are kept under");
+    discover->add_option("--eye", o.eye, "the frame's camera, where the manifest does not have it: x y z (with --target)")->expected(3);
+    discover->add_option("--target", o.target, "x y z")->expected(3);
+    discover->add_option("--up", o.up, "x y z")->expected(3);
+    discover->add_option("--focal", o.focal, "mm, over a 24.576 mm aperture");
+    discover->add_option("--name", o.name, "the scene's name");
+    discover->add_option("--up-axis", o.upAxis, "Y or Z");
+    discover->add_option("--meters-per-unit", o.metersPerUnit, "the scene's unit, in metres");
+    discover->add_option("--source", o.source, "what the frames are renders of");
+    discover->add_option("--licence", o.licence, "what the source asks of whoever uses it");
+    discover->add_option("--time", o.time, "when: with the camera, the look's snapshot");
+    discover->add_option("--tolerance", o.tolerance, "a pixel is already held where the scene's depth is within this share of the frame's");
+    discover->add_option("--spread", o.spread, "a gaussian's standard deviation, in pixels at its depth");
+    discover->add_option("-o,--output", o.output, "the scene after the look through that camera, an EXR");
+    run(discover, options, runDiscover);
 
     CLI::App* info = cmd->add_subcommand("info", "what the manifest holds");
     info->add_option("scene", o.directory, "the scene's directory")->required();

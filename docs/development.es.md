@@ -222,7 +222,9 @@ cada una):
   `render/Discovery.h` (`shaders/athenea/neural/scene_discover.slang`) es de lo que
   está hecha una mirada: sella las gaussianas que las contribuciones de un frame dicen que se
   vieron, las cuenta, y devuelve una pieza con las no vistas sin
-  opacidad, que es como se dibuja la escena tal como se conoce.
+  opacidad, que es como se dibuja la escena tal como se conoce. `Discovery::fromFrame`
+  (`scene_frame.slang`) crea gaussianas a partir del color y la profundidad de un frame, un
+  disco por píxel que la escena no tiene ya, como los registros de un PLY de 3DGS.
 
 Un kernel que añade algo a `shaders/athenea/neural/neural_appearance.slang` lo añade a
 las dos pasadas: la forward y, a mano, la backward junto a ella, y las diferencias

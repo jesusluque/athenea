@@ -913,3 +913,44 @@ TEST_CASE("a look finds the gaussians its frame is made of, a second look from t
     std::printf("  the scene as the first look knew it against that look's frame: p99 %u, max %u\n", same->p99, same->max);
     CHECK(same->p99 <= 4);
 }
+
+TEST_CASE("a frame's pixels become gaussians, and a second frame from there finds the scene holds them",
+          "[render][gpu][neural][scene][discover]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto discovery = render::Discovery::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!discovery) FAIL(discovery.error().toString());
+    test::CloudBuilder builder = test::randomCloud(6000, 21, 0.05F, 0.2F);
+    auto cloud = loader->upload(builder.raw, 3);
+    REQUIRE(cloud);
+    const render::SplatInstance instance{&*cloud, render::Mat4::identity()};
+    const render::Camera camera = render::Camera::lookingAt({0.5, 0.5, 6.0}, {0.0, 0.0, 0.0});
+    render::RenderSettings settings;
+    settings.width = 320;
+    settings.height = 240;
+    render::RenderTargets frame;
+    REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&instance, 1), settings, frame));
+    const render::Projection projection = render::projectionFor(camera, settings.width, settings.height);
+
+    // Nothing known: a gaussian a pixel that holds a surface.
+    auto first = discovery->fromFrame(frame.colour, frame.depth, settings.width, settings.height, projection, nullptr,
+                                      nullptr);
+    if (!first) FAIL(first.error().toString());
+    CHECK(first->surfaces > 1000);
+    CHECK(first->held == 0);
+    CHECK(first->made == first->surfaces);
+    CHECK(first->records.size() == size_t{first->made} * render::kFrameRecord);
+
+    // The same frame against itself as what is known: every surface is held, and nothing is made.
+    auto again = discovery->fromFrame(frame.colour, frame.depth, settings.width, settings.height, projection,
+                                      &frame.colour, &frame.depth);
+    if (!again) FAIL(again.error().toString());
+    std::printf("  a frame of %u surfaces: %u gaussians made; against itself, %u held and %u made\n", first->surfaces,
+                first->made, again->held, again->made);
+    CHECK(again->surfaces == first->surfaces);
+    CHECK(again->held == again->surfaces);
+    CHECK(again->made == 0);
+}

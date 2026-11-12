@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -15,6 +16,8 @@
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/gpu/ShaderLibrary.h"
+#include "athenea/gpu/algo/PrefixSum.h"
+#include "athenea/render/Camera.h"
 #include "athenea/scene/GpuClouds.h"
 
 namespace athenea::render {
@@ -24,6 +27,18 @@ struct LookCount {
     uint32_t found = 0;   ///< gaussians it saw that no look had
     uint32_t again = 0;   ///< gaussians it saw that the scene already held
 };
+
+/// What a frame left in the scene (shaders/athenea/neural/scene_frame.slang).
+struct FrameLook {
+    uint32_t           surfaces = 0;   ///< the frame's pixels that hold a surface
+    uint32_t           held = 0;       ///< of those, the ones the scene already had at that depth
+    uint32_t           made = 0;       ///< gaussians made: one a pixel the scene did not have
+    /// The gaussians as a 3DGS PLY keeps them, `kFrameRecord` floats each.
+    std::vector<float> records;
+};
+
+/// scene_frame.slang's kFrameRecord: INRIA's 62 floats a gaussian.
+inline constexpr uint32_t kFrameRecord = 62;
 
 class Discovery {
 public:
@@ -49,6 +64,18 @@ public:
     [[nodiscard]] Result<scene::GpuSplats> masked(const scene::GpuSplats& cloud, const gpu::Buffer& seen,
                                                   uint32_t upTo);
 
+    /// GAUSSIANS MADE FROM A FRAME: a gaussian a pixel of `colour` (float4,
+    /// linear, bottom row first) whose `depth` (a float, view z; 0 where
+    /// nothing is) the scene does not already hold -- `knownColour` and
+    /// `knownDepth` being the scene as it is known drawn through the same
+    /// `projection`, or null where nothing is known yet. A pixel is held
+    /// where the two depths are within `tolerance` of the frame's own; a
+    /// gaussian is a disc in the pixel's surface, `spread` pixels wide.
+    [[nodiscard]] Result<FrameLook> fromFrame(const gpu::Buffer& colour, const gpu::Buffer& depth, uint32_t width,
+                                              uint32_t height, const Projection& projection,
+                                              const gpu::Buffer* knownColour, const gpu::Buffer* knownDepth,
+                                              float tolerance = 0.03F, float spread = 0.8F);
+
     /// A buffer of `words` zeros: what a look's frame sums its contributions into.
     [[nodiscard]] Result<gpu::Buffer> zeros(uint32_t words);
 
@@ -56,7 +83,8 @@ private:
     void bind(rhi::ShaderCursor cursor) const;
 
     gpu::ShaderLibrary* library_ = nullptr;
-    gpu::ComputeKernel  clear_, mark_, count_, mask_;
+    gpu::ComputeKernel  clear_, mark_, count_, mask_, frameValid_, framePack_;
+    std::optional<gpu::PrefixSum> prefix_;
     gpu::Buffer         counters_, spareWords_, spareFloats_;
 };
 

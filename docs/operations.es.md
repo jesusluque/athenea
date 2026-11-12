@@ -398,6 +398,7 @@ athenea neural-scene info   hall.aths
 | `fit` | los harmonics de cada pieza aprendidos por un latente por gaussiana y la red propia de la pieza, una pieza cada vez; escribe `pieces/<id>.athn` y las medidas en el manifest tras cada pieza, así que un fit que se para conserva las piezas que terminó |
 | `render` | todas las piezas desde una vista, cada una con su apariencia donde la tiene y con sus harmonics donde no |
 | `look` | la mirada de una cámara en un tiempo: se dibuja el frame y cada gaussiana que le dio algo queda encontrada, sellada con esta mirada donde ninguna la había visto. Escribe `pieces/<id>.seen` y la mirada en los `snapshots` del manifest, e imprime cuántas gaussianas vio, cuántas eran nuevas y cuántas tenía ya la escena |
+| `discover` | una pieza hecha de un frame: el frame de cualquier renderer por una cámara conocida, un EXR con `R`, `G`, `B` y su profundidad de vista como `Z`, se convierte en una gaussiana por píxel -- un disco en la superficie del píxel, en el mundo -- por cada píxel cuya superficie la escena, dibujada por esa cámara, no tiene ya. Escribe `pieces/<id>.ply`, la pieza (`origin` discovered) y el snapshot de la mirada; imprime cuánto del frame tenía ya la escena, y la escena por esa cámara contra el frame. Crea la escena donde no la hay |
 | `info` | el manifest, leído; sin dispositivo |
 
 | Opción | De | Valor | Por defecto | Notas |
@@ -420,6 +421,11 @@ athenea neural-scene info   hall.aths
 | `--discovered` | `render` | flag | off | solo las gaussianas que han encontrado las miradas: la escena tal como se conoce. Una pieza de la que no se ha tomado ninguna mirada no se dibuja |
 | `--up-to` | `render` | entero | `0` | `--discovered`: solo las miradas hasta esta, contadas desde uno en el orden de `snapshots`; `0` son todas |
 | `--camera`, `--time` | `look` | nombre, número | —, — | una vista del manifest y cuándo; el par es el snapshot de la mirada, y una mirada repetida es la misma |
+| `--frame` | `discover` | ruta | — | el frame: un EXR con `R`, `G`, `B` (luz lineal) y `Z`, la profundidad a lo largo de la vista; su tamaño es el de la mirada |
+| `--id`, `--camera`, `--time` | `discover` | | —, —, — | el nombre de la pieza nueva, la vista por la que se dibujó el frame y cuándo. La vista es una del manifest, o `--eye`, `--target`, `--up`, `--focal` guardados con ese nombre; la focal es sobre una apertura de 24,576 mm, como la de `athenea stage` |
+| `--tolerance` | `discover` | fracción | `0.03` | la superficie de un píxel ya está donde la profundidad de la escena por esa cámara queda dentro de esta fracción de la del frame |
+| `--spread` | `discover` | píxeles | `0.8` | la desviación típica de una gaussiana, en píxeles a su propia profundidad; la mitad en el borde de una superficie. Más ancha cierra los huecos entre gaussianas y pinta más allá de las siluetas |
+| `--name`, `--up-axis`, `--meters-per-unit`, `--source`, `--licence` | `discover` | | | los de la escena, como los de `add` |
 | `--threshold` | `look` | píxeles | `0.05` | cuánto da una gaussiana al frame para contar como vista: su peso de blend sumado sobre sus píxeles |
 | `--compare` | `render` | flag | off | de las dos maneras: los latentes contra los harmonics (las medidas de `athenea compare`) y el tiempo de un frame con cada uno, el menor de doce |
 | `-o`, `--output` | `render` | ruta | — | un EXR; con `--compare`, `<stem>_harmonics.exr` y `<stem>_latents.exr` |

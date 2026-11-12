@@ -216,7 +216,9 @@ each measured):
   `render/Discovery.h` (`shaders/athenea/neural/scene_discover.slang`) is what
   a look is made of: it stamps the gaussians a frame's contributions say were
   seen, counts them, and hands back a piece with the unseen ones given no
-  opacity, which is how the scene as it is known is drawn.
+  opacity, which is how the scene as it is known is drawn. `Discovery::fromFrame`
+  (`scene_frame.slang`) makes gaussians from a frame's colour and depth, a
+  disc a pixel the scene does not already hold, as the records of a 3DGS PLY.
 
 A kernel that adds to `shaders/athenea/neural/neural_appearance.slang` adds to
 both passes: the forward one and, by hand, the backward one beside it, and
