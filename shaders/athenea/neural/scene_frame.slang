@@ -37,7 +37,8 @@ RWStructuredBuffer<uint>   valid;        // a pixel: it makes a gaussian
 StructuredBuffer<uint>     validRead;
 StructuredBuffer<uint>     dest;         // its place among those that do
 RWStructuredBuffer<float>  records;
-RWStructuredBuffer<uint>   counters;     // pixels with a surface, pixels the scene already held
+RWStructuredBuffer<uint>   counters;     // pixels with a surface, pixels the scene already held, pixels seen through
+RWStructuredBuffer<float>  seenThrough;  // a pixel: the frame sees past what the scene has there
 ConstantBuffer<FrameParams> params;
 
 float3 viewPoint(uint x, uint y, float z) {
@@ -84,6 +85,29 @@ void frameValid(uint3 tid: SV_DispatchThreadID) {
         }
     }
     valid[at] = makes ? 1u : 0u;
+}
+
+/// WHERE THE FRAME SEES THROUGH THE SCENE. The scene, drawn through the
+/// frame's camera, has a surface nearer than the frame's own: the frame looked
+/// past where something used to be. What stood there has moved or gone, and
+/// the gaussians that made it are to be taken out (scene_discover.slang's
+/// discoverGone, through the blend's lift).
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void frameSeenThrough(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x >= params.width || tid.y >= params.height) {
+        return;
+    }
+    const uint at = tid.y * params.width + tid.x;
+    const float z = depth[at];
+    const bool past = z > 0.0 && isfinite(z) && colour[at].a > 0.5 && knownColour[at].a > 0.5 &&
+                      knownDepth[at] < z * (1.0 - params.tolerance);
+    // A frame with nothing at a pixel where the scene has something sees through it too.
+    const bool empty = !(z > 0.0) && colour[at].a < 0.5 && knownColour[at].a > 0.5;
+    seenThrough[at] = (past || empty) ? 1.0 : 0.0;
+    if (past || empty) {
+        InterlockedAdd(counters[2], 1u);
+    }
 }
 
 /// A unit quaternion (w x y z) of the frame whose columns are `a`, `b`, `c`.

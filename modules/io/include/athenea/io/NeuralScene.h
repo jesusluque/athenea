@@ -14,6 +14,7 @@
 //     pieces/<id>.athn           its neural appearance (NeuralFile.h), once fitted
 //     pieces/<id>.seen           which look first saw each gaussian: a uint32 a gaussian, little
 //                                endian, the snapshot's place in `snapshots` counted from one, 0 for none
+//     pieces/<id>.gone           which look found each gaussian gone, the same way
 //
 // Every path in the manifest is relative to the directory, so a scene moves
 // as a directory does. The manifest is read and written here and nothing is
@@ -86,6 +87,11 @@ struct NeuralScenePiece {
     /// (empty: no look has been taken), and how many gaussians that is.
     std::string            seen;
     uint32_t               discovered = 0;
+    /// What later looks saw through: its `.gone`, a uint32 a gaussian as a
+    /// `.seen` is (the look that found it gone, 0 while it stands), and how
+    /// many that is. Those gaussians are drawn by nothing.
+    std::string            gone;
+    uint32_t               removed = 0;
     std::optional<NeuralSceneFit> fit;
 };
 

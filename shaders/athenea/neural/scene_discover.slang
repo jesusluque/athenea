@@ -19,13 +19,15 @@ struct DiscoverParams {
     uint stamp;       // the look: what a gaussian found by it is stamped with
     uint threshold;   // in 1/4096 of a pixel
     uint upTo;        // discoverMask, discoverCount: the last look that counts
-    uint pad0; uint pad1; uint pad2;
+    uint drop;        // discoverMask: 1, and `seenRead` is a record of what is gone: those are what is not drawn
+    uint pad1; uint pad2;
 };
 
 StructuredBuffer<uint>     contribution;   // a uint a slot, as the blend summed it
 RWStructuredBuffer<uint>   seen;           // a uint a gaussian
 RWStructuredBuffer<uint>   counters;       // found now, seen again, known up to `upTo`
 StructuredBuffer<uint>     seenRead;
+StructuredBuffer<uint>     lifted;         // two a slot: weight where a frame saw through, weight (1/1024 of a pixel)
 StructuredBuffer<float4>   positions;      // xyz, opacity
 RWStructuredBuffer<float4> positionsOut;
 RWStructuredBuffer<uint>   cleared;
@@ -55,6 +57,25 @@ void discoverMark(uint3 tid: SV_DispatchThreadID) {
     }
 }
 
+/// WHAT A FRAME SAW THROUGH IS GONE. A gaussian most of whose weight in the
+/// scene's frame fell on pixels the new frame sees past is no longer there:
+/// stamped with the look that says so, in a record of its own (`seen` here),
+/// and drawn by nothing after.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void discoverGone(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count || seen[i] != 0u) {
+        return;
+    }
+    const uint through = lifted[(params.base + i) * 2];
+    const uint whole = lifted[(params.base + i) * 2 + 1];
+    if (whole >= params.threshold && through * 2u > whole) {
+        seen[i] = params.stamp;
+        InterlockedAdd(counters[0], 1u);
+    }
+}
+
 /// How many gaussians the looks up to `upTo` found.
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -75,6 +96,6 @@ void discoverMask(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const float4 p = positions[i];
-    const bool known = seenRead[i] != 0u && seenRead[i] <= params.upTo;
+    const bool known = params.drop != 0 ? seenRead[i] == 0u : (seenRead[i] != 0u && seenRead[i] <= params.upTo);
     positionsOut[i] = float4(p.xyz, known ? p.w : 0.0);
 }

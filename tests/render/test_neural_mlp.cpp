@@ -209,6 +209,7 @@ TEST_CASE("a cloud drawn from its latents starts as its own first harmonic draws
 #include "athenea/render/NeuralFit.h"
 #include "athenea/render/NeuralWall.h"
 #include "athenea/render/Discovery.h"
+#include "athenea/render/SplatLift.h"
 
 TEST_CASE("a cloud's harmonics are learnt by its latents, from frames of itself", "[render][gpu][neural][fit]") {
     ATHENEA_REQUIRE_GPU(gpu);
@@ -953,4 +954,111 @@ TEST_CASE("a frame's pixels become gaussians, and a second frame from there find
     CHECK(again->surfaces == first->surfaces);
     CHECK(again->held == again->surfaces);
     CHECK(again->made == 0);
+}
+
+TEST_CASE("what a frame sees through is taken out of the scene", "[render][gpu][neural][scene][gone]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto discovery = render::Discovery::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!discovery) FAIL(discovery.error().toString());
+    test::CloudBuilder builder = test::randomCloud(6000, 21, 0.05F, 0.2F);
+    auto cloud = loader->upload(builder.raw, 3);
+    REQUIRE(cloud);
+    render::SplatInstance instance{&*cloud, render::Mat4::identity()};
+    const render::Camera camera = render::Camera::lookingAt({0.5, 0.5, 6.0}, {0.0, 0.0, 0.0});
+    render::RenderSettings settings;
+    settings.width = 320;
+    settings.height = 240;
+    const uint32_t pixels = settings.width * settings.height;
+    render::RenderTargets known;
+    REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&instance, 1), settings, known));
+
+    // A frame with nothing in it: every pixel where the scene has something is seen through.
+    gpu::Buffer emptyColour = floats(*gpu->device, pixels, 4, "empty.colour");
+    gpu::Buffer emptyDepth = floats(*gpu->device, pixels, 1, "empty.depth");
+    {
+        auto zero = gpu::ComputeKernel::create(*gpu->library, "athenea/neural/scene_discover", "discoverClear");
+        if (!zero) FAIL(zero.error().toString());
+        gpu::CommandBatch batch(*gpu->device);
+        for (const auto& [buffer, words] : {std::pair<gpu::Buffer*, uint32_t>{&emptyColour, pixels * 4},
+                                            std::pair<gpu::Buffer*, uint32_t>{&emptyDepth, pixels}}) {
+            zero->dispatch(batch, {words, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["contribution"].setBinding(known.depth.rhi());
+                cursor["seen"].setBinding(emptyDepth.rhi());
+                cursor["counters"].setBinding(emptyDepth.rhi());
+                cursor["seenRead"].setBinding(known.depth.rhi());
+                cursor["lifted"].setBinding(known.depth.rhi());
+                cursor["positions"].setBinding(known.colour.rhi());
+                cursor["positionsOut"].setBinding(emptyColour.rhi());
+                cursor["cleared"].setBinding(buffer->rhi());
+                cursor["params"]["count"].setData(words);
+            });
+        }
+        REQUIRE(batch.submit(true));
+    }
+    // Layer by layer: the mask carried to the gaussians by the blend, those it fell on stamped gone, and
+    // the scene drawn again without them -- until the frame sees through nothing more.
+    auto gone = discovery->record(cloud->count);
+    REQUIRE(gone);
+    scene::GpuSplats standing = *cloud;
+    uint32_t firstThrough = 0;
+    uint32_t taken = 0;
+    uint32_t passes = 0;
+    for (; passes < 12; ++passes) {
+        instance.splats = &standing;
+        REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&instance, 1), settings, known));
+        uint32_t through = 0;
+        auto mask = discovery->seenThrough(emptyColour, emptyDepth, settings.width, settings.height, known.colour,
+                                           known.depth, 0.03F, through);
+        if (!mask) FAIL(mask.error().toString());
+        if (passes == 0) {
+            firstThrough = through;
+        }
+        if (through == 0) {
+            break;
+        }
+        auto lift = render::makeSplatLift(*gpu->device, cloud->count);
+        REQUIRE(lift);
+        render::RenderSettings carrying = settings;
+        render::liftWhileBlending(carrying, *lift, *mask);
+        render::RenderTargets carried;
+        REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&instance, 1), carrying, carried));
+        auto marked = discovery->markGone(lift->sums, 0, *gone, cloud->count, passes + 1);
+        REQUIRE(marked);
+        if (passes == 0) {
+            // What is gone is not found gone again.
+            auto twice = discovery->markGone(lift->sums, 0, *gone, cloud->count, 99);
+            REQUIRE(twice);
+            CHECK(*twice == 0);
+        }
+        if (*marked == 0) {
+            break;
+        }
+        taken += *marked;
+        auto kept = discovery->without(*cloud, *gone);
+        REQUIRE(kept);
+        standing = std::move(*kept);
+    }
+    CHECK(firstThrough > 1000);
+    CHECK(taken > 100);
+    const uint32_t through = firstThrough;
+    const uint32_t* marked = &taken;
+
+    // Without them the frame is all but empty where it was full.
+    const render::SplatInstance left{&standing, render::Mat4::identity()};
+    render::RenderTargets after;
+    render::RenderTargets full;
+    const render::SplatInstance whole{&*cloud, render::Mat4::identity()};
+    REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&whole, 1), settings, full));
+    REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&left, 1), settings, after));
+    auto before = render::imageStats(*gpu->library, full.colour, settings.width, settings.height);
+    auto now = render::imageStats(*gpu->library, after.colour, settings.width, settings.height);
+    REQUIRE(before);
+    REQUIRE(now);
+    std::printf("  %u pixels seen through, %u gaussians gone of %u; the frame's cover %.3f before and %.3f after\n", through,
+                *marked, cloud->count, before->mean[3], now->mean[3]);
+    CHECK(now->mean[3] < before->mean[3] * 0.2);
 }

@@ -231,6 +231,11 @@ Cada punto con su medida y contra qué. El detalle está en `docs/decisions.md`,
   frames y discos de un píxel, 2,35 millones, y cada frame vuelve por su cámara con relMSE 0,007 a 0,016; los
   últimos frames ya tenían del 68 al 87 % de lo que vieron. Queda mal el borde de las siluetas (p99 107 a 131) y
   cada gaussiana lleva solo el color de la cámara que la vio.
+- `discover` también retira: donde un frame nuevo ve a través de lo que la escena tenía (algo que se movió), las
+  gaussianas de ese sitio se sellan como idas, capa a capa. Con un peón que se mueve 32 cm entre dos frames, el
+  63,7 % de la escena se conserva, se retiran 43 066 gaussianas y se crean 44 306.
+- El Sponza descubierto se recorre a 22 ms por frame como mínimo (44 de media) a 1280 × 720, con 2,35 millones de
+  gaussianas; cada frame del path tracer del que salió tardó alrededor de un minuto.
 
 **Lo que se intentó y no sirvió**
 - Sujetar cada lectura de la pared a su posición inicial (`--prior`): no mejora; retirado del código.

@@ -394,7 +394,7 @@ athenea neural-scene info   hall.aths
 | `fit` | each piece's harmonics learnt by a latent a gaussian and the piece's own network, a piece at a time; writes `pieces/<id>.athn` and the measures into the manifest after each piece, so a fit that stops keeps the pieces it finished |
 | `render` | every piece from one view, each by its appearance where it has one and by its harmonics where it has none |
 | `look` | one camera's look at one time: the frame is drawn and every gaussian that gave it something is found, stamped with this look where no look had seen it. Writes `pieces/<id>.seen` and the look into the manifest's `snapshots`, and prints how many gaussians it saw, how many were new and how many the scene already held |
-| `discover` | a piece made from a frame: any renderer's frame through a known camera, an EXR with `R`, `G`, `B` and its view depth as `Z`, becomes a gaussian a pixel -- a disc in the pixel's surface, in the world -- for every pixel whose surface the scene, drawn through that camera, does not already hold. Writes `pieces/<id>.ply`, the piece (`origin` discovered) and the look's snapshot; prints how much of the frame the scene already held, and the scene through that camera against the frame. It makes the scene where there is none |
+| `discover` | a piece made from a frame: any renderer's frame through a known camera, an EXR with `R`, `G`, `B` and its view depth as `Z`, becomes a gaussian a pixel -- a disc in the pixel's surface, in the world -- for every pixel whose surface the scene, drawn through that camera, does not already hold. Writes `pieces/<id>.ply`, the piece (`origin` discovered) and the look's snapshot; prints how much of the frame the scene already held, and the scene through that camera against the frame. It makes the scene where there is none. Before it adds, it takes out: where the scene has a surface nearer than the frame's, or something where the frame has nothing, what stood there has moved or gone, and the gaussians most of whose weight fell on those pixels are stamped gone (`pieces/<id>.gone`) and drawn by nothing after |
 | `info` | the manifest, read; no device |
 
 | Option | Of | Value | Default | Notes |
@@ -3432,10 +3432,14 @@ relative to the directory, so a scene moves as a directory does.
   pieces/<id>.usda|…       a piece's gaussians: a USD ParticleField or a splat file
   pieces/<id>.athn         its neural appearance, once fitted
   pieces/<id>.seen         which look first saw each gaussian
+  pieces/<id>.gone         which look found each gaussian gone
 ```
 
 A `.seen` is a uint32 a gaussian, little endian and nothing else: the place in
 `snapshots`, counted from one, of the look that first saw it, 0 where none has.
+A `.gone` is the same for the look that saw through where the gaussian was, 0
+while it stands; every command draws a piece without the gaussians its `.gone`
+stamps.
 
 | Key of `scene.json` | Value |
 |---|---|
@@ -3444,6 +3448,7 @@ A `.seen` is a uint32 a gaussian, little endian and nothing else: the place in
 | `source` | `stage`: what the pieces were converted from; `licence`: what it asks of whoever uses it |
 | `bounds` | `min`, `max`: the box round every piece's, written and not read |
 | `pieces[]` | `id`; `prim` (where it came from); `cloud` (its file); `gaussians`; `bounds`; `transform` (object to world, sixteen numbers row major); `revision`, `movedAt`, `paintedAt`; `static`; `origin`; and, once fitted, `appearance` |
+| `pieces[].gone`, `removed` | its `.gone` and how many gaussians later looks saw through; absent until one does. Taking gaussians out raises the piece's `revision` and `movedAt` |
 | `pieces[].seen`, `discovered` | its `.seen` and how many gaussians the looks have found; absent until a look is taken |
 | `pieces[].origin` | `kind`: `"converted"` (from geometry, whole), `"discovered"` (the gaussians a camera saw) or `"generated"` (filled in by another system); `camera` and `time`: what found it and when |
 | `pieces[].appearance` | `file` (its `.athn`); `lit`; `split`; `fit`: `steps`, `against` (`"harmonics"`), `relMSE`, `p99`, `max` as the device measured them from the held-out cameras |

@@ -398,7 +398,7 @@ athenea neural-scene info   hall.aths
 | `fit` | los harmonics de cada pieza aprendidos por un latente por gaussiana y la red propia de la pieza, una pieza cada vez; escribe `pieces/<id>.athn` y las medidas en el manifest tras cada pieza, así que un fit que se para conserva las piezas que terminó |
 | `render` | todas las piezas desde una vista, cada una con su apariencia donde la tiene y con sus harmonics donde no |
 | `look` | la mirada de una cámara en un tiempo: se dibuja el frame y cada gaussiana que le dio algo queda encontrada, sellada con esta mirada donde ninguna la había visto. Escribe `pieces/<id>.seen` y la mirada en los `snapshots` del manifest, e imprime cuántas gaussianas vio, cuántas eran nuevas y cuántas tenía ya la escena |
-| `discover` | una pieza hecha de un frame: el frame de cualquier renderer por una cámara conocida, un EXR con `R`, `G`, `B` y su profundidad de vista como `Z`, se convierte en una gaussiana por píxel -- un disco en la superficie del píxel, en el mundo -- por cada píxel cuya superficie la escena, dibujada por esa cámara, no tiene ya. Escribe `pieces/<id>.ply`, la pieza (`origin` discovered) y el snapshot de la mirada; imprime cuánto del frame tenía ya la escena, y la escena por esa cámara contra el frame. Crea la escena donde no la hay |
+| `discover` | una pieza hecha de un frame: el frame de cualquier renderer por una cámara conocida, un EXR con `R`, `G`, `B` y su profundidad de vista como `Z`, se convierte en una gaussiana por píxel -- un disco en la superficie del píxel, en el mundo -- por cada píxel cuya superficie la escena, dibujada por esa cámara, no tiene ya. Escribe `pieces/<id>.ply`, la pieza (`origin` discovered) y el snapshot de la mirada; imprime cuánto del frame tenía ya la escena, y la escena por esa cámara contra el frame. Crea la escena donde no la hay. Antes de añadir, retira: donde la escena tiene una superficie más cerca que la del frame, o algo donde el frame no tiene nada, lo que había allí se ha movido o se ha ido, y las gaussianas cuyo peso cayó en su mayor parte sobre esos píxeles quedan selladas como idas (`pieces/<id>.gone`) y ya no las dibuja nada |
 | `info` | el manifest, leído; sin dispositivo |
 
 | Opción | De | Valor | Por defecto | Notas |
@@ -3542,10 +3542,14 @@ relativas al directorio, así que una escena se mueve como se mueve un directori
   pieces/<id>.usda|…       las gaussianas de una pieza: un ParticleField de USD o un fichero de splats
   pieces/<id>.athn         su apariencia neural, una vez ajustada
   pieces/<id>.seen         qué mirada vio primero cada gaussiana
+  pieces/<id>.gone         qué mirada encontró ida cada gaussiana
 ```
 
 Un `.seen` es un uint32 por gaussiana, little endian y nada más: el puesto en
 `snapshots`, contado desde uno, de la mirada que la vio primero, 0 donde ninguna.
+Un `.gone` es lo mismo para la mirada que vio a través de donde estaba la gaussiana, 0
+mientras sigue en pie; todos los comandos dibujan una pieza sin las gaussianas que su `.gone`
+sella.
 
 | Clave de `scene.json` | Valor |
 |---|---|
@@ -3554,6 +3558,7 @@ Un `.seen` es un uint32 por gaussiana, little endian y nada más: el puesto en
 | `source` | `stage`: de qué se convirtieron las piezas; `licence`: qué pide a quien lo use |
 | `bounds` | `min`, `max`: la caja que envuelve las de todas las piezas, escrita y no leída |
 | `pieces[]` | `id`; `prim` (de dónde salió); `cloud` (su fichero); `gaussians`; `bounds`; `transform` (objeto a mundo, dieciséis números por filas); `revision`, `movedAt`, `paintedAt`; `static`; `origin`; y, una vez ajustada, `appearance` |
+| `pieces[].gone`, `removed` | su `.gone` y cuántas gaussianas vieron a través miradas posteriores; ausentes hasta que una lo hace. Retirar gaussianas sube la `revision` y el `movedAt` de la pieza |
 | `pieces[].seen`, `discovered` | su `.seen` y cuántas gaussianas han encontrado las miradas; ausentes hasta que se toma una mirada |
 | `pieces[].origin` | `kind`: `"converted"` (de geometría, entera), `"discovered"` (las gaussianas que vio una cámara) o `"generated"` (rellenada por otro sistema); `camera` y `time`: qué la encontró y cuándo |
 | `pieces[].appearance` | `file` (su `.athn`); `lit`; `split`; `fit`: `steps`, `against` (`"harmonics"`), `relMSE`, `p99`, `max` como los midió el dispositivo desde las cámaras held-out |

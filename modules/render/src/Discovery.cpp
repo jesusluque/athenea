@@ -35,6 +35,7 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(d.mark_, "discoverMark"));
     ATHENEA_TRY(make(d.count_, "discoverCount"));
     ATHENEA_TRY(make(d.mask_, "discoverMask"));
+    ATHENEA_TRY(make(d.gone_, "discoverGone"));
     {
         auto valid = gpu::ComputeKernel::create(library, "athenea/neural/scene_frame", "frameValid");
         if (!valid) return std::move(valid).error();
@@ -42,6 +43,9 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
         auto pack = gpu::ComputeKernel::create(library, "athenea/neural/scene_frame", "framePack");
         if (!pack) return std::move(pack).error();
         d.framePack_ = std::move(*pack);
+        auto through = gpu::ComputeKernel::create(library, "athenea/neural/scene_frame", "frameSeenThrough");
+        if (!through) return std::move(through).error();
+        d.frameThrough_ = std::move(*through);
         auto prefix = gpu::PrefixSum::create(library);
         if (!prefix) return std::move(prefix).error();
         d.prefix_.emplace(std::move(*prefix));
@@ -64,6 +68,7 @@ void Discovery::bind(rhi::ShaderCursor cursor) const {
     cursor["seen"].setBinding(spareWords_.rhi());
     cursor["counters"].setBinding(counters_.rhi());
     cursor["seenRead"].setBinding(spareWords_.rhi());
+    cursor["lifted"].setBinding(spareWords_.rhi());
     cursor["positions"].setBinding(spareFloats_.rhi());
     cursor["positionsOut"].setBinding(spareFloats_.rhi());
     cursor["cleared"].setBinding(spareWords_.rhi());
@@ -151,6 +156,7 @@ Result<FrameLook> Discovery::fromFrame(const gpu::Buffer& colour, const gpu::Buf
         cursor["dest"].setBinding(dest->rhi());
         cursor["records"].setBinding(records.rhi());
         cursor["counters"].setBinding(counters_.rhi());
+        cursor["seenThrough"].setBinding(spareFloats_.rhi());
         rhi::ShaderCursor p = cursor["params"];
         p["width"].setData(width);
         p["height"].setData(height);
@@ -209,6 +215,96 @@ Result<FrameLook> Discovery::fromFrame(const gpu::Buffer& colour, const gpu::Buf
     floats->resize(size_t{look.made} * kFrameRecord);
     look.records = std::move(*floats);
     return look;
+}
+
+Result<gpu::Buffer> Discovery::seenThrough(const gpu::Buffer& colour, const gpu::Buffer& depth, uint32_t width,
+                                           uint32_t height, const gpu::Buffer& knownColour,
+                                           const gpu::Buffer& knownDepth, float tolerance, uint32_t& pixels) {
+    gpu::Device& device = library_->device();
+    gpu::BufferDesc desc;
+    desc.bytes = std::max<uint64_t>(uint64_t{width} * height, 4) * sizeof(float);
+    desc.elementBytes = sizeof(float);
+    desc.label = "frame.seenThrough";
+    auto mask = gpu::Buffer::create(device, desc);
+    if (!mask) return std::move(mask).error();
+    gpu::CommandBatch batch(device);
+    clear_.dispatch(batch, {4, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        bind(cursor);
+        cursor["cleared"].setBinding(counters_.rhi());
+        cursor["counters"].setBinding(spareWords_.rhi());
+        cursor["params"]["count"].setData(uint32_t{4});
+    });
+    frameThrough_.dispatch(batch, {width, height, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["colour"].setBinding(colour.rhi());
+        cursor["depth"].setBinding(depth.rhi());
+        cursor["knownColour"].setBinding(knownColour.rhi());
+        cursor["knownDepth"].setBinding(knownDepth.rhi());
+        cursor["valid"].setBinding(spareWords_.rhi());
+        cursor["validRead"].setBinding(spareWords_.rhi());
+        cursor["dest"].setBinding(spareWords_.rhi());
+        cursor["records"].setBinding(spareFloats_.rhi());
+        cursor["counters"].setBinding(counters_.rhi());
+        cursor["seenThrough"].setBinding(mask->rhi());
+        rhi::ShaderCursor p = cursor["params"];
+        p["width"].setData(width);
+        p["height"].setData(height);
+        p["tolerance"].setData(tolerance);
+        p["hasKnown"].setData(uint32_t{1});
+    });
+    ATHENEA_TRY(batch.submit(true));
+    std::array<uint32_t, 4> read{};
+    ATHENEA_TRY(counters_.read(device, 0, sizeof(read), read.data()));
+    pixels = read[2];
+    return *mask;
+}
+
+Result<uint32_t> Discovery::markGone(const gpu::Buffer& lifted, uint32_t base, gpu::Buffer& gone, uint32_t count,
+                                     uint32_t stamp, float threshold) {
+    gpu::Device& device = library_->device();
+    gpu::CommandBatch batch(device);
+    clear_.dispatch(batch, {4, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        bind(cursor);
+        cursor["cleared"].setBinding(counters_.rhi());
+        cursor["counters"].setBinding(spareWords_.rhi());
+        cursor["params"]["count"].setData(uint32_t{4});
+    });
+    gone_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        bind(cursor);
+        cursor["lifted"].setBinding(lifted.rhi());
+        cursor["seen"].setBinding(gone.rhi());
+        cursor["params"]["count"].setData(count);
+        cursor["params"]["base"].setData(base);
+        cursor["params"]["stamp"].setData(stamp);
+        // The lift's sums are in 1/1024 of a pixel.
+        cursor["params"]["threshold"].setData(static_cast<uint32_t>(std::max(threshold, 0.0F) * 1024.0F + 0.5F));
+    });
+    ATHENEA_TRY(batch.submit(true));
+    std::array<uint32_t, 4> read{};
+    ATHENEA_TRY(counters_.read(device, 0, sizeof(read), read.data()));
+    return read[0];
+}
+
+Result<scene::GpuSplats> Discovery::without(const scene::GpuSplats& cloud, const gpu::Buffer& gone) {
+    gpu::Device& device = library_->device();
+    gpu::BufferDesc desc;
+    desc.bytes = std::max<uint64_t>(cloud.count, 1) * 16;
+    desc.elementBytes = 16;
+    desc.label = "discover.positions";
+    auto positions = gpu::Buffer::create(device, desc);
+    if (!positions) return std::move(positions).error();
+    gpu::CommandBatch batch(device);
+    mask_.dispatch(batch, {cloud.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        bind(cursor);
+        cursor["positions"].setBinding(cloud.positions.rhi());
+        cursor["positionsOut"].setBinding(positions->rhi());
+        cursor["seenRead"].setBinding(gone.rhi());
+        cursor["params"]["count"].setData(cloud.count);
+        cursor["params"]["drop"].setData(uint32_t{1});
+    });
+    ATHENEA_TRY(batch.submit(true));
+    scene::GpuSplats kept = cloud;
+    kept.positions = *positions;
+    return kept;
 }
 
 Result<scene::GpuSplats> Discovery::masked(const scene::GpuSplats& cloud, const gpu::Buffer& seen, uint32_t upTo) {

@@ -21309,3 +21309,43 @@ shows nothing where no look reached, which the walk makes plain.
 - The same walk timed on CUDA, and at the sizes a set uses.
 - The found scene's cost brought down: ten layers of gaussians a pixel wide are many more than the surface needs
   from any one view, and none has a level of detail.
+
+## What a frame sees through is taken out: a scene that changes between looks (12 Nov)
+
+A look that only adds leaves a ghost of everything that moved. So `neural-scene discover` takes out before it
+adds. The scene as it stands is drawn through the new frame's camera; where it has a surface nearer than the
+frame's by more than the tolerance, or something where the frame has nothing, the frame is looking past what used
+to be there (`Discovery::seenThrough`). That mask is carried to the scene's gaussians by the blend -- the lift a
+key is carried by, `contributionMode` 3 -- and a gaussian most of whose weight fell on seen-through pixels is
+stamped with the look in its piece's `.gone` (`Discovery::markGone`) and drawn by nothing after
+(`Discovery::without`: no opacity, the piece's other buffers as they were). Then the frame's own pixels are found
+as before, and what stands in the moved thing's new place is new.
+
+It is done a layer at a time, up to eight: taking out what stood in front shows what it hid, and the frame may see
+through that too. A cloud of 6000 gaussians before an empty frame loses 1915 in one pass and its cover stays 0.955;
+repeated until nothing more is seen through, 4364 and 0.009.
+
+Two pawns on their floors, the second moved 32 cm between two frames from one camera, 960 x 540, CUDA:
+
+| look | the scene already held | taken out | made |
+|---|---|---|---|
+| the frame at T0, from nothing | 0% | — | 121 356 |
+| the same frame again | 99.8% | 1 385 | 187 |
+| the frame at T1, the second pawn moved | 63.7% | 43 066 | 44 306 |
+
+What stood still is held, what moved is taken out where it was and made where it is, and the two counts are the
+same thing moved. The same frame again takes out 1385 gaussians: those are the discs that painted past a
+silhouette, which the frame, having nothing there, sees through -- and the scene through that camera goes from
+relMSE 0.107 to 0.075 for it. So a second look from the same place is also what trims the first.
+
+A piece that loses gaussians has its `revision` and `movedAt` raised, which is what a renderer that kept its
+geometry is told by.
+
+### Not done
+
+- A few gaussians at a moved thing's old rim stay: their weight on seen-through pixels was under a half.
+- What moved, moved rather than remade: the frame does not say that the pawn here is the pawn that was there, so
+  44 thousand gaussians are thrown away and made again. That wants motion from the renderer (its vectors, or the
+  prim a pixel belongs to).
+- A change of colour with no change of depth, still held as it was.
+- Gaussians behind what a frame sees, which no look from that side can find gone.

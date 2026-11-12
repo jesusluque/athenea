@@ -40,6 +40,7 @@
 #include "athenea/render/NeuralAppearance.h"
 #include "athenea/render/NeuralFit.h"
 #include "athenea/render/ReferenceRenderer.h"
+#include "athenea/render/SplatLift.h"
 #include "athenea/render/TileRasterizer.h"
 #include "athenea/scene/GpuClouds.h"
 #include "athenea/usd/Export.h"
@@ -104,6 +105,20 @@ Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& l
         return usd::uploadParticleField(library, loader, path);
     }
     return scene::loadSplatFile(loader, path.string(), 3);
+}
+
+/// A piece as it is drawn: its gaussians, less those a later look found gone.
+Result<scene::GpuSplats> loadPiece(gpu::ShaderLibrary& library, scene::CloudLoader& loader, render::Discovery& discovery,
+                                   const std::filesystem::path& directory, const io::NeuralScenePiece& piece) {
+    auto cloud = load(library, loader, directory / piece.cloud);
+    if (!cloud || piece.gone.empty()) {
+        return cloud;
+    }
+    auto held = io::readSeen(directory / piece.gone, cloud->count);
+    if (!held) return std::move(held).error();
+    auto record = discovery.record(cloud->count, *held);
+    if (!record) return std::move(record).error();
+    return discovery.without(*cloud, *record);
 }
 
 render::Vec3 upOf(const io::NeuralScene& scene) {
@@ -252,6 +267,9 @@ int runInfo(const SceneOptions& o) {
         if (!p.seen.empty()) {
             out(", %u found by the looks", p.discovered);
         }
+        if (!p.gone.empty()) {
+            out(", %u gone", p.removed);
+        }
         if (p.appearance.empty()) {
             out(", by its harmonics\n");
         } else if (p.fit) {
@@ -307,7 +325,9 @@ int runFit(const SceneOptions& o) {
         if (piece.gaussians == 0) {
             continue;
         }
-        auto cloud = load(library, *loader, directory / piece.cloud);
+        auto sceneDiscovery = render::Discovery::create(library);
+        if (!sceneDiscovery) return report(sceneDiscovery.error());
+        auto cloud = loadPiece(library, *loader, *sceneDiscovery, directory, piece);
         if (!cloud) return report(cloud.error());
         if (cloud->count != piece.gaussians) {
             err("piece %s: its cloud holds %u gaussians and the manifest says %u\n", piece.id.c_str(), cloud->count,
@@ -487,7 +507,7 @@ int runLook(const SceneOptions& o) {
     std::vector<render::SplatInstance> instances;
     uint32_t slots = 0;
     for (const io::NeuralScenePiece& piece : scene->pieces) {
-        auto cloud = load(library, *loader, directory / piece.cloud);
+        auto cloud = loadPiece(library, *loader, *discovery, directory, piece);
         if (!cloud) return report(cloud.error());
         clouds.push_back(std::make_unique<scene::GpuSplats>(std::move(*cloud)));
         const uint32_t count = clouds.back()->count;
@@ -671,7 +691,7 @@ int runDiscover(const SceneOptions& o) {
     std::vector<std::unique_ptr<scene::GpuSplats>> clouds;
     std::vector<render::SplatInstance> instances;
     for (const io::NeuralScenePiece& piece : scene.pieces) {
-        auto cloud = load(library, *loader, directory / piece.cloud);
+        auto cloud = loadPiece(library, *loader, *discovery, directory, piece);
         if (!cloud) return report(cloud.error());
         clouds.push_back(std::make_unique<scene::GpuSplats>(std::move(*cloud)));
         instances.push_back(render::SplatInstance{clouds.back().get(), render::Mat4::identity(), {}});
@@ -684,6 +704,97 @@ int runDiscover(const SceneOptions& o) {
         auto drawn = raster->render(*camera, instances, settings, known);
         if (!drawn) return report(drawn.error());
     }
+    // WHAT THE FRAME SEES THROUGH IS TAKEN OUT FIRST. Where the scene has a surface nearer than the frame's,
+    // what stood there has moved or gone: the gaussians that made it are stamped gone, and the scene drawn
+    // again without them, so that what the frame shows in their place is found as new.
+    size_t place = scene.snapshots.size();
+    for (size_t k = 0; k < scene.snapshots.size(); ++k) {
+        if (scene.snapshots[k].time == o.time && scene.snapshots[k].camera == o.camera) {
+            place = k;
+        }
+    }
+    const uint32_t stamp = static_cast<uint32_t>(place) + 1;
+    if (!instances.empty()) {
+        // Layer by layer: what stood in front is taken out, what it hid is then in the scene's frame, and
+        // the frame may see through that too. Until it sees through nothing more, a few times at most.
+        uint32_t firstThrough = 0;
+        uint32_t taken = 0;
+        uint32_t passes = 0;
+        std::vector<gpu::Buffer> records(scene.pieces.size());
+        std::vector<uint32_t> newly(scene.pieces.size(), 0);
+        for (; passes < 8; ++passes) {
+            uint32_t through = 0;
+            auto mask = discovery->seenThrough(*frameColour, *frameDepth, width, height, known.colour, known.depth,
+                                               o.tolerance, through);
+            if (!mask) return report(mask.error());
+            if (passes == 0) {
+                firstThrough = through;
+            }
+            if (through == 0) {
+                break;
+            }
+            uint32_t slots = 0;
+            for (const auto& cloud : clouds) {
+                slots += cloud->count;
+            }
+            auto lift = render::makeSplatLift(**device, slots);
+            if (!lift) return report(lift.error());
+            render::RenderSettings carrying = settings;
+            render::liftWhileBlending(carrying, *lift, *mask);
+            render::RenderTargets carried;
+            auto lifted = raster->render(*camera, instances, carrying, carried);
+            if (!lifted) return report(lifted.error());
+            uint32_t base = 0;
+            uint32_t now = 0;
+            for (size_t k = 0; k < scene.pieces.size(); ++k) {
+                const io::NeuralScenePiece& piece = scene.pieces[k];
+                const uint32_t count = clouds[k]->count;
+                if (!records[k].valid()) {
+                    std::vector<uint32_t> held;
+                    if (!piece.gone.empty()) {
+                        auto read = io::readSeen(directory / piece.gone, count);
+                        if (!read) return report(read.error());
+                        held = std::move(*read);
+                    }
+                    auto gone = discovery->record(count, held);
+                    if (!gone) return report(gone.error());
+                    records[k] = *gone;
+                }
+                auto marked = discovery->markGone(lift->sums, base, records[k], count, stamp);
+                if (!marked) return report(marked.error());
+                if (*marked > 0) {
+                    auto kept = discovery->without(*clouds[k], records[k]);
+                    if (!kept) return report(kept.error());
+                    *clouds[k] = std::move(*kept);
+                    newly[k] += *marked;
+                    now += *marked;
+                }
+                base += count;
+            }
+            if (now == 0) {
+                break;
+            }
+            taken += now;
+            auto again = raster->render(*camera, instances, settings, known);
+            if (!again) return report(again.error());
+        }
+        for (size_t k = 0; k < scene.pieces.size(); ++k) {
+            if (newly[k] == 0) {
+                continue;
+            }
+            io::NeuralScenePiece& piece = scene.pieces[k];
+            auto words = records[k].readAll<uint32_t>(**device);
+            if (!words) return report(words.error());
+            words->resize(clouds[k]->count);
+            piece.gone = "pieces/" + piece.id + ".gone";
+            if (auto written = io::writeSeen(directory / piece.gone, *words); !written) return report(written.error());
+            piece.removed += newly[k];
+            ++piece.revision;
+            piece.movedAt = piece.revision;
+        }
+        out("the frame sees through the scene at %u pixels; %u gaussians taken out in %u passes\n", firstThrough, taken,
+            passes);
+    }
     const render::Projection projection = render::projectionFor(*camera, width, height);
     auto look = discovery->fromFrame(*frameColour, *frameDepth, width, height, projection,
                                      instances.empty() ? nullptr : &known.colour,
@@ -693,10 +804,11 @@ int runDiscover(const SceneOptions& o) {
         "gaussians made\n",
         o.frame.c_str(), o.camera.c_str(), o.time, look->surfaces, pixels, look->held,
         look->surfaces > 0 ? 100.0 * look->held / look->surfaces : 0.0, look->made);
+    // Written either way: a look that made nothing may still have taken gaussians out.
+    if (auto made = io::writeNeuralScene(directory, scene); !made) return report(made.error());
     if (look->made == 0) {
         return 0;
     }
-    if (auto made = io::writeNeuralScene(directory, scene); !made) return report(made.error());
     const std::string kept = "pieces/" + o.id + ".ply";
     const std::vector<std::vector<float>> chunks{std::move(look->records)};
     const std::vector<std::string> comments{"athenea neural-scene discover: a gaussian a pixel of " + o.frame};
@@ -776,7 +888,7 @@ int runRender(const SceneOptions& o) {
     std::vector<render::SplatInstance> byLatents;
     uint32_t fitted = 0;
     for (const io::NeuralScenePiece& piece : scene->pieces) {
-        auto cloud = load(library, *loader, directory / piece.cloud);
+        auto cloud = loadPiece(library, *loader, *discovery, directory, piece);
         if (!cloud) return report(cloud.error());
         if (o.discovered) {
             // THE SCENE AS IT IS KNOWN: only what the looks found, up to one of them. A piece no look

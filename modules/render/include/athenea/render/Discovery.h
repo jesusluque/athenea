@@ -76,6 +76,25 @@ public:
                                               const gpu::Buffer* knownColour, const gpu::Buffer* knownDepth,
                                               float tolerance = 0.03F, float spread = 0.8F);
 
+    /// WHERE A FRAME SEES THROUGH THE SCENE: a float a pixel, 1 where the scene
+    /// drawn through the frame's camera (`knownColour`, `knownDepth`) has a
+    /// surface nearer than the frame's own by more than `tolerance`, or
+    /// something where the frame has nothing. `pixels` is how many.
+    [[nodiscard]] Result<gpu::Buffer> seenThrough(const gpu::Buffer& colour, const gpu::Buffer& depth, uint32_t width,
+                                                  uint32_t height, const gpu::Buffer& knownColour,
+                                                  const gpu::Buffer& knownDepth, float tolerance, uint32_t& pixels);
+
+    /// The gaussians of one piece that a frame saw through: `lifted` is that
+    /// mask carried to the scene's gaussians by the blend (SplatLift.h's
+    /// sums), `base` the piece's first slot. One most of whose weight fell on
+    /// seen-through pixels is stamped `stamp` in `gone`; how many were.
+    [[nodiscard]] Result<uint32_t> markGone(const gpu::Buffer& lifted, uint32_t base, gpu::Buffer& gone,
+                                            uint32_t count, uint32_t stamp, float threshold = 0.05F);
+
+    /// A piece without the gaussians its record `gone` stamps: the same
+    /// cloud, those given no opacity.
+    [[nodiscard]] Result<scene::GpuSplats> without(const scene::GpuSplats& cloud, const gpu::Buffer& gone);
+
     /// A buffer of `words` zeros: what a look's frame sums its contributions into.
     [[nodiscard]] Result<gpu::Buffer> zeros(uint32_t words);
 
@@ -83,7 +102,7 @@ private:
     void bind(rhi::ShaderCursor cursor) const;
 
     gpu::ShaderLibrary* library_ = nullptr;
-    gpu::ComputeKernel  clear_, mark_, count_, mask_, frameValid_, framePack_;
+    gpu::ComputeKernel  clear_, mark_, count_, mask_, gone_, frameValid_, framePack_, frameThrough_;
     std::optional<gpu::PrefixSum> prefix_;
     gpu::Buffer         counters_, spareWords_, spareFloats_;
 };
