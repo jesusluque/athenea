@@ -277,7 +277,8 @@ Result<gpu::Buffer> Discovery::seenThrough(const gpu::Buffer& colour, const gpu:
 }
 
 Result<uint32_t> Discovery::markGone(const gpu::Buffer& lifted, uint32_t base, gpu::Buffer& gone, uint32_t count,
-                                     uint32_t stamp, float threshold) {
+                                     uint32_t stamp, float threshold, const scene::GpuSplats* cloud,
+                                     const Projection* projection, float coarse) {
     gpu::Device& device = library_->device();
     gpu::CommandBatch batch(device);
     clear_.dispatch(batch, {4, 1, 1}, [&](rhi::ShaderCursor cursor) {
@@ -293,6 +294,17 @@ Result<uint32_t> Discovery::markGone(const gpu::Buffer& lifted, uint32_t base, g
         cursor["params"]["count"].setData(count);
         cursor["params"]["base"].setData(base);
         cursor["params"]["stamp"].setData(stamp);
+        if (cloud != nullptr && projection != nullptr && coarse > 0.0F) {
+            // The view's depth of a point of the cloud's own space, and the look's disc a unit of depth.
+            cursor["positions"].setBinding(cloud->positions.rhi());
+            cursor["shape"].setBinding(cloud->shape.rhi());
+            const std::array<float, 4> viewZ{static_cast<float>(projection->worldToView.at(2, 0)),
+                                             static_cast<float>(projection->worldToView.at(2, 1)),
+                                             static_cast<float>(projection->worldToView.at(2, 2)),
+                                             static_cast<float>(projection->worldToView.at(2, 3))};
+            cursor["params"]["viewZ"].setData(viewZ);
+            cursor["params"]["coarse"].setData(coarse / static_cast<float>(projection->focalX));
+        }
         // The lift's sums are in 1/1024 of a pixel.
         cursor["params"]["threshold"].setData(static_cast<uint32_t>(std::max(threshold, 0.0F) * 1024.0F + 0.5F));
     });

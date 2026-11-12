@@ -96,8 +96,13 @@ public:
     /// mask carried to the scene's gaussians by the blend (SplatLift.h's
     /// sums), `base` the piece's first slot. One most of whose weight fell on
     /// seen-through pixels is stamped `stamp` in `gone`; how many were.
+    /// With `cloud` and `projection` and a `coarse` ratio, a gaussian wider
+    /// than that many of the look's own discs at its depth goes on a fifth
+    /// of its weight: it is what a finer look is laid over.
     [[nodiscard]] Result<uint32_t> markGone(const gpu::Buffer& lifted, uint32_t base, gpu::Buffer& gone,
-                                            uint32_t count, uint32_t stamp, float threshold = 0.05F);
+                                            uint32_t count, uint32_t stamp, float threshold = 0.05F,
+                                            const scene::GpuSplats* cloud = nullptr,
+                                            const Projection* projection = nullptr, float coarse = 0.0F);
 
     /// A piece without the gaussians its record `gone` stamps: the same
     /// cloud, those given no opacity.

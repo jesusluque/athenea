@@ -21,7 +21,11 @@ struct DiscoverParams {
     uint threshold;   // in 1/4096 of a pixel
     uint upTo;        // discoverMask, discoverCount: the last look that counts
     uint drop;        // discoverMask: 1, and `seenRead` is a record of what is gone: those are what is not drawn
-    uint pad1; uint pad2;
+    // discoverGone: a gaussian wider than `coarse` times its depth along the view (the row `viewZ` gives
+    // it; 0: not asked) is coarser than the look that flagged its pixels, and goes on a fifth of its
+    // weight rather than on most of it.
+    float coarse; uint pad2;
+    float4 viewZ;
 };
 
 StructuredBuffer<uint>     contribution;   // a uint a slot, as the blend summed it
@@ -73,7 +77,16 @@ void discoverGone(uint3 tid: SV_DispatchThreadID) {
     }
     const uint through = lifted[(params.base + i) * 2];
     const uint whole = lifted[(params.base + i) * 2 + 1];
-    if (whole >= params.threshold && through * 2u > whole) {
+    // A coarse gaussian lies under many of the look's pixels, some flagged and some not, and what is
+    // laid over it is finer: it need not be mostly flagged to be in the way.
+    bool wide = false;
+    if (params.coarse > 0.0) {
+        const uint row = i * 4;
+        const float size = exp(max(lowHalf(shape[row + 1]), max(highHalf(shape[row + 1]), lowHalf(shape[row + 2]))));
+        const float z = dot(params.viewZ.xyz, positions[i].xyz) + params.viewZ.w;
+        wide = z > 0.0 && size > params.coarse * z;
+    }
+    if (whole >= params.threshold && (wide ? through * 5u > whole : through * 2u > whole)) {
         seen[i] = params.stamp;
         InterlockedAdd(counters[0], 1u);
     }

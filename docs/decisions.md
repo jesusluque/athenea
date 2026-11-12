@@ -21491,3 +21491,26 @@ coarse ones that stay.
   than by where their weight fell.
 - A coarse gaussian that reaches past the frame's edge is taken out whole and leaves a gap there.
 - The looks ordered: the same ten frames nearest first would make the scene once.
+
+## A coarse gaussian under a finer look goes on a fifth of its weight (12 Nov)
+
+What the section before left: fine gaussians laid over coarse ones that stay. `Discovery::markGone` now knows a
+gaussian's size against the look's own disc at its depth; one wider than `--refine` discs goes when a fifth of its
+weight in the scene's frame fell on flagged pixels, where others still want most of it.
+
+The same Sponza, ten frames, discs of 1.3 pixels, `--refine 2`:
+
+| | before | now |
+|---|---|---|
+| view A: PSNR, SSIM | 34.6 dB, 0.905 | 34.6 dB, 0.905 |
+| view B: PSNR, SSIM | 28.3 dB, 0.848 | 28.6 dB, 0.851 |
+| the walk, a frame at 1280 x 720: least, mean | 25.0, 37.1 ms | 23.8, 35.5 ms |
+
+Of 2 978 177 gaussians the looks made, 316 409 are gone and 2 661 768 stand. (The count the section before gave,
+2 977 844, was of gaussians made, gone ones among them; a piece's file keeps them and its `.gone` says which.)
+Against no refining at all the view that wanted it is 1.3 dB better (27.3 to 28.6) for a quarter more gaussians
+standing.
+
+### Not done
+
+- A piece's file written without what is gone, once enough is.

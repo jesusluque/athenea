@@ -790,7 +790,8 @@ int runDiscover(const SceneOptions& o) {
                     if (!gone) return report(gone.error());
                     records[k] = *gone;
                 }
-                auto marked = discovery->markGone(lift->sums, base, records[k], count, stamp);
+                auto marked = discovery->markGone(lift->sums, base, records[k], count, stamp, 0.05F, clouds[k].get(), &projection,
+                                                  o.refine * o.spread);
                 if (!marked) return report(marked.error());
                 if (*marked > 0) {
                     auto kept = discovery->without(*clouds[k], records[k]);
