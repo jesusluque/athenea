@@ -21531,3 +21531,26 @@ to a fifth of its pixels from a renderer, and the rest is there in some thirty m
 - That saving had: a renderer given the mask and drawing only where it is empty. `athenea stage` draws whole
   frames.
 - Cover that says how well and not only whether: a pixel held by gaussians a metre wide counts as held.
+
+## The fit to the frames again: what made it worse, and that mended it does nothing (12 Nov)
+
+The fit of a found scene's pieces to the frames, which made Sponza worse and was not understood, was put back with
+one change and measured again on the scene found at 1.3 pixels with refining. What made it worse was the rates:
+they are an appearance's on a pawn whose colours are 0.3 to 0.6, and Sponza's frames are 0.02 to 0.1, so a step
+moved a colour by several hundredths of itself and the pieces were left as noise.
+
+| 3000 steps | held-out frames, relMSE | fitted frames, relMSE |
+|---|---|---|
+| as found | 0.01520 | 0.02166 |
+| the three rates at a twentieth | 0.01507 | 0.02161 |
+| at a hundredth | 0.01519 | 0.02164 |
+
+No harm, and no gain: under one in a hundred. The p99 stays 253 either way. A found scene's error is where its
+gaussians are and how wide -- the rim of a surface, a lamp a pixel across -- and a colour moves none of that. The
+step and its option are out of the code again; what a fit of colour would be for is what turns with the eye, and
+that wants a scene whose gaussians are first in the right place.
+
+### Not done
+
+- Rates that follow the level of what is fitted, for any fit: `neural-fit` has the same rates whatever the cloud's
+  brightness.
