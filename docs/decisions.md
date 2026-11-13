@@ -13727,6 +13727,13 @@ most 8 codes, where the frame without any cloud shadow differs from it by
 more than 20. *To be run in the GPU turn*, measured before the step as well,
 and the threshold set from the two with margin.
 
+Measured (13 Nov; it had been left at a guessed 8 and failed everywhere):
+level zero alone, p99 55 and max 92 against the boxed frame; the chain, p99
+26 and max 51 -- the same on Metal, Vulkan and D3D12 -- with the unshadowed
+floor at p99 63. The chain halves the error; what it leaves is its own (a
+level's texels are not the pixel's box, and the blend between two levels
+widens it). The bound is p99 32.
+
 ### Step 4: the lit side is a ramp, in the world
 
 **The cause.** `z <= nearest + bias ? 1 : exp(-tau)`: a gaussian crossing
