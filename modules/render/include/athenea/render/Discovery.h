@@ -82,6 +82,9 @@ struct RenderLookSettings {
     /// behind it; false, as a disc carrying its pixel like any other -- what
     /// a look at coarse cells takes, which a finer one then replaces whole.
     bool     panes = true;
+    /// A level of a frame's pyramid that has one above it: a gaussian laid
+    /// over nothing the scene held takes cells twice as wide for its parent.
+    bool     pyramid = false;
 };
 
 /// What a render left in the scene.

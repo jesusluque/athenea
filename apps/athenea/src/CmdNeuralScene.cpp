@@ -118,6 +118,7 @@ struct SceneOptions {
     double                   timeStep = 0.0;
     bool                     freeEachFrame = false;
     double                   coveredEnough = 0.8;
+    unsigned                 pyramid = 32;
     std::vector<unsigned>    storedFrames;
 };
 
@@ -1315,17 +1316,25 @@ int runShoot(const SceneOptions& all) {
         if (!instances.empty()) {
             if (auto drawn = drawKnown(); !drawn) return report(drawn.error());
             {
-                auto drawnBefore = raster->render(camera, instances, settings, before);
-                if (!drawnBefore) return report(drawnBefore.error());
+                // Of what earlier frames left: this frame's gathering looks are no one's parents.
+                std::vector<render::SplatInstance> earlier;
                 std::vector<render::SplatInstance> bySize;
                 for (size_t k = 0; k < clouds.size(); ++k) {
+                    if (scene.pieces[pieceOf[k]].foundIn >= frameFirst) {
+                        continue;
+                    }
+                    earlier.push_back(instances[k]);
                     auto instance = bySizeOf(k);
                     if (!instance) return report(instance.error());
                     bySize.push_back(*instance);
                 }
-                auto sizesBefore = raster->render(camera, bySize, settings, beforeSize);
-                if (!sizesBefore) return report(sizesBefore.error());
-                hasBefore = true;
+                if (!earlier.empty()) {
+                    auto drawnBefore = raster->render(camera, earlier, settings, before);
+                    if (!drawnBefore) return report(drawnBefore.error());
+                    auto sizesBefore = raster->render(camera, bySize, settings, beforeSize);
+                    if (!sizesBefore) return report(sizesBefore.error());
+                    hasBefore = true;
+                }
             }
             // A piece's record, on the device the first time it is marked in: what a file held, or nothing.
             const auto recordOf = [&](std::vector<gpu::Buffer>& records, size_t k, const std::string& file) -> Result<void> {
@@ -1457,33 +1466,31 @@ int runShoot(const SceneOptions& all) {
                 }
                 if (auto again2 = drawKnown(); !again2) return report(again2.error());
             }
-            // THE FRAME'S COARSE LOOKS ARE THE LEVELS ABOVE ITS LAST. Every pixel of the whole frame is now
-            // held by what was there before or about to be made at one pixel, so whatever is left of a coarse
-            // look's discs has finer gaussians over all of it: refined, with the rest.
+            // THE LOOKS TAKEN WHILE THE FRAME GATHERED END WITH ITS LAST. They were there for something to
+            // draw before the frame was whole, made of a sixty-fourth and a sixteenth of its paths; what is
+            // left of their discs goes, and the levels above the last look are made of the whole frame
+            // (the pyramid, below).
             if (last) {
                 for (size_t k = 0; k < instances.size(); ++k) {
                     io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
                     if (piece.foundIn < frameFirst) {
                         continue;
                     }
-                    if (auto has = recordOf(refined, k, piece.refined); !has) return report(has.error());
-                    auto words = refined[k].readAll<uint32_t>(device);
+                    if (auto has = recordOf(gone, k, piece.gone); !has) return report(has.error());
+                    auto words = gone[k].readAll<uint32_t>(device);
                     if (!words) return report(words.error());
                     words->resize(clouds[k]->count);
-                    uint32_t sealed = 0;
                     for (uint32_t& word : *words) {
                         if (word == 0u) {
                             word = stamp;
-                            ++sealed;
                         }
                     }
-                    // Those already stamped gone are counted there, not here.
-                    const uint32_t left = piece.gaussians - std::min(piece.gaussians, piece.removed + piece.refinedCount +
-                                                                                          newlyGone[k] + newlyRefined[k]);
                     auto record = discovery->record(clouds[k]->count, *words);
                     if (!record) return report(record.error());
-                    refined[k] = *record;
-                    newlyRefined[k] += std::min(sealed, left);
+                    gone[k] = *record;
+                    // All of it is gone now, whatever of it had been refined on the way.
+                    newlyGone[k] = piece.gaussians - std::min(piece.gaussians, piece.removed + piece.refinedCount +
+                                                                                   newlyRefined[k]);
                 }
             }
             for (size_t k = 0; k < instances.size(); ++k) {
@@ -1533,6 +1540,8 @@ int runShoot(const SceneOptions& all) {
             held.first = &knownFirst.depth;
             held.size = &knownSize.colour;
         }
+        // A frame's gathering looks are no parents: what a gaussian is laid over is what earlier frames
+        // left, and the levels above it are the pyramid's.
         if (hasBefore) {
             held.beforeSize = &beforeSize.colour;
             held.beforeDepth = &before.depth;
@@ -1547,8 +1556,65 @@ int runShoot(const SceneOptions& all) {
         how.turned = all.turned;
         // Glass is made as glass by the view's last look; the coarse ones before it carry its picture.
         how.panes = last;
+        how.pyramid = last && all.pyramid > 1;
         auto look = discovery->fromRender(frameColour, frameDepth, planes, width, height, projection, held, how);
         if (!look) return report(look.error());
+        // THE FRAME'S PYRAMID. Where the whole frame found surface the scene did not hold, it also leaves
+        // the levels above: cells of 2, 4, 8... pixels of the same frame, each the mean of its pixels that
+        // show the one surface -- a gaussian the right width for an eye that far again, and that far again.
+        // They are born refined: the last look's gaussians lie over them. A look does not read them; the cut
+        // draws them from where the finer ones are under its threshold. A third as many gaussians again.
+        uint32_t pyramidMade = 0;
+        if (last && look->made > 0) {
+            render::KnownScene under = held;
+            under.size = nullptr;        // held however coarse: a level is laid only where there was nothing
+            under.beforeSize = nullptr;
+            under.beforeDepth = nullptr;
+            for (uint32_t level = 2; level <= all.pyramid; level *= 2) {
+                render::RenderLookSettings above = how;
+                above.footprint = level;
+                above.refine = 0.0F;
+                above.repaint = 0.0F;
+                above.panes = false;
+                above.pyramid = level * 2 <= all.pyramid;
+                auto cells = discovery->fromRender(frameColour, frameDepth, planes, width, height, projection, under, above);
+                if (!cells) return report(cells.error());
+                if (cells->made == 0) {
+                    continue;
+                }
+                char label[96];
+                std::snprintf(label, sizeof(label), "%s_t%g_f%u_s%u", name.c_str(), time, level, stamp);
+                io::NeuralScenePiece piece;
+                piece.id = label;
+                piece.cloud = "pieces/" + piece.id + ".athg";
+                auto floats = cells->records.readAll<float>(device);
+                if (!floats) return report(floats.error());
+                if (auto written = io::writeGaussians(directory / piece.cloud, cells->made, render::kRenderRecord, *floats);
+                    !written) {
+                    return report(written.error());
+                }
+                loader->keepFaint(true);
+                auto cloud = loader->upload(cells->records, cells->made, render::Discovery::renderEncoding(), piece.cloud, 0);
+                loader->keepFaint(false);
+                if (!cloud) return report(cloud.error());
+                piece.prim = all.stage;
+                piece.gaussians = cloud->count;
+                piece.boundsMin = cloud->bounds.min;
+                piece.boundsMax = cloud->bounds.max;
+                piece.origin = "discovered";
+                piece.foundBy = name;
+                piece.foundAt = time;
+                piece.foundIn = stamp;
+                piece.footprint = level;
+                piece.refined = "pieces/" + piece.id + ".refined";
+                piece.refinedCount = cloud->count;
+                const std::vector<uint32_t> born(cloud->count, stamp);
+                if (auto written = io::writeSeen(directory / piece.refined, born); !written) return report(written.error());
+                scene.pieces.push_back(piece);
+                scene.snapshots.back().pieces.push_back(piece.id);
+                pyramidMade += cloud->count;
+            }
+        }
         std::string id;
         if (look->made > 0) {
             char label[96];
@@ -1593,10 +1659,10 @@ int runShoot(const SceneOptions& all) {
         }
         out("  %s at %g, %u paths a pixel, cells of %u: %u hold a surface, the scene held %u (%.1f%%), %u let the eye "
             "through; %u gaussians made (%u of them behind glass), %u gone and %u refined (seen through at %u "
-            "pixels, finer at %u); %.2f s\n",
+            "pixels, finer at %u), %u more in the levels above; %.2f s\n",
             name.c_str(), time, samples, footprint, look->surfaces, look->held,
             look->surfaces > 0 ? 100.0 * look->held / look->surfaces : 0.0, look->panes, look->made, look->behind,
-            taken, refinedNow, firstThrough, firstAgain,
+            taken, refinedNow, firstThrough, firstAgain, pyramidMade,
             std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count());
         return 0;
     };
@@ -2377,6 +2443,7 @@ void addNeuralScene(CLI::App& app) {
     shoot->add_option("--size", o.size, "WIDTHxHEIGHT of the render");
     shoot->add_option("--time", o.time, "the stage's time code");
     shoot->add_option("--times", o.times, "several time codes, each shot through every view in turn");
+    shoot->add_option("--pyramid", o.pyramid, "the widest cells, in pixels, of the levels a frame leaves above its last look where it found new surface (a power of two; 1: none)");
     shoot->add_option("--covered-enough", o.coveredEnough, "a view the scene already covers this much of takes only its last look, at one pixel (over 1: every view takes them all)");
     shoot->add_flag("--free-each-frame", o.freeEachFrame, "the scene leaves the device after every frame and the next reads back what it sees, rather than keeping what the next view still sees");
     shoot->add_option("--time-step", o.timeStep, "--views: each view of the file is this much later than the last (a sequence, a frame a line)");

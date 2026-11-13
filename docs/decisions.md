@@ -22101,3 +22101,42 @@ with no threshold the finest everywhere; and as the scene stood before the secon
 - The question "does my cell hold a node at my level" is still `--refine`'s ratio, asked on the screen.
 - A walk cut for each view reads its pieces again from the disk for every view.
 - Metal: nothing of this section has run there.
+
+## A frame's pyramid (13 Nov)
+
+The looks taken while a frame gathers are for something to draw before it is whole, and make noisy parents: they
+end with the frame's last look again, as they did, and the levels above that look are made of the whole frame.
+Where the last look found surface the scene did not hold, the frame also leaves cells of 2, 4, 8, 16 and 32
+pixels (`--pyramid`), each the mean of its pixels that show the one surface: `fromRender` at those footprints,
+held however coarse the scene is there, so that a level is laid only where there was nothing. A gaussian laid
+over nothing takes the level above for its parent -- twice its width -- where that level's cell is made (its
+middle shows the same surface, unheld); the pieces are written refined and no look reads them. Two things the
+first run of it showed: the last look had lost the parents earlier frames left (the scene "before" is now of
+earlier frames' pieces alone, at every look), and a parent was named where the level above made no cell.
+
+The same dolly, with the pyramid: 5.83 million gaussians on the disk in 242 pieces, 642 MB (5.05 million and
+558 MB without), 0.78 million of them the pyramid's; the shoot 88 s. The cut then:
+
+| from | threshold | gaussians drawn, without and with the pyramid | against the scene drawn flat, without and with |
+|---|---|---|---|
+| the farthest camera, inside | 1.2 px | 2.45 and 2.55 million | 34.0 and 33.9 dB |
+| | 1.5 px | 1.71 and 1.81 million | 34.0 and 32.9 dB |
+| | 3 px | 0.82 and 1.01 million | 26.5 and 27.5 dB |
+| outside, 45 m off | 1.2 px | 0.56 and 0.63 million | 37.8 and 34.6 dB |
+| | 1.5 px | 0.51 and 0.49 million | 36.5 and 32.4 dB |
+| | 3 px | 0.41 and 0.26 million | 31.5 and 28.2 dB |
+
+Against the path tracer from the farthest camera: 27.05 dB at 1.2 and 1.5 px without the pyramid, 26.78 and
+26.32 with. So the pyramid does what it is for only far out and at coarse thresholds -- a third fewer gaussians
+from outside at three pixels -- and at a pixel and a half it draws about as many and is further from the scene
+drawn whole, by one to four decibels. It is not yet a gain where it matters most. Frame times on that machine
+moved too much between these runs (77 to 158 ms for one cut) to say anything of them.
+
+### Not done
+
+- **Why a pyramid's parent is further off than an earlier frame's gaussian**: a cell's mean leaves out the
+  pixels a silhouette crosses and is laid square to the middle pixel's triangle; whether that, or parents named
+  for gaussians the level above only part covers, is not looked into.
+- The pyramid stops at 32 pixels of the frame that made it, and its levels are not merged across frames: from
+  very far each frame's top level is drawn beside the next's.
+- The frame times of a cut, on a machine that holds still.

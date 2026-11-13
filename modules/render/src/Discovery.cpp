@@ -349,6 +349,7 @@ Result<RenderLook> Discovery::fromRender(const gpu::Buffer& colour, const gpu::B
         p["glassOpacity"].setData(settings.glassOpacity);
         p["turned"].setData(settings.turned);
         p["panes"].setData(uint32_t{settings.panes ? 1u : 0u});
+        p["pyramid"].setData(uint32_t{settings.pyramid ? 1u : 0u});
         p["hasFirst"].setData(uint32_t{hasKnown && known.first != nullptr ? 1u : 0u});
     };
     {

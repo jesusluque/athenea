@@ -84,7 +84,11 @@ struct RenderLookParams {
     /// depth stops at.
     uint  panes;
     uint  hasBefore;                 // beforeSize and beforeDepth are bound
-    uint  pad1; uint pad2; uint pad3;
+    /// A LEVEL OF A FRAME'S PYRAMID: 1, a gaussian laid over nothing the scene held is given the level
+    /// above its own for a parent -- cells twice as wide, which the same frame makes -- so that the cut
+    /// has something coarser to draw of a surface found from near. The top level is made with 0.
+    uint  pyramid;
+    uint pad2; uint pad3;
 };
 
 StructuredBuffer<float4>   colour;       // the frame: linear light, premultiplied
@@ -458,11 +462,30 @@ void renderPack(uint3 tid: SV_DispatchThreadID) {
         // WHAT IT IS LAID OVER. Where the scene, before this look took anything out, held this surface
         // with coarser gaussians, their width is this one's parent's: the level above it, which is drawn in
         // its place from where this one is too fine to matter (scene_discover.slang's discoverCut).
+        bool laidOver = false;
         if (params.hasBefore != 0u) {
             const float4 was = beforeSize[at];
             const float wide = was.r / max(was.a, 1.0e-3);
             if (was.a > 0.5 && abs(beforeDepth[at] - z) <= params.tolerance * z && wide > 1.2 * across) {
                 records[row + kAtParent] = wide;
+                laidOver = true;
+            }
+        }
+        if (!laidOver && params.pyramid != 0u) {
+            // The level above is made where its own cell's middle shows a surface the scene does not hold
+            // (renderValid, of the look at twice the footprint): only then is there a parent to name, and
+            // only if that middle shows this same surface.
+            const uint twice = params.footprint * 2u;
+            const uint2 above = uint2(min((mid.x / twice) * twice + params.footprint, params.width - 1u),
+                                      min((mid.y / twice) * twice + params.footprint, params.height - 1u));
+            const uint at2 = above.y * params.width + above.x;
+            const float z2 = depth[at2];
+            const bool there = z2 > 0.0 && colour[at2].a > 0.5 && abs(z2 - z) <= 0.05 * z &&
+                               plane(kPlaneRow, at2).x == rowHere.x;
+            const bool heldThere = params.hasKnown != 0 && knownColour[at2].a > 0.5 &&
+                                   abs(knownDepth[at2] - z2) <= params.tolerance * z2;
+            if (there && !heldThere) {
+                records[row + kAtParent] = 2.0 * across;
             }
         }
         const float3 tint = plane(kPlaneTint, at).rgb;
