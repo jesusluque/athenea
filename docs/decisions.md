@@ -22025,6 +22025,17 @@ three-quarter view at 1920 x 1080 (`athenea bench --lod` at a threshold of nothi
   OpenColorIO, OIDN) left the disk under it. Nothing of this branch removed it.
 - Everything after the first step: the scale as the level and the stamp `refined`, the cut a gaussian, the frame's
   pyramid, pieces by place, stale parents.
+- **Three gaps athenea-research found in the plan** (its proposal 114), each to be settled as the second step
+  is written. (1) "Does my cell hold a live node at my level?" asked of a scene on the device wants something to
+  ask: a binary search of a brick's sorted run by the key (level, class, local Morton) and a walk of its tail of
+  additions, compacted when the tail passes a quarter of the run; while the pieces are still a look's, the
+  question is asked in the look's own frame, of the scene drawn with each gaussian's level as its colour.
+  (2) The key: a brick of a sixteenth of the scene's cube and thirty bits of Morton code inside it are cells of
+  1.8 mm in thirty metres, in two uint32. (3) **`refined` is one bit and a parent's children may cover part of
+  it**: a zoom that saw half a wall would have the cut drop the whole parent and leave the other half open. To
+  stamp `refined` only where the children cover nine tenths of the parent's 2 sigma, a mask of eight bits an
+  octant, or levels that add (below); to be measured on the dolly and on a zoom that sees part, as the share of
+  pixels covered under a half where the path tracer sees a surface.
 - **Adding in place of replacing.** The cut above draws a parent or its children. SHIN (arXiv 2611.10652, noted
   by athenea-research) has levels that add to what is drawn, with a delta of opacity on what was there: an
   observed parent that goes on being drawn and children that complete it. It would spare the seam where a
