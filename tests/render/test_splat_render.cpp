@@ -1661,14 +1661,19 @@ TEST_CASE("a posed cloud refits its ray tracing structure and draws what a rebui
                     pose, sa->rebuilt ? "rebuilt" : (sa->refitted != 0 ? "refitted" : "kept"), sa->buildMs,
                     sb->buildMs, sc->rebuilt ? "rebuilt" : "refitted", refitted->p99, refitted->max,
                     static_cast<unsigned long long>(refitted->over2), inPlace->p99, inPlace->max);
-        // Measured (M5 Pro, both routes): p99 0, max 1, nothing over 2 --
-        // a refitted tree is walked in another order than a rebuilt one, and
-        // near-equal peaks land a code value apart. A tree left stale (the
-        // refit skipped) reads p99 255 and ~17000 pixels over 2.
+        // A refitted tree is walked in another order than a rebuilt one, and
+        // near-equal peaks land a code value or two apart. Measured when this
+        // was written (3 Oct, M5 Pro, both routes): p99 0, max 1, nothing
+        // over 2. Measured 13 Nov: Vulkan (RTX 3070, hardware) max 2 on one
+        // pose of six; Metal's compute BVH one pixel of the frame off by 3 and
+        // by 16 on poses 3 and 4 -- the same pixel each run, where the gold
+        // ball's mirror sends the ray on to another hit. A tree left stale
+        // (the refit skipped) reads p99 255 and ~17000 pixels over 2: these
+        // tell that apart, a pixel or two of reflections do not.
         CHECK(refitted->p99 == 0);
-        CHECK(refitted->max <= 1);
+        CHECK(refitted->over2 <= 2);
         CHECK(inPlace->p99 == 0);
-        CHECK(inPlace->max <= 1);
+        CHECK(inPlace->over2 <= 2);
     }
     // The first pose builds; every one after it refits, and nothing is
     // rebuilt. The periodic tracer builds, refits twice, rebuilds in place,
