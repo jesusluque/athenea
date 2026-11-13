@@ -193,7 +193,7 @@ athenea info
 | `--edl` | number | `0` | eye-dome lighting strength, raster route |
 | `--surface` | number | `0` | surface-splatting depth slack, raster route |
 | `--eye` | 3 numbers | the target plus 1.2 of the scene's extent in z | |
-| `--target` | 3 numbers | the centre of every cloud's bounds | |
+| `--target` | 3 numbers | the centre of every cloud's bounds; of their core -- the central 96% of the splats on each axis -- where the whole box is over four times its size (a capture's far outliers) | the far clip reaches past the whole box from the eye either way |
 | `--up` | 3 numbers | `0 1 0` | |
 | `--rotate-x` | 1 number | none | degrees, applied to every cloud; COLMAP clouds want `180` |
 | `--scale` | 3 numbers | none | applied to every cloud |

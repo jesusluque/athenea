@@ -8,6 +8,10 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **`athenea render` frames a capture by its core.** Where a cloud's few far
+  outliers make its box over four times the box of its central 96 %, the
+  default camera frames that core (sorted on the device): botanics.sog and
+  nessundet-bru.sog showed a dot or nothing, and show the scene now.
 - **The OptiX pipeline build says it is building.** The path tracer's pipeline
   on CUDA can take minutes the first time a set of materials is seen (750 s
   for a transfer bake on Windows), in silence; it is announced and timed now.

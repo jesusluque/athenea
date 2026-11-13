@@ -198,7 +198,7 @@ athenea info
 | `--edl` | número | `0` | fuerza del eye-dome lighting, ruta raster |
 | `--surface` | número | `0` | holgura en profundidad del surface splatting, ruta raster |
 | `--eye` | 3 números | el target más 1.2 de la extensión de la escena en z | |
-| `--target` | 3 números | el centro de la caja de todas las nubes | |
+| `--target` | 3 números | el centro de las cajas de todas las nubes; el de su núcleo -- el 96 % central de los splats en cada eje -- donde la caja entera mide más de cuatro veces él (los outliers lejanos de una captura) | el plano lejano llega más allá de toda la caja desde el ojo en ambos casos |
 | `--up` | 3 números | `0 1 0` | |
 | `--rotate-x` | 1 número | ninguno | grados, a todas las nubes; las de COLMAP quieren `180` |
 | `--scale` | 3 números | ninguno | a todas las nubes |

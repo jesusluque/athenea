@@ -19,6 +19,7 @@
 #include "athenea/io/Readers.h"
 #include "athenea/lod/Lod.h"
 #include "athenea/lod/Athc.h"
+#include "athenea/render/Framing.h"
 #include "athenea/render/GaussianRayTracer.h"
 #include "athenea/render/PointRasterizer.h"
 #include "athenea/render/ReferenceRenderer.h"
@@ -167,10 +168,38 @@ int run(const RenderOptions& options, bool bench) {
     }
 
     const auto d = [](float v) { return static_cast<double>(v); };
-    const render::Vec3 centre{(d(all.min[0]) + d(all.max[0])) * 0.5, (d(all.min[1]) + d(all.max[1])) * 0.5,
-                              (d(all.min[2]) + d(all.max[2])) * 0.5};
-    const double extent = std::max({d(all.max[0]) - d(all.min[0]), d(all.max[1]) - d(all.min[1]),
-                                    d(all.max[2]) - d(all.min[2])});
+    // FRAMED BY THE CLOUDS' CORE WHERE OUTLIERS RULE THE BOX: the box of
+    // their central 96% on each axis (render::coreBounds, on the device),
+    // where the whole box is over four times its size -- a capture's few
+    // splats thousands of units out made the scene a dot (botanics.sog).
+    // Otherwise the whole box, as before: the core of a garden crops it. A
+    // .athc and points frame by their whole box.
+    scene::Bounds framed = all;
+    if (!clouds.empty() && athcClouds.empty() && pools.empty() && pointClouds.empty()) {
+        scene::Bounds core;
+        bool first = true;
+        for (const auto& cloud : clouds) {
+            auto one = render::coreBounds(library, *cloud);
+            if (!one) {
+                return cli::report(one.error());
+            }
+            for (size_t k = 0; k < 3; ++k) {
+                core.min[k] = first ? one->min[k] : std::min(core.min[k], one->min[k]);
+                core.max[k] = first ? one->max[k] : std::max(core.max[k], one->max[k]);
+            }
+            first = false;
+        }
+        const auto largest = [&](const scene::Bounds& b) {
+            return std::max({d(b.max[0]) - d(b.min[0]), d(b.max[1]) - d(b.min[1]), d(b.max[2]) - d(b.min[2])});
+        };
+        if (largest(all) > 4.0 * largest(core)) {
+            framed = core;
+        }
+    }
+    const render::Vec3 centre{(d(framed.min[0]) + d(framed.max[0])) * 0.5, (d(framed.min[1]) + d(framed.max[1])) * 0.5,
+                              (d(framed.min[2]) + d(framed.max[2])) * 0.5};
+    const double extent = std::max({d(framed.max[0]) - d(framed.min[0]), d(framed.max[1]) - d(framed.min[1]),
+                                    d(framed.max[2]) - d(framed.min[2])});
     const render::Vec3 target = vec(options.target, model.point(centre));
     const render::Vec3 eye =
         vec(options.eye, target + render::Vec3{0.0, 0.0, std::max(extent, 1e-3) * 1.2});
@@ -185,7 +214,9 @@ int run(const RenderOptions& options, bool bench) {
         const render::Vec3 hi = model.point({d(all.max[0]), d(all.max[1]), d(all.max[2])});
         const double across = std::sqrt((hi.x - lo.x) * (hi.x - lo.x) + (hi.y - lo.y) * (hi.y - lo.y) +
                                         (hi.z - lo.z) * (hi.z - lo.z));
-        const render::Vec3 middle = model.point(centre);
+        const render::Vec3 middle = model.point({(d(all.min[0]) + d(all.max[0])) * 0.5,
+                                                 (d(all.min[1]) + d(all.max[1])) * 0.5,
+                                                 (d(all.min[2]) + d(all.max[2])) * 0.5});
         const double toMiddle = std::sqrt((eye.x - middle.x) * (eye.x - middle.x) +
                                           (eye.y - middle.y) * (eye.y - middle.y) +
                                           (eye.z - middle.z) * (eye.z - middle.z));

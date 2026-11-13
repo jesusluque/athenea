@@ -5,6 +5,7 @@ athenea_add_module(render
         src/SplatQuery.cpp
         src/TileRasterizer.cpp
         src/Flatten.cpp
+        src/Framing.cpp
         src/ReferenceRenderer.cpp
         src/PointRasterizer.cpp
         src/GaussianRayTracer.cpp
