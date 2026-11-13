@@ -21956,3 +21956,41 @@ finer when what holds it is half as wide again as the look's disc (`--refine 1.5
 - **A stage that moves.** The time went on and nothing in Sponza did; the sequence measures a moving camera.
 - The four frames compared are each one the scene had just been given; no frame of the walk was held out.
 - The pictures written in one run, the scene read once, rather than a process a frame.
+
+## A sequence's frame does not grow with the scene (13 Nov)
+
+The user's answer to the hundred frames: solutions that do not slow it. The same walk, the same settings, three
+ways (Metal; the stage a copy of Sponza with its maps other than colour at 1024, another session's tests on the
+same device leaving no room for the whole one):
+
+| | the shoot | a frame, on average | frames 2 to 11 | the last ten | pieces at the end | the hundred pictures |
+|---|---|---|---|---|---|---|
+| the scene off the device after every frame, read back for the next | 2353 s | 23.4 s | 7 s | 30 to 39 s | 400 | 434 s |
+| what the next view still sees stays; a frame's coarse looks end with its last; the sizes kept | 1070 s | 10.6 s | 6.7 s | 13.3 s | 400 | 12.5 s |
+| and a view the scene already covers takes its last look alone | 912 s | 9.0 s | 5.6 to 5.8 s where nothing else ran | 8.0 s | 103 | 11.3 s |
+
+The path tracer's frame alone is about 5 s, so a frame's gaussians now cost one to three seconds over it, at the
+hundredth frame as at the second. The stored frames against the path tracer's are what they were (32.05, 38.60,
+32.83, 31.85 dB; SSIM 0.939, 0.960, 0.968, 0.957), 93.5% of a frame held on average and 28 423 gaussians made.
+
+- **What the next view still sees stays on the device** (`bringInView`). A view drops the pieces its frustum does
+  not meet and reads the ones it meets that are not there; a camera a step on reads nothing, where reading 283
+  files was most of a frame. The device is still bounded by what one view sees, not by the scene.
+  `--free-each-frame` is the other way.
+- **A frame's coarse looks end with its last.** What the take-out left of their discs -- a few of thousands, each
+  a file -- is stamped gone when the look at one pixel is in: every pixel is by then held by what was there or
+  made finer.
+- **A piece's cloud of sizes is made once** while the piece is on the device, not for every draw.
+- **A view the scene covers takes one look** (`--covered-enough 0.8`, the frame's mean cover drawn before a path
+  is traced): the coarse looks are for a render with nothing to show, and 98 of the hundred frames had a scene
+  already. Four snapshots a frame become one.
+- **The pictures in one run** (`render --frames FIRST LAST`): 0.11 s a frame, 39 ms of it drawing, where a process
+  a frame was 4.3 s.
+- The manifest is written a frame, not a look.
+
+### Not done
+
+- The few seconds left are the look's draws of the whole scene in view (the scene as known, where it begins, its
+  sizes, the lift): a walk's hundred pieces are a hundred instances. Pieces merged as they settle would draw as one.
+- Two sessions on one device without the queue between them: this shoot ran out of memory twice beside another
+  session's tests, and its times above carry their spikes (a frame of 21 s among frames of 6).
