@@ -22140,3 +22140,18 @@ moved too much between these runs (77 to 158 ms for one cut) to say anything of 
 - The pyramid stops at 32 pixels of the frame that made it, and its levels are not merged across frames: from
   very far each frame's top level is drawn beside the next's.
 - The frame times of a cut, on a machine that holds still.
+
+## What the Morton report adds to the found scene's levels (13 Nov)
+
+`~/luc/morton/INFORME.md` (the hub of "alternatives to the Morton tree on the GPU", with athenea-research). Its
+proposal 114 is the three gaps already taken up above. Two more of its ideas fit what `discoverCut` already is:
+
+- **A cut by a budget, in one pass** (its 113): a gaussian here is drawn for the thresholds between its own width
+  on the screen and its parent's -- an interval -- so a histogram of those intervals' ends and a prefix sum give how
+  many are drawn at every threshold at once, and the threshold for "no more than N gaussians" with no readback.
+- **A node moved towards its parent across the threshold's band** (its 116C), opacity compensated, in place of
+  the step from a parent to its children; beside the levels that add (SHIN), noted above.
+
+### Not done
+
+- Either.
