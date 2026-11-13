@@ -1838,6 +1838,8 @@ float3 refractInto(float3 wi, float3 n, float ior) {
 /// (`kFlagInside`) and a reflection stays in the glass. A back face of
 /// anything else, a room seen from inside its walls, is a surface like any
 /// other: the closed furnace is one, and counted its bounces free.
+)"
+R"(
 /// WHETHER A SURFACE ONLY REFLECTS: no lobe of its stack passes light
 /// through (a glass's that is not reflection alone, translucency, a hair's
 /// fibre). Only of such a surface is the triangle's own side the side light

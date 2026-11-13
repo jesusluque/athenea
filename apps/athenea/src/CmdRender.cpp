@@ -177,6 +177,20 @@ int run(const RenderOptions& options, bool bench) {
     render::Camera camera = render::Camera::lookingAt(eye, target, vec(options.up, {0, 1, 0}));
     camera.lens.focal = options.focal;
     camera.lens.nearZ = options.nearZ;
+    // The far plane past the whole cloud from wherever the eye is: a capture
+    // with a few splats thousands of units out (a .sog's sky) put the framed
+    // eye beyond the fixed 10000 and drew nothing at all.
+    {
+        const render::Vec3 lo = model.point({d(all.min[0]), d(all.min[1]), d(all.min[2])});
+        const render::Vec3 hi = model.point({d(all.max[0]), d(all.max[1]), d(all.max[2])});
+        const double across = std::sqrt((hi.x - lo.x) * (hi.x - lo.x) + (hi.y - lo.y) * (hi.y - lo.y) +
+                                        (hi.z - lo.z) * (hi.z - lo.z));
+        const render::Vec3 middle = model.point(centre);
+        const double toMiddle = std::sqrt((eye.x - middle.x) * (eye.x - middle.x) +
+                                          (eye.y - middle.y) * (eye.y - middle.y) +
+                                          (eye.z - middle.z) * (eye.z - middle.z));
+        camera.lens.farZ = std::max(camera.lens.farZ, toMiddle + across);
+    }
 
     auto rasterizer = render::TileRasterizer::create(library);
     if (!rasterizer) {

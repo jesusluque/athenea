@@ -8,6 +8,9 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **`athenea render` draws a cloud with far outliers.** The framed eye of a
+  capture with a few splats thousands of units out sat past the fixed far
+  clip and drew nothing; the far plane now reaches past the whole cloud.
 - **Normal maps no longer add light in the path tracer.** A reflection under a
   normal map's tilted normal was taken for a glass crossing and left inside
   the mesh; a normal-mapped sphere grew brighter with every bounce (2.8 where
