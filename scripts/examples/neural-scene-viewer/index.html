@@ -83,6 +83,7 @@
     renderer.setSize(innerWidth, innerHeight);
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 500);
+    window.__camera = camera;   // for whoever drives the page from outside
     const spark = new SparkRenderer({ renderer });
     scene.add(spark);
     addEventListener("resize", () => {
@@ -127,6 +128,7 @@
       let glassReady = false;     // a cube has been drawn
       let glassStale = false;     // what is shown changed: the cube is drawn again
       let glassBusy = false;
+      let glassFresh = false;     // a cube was just drawn: the glass is shaded from it
       const lensShading = (ior, tint) => {
         const index = dyno.dynoFloat(ior);
         const through = dyno.dynoVec3(new THREE.Vector3(tint[0], tint[1], tint[2]));
@@ -195,6 +197,7 @@
           glassRoom.value = texture;
           glassMiddle.value.copy(middle);
           glassReach.value = Math.max(size * 2.0, 0.5);
+          glassFresh = true;
           if (!glassReady) {
             glassReady = true;
             for (const lens of lenses) if (lens) { lens.worldModifier = lens.userData.shading; lens.updateGenerator(); }
@@ -373,7 +376,13 @@
           }
         }
         if (!(playing && follow.checked)) controls.update(camera);
-        glassEye.value.copy(camera.position);
+        // The eye moved, or the cube is new: the glass is shaded again. A gaussian's colour is made when
+        // its mesh says it changed, and a value handed to the shader does not say so by itself.
+        if (glassReady && (!glassEye.value.equals(camera.position) || glassFresh)) {
+            glassEye.value.copy(camera.position);
+            glassFresh = false;
+            for (let k = 0; k < shown; ++k) if (lenses[k]) lenses[k].updateVersion();
+        }
         if (glassStale && !loading) drawRoom();
         renderer.render(scene, camera);
       });

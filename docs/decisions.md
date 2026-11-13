@@ -22385,3 +22385,10 @@ does. Not measured against the path tracer: there is no reading back from the pa
 - **One glass a scene**, in effect: one cube, from the middle of all the glass shown; and one index and tint a
   part, the first lens's.
 - The cube is drawn again on every step of the timeline, playing included.
+
+**The eye that moved (same day).** The user, of the page: turning the camera, nothing is seen through the
+gaussians. Spark makes a gaussian's colour when its mesh says it changed, and a value handed to the shader does
+not say so: the glass kept the colours of the eye it was first shaded from. The page now tells each glass mesh
+(`updateVersion`) whenever the camera's position changed or a cube was drawn. Checked by driving the page:
+the camera set at one place and then another gives, pixel for pixel, the frame of the page opened at the
+second.
