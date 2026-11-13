@@ -1339,3 +1339,139 @@ TEST_CASE("a scene cut for a view draws a coarse look's gaussians from far and t
     REQUIRE(moved);
     CHECK(moved->count == stepped->count);
 }
+
+#include "athenea/render/SceneGlass.h"
+
+TEST_CASE("a found scene's glass shows what stands behind it from where the eye is, and something else from elsewhere",
+          "[render][gpu][neural][scene][glass]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto discovery = render::Discovery::create(*gpu->library);
+    auto glass = render::SceneGlass::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!discovery) FAIL(discovery.error().toString());
+    if (!glass) FAIL(glass.error().toString());
+    // A ROOM AND A SLAB OF GLASS IN IT, as records a render's look would have left: a wall behind the slab
+    // that is red on one side and blue on the other, a grey wall behind the eye, and the slab's two faces,
+    // whose stored picture is green -- what some look saw in it, and no view's here.
+    const uint32_t stride = render::kRenderRecord;
+    std::vector<float> records;
+    std::vector<std::array<float, 4>> made;
+    const auto shown = [](float light) {
+        const float encoded = light <= 0.0031308F ? 12.92F * light : 1.055F * std::pow(light, 1.0F / 2.4F) - 0.055F;
+        return (encoded - 0.5F) / 0.28209479F;
+    };
+    const auto disc = [&](float x, float y, float z, float size, std::array<float, 3> light, float facing, bool isGlass) {
+        const size_t at = records.size();
+        records.resize(at + stride, 0.0F);
+        float* r = &records[at];
+        r[0] = x; r[1] = y; r[2] = z;
+        r[3] = 4.0F;                                    // opaque
+        r[4] = std::log(size); r[5] = std::log(size); r[6] = std::log(size * 0.05F);
+        r[7] = 1.0F;                                    // no turn: the thin axis is z
+        for (int c = 0; c < 3; ++c) r[11 + c] = shown(light[c]);
+        r[16] = facing;                                 // the surface's normal
+        r[18] = isGlass ? 0.0F : 1.0F;
+        r[19] = isGlass ? 1.0F : 0.0F;                  // what it transmits
+        r[render::kRenderRecordIndex] = isGlass ? 1.5F : 1.0F;
+        for (int c = 0; c < 3; ++c) r[render::kRenderRecordTint + c] = 1.0F;
+        made.push_back({1.0F, 1.0F, 1.0F, isGlass ? 1.5F : 0.0F});
+    };
+    const std::array<float, 3> red{0.8F, 0.05F, 0.05F};
+    const std::array<float, 3> blue{0.05F, 0.05F, 0.8F};
+    const std::array<float, 3> grey{0.3F, 0.3F, 0.3F};
+    const std::array<float, 3> green{0.05F, 0.8F, 0.05F};
+    for (int j = -40; j <= 40; ++j) {
+        for (int i = -40; i <= 40; ++i) {
+            const float x = static_cast<float>(i) * 0.15F;
+            const float y = static_cast<float>(j) * 0.15F;
+            disc(x, y, -4.0F, 0.1F, x < 0.0F ? red : blue, 1.0F, false);
+            disc(x, y, 9.0F, 0.1F, grey, -1.0F, false);
+        }
+    }
+    uint32_t panes = 0;
+    for (int j = -20; j <= 20; ++j) {
+        for (int i = -20; i <= 20; ++i) {
+            const float x = static_cast<float>(i) * 0.05F;
+            const float y = static_cast<float>(j) * 0.05F;
+            disc(x, y, 0.25F, 0.035F, green, 1.0F, true);
+            disc(x, y, -0.25F, 0.035F, green, -1.0F, true);
+            panes += 2;
+        }
+    }
+    const uint32_t count = static_cast<uint32_t>(records.size() / stride);
+    io::RawSplats raw;
+    raw.source = "test";
+    raw.count = count;
+    raw.encoding = render::Discovery::renderEncoding();
+    raw.records = std::move(records);
+    loader->keepFaint(true);
+    auto piece = loader->upload(raw, 0);
+    loader->keepFaint(false);
+    if (!piece) FAIL(piece.error().toString());
+    REQUIRE(piece->count == count);
+    auto matter = gpu::Buffer::fromSpan<std::array<float, 4>>(
+        *gpu->device, std::span<const std::array<float, 4>>(made), "test.matter");
+    REQUIRE(matter);
+    render::RenderSettings settings;
+    settings.width = 320;
+    settings.height = 240;
+    // The middle of the frame, which is the slab's: its colour over its cover.
+    const auto middle = [&](const render::RenderTargets& frame) {
+        auto stats = render::imageStats(*gpu->library, frame.colour, settings.width, settings.height, 150, 110, 170, 130);
+        REQUIRE(stats);
+        const double cover = std::max(stats->mean[3], 1.0e-6);
+        return std::array<double, 3>{stats->mean[0] / cover, stats->mean[1] / cover, stats->mean[2] / cover};
+    };
+    // The scene cut for a view as `neural-scene render --glass` cuts it: one cloud, what each gaussian is
+    // made of gathered beside it, and the glass seen from the view's eye.
+    const auto seenFrom = [&](double x, render::GlassSeen& said, std::array<double, 3>* before = nullptr) {
+        const render::Camera camera = render::Camera::lookingAt({x, 0.0, 5.0}, {0.0, 0.0, 0.0});
+        const render::Projection projection = render::projectionFor(camera, settings.width, settings.height);
+        auto plan = discovery->planCut(*piece, nullptr, nullptr, nullptr, projection, 0.0F);
+        if (!plan) FAIL(plan.error().toString());
+        REQUIRE(plan->drawn == count);
+        auto cut = discovery->cutCloud(*piece, plan->drawn);
+        if (!cut) FAIL(cut.error().toString());
+        auto room = glass->room(*cut);
+        if (!room) FAIL(room.error().toString());
+        REQUIRE(discovery->gatherCut(*piece, nullptr, *plan, projection, 0.0F, 0.0F, *cut, 0));
+        REQUIRE(glass->gather(*piece, *matter, *plan, *cut, *room, 0));
+        const render::SplatInstance instance{&*cut, render::Mat4::identity()};
+        if (before != nullptr) {
+            render::RenderTargets frame;
+            REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&instance, 1), settings, frame));
+            *before = middle(frame);
+        }
+        auto seen = glass->see(projection, *cut, *room);
+        if (!seen) FAIL(seen.error().toString());
+        said = *seen;
+        render::RenderTargets frame;
+        REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&instance, 1), settings, frame));
+        return middle(frame);
+    };
+    render::GlassSeen fromRight;
+    render::GlassSeen fromLeft;
+    std::array<double, 3> picture{};
+    const std::array<double, 3> right = seenFrom(2.5, fromRight, &picture);
+    const std::array<double, 3> left = seenFrom(-2.5, fromLeft);
+    std::printf("  a slab of %u glass gaussians in a room of %u: its picture (%.2f %.2f %.2f); seen from the right "
+                "(%.2f %.2f %.2f), %u rays through it met the room and %u mirrored; from the left (%.2f %.2f %.2f); "
+                "the tree %.1f ms, the rays %.1f ms\n",
+                panes, count - panes, picture[0], picture[1], picture[2], right[0], right[1], right[2],
+                fromRight.behind, fromRight.mirrored, left[0], left[1], left[2], fromRight.treeMs, fromRight.seenMs);
+    CHECK(picture[1] > 0.5);                         // drawn as it was stored, the slab is its picture
+    CHECK(fromRight.glass == panes);
+    CHECK(fromRight.behind > panes * 9 / 10);        // every ray through it finds the wall behind
+    CHECK(fromRight.mirrored > panes * 2 / 3);       // and most mirrored ones the wall behind the eye, as far as it reaches
+    // From the right the eye's ray through the slab lands on the wall's left, which is red; from the left,
+    // on its right, which is blue. Nothing of the green picture is left in either.
+    CHECK(right[0] > 0.5);
+    CHECK(right[2] < 0.2);
+    CHECK(right[1] < 0.15);
+    CHECK(left[2] > 0.5);
+    CHECK(left[0] < 0.2);
+    CHECK(left[1] < 0.15);
+}

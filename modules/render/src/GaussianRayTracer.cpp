@@ -1005,6 +1005,22 @@ ShadowScene GaussianRayTracer::shadowScene() const noexcept {
     return scene;
 }
 
+ParticleTree GaussianRayTracer::treeOf(const scene::GpuSplats& cloud) const noexcept {
+    ParticleTree tree;
+    const Cloud* built = find(cloud);
+    if (built == nullptr || settings_.route != RayTracingRoute::ComputeBvh || !bvhBoxes_.valid()) {
+        return tree;
+    }
+    tree.frames = &frames_;
+    tree.boxes = &bvhBoxes_;
+    tree.children = &bvhChildren_;
+    tree.leaves = &bvhLeaves_buffer_;
+    tree.nodeBase = built->nodeBase;
+    tree.base = built->base;
+    tree.particles = cloud.count;
+    return tree;
+}
+
 Result<RayTracerStats> GaussianRayTracer::render(const Projection& projection,
                                                  std::span<const SplatInstance> instances,
                                                  const RenderSettings& settings,

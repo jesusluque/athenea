@@ -190,7 +190,16 @@ void renderValid(uint3 tid: SV_DispatchThreadID) {
         InterlockedAdd(counters[0], 1u);
         const float through = plane(kPlaneMade, at).z;
         const bool pane = params.panes != 0 && through > 0.02;
-        if (holds(at, z, pane) && (pane || (!repainted(at) && !coarser(at, z)))) {
+        // A SHEET IS HELD WHERE THE SCENE BEGINS, and is not made again: its depth is not what the scene's
+        // depth says. A solid of glass is a surface like any other -- its gaussians are opaque, the scene's
+        // depth is theirs -- and a nearer look lays finer ones over it; only its colour says nothing of
+        // whether it changed, since what glass shows is the eye's.
+        // (A lens: glass that is no sheet and has an index to bend by. Whatever else lets the eye through
+        // is held as a sheet is.)
+        const float4 rowAt = plane(kPlaneRow, at);
+        const bool solid = pane && rowAt.y <= 0.5 && rowAt.z > 1.0;
+        const bool sheet = pane && !solid;
+        if (holds(at, z, sheet) && (sheet || ((solid || !repainted(at)) && !coarser(at, z)))) {
             InterlockedAdd(counters[1], 1u);
         } else {
             kinds |= 1u;
@@ -241,7 +250,9 @@ void renderSparePanes(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const uint at = tid.y * params.width + tid.x;
-    if (plane(kPlaneMade, at).z > 0.02) {
+    // A sheet's pixels, and anything that lets the eye through with no index: a lens is where the scene's depth says it is.
+    const float4 rowAt = plane(kPlaneRow, at);
+    if (plane(kPlaneMade, at).z > 0.02 && !(rowAt.y <= 0.5 && rowAt.z > 1.0)) {
         seenThrough[at] = 0.0;
     }
 }

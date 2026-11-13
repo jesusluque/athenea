@@ -22278,3 +22278,78 @@ gaussians, 113 s. The first export of the walk is published at neural.lucab.co.u
   written to the file.
 - **Live on the web.** A shoot is followed where its files are served; the published page plays a growth back.
 - The frame's aspect, which the page takes as sixteen by nine, and the scene's unit, which it guesses from the box.
+
+## Glass that is its own, and what it shows worked out a view (13 Nov)
+
+The user: the glass has the material that is its own and refracts what it sees; if the camera changes
+something else must appear; the properties are intrinsic to the object, and what is seen depends on the point
+of view; the scene must hold what is behind, which it reflects and refracts.
+
+A solid of glass in a found scene was a picture: the gaussians a look made of it kept what that look saw in
+it, and from any other eye the knight in Sponza showed the first eye's room. What was already in the record
+(scene_render.slang) is what is the glass's own -- its transmission, its index, what one crossing tints, the
+way its surface faces -- and those do not depend on the eye. So:
+
+- **Where the attributes live.** As the engine keeps them for every cloud: `scene::GpuSplats::pbr`
+  (transmission, roughness, metal) and `normals`, which `Discovery::renderEncoding` already filled for a
+  piece; and beside the cloud a float4 a gaussian, `matter` -- the tint of a crossing and the index (0 where
+  nothing bends: an opaque surface, a sheet) -- laid out of the records when a piece is read. A cut's cloud
+  keeps all three (`SceneGlass::room`, `gather`, beside `Discovery::gatherCut`). No change to `.athg`.
+- **What it shows** (`render::SceneGlass::see`, `scene_glass.slang`, `neural-scene render --glass`). The
+  scene is cut for the view as one cloud, glass and room together and the pieces outside the view too. The
+  gaussian ray tracer builds its tree over that cloud (the compute route's LBVH; `GaussianRayTracer::treeOf`
+  hands it to a kernel, which is all that was added to the tracer), and for each glass gaussian two rays are
+  cast with the walks the engine's own glass uses (`rt/rt_glass.slang`): the mirror of the eye's ray, to the
+  first gaussian that is not glass and stands clear of this one's plane; and the eye's ray bent in at the
+  gaussian's normal, to the far face of the glass (`glassExit`), bent out there -- or turned back in, past
+  the critical angle -- and on to the first gaussian that is not glass. Its colour is
+  `F mirrored + (1 - F)(1 - F') tint^2 behind`. A ray that meets nothing keeps the stored picture.
+- **The engine's relit glass was not used.** `rt_shade.slang` does this for a cloud that asks to be relit,
+  inside a shading that wants lights, a dome and a transfer; a found scene carries light, not an albedo, and
+  has none of those. The walks and the tree are the engine's; the shading is the three lines above.
+- **A lens is a surface like any other to the looks.** Solid glass was held as a sheet is -- where the scene
+  begins, never made again -- so the knight stayed the 5 963 gaussians of the first look that saw it, from
+  ten metres, each some six pixels wide from near. Its gaussians are opaque and the scene's depth is theirs:
+  a nearer look now lays finer ones over it (`renderValid`), and the masks spare only sheets and what lets
+  the eye through with no index (`renderSparePanes`). Its colour still says nothing of whether it changed.
+
+Measured, Metal, 960 x 540. The test (`[glass]`): a slab of 3 362 glass gaussians whose picture is green, a
+wall behind it red on the left and blue on the right, a grey one behind the eye; seen from the right the
+slab's middle is (0.75 0.06 0.06), from the left (0.06 0.06 0.75), where 0.92 of the wall and 0.04 of grey
+give 0.75; every ray through met the wall. The knight in Sponza (60 frames, 2.13 million gaussians standing):
+
+| | before | now |
+|---|---|---|
+| glass gaussians of the knight standing | 13 721 | 130 630 |
+| a frame of `shoot` | 28.4 s | 28.2 s (1 690 s the sixty; 30.5 s in a run that held every transmitting surface as a lens) |
+| a view drawn | 12 ms (the cut, one cloud) | 0.56 s with `--glass`: the tree 0.48 s, the rays 0.06 s, the frame 0.012 s |
+| three views no look took, against the path tracer at 8 bounces (PSNR; SSIM) | the picture: 29.31, 32.67, 32.72 dB; 0.857, 0.835, 0.864 | `--glass`: 29.31, 32.60, 32.69 dB; 0.851, 0.833, 0.861 |
+
+No nearer the path tracer by the numbers, then, and it is said as it is: the knight is now see-through and
+what it shows moves with the eye, where the picture was a bright knight pasted on; but it is noisier than the
+picture, and it has none of the bright rims the reference has (the reference's knight reaches 0.5 to 1.0
+where ours reaches 0.2).
+
+### Not done
+
+- **Holes in a wall.** Black patches on a pillar's face beside the knight, in the stored picture and with
+  `--glass` alike, in both shoots made after a lens was let be refined. Not looked into: whether the shoot
+  before had them was not seen, its views looked elsewhere. Sponza has a second transmitting material (row 19,
+  index 1.0, 39 360 gaussians), which is held as a sheet is.
+- **The highlights.** A mirror ray reads a gaussian's colour, and no gaussian is a lamp: the bright rims are
+  the lights themselves and the sunlit court seen at grazing angles. The scene would have to keep its lights
+  (or the emission a look saw) for a glass to mirror them.
+- **Noise.** One ray each way a gaussian, read from the one gaussian it meets nearest its middle: neighbours
+  land on different gaussians. Not filtered by the glass's roughness, nor by the footprint of the gaussian
+  that casts the ray.
+- **What is only ever seen through the glass.** Nothing is made behind a lens (the path tracer's
+  `throughPosition` is there): what stands behind the knight is in the scene because other looks saw it
+  directly. A room seen only through its glass would show the stored picture.
+- **The far face.** `glassExit` takes the farthest glass along the bent ray, of any glass: a horse's ear in
+  front of its neck is crossed as one solid, and two glass objects in line as one.
+- **The tree every view.** 0.48 s of the 0.56 s. The cut is a new cloud a view, so the tree is built anew;
+  a scene that stands still wants it built once over the finest level, and refitted or not at all.
+- **The web page** draws the stored picture: Spark has no such pass.
+- **CUDA** not run. The compute route is the one used, which runs there.
+- `--repaint` over glass: a lens's colour is the eye's, and is left out of that test; `seenThrough`'s own
+  repaint is not, and with `--repaint` set would take a lens out every frame.

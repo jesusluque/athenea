@@ -48,6 +48,7 @@
 #include "athenea/render/NeuralFit.h"
 #include "athenea/render/ReferenceRenderer.h"
 #include "athenea/render/SplatLift.h"
+#include "athenea/render/SceneGlass.h"
 #include "athenea/render/TileRasterizer.h"
 #include "athenea/scene/GpuClouds.h"
 #include "athenea/technique/DisplayTransform.h"
@@ -110,6 +111,7 @@ struct SceneOptions {
     std::string              grow;
     float                    growExposure = 0.0F;
     float                    morph = 0.0F;
+    bool                     glass = false;
     float                    exposure = 0.0F;
     // shoot
     std::string              stage;
@@ -147,7 +149,8 @@ bool renderRecordOf(uint32_t floats) {
 /// With `parent`, a render's piece also gives the width of what each gaussian was laid over (left
 /// invalid where the file has none).
 Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& loader,
-                              const std::filesystem::path& path, gpu::Buffer* parent = nullptr) {
+                              const std::filesystem::path& path, gpu::Buffer* parent = nullptr,
+                              gpu::Buffer* matter = nullptr) {
     const std::string ext = path.extension().string();
     if (ext == ".usda" || ext == ".usdc" || ext == ".usd") {
         return usd::uploadParticleField(library, loader, path);
@@ -178,6 +181,25 @@ Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& l
                 library.device(), std::span<const std::array<float, 4>>(over), "piece.parent");
             if (!made) return std::move(made).error();
             *parent = *made;
+        }
+        if (matter != nullptr) {
+            // WHAT THE SURFACE IS MADE OF THAT THE CLOUD DOES NOT KEEP (render::SceneGlass): what one crossing
+            // tints and the index, a float4 a gaussian, laid side by side out of the records. No index for a
+            // sheet, which bends nothing, nor for a record from before a gaussian kept its material.
+            const bool carried = held->floats >= render::kRenderRecordTint + 3;
+            std::vector<std::array<float, 4>> made(held->count);
+            for (uint32_t k = 0; k < held->count; ++k) {
+                const float* record = &held->records[size_t{k} * held->floats];
+                const bool sheet = carried && record[render::kRenderRecordSheet] > 0.5F;
+                made[k] = {carried ? record[render::kRenderRecordTint] : 1.0F,
+                           carried ? record[render::kRenderRecordTint + 1] : 1.0F,
+                           carried ? record[render::kRenderRecordTint + 2] : 1.0F,
+                           carried && !sheet ? record[render::kRenderRecordIndex] : 0.0F};
+            }
+            auto laid = gpu::Buffer::fromSpan<std::array<float, 4>>(
+                library.device(), std::span<const std::array<float, 4>>(made), "piece.matter");
+            if (!laid) return std::move(laid).error();
+            *matter = *laid;
         }
         io::RawSplats raw;
         raw.source = path.string();
@@ -227,12 +249,14 @@ struct PieceForCut {
     gpu::Buffer      gone;
     gpu::Buffer      refined;
     gpu::Buffer      parent;
+    gpu::Buffer      matter;   ///< with glass: what each is made of (render::SceneGlass)
 };
 
 Result<PieceForCut> loadForCut(gpu::ShaderLibrary& library, scene::CloudLoader& loader, render::Discovery& discovery,
-                               const std::filesystem::path& directory, const io::NeuralScenePiece& piece) {
+                               const std::filesystem::path& directory, const io::NeuralScenePiece& piece,
+                               bool withMatter = false) {
     PieceForCut held;
-    auto cloud = load(library, loader, directory / piece.cloud, &held.parent);
+    auto cloud = load(library, loader, directory / piece.cloud, &held.parent, withMatter ? &held.matter : nullptr);
     if (!cloud) return std::move(cloud).error();
     held.cloud = std::move(*cloud);
     const std::string* files[2] = {&piece.gone, &piece.refined};
@@ -268,7 +292,8 @@ Result<scene::GpuSplats> cutPiece(gpu::ShaderLibrary& library, scene::CloudLoade
 Result<scene::GpuSplats> cutScene(gpu::ShaderLibrary& library, scene::CloudLoader& loader, render::Discovery& discovery,
                                   const std::filesystem::path& directory, const io::NeuralScene& scene,
                                   const render::Projection& projection, uint32_t width, uint32_t height,
-                                  float threshold, uint32_t upTo, float morph) {
+                                  float threshold, uint32_t upTo, float morph, render::SceneGlass* glass = nullptr,
+                                  render::GlassSeen* seen = nullptr) {
     std::vector<PieceForCut> held;
     std::vector<render::Discovery::CutPlan> plans;
     uint32_t total = 0;
@@ -276,10 +301,12 @@ Result<scene::GpuSplats> cutScene(gpu::ShaderLibrary& library, scene::CloudLoade
     std::array<float, 3> high{-1.0e30F, -1.0e30F, -1.0e30F};
     for (const io::NeuralScenePiece& piece : scene.pieces) {
         if ((upTo != 0 && piece.foundIn > upTo) || (piece.gaussians != 0 && piece.removed >= piece.gaussians) ||
-            !boxInView(piece.boundsMin, piece.boundsMax, projection, width, height)) {
+            // With glass the scene is the room its glass shows: what is behind the eye is mirrored, and
+            // what the glass bends into view may stand outside it.
+            (glass == nullptr && !boxInView(piece.boundsMin, piece.boundsMax, projection, width, height))) {
             continue;
         }
-        auto loaded = loadForCut(library, loader, discovery, directory, piece);
+        auto loaded = loadForCut(library, loader, discovery, directory, piece, glass != nullptr);
         if (!loaded) return std::move(loaded).error();
         auto plan = discovery.planCut(loaded->cloud, loaded->gone.valid() ? &loaded->gone : nullptr,
                                       loaded->refined.valid() ? &loaded->refined : nullptr,
@@ -303,11 +330,28 @@ Result<scene::GpuSplats> cutScene(gpu::ShaderLibrary& library, scene::CloudLoade
     if (!cloud) return cloud;
     cloud->bounds.min = low;
     cloud->bounds.max = high;
+    gpu::Buffer matter;
+    if (glass != nullptr) {
+        auto room = glass->room(*cloud);
+        if (!room) return std::move(room).error();
+        matter = *room;
+    }
     uint32_t base = 0;
     for (size_t k = 0; k < held.size(); ++k) {
         ATHENEA_TRY(discovery.gatherCut(held[k].cloud, held[k].parent.valid() ? &held[k].parent : nullptr, plans[k],
                                         projection, threshold, morph, *cloud, base));
+        if (glass != nullptr) {
+            ATHENEA_TRY(glass->gather(held[k].cloud, held[k].matter, plans[k], *cloud, matter, base));
+        }
         base += plans[k].drawn;
+    }
+    if (glass != nullptr) {
+        // What each glass gaussian shows from this eye, written as its colour: the picture is the view's.
+        auto shown = glass->see(projection, *cloud, matter);
+        if (!shown) return std::move(shown).error();
+        if (seen != nullptr) {
+            *seen = *shown;
+        }
     }
     return cloud;
 }
@@ -2104,6 +2148,12 @@ int runRenderStored(const SceneOptions& o, const io::NeuralScene& scene) {
     if (!raster) return report(raster.error());
     auto discovery = render::Discovery::create(library);
     if (!discovery) return report(discovery.error());
+    std::optional<render::SceneGlass> glass;
+    if (o.glass) {
+        auto made = render::SceneGlass::create(library);
+        if (!made) return report(made.error());
+        glass.emplace(std::move(*made));
+    }
     struct Held {
         std::unique_ptr<scene::GpuSplats> cloud;
         gpu::Buffer                       gone;      // its record, where it has one
@@ -2136,9 +2186,20 @@ int runRenderStored(const SceneOptions& o, const io::NeuralScene& scene) {
         if (!view) return kExitFailure;
         const render::Projection projection = render::projectionFor(*view, frame.width, frame.height);
         std::vector<scene::GpuSplats> drawn;
-        drawn.reserve(scene.pieces.size());
+        drawn.reserve(scene.pieces.size() + 1);
         std::vector<render::SplatInstance> instances;
-        for (size_t k = 0; k < scene.pieces.size(); ++k) {
+        if (glass) {
+            // With glass the frame is the scene as it stood then, cut as one cloud, its glass seen from the
+            // frame's camera (read again a frame: the cut owns what it loads).
+            auto cut = cutScene(library, *loader, *discovery, directory, scene, projection, frame.width, frame.height,
+                                o.lod, frame.lastSnapshot, o.morph, &*glass);
+            if (!cut) return report(cut.error());
+            if (cut->count != 0) {
+                drawn.push_back(std::move(*cut));
+                instances.push_back(render::SplatInstance{&drawn.back(), render::Mat4::identity(), {}});
+            }
+        }
+        for (size_t k = 0; !glass && k < scene.pieces.size(); ++k) {
             const io::NeuralScenePiece& piece = scene.pieces[k];
             if (piece.foundIn > frame.lastSnapshot) {
                 continue;
@@ -2522,14 +2583,31 @@ int runRender(const SceneOptions& given) {
         out("a budget of %llu gaussians: a threshold of %.2f pixels, which draws %llu\n",
             static_cast<unsigned long long>(o.budget), o.lod, static_cast<unsigned long long>(drawn));
     }
+    // WITH GLASS (--glass) the scene is cut whatever the threshold (none: the finest there is), as one cloud
+    // that holds the glass and the room it shows, and each glass gaussian's colour is the view's.
+    const bool cutting = o.lod > 0.0F || o.glass;
+    std::optional<render::SceneGlass> glass;
+    if (o.glass) {
+        auto made = render::SceneGlass::create(library);
+        if (!made) return report(made.error());
+        glass.emplace(std::move(*made));
+    }
+    const auto saidOfGlass = [&](const render::GlassSeen& seen) {
+        out("glass: %u gaussians; through it %u met the scene, mirrored %u did; the tree %.1f ms, the rays %.1f ms\n",
+            seen.glass, seen.behind, seen.mirrored, seen.treeMs, seen.seenMs);
+    };
     std::unique_ptr<scene::GpuSplats> wholeCut;
-    if (o.lod > 0.0F && o.views.empty()) {
+    if (cutting && o.views.empty()) {
         // THE SCENE CUT FOR THE VIEW (--lod, --budget): each gaussian drawn where it is the level the view
         // wants, a coarse one in place of the finer ones laid over it from where those are under the
         // threshold -- gathered into one cloud.
+        render::GlassSeen seen;
         auto cut = cutScene(library, *loader, *discovery, directory, *scene, render::projectionFor(camera, width, height),
-                            width, height, o.lod, asOf, o.morph);
+                            width, height, o.lod, asOf, o.morph, glass ? &*glass : nullptr, &seen);
         if (!cut) return report(cut.error());
+        if (glass) {
+            saidOfGlass(seen);
+        }
         if (cut->count != 0) {
             wholeCut = std::make_unique<scene::GpuSplats>(std::move(*cut));
             clouds.push_back(std::make_unique<scene::GpuSplats>(*wholeCut));
@@ -2540,7 +2618,7 @@ int runRender(const SceneOptions& given) {
         }
     }
     for (const io::NeuralScenePiece& piece : scene->pieces) {
-        if (o.lod > 0.0F) {
+        if (cutting) {
             break;   // the cut above is the scene; a walk cuts for each of its views
         }
         if (asOf != 0 && piece.foundIn > asOf) {
@@ -2666,20 +2744,24 @@ int runRender(const SceneOptions& given) {
                 lod = *threshold;
                 walkThreshold = lod;
             }
-            if (lod > 0.0F) {
+            if (lod > 0.0F || o.glass) {
                 const render::Projection projection = render::projectionFor(view, width, height);
+                render::GlassSeen seen;
                 auto cut = cutScene(library, *loader, *discovery, directory, *scene, projection, width, height, lod, asOf,
-                                    o.morph);
+                                    o.morph, glass ? &*glass : nullptr, &seen);
                 if (!cut) return report(cut.error());
+                if (glass) {
+                    saidOfGlass(seen);
+                }
                 walkDrawn = cut->count;
                 if (cut->count != 0) {
                     cutClouds.push_back(std::move(*cut));
                     cutInstances.push_back(render::SplatInstance{&cutClouds.back(), render::Mat4::identity(), {}});
                 }
             }
-            auto stats = raster->render(view, lod > 0.0F ? cutInstances : drawnAs, waited, frame);
+            auto stats = raster->render(view, lod > 0.0F || o.glass ? cutInstances : drawnAs, waited, frame);
             if (!stats) return report(stats.error());
-            if (lod > 0.0F) {
+            if (lod > 0.0F || o.glass) {
                 // A cut's clouds are new to the rasteriser, and a first frame of anything pays for that: the
                 // frame timed is the one after, as a scene drawn flat is timed from its second view on.
                 stats = raster->render(view, cutInstances, waited, frame);
@@ -2704,7 +2786,7 @@ int runRender(const SceneOptions& given) {
         for (const auto& cloud : clouds) {
             held += cloud->count;
         }
-        if (o.lod > 0.0F || o.budget != 0) {
+        if (cutting || o.budget != 0) {
             held = walkDrawn;   // the last view's cut
         }
         if (o.budget != 0) {
@@ -2839,6 +2921,7 @@ void addNeuralScene(CLI::App& app) {
     render->add_option("--frame", o.storedFrame, "a frame the scene stored (neural-scene shoot), counted from one: its camera, its size, the scene as it stood then");
     render->add_option("--lod", o.lod, "levels of detail: a gaussian narrower than this many pixels on the screen is drawn in place of the finer ones laid over it (0: the finest everywhere)");
     render->add_option("--budget", o.budget, "levels of detail by a count: the finest threshold that draws no more than this many gaussians from the view, in place of --lod");
+    render->add_flag("--glass", o.glass, "solid glass shows what it bends and mirrors of the scene from each view, worked out from what the glass is made of, in place of the picture the look that found it saw");
     render->add_option("--morph", o.morph, "--lod, --budget: a gaussian is moved towards what it was laid over across this share of the threshold before that is drawn in its place (0: a step)");
     render->add_option("--frames", o.storedFrames, "the stored frames FIRST to LAST as pictures, the scene read once: -o a prefix, written <stem>_NNNN.png or .exr")->expected(2);
     render->add_option("--snapshot", o.snapshot, "the same by a snapshot of the manifest's, counted from one");

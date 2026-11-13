@@ -235,6 +235,14 @@ each measured):
   its own), each finer gaussian keeps its parent's width in its record, and
   `Discovery::cut` (`discoverCut`) chooses a gaussian or what was laid over
   it by their widths on the screen, with no tree walked and none stored.
+  `render/SceneGlass.h` (`scene_glass.slang`) is what solid glass shows from
+  a view: what a gaussian is made of is gathered into the cut's cloud beside
+  it (`pbr` and `normals` as every cloud keeps them, and `matter`: the tint
+  of a crossing and the index), and `see` writes each glass gaussian's colour
+  from two rays cast through the tree the gaussian ray tracer builds over
+  that cloud (`GaussianRayTracer::treeOf`, `rt/rt_glass.slang`'s walks). A
+  kernel that wants a ray through a cloud's gaussians takes the tree from
+  there; it does not build one.
 
 A kernel that adds to `shaders/athenea/neural/neural_appearance.slang` adds to
 both passes: the forward one and, by hand, the backward one beside it, and

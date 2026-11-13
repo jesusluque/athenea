@@ -8,6 +8,7 @@ athenea_add_module(render
         src/NeuralFit.cpp
         src/NeuralWall.cpp
         src/Discovery.cpp
+        src/SceneGlass.cpp
         src/TileRasterizer.cpp
         src/Flatten.cpp
         src/ReferenceRenderer.cpp

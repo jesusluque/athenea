@@ -242,6 +242,14 @@ cada una):
   registro el ancho de su padre, y `Discovery::cut` (`discoverCut`) elige una
   gaussiana o lo que se puso encima según sus anchos en pantalla, sin recorrer
   ni guardar ningún árbol.
+  `render/SceneGlass.h` (`scene_glass.slang`) es lo que el vidrio macizo muestra
+  desde una vista: de qué está hecha una gaussiana se reúne en la nube del corte
+  junto a ella (`pbr` y `normals` como los guarda toda nube, y `matter`: lo que
+  tiñe un cruce y el índice), y `see` escribe el color de cada gaussiana de vidrio
+  con dos rayos lanzados por el árbol que el ray tracer de gaussianas construye
+  sobre esa nube (`GaussianRayTracer::treeOf`, los recorridos de
+  `rt/rt_glass.slang`). Un kernel que quiere un rayo a través de las gaussianas
+  de una nube toma el árbol de ahí; no construye uno.
 
 Un kernel que añade algo a `shaders/athenea/neural/neural_appearance.slang` lo añade a
 las dos pasadas: la forward y, a mano, la backward junto a ella, y las diferencias
