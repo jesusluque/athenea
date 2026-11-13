@@ -303,12 +303,16 @@ set_tests_properties(mesh2splat_density_per-mesh PROPERTIES
 # athenea_mesh2splat_tests reads them back and counts with kernels.
 set(ATHENEA_M2S_OUTPUTS ${CMAKE_CURRENT_BINARY_DIR}/mesh2splat)
 file(MAKE_DIRECTORY ${ATHENEA_M2S_OUTPUTS})
+# An hour each: the first bake on a CUDA machine builds the path tracer's
+# OptiX pipeline from the PTX, 750 s on the RTX 3070 under Windows, and a
+# timeout that killed it left the cache unwritten for every bake after it.
 function(athenea_m2s_output name)
     add_test(NAME mesh2splat_output_${name}
         COMMAND athenea mesh2splat ${ARGN})
     set_tests_properties(mesh2splat_output_${name} PROPERTIES
         ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
         FIXTURES_SETUP mesh2splat_outputs
+        TIMEOUT 3600
         LABELS gpe)
 endfunction()
 athenea_m2s_output(two_subsets ${CMAKE_CURRENT_SOURCE_DIR}/data/two_subsets.usda --no-bake --no-camera
