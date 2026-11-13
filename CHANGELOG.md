@@ -8,6 +8,9 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **The OptiX pipeline build says it is building.** The path tracer's pipeline
+  on CUDA can take minutes the first time a set of materials is seen (750 s
+  for a transfer bake on Windows), in silence; it is announced and timed now.
 - **`athenea render` draws a cloud with far outliers.** The framed eye of a
   capture with a few splats thousands of units out sat past the fixed far
   clip and drew nothing; the far plane now reaches past the whole cloud.

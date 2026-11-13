@@ -5,6 +5,7 @@
 #include "athenea/technique/SplatShadows.h"
 
 #include <algorithm>
+#include <chrono>
 
 #include "athenea/gpu/CommandBatch.h"
 #include "athenea/gpu/Device.h"
@@ -3293,8 +3294,18 @@ Result<void> PathTracer::setPrograms(const MaterialPrograms& programs, bool grou
         desc.hitGroups = {{"nearest", "pathNearestHit", "", ""}, {"shadow", "", "pathShadowAnyHit", ""}};
         desc.maxRecursion = 1;
         desc.payloadBytes = 64;
+        // OptiX compiles the pipeline from the PTX on the CPU, and the path
+        // tracer's with a bake and every material is megabytes of it: the
+        // first time on a machine took 750 s and 15 GB on Windows (QA21),
+        // in silence, and it is cached after (27 s). Said before, timed after.
+        log::info("path tracer: building its ray tracing pipeline ({}); the first time a set of materials is seen "
+                  "this takes minutes, and it is cached after",
+                  name);
+        const auto started = std::chrono::steady_clock::now();
         auto rays = gpu::RayTracingKernel::create(*library_, desc);
         if (!rays) return std::move(rays).error();
+        log::info("path tracer: pipeline built in {:.1f} s",
+                  std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
         rayKernel_.emplace(std::move(*rays));
         kernel_.reset();
     } else {
