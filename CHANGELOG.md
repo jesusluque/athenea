@@ -8,6 +8,10 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **The path tracer draws bump materials on CUDA.** OptiX refused the
+  quad read a bump's screen derivatives take (a shuffle over the whole warp
+  rather than its active lanes), so on CUDA any stage with a bump gave no
+  path traced frame. CUDA now shuffles over the active lanes.
 - **A camera path with nothing at it is an error.** `--camera` naming a path
   where the stage has no prim (Blender can export a camera's Xform with no
   Camera under it) aborted the program with an uncaught USD exception; it now

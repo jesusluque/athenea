@@ -250,13 +250,29 @@ public uint2 atheneaQuadPixel(uint2 group, uint index) {
                  group.y * 16u + (quad >> 3u) * 2u + (lane >> 1u));
 }
 
+// The value of the quad's lane across: x when `across` is 1, y when it is 2.
+// CUDA is given its shuffle by hand: Slang's quad read there names every lane
+// of the warp (0xFFFFFFFF), and OptiX refuses that in a ray generation
+// program -- the path tracer's route on CUDA -- where a shuffle's mask must be
+// __activemask()'s. The active lanes are the right mask anyway: a thread that
+// has left takes no part.
+float atheneaQuadAcross(float v, uint across) {
+    __target_switch
+    {
+    case cuda:
+        __intrinsic_asm "__shfl_xor_sync(__activemask(), $0, $1)";
+    default:
+        return across == 1u ? QuadReadAcrossX(v) : QuadReadAcrossY(v);
+    }
+}
+
 public float atheneaDdx(float v) {
-    const float other = QuadReadAcrossX(v);
+    const float other = atheneaQuadAcross(v, 1u);
     return (WaveGetLaneIndex() & 1u) != 0u ? v - other : other - v;
 }
 
 public float atheneaDdy(float v) {
-    const float other = QuadReadAcrossY(v);
+    const float other = atheneaQuadAcross(v, 2u);
     return (WaveGetLaneIndex() & 2u) != 0u ? v - other : other - v;
 }
 

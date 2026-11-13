@@ -1409,6 +1409,16 @@ identifier at all), so the difference comes from the thread's quad.
   did evaluate. Measured: one pixel of a square's 360-pixel edge ring.
 - `normalmap` needed nothing: the tangent frame (dP/du orthonormalised
   against the normal) was already in `MaterialInputs`.
+- **On CUDA the quad read is written by hand** (13 Nov). Slang's
+  `QuadReadAcrossX/Y` becomes a shuffle over every lane of the warp
+  (`0xFFFFFFFF`), and OptiX refuses that in a ray generation program -- the
+  path tracer's route on CUDA -- with "Mask argument to
+  llvm.nvvm.shfl.sync.i32 is not the result of a call to __activemask": no
+  pipeline, and so no path traced frame, for any material with a bump (the
+  Barcelona pavilion and fishy cat from Blender). `atheneaQuadAcross` gives
+  CUDA `__shfl_xor_sync(__activemask(), v, lane)` and every other target the
+  quad read. A constant-height bump path traced against the same material
+  flat: max 0 on Metal and on CUDA.
 
 ### In Hydra
 

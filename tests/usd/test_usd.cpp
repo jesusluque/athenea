@@ -901,6 +901,72 @@ def Camera "Camera"
 
 }   // namespace
 
+TEST_CASE("a bump material is path traced on every route, OptiX's ray generation program included",
+          "[usd][gpu][mesh][materials][rt]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    // bump (heighttonormal under it) reads screen derivatives across the
+    // thread's quad. On
+    // CUDA the path tracer is an OptiX ray generation program, which refused
+    // the quad read Slang writes there (a shuffle over every lane rather than
+    // the active ones): no pipeline, no frame, for any material with a bump.
+    // A constant height bends nothing, so the bumped frame is the flat one.
+    const auto stage = [&](bool bump, const char* name) {
+        const fs::path path = scratch(name);
+        std::ofstream out(path);
+        out << kSquareStage
+            << "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n"
+               "def Scope \"Materials\"\n{\n"
+               "    def Material \"Mat\"\n    {\n"
+               "        token outputs:mtlx:surface.connect = </Materials/Mat/Surface.outputs:out>\n"
+               "        def Shader \"Surface\"\n        {\n"
+               "            uniform token info:id = \"ND_surface\"\n"
+               "            token inputs:bsdf.connect = </Materials/Mat/Diffuse.outputs:out>\n"
+               "            token outputs:out\n        }\n"
+               "        def Shader \"Diffuse\"\n        {\n"
+               "            uniform token info:id = \"ND_oren_nayar_diffuse_bsdf\"\n"
+               "            color3f inputs:color = (0.8, 0.5, 0.2)\n";
+        if (bump) {
+            out << "            vector3f inputs:normal.connect = </Materials/Mat/Bump.outputs:out>\n";
+        }
+        out << "            token outputs:out\n        }\n";
+        if (bump) {
+            out << "        def Shader \"Bump\"\n        {\n"
+                   "            uniform token info:id = \"ND_bump_vector3\"\n"
+                   "            float inputs:height = 0.5\n"
+                   "            float inputs:scale = 1\n"
+                   "            vector3f outputs:out\n        }\n";
+        }
+        out << "    }\n}\n";
+        return path;
+    };
+    const auto traced = [&](const fs::path& path) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setPathSamples(4);
+        (*renderer)->setPathTotal(4);
+        (*renderer)->setPathBounces(1);
+        auto image = (*renderer)->render("/Camera", 0.0, 64, 48, "rt");
+        if (!image) FAIL(image.error().toString());
+        return std::move(*image);
+    };
+    const usd::StageImage flat = traced(stage(false, "bump_flat.usda"));
+    const usd::StageImage bumped = traced(stage(true, "bump_constant.usda"));
+    const float* centre = bumped.rgba.data() + (24 * 64 + 32) * 4;
+    std::printf("  path traced bump: centre %.4f %.4f %.4f\n", double(centre[0]), double(centre[1]), double(centre[2]));
+    CHECK(centre[0] > 0.0F);
+    gpu::BufferDesc desc;
+    desc.bytes = flat.rgba.size() * sizeof(float);
+    desc.elementBytes = 16;
+    auto a = gpu::Buffer::create(*gpu->device, desc, flat.rgba.data());
+    auto b = gpu::Buffer::create(*gpu->device, desc, bumped.rgba.data());
+    REQUIRE(a);
+    REQUIRE(b);
+    auto diff = render::compareImages(*gpu->library, *a, *b, 64, 48);
+    REQUIRE(diff);
+    std::printf("  flat against constant bump: p99 %u, max %u\n", diff->p99, diff->max);
+    CHECK(diff->max <= 1);
+}
+
 TEST_CASE("materials bound in USD shade a mesh: MaterialX with a texture, and UsdPreviewSurface",
           "[usd][gpu][mesh][materials]") {
     ATHENEA_REQUIRE_GPU(gpu);
