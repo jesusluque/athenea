@@ -8,6 +8,10 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **A camera path with nothing at it is an error.** `--camera` naming a path
+  where the stage has no prim (Blender can export a camera's Xform with no
+  Camera under it) aborted the program with an uncaught USD exception; it now
+  stops with `no camera at '<path>'`, as a prim that is not a camera did.
 - **Windows reads `.spz` and `.sog`.** The 0.5.0 package was built without
   zstd and libwebp and refused both. Where the system has neither, CMake now
   fetches zstd 1.5.7 and libwebp 1.5.0 and builds them as static libraries

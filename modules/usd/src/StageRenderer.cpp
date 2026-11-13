@@ -1451,7 +1451,11 @@ Result<void> StageRenderer::aim(const std::string& camera, double time, const st
         }
         cameraPath = all.front();
     }
-    if (!impl.stage->GetPrimAtPath(SdfPath(cameraPath)).IsA<UsdGeomCamera>()) {
+    // A path with no prim at it gives a null prim, and asking a null prim its
+    // type throws (UsdExpiredPrimAccessError) rather than answering no.
+    const UsdPrim cameraPrim = SdfPath::IsValidPathString(cameraPath) ? impl.stage->GetPrimAtPath(SdfPath(cameraPath))
+                                                                       : UsdPrim();
+    if (!cameraPrim || !cameraPrim.IsA<UsdGeomCamera>()) {
         return Error::make(ErrorCode::NotFound, "no camera at '{}'", cameraPath);
     }
     // The camera's shutter, ahead of the first Sync, so the first frame

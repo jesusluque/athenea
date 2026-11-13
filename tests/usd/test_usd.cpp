@@ -113,6 +113,31 @@ io::RawSplats cloud(uint32_t count) {
 
 }   // namespace
 
+TEST_CASE("a camera path with nothing at it, or a prim that is not a camera, is an error, not an abort",
+          "[usd][gpu]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    // Blender's exporter can write a camera's Xform with no Camera under it,
+    // and the shot named the path it expected.
+    const fs::path shot = scratch("no-camera.usda");
+    {
+        std::ofstream out(shot);
+        out << "#usda 1.0\n(\n    defaultPrim = \"root\"\n)\n"
+               "def Xform \"root\"\n{\n    def Xform \"Camera\"\n    {\n    }\n"
+               "    def Camera \"Shot\"\n    {\n    }\n}\n";
+    }
+    auto renderer = usd::StageRenderer::open(shot);
+    if (!renderer) {
+        FAIL(renderer.error().toString());
+    }
+    for (const char* path : {"/root/Camera/Camera", "/root/Camera", "not a path"}) {
+        CAPTURE(path);
+        auto image = (*renderer)->render(path, 0.0, 32, 24);
+        REQUIRE_FALSE(image);
+        CHECK(image.error().code() == ErrorCode::NotFound);
+    }
+    CHECK((*renderer)->render("/root/Shot", 0.0, 32, 24));
+}
+
 TEST_CASE("a cloud written to USD and drawn through Hydra matches the cloud drawn directly",
           "[usd][gpu]") {
     ATHENEA_REQUIRE_GPU(gpu);
