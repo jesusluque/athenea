@@ -22025,3 +22025,8 @@ three-quarter view at 1920 x 1080 (`athenea bench --lod` at a threshold of nothi
   OpenColorIO, OIDN) left the disk under it. Nothing of this branch removed it.
 - Everything after the first step: the scale as the level and the stamp `refined`, the cut a gaussian, the frame's
   pyramid, pieces by place, stale parents.
+- **Adding in place of replacing.** The cut above draws a parent or its children. SHIN (arXiv 2611.10652, noted
+  by athenea-research) has levels that add to what is drawn, with a delta of opacity on what was there: an
+  observed parent that goes on being drawn and children that complete it. It would spare the seam where a
+  parent's colour, seen by one eye, gives way to its children's, at the price of drawing both; to be weighed
+  when the cut is measured.
