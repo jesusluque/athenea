@@ -66,7 +66,7 @@
   </script>
   <script type="module">
     import * as THREE from "three";
-    import { SparkRenderer, SplatMesh, SparkControls } from "@sparkjsdev/spark";
+    import { SparkRenderer, SplatMesh, SparkControls, dyno } from "@sparkjsdev/spark";
 
     const params = new URLSearchParams(location.search);
     const name = (params.get("scene") ?? "sponza_growth").replace(/[^\w-]/g, "");
@@ -83,7 +83,8 @@
     renderer.setSize(innerWidth, innerHeight);
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 500);
-    scene.add(new SparkRenderer({ renderer }));
+    const spark = new SparkRenderer({ renderer });
+    scene.add(spark);
     addEventListener("resize", () => {
       camera.aspect = innerWidth / innerHeight;
       camera.updateProjectionMatrix();
@@ -110,6 +111,96 @@
       // gaussians, and the frame, its time and the camera it was rendered through.
       const partOf = (p) => typeof p === "string" ? { file: p, gaussians: 0 } : p;
       const meshes = [];        // a part's mesh, once it is in
+      const lenses = [];        // and, where the part holds solid glass, the mesh of that (null where none)
+
+      // SOLID GLASS, SHADED BY THE EYE. A part's glass comes in a file of its own with its index and its
+      // tint (the index's `glass`): what those gaussians are made of, which is theirs whatever the eye. What
+      // they show is worked out here, a frame: the scene without its glass is drawn into a cube from the
+      // glass's middle, and each glass gaussian takes the cube along the eye's ray mirrored at its disc and
+      // along it bent into the glass -- so the room behind turns as the camera does. One bend, at the face
+      // the eye meets, and a room read from one point: a lens's far face and what is near it are not there.
+      const room = { value: new THREE.WebGLCubeRenderTarget(1).texture };
+      const glassEye = dyno.dynoVec3(new THREE.Vector3());
+      const glassMiddle = dyno.dynoVec3(new THREE.Vector3());
+      const glassReach = dyno.dynoFloat(1.0);
+      const glassRoom = dyno.dynoSamplerCube(room.value);
+      let glassReady = false;     // a cube has been drawn
+      let glassStale = false;     // what is shown changed: the cube is drawn again
+      let glassBusy = false;
+      const lensShading = (ior, tint) => {
+        const index = dyno.dynoFloat(ior);
+        const through = dyno.dynoVec3(new THREE.Vector3(tint[0], tint[1], tint[2]));
+        return dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
+          const shade = new dyno.Dyno({
+            inTypes: { gsplat: dyno.Gsplat, eye: "vec3", middle: "vec3", reach: "float", room: "samplerCube",
+                       index: "float", through: "vec3" },
+            outTypes: { gsplat: dyno.Gsplat },
+            inputs: { gsplat, eye: glassEye, middle: glassMiddle, reach: glassReach, room: glassRoom, index, through },
+            globals: () => [dyno.defineGsplat, dyno.unindent(`
+              vec3 lensAxis(vec4 q, vec3 scales) {
+                vec3 axis = scales.x <= scales.y ? (scales.x <= scales.z ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0))
+                                                 : (scales.y <= scales.z ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0));
+                return normalize(axis + 2.0 * cross(q.xyz, cross(q.xyz, axis) + q.w * axis));
+              }
+              // The cube was drawn from the glass's middle: a ray from elsewhere is read where it would meet
+              // a ball of the room's reach about that middle.
+              vec3 lensLook(vec3 from, vec3 along, vec3 middle, float reach) {
+                vec3 o = from - middle;
+                float b = dot(o, along);
+                float t = -b + sqrt(max(b * b - dot(o, o) + reach * reach, 0.0));
+                return o + along * t;
+              }
+              // The cube is read as light; a gaussian's colour is kept as a display shows it.
+              vec3 lensEncoded(vec3 light) { return pow(max(light, vec3(0.0)), vec3(1.0 / 2.2)); }
+            `)],
+            statements: ({ inputs, outputs }) => dyno.unindentLines(`
+              ${outputs.gsplat} = ${inputs.gsplat};
+              if (isGsplatActive(${outputs.gsplat}.flags)) {
+                vec3 p = ${inputs.gsplat}.center;
+                vec3 v = normalize(p - ${inputs.eye});
+                vec3 n = lensAxis(${inputs.gsplat}.quaternion, ${inputs.gsplat}.scales);
+                if (dot(n, v) > 0.0) { n = -n; }
+                float cosine = clamp(-dot(n, v), 0.0, 1.0);
+                float f0 = (${inputs.index} - 1.0) / (${inputs.index} + 1.0);
+                f0 *= f0;
+                float mirrored = f0 + (1.0 - f0) * pow(1.0 - cosine, 5.0);
+                vec3 bent = refract(v, n, 1.0 / ${inputs.index});
+                if (dot(bent, bent) < 1.0e-6) { bent = v; }
+                vec3 seenBehind = texture(${inputs.room}, lensLook(p, bent, ${inputs.middle}, ${inputs.reach})).rgb;
+                vec3 seenMirrored = texture(${inputs.room}, lensLook(p, reflect(v, n), ${inputs.middle}, ${inputs.reach})).rgb;
+                vec3 light = mirrored * seenMirrored + (1.0 - mirrored) * ${inputs.through} * ${inputs.through} * seenBehind;
+                ${outputs.gsplat}.rgba.rgb = lensEncoded(light);
+              }
+            `),
+          });
+          return { gsplat: shade.outputs.gsplat };
+        });
+      };
+      // The cube, drawn again when what is shown changed: the room as it stands, without its glass or the
+      // lines this page draws over it, from the middle of the glass that is shown.
+      const drawRoom = async () => {
+        const seen = lenses.filter((lens, k) => lens && k < shown);
+        if (glassBusy || seen.length === 0) return;
+        glassBusy = true;
+        glassStale = false;
+        try {
+          root.updateMatrixWorld(true);
+          const box = new THREE.Box3();
+          for (const lens of seen) box.union(lens.getBoundingBox(true).clone().applyMatrix4(lens.matrixWorld));
+          const middle = box.getCenter(new THREE.Vector3());
+          const size = box.getSize(new THREE.Vector3()).length();
+          const texture = await spark.renderCubeMap({ scene, worldCenter: middle, size: 512, near: 0.02,
+                                                      far: Math.max(across * unit * 2, 10),
+                                                      hideObjects: [...lenses.filter(Boolean), frustum, path] });
+          glassRoom.value = texture;
+          glassMiddle.value.copy(middle);
+          glassReach.value = Math.max(size * 2.0, 0.5);
+          if (!glassReady) {
+            glassReady = true;
+            for (const lens of lenses) if (lens) { lens.worldModifier = lens.userData.shading; lens.updateGenerator(); }
+          }
+        } finally { glassBusy = false; }
+      };
       let parts = index.parts.map(partOf);
       let cameras = new Map((index.cameras ?? []).map((c) => [c.name, c]));
       let shown = 0;            // parts drawn: the scene as it stood after that many
@@ -169,8 +260,10 @@
         let gaussians = 0;
         meshes.forEach((mesh, k) => {
           mesh.visible = k < shown;
-          if (k < shown) gaussians += parts[k].gaussians;
+          if (lenses[k]) lenses[k].visible = k < shown;
+          if (k < shown) gaussians += parts[k].gaussians + (parts[k].glass?.gaussians ?? 0);
         });
+        glassStale = true;
         slider.max = String(Math.max(parts.length, 1));
         slider.value = String(shown);
         const part = shown > 0 ? parts[shown - 1] : null;
@@ -199,10 +292,21 @@
         if (loading) return;
         loading = true;
         while (meshes.length < parts.length) {
-          const mesh = new SplatMesh({ url: `./scenes/${parts[meshes.length].file}` });
+          const part = parts[meshes.length];
+          const mesh = new SplatMesh({ url: `./scenes/${part.file}` });
           await mesh.initialized;
           mesh.visible = false;
           root.add(mesh);
+          let lens = null;
+          if (part.glass && params.get("glass") !== "0") {
+            lens = new SplatMesh({ url: `./scenes/${part.glass.file}` });
+            await lens.initialized;
+            lens.visible = false;
+            lens.userData.shading = lensShading(part.glass.ior ?? 1.5, part.glass.tint ?? [1, 1, 1]);
+            if (glassReady) { lens.worldModifier = lens.userData.shading; lens.updateGenerator(); }
+            root.add(lens);
+          }
+          lenses.push(lens);
           meshes.push(mesh);
           window.__scene.parts = meshes.length;
           status.textContent = meshes.length < parts.length ? `loading… ${meshes.length} of ${parts.length} parts` : summary();
@@ -213,7 +317,7 @@
         window.__scene.loaded = true;
       };
       const summary = () => {
-        const total = parts.reduce((sum, p) => sum + p.gaussians, 0);
+        const total = parts.reduce((sum, p) => sum + p.gaussians + (p.glass?.gaussians ?? 0), 0);
         const seconds = parts.reduce((sum, p) => sum + (p.seconds ?? 0), 0);
         return `${(total / 1e6).toFixed(2)} M gaussians · ${parts.length} rendered frames` +
                (seconds > 0 ? ` · ${Math.round(seconds)} s of rendering` : "");
@@ -269,6 +373,8 @@
           }
         }
         if (!(playing && follow.checked)) controls.update(camera);
+        glassEye.value.copy(camera.position);
+        if (glassStale && !loading) drawRoom();
         renderer.render(scene, camera);
       });
     } catch (error) {

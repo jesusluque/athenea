@@ -22349,7 +22349,39 @@ where ours reaches 0.2).
   front of its neck is crossed as one solid, and two glass objects in line as one.
 - **The tree every view.** 0.48 s of the 0.56 s. The cut is a new cloud a view, so the tree is built anew;
   a scene that stands still wants it built once over the finest level, and refitted or not at all.
-- **The web page** draws the stored picture: Spark has no such pass.
 - **CUDA** not run. The compute route is the one used, which runs there.
 - `--repaint` over glass: a lens's colour is the eye's, and is left out of that test; `seenThrough`'s own
   repaint is not, and with `--repaint` set would take a lens out every frame.
+
+## The glass on the web page (13 Nov)
+
+The user: in the web preview it does not appear as glass. The page drew the picture a look saw in the knight.
+
+`neural-scene export` and `shoot --grow` now set a part's solid glass apart: `<stem>_NNN_glass.spz` beside the
+part, named in the index with the glass's index and tint (`glass`: `file`, `gaussians`, `ior`, `tint`). Which
+records are a lens's is read off their fields as a stamp is (transmission, not a sheet, an index over one). The
+files are ordinary SPZ with the picture in them, so a viewer that knows nothing of `glass` draws what it drew.
+
+The page (`scripts/examples/neural-scene-viewer`) shades them by the eye. Spark draws the scene without its
+glass into a cube from the middle of the glass that is shown (`renderCubeMap`, 512 a face), again whenever
+what the timeline shows changes; each glass gaussian then takes its colour in Spark's own per-gaussian pass (a
+`dyno` world modifier): its disc's short axis turned to the eye is its normal, the eye's ray is mirrored and
+bent there, and the cube is read along both, each as a ray from where the gaussian is to a ball about the
+cube's middle. Schlick's share mirrored, the rest tinted twice. The cube is light and a gaussian's colour is
+display encoded: encoded on the way back, which a frame of both showed is what matches the wall beside it.
+
+Seen in Chrome (headless, the knight scene exported by frame: 2.13 million gaussians, 130 630 of them glass in
+55 files, 41 MB of scenes against 45): the knight shows the bricks behind it bent, and they move as the camera
+does. Not measured against the path tracer: there is no reading back from the page.
+
+### Not done
+
+- **It is not the engine's glass.** One bend at the near face and a room read from one point, where `render
+  --glass` walks to the far face and meets the scene's own gaussians: what is near the glass is in the wrong
+  place, and the glass does not show itself.
+- **Patches.** A gaussian has one colour, and those of the knight that only far looks made are wide: seen
+  near, the glass is a mosaic. The normal is the disc's axis; the shading normal the record keeps is not in an
+  SPZ.
+- **One glass a scene**, in effect: one cube, from the middle of all the glass shown; and one index and tint a
+  part, the first lens's.
+- The cube is drawn again on every step of the timeline, playing included.

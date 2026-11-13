@@ -1286,8 +1286,10 @@ int runDiscover(const SceneOptions& all) {
     return 0;
 }
 
+struct LensRecords;
 Result<uint32_t> standingRecords(const std::filesystem::path& directory, const io::NeuralScenePiece& piece,
-                                 uint32_t asOf, uint32_t& floats, std::vector<float>& records);
+                                 uint32_t asOf, uint32_t& floats, std::vector<float>& records,
+                                 LensRecords* lenses = nullptr);
 
 /// One part of a scene handed on: `count` records (of `floats` floats each) written as an SPZ with no
 /// harmonics above the first, the light scaled by `gain`. Its size in bytes, and its box added to `low`, `high`.
@@ -1323,11 +1325,26 @@ Result<uint64_t> writeSpzPart(gpu::Device& device, render::Discovery& discovery,
     return static_cast<uint64_t>(std::filesystem::file_size(path, ignored));
 }
 
+/// THE GAUSSIANS OF SOLID GLASS AMONG A PART'S, set apart: their records, and what the first of them is
+/// made of -- one glass a part is what a viewer is told.
+struct LensRecords {
+    std::vector<float>   records;
+    uint32_t             count = 0;
+    float                ior = 1.0F;
+    std::array<float, 3> tint{1.0F, 1.0F, 1.0F};
+};
+
 /// A part of a scene handed on, as its index names it: the file, how many gaussians, and -- where the part
-/// is a frame's -- which frame, its time and the camera it was rendered through.
+/// is a frame's -- which frame, its time and the camera it was rendered through. Where the part holds solid
+/// glass, those gaussians are in a file of their own beside it, with the glass's index and its tint: a
+/// viewer that knows how shades them by the eye, and one that does not draws the picture they keep.
 struct ExportedPart {
     std::string file;
     uint32_t    gaussians = 0;
+    std::string          glassFile;
+    uint32_t             glassGaussians = 0;
+    float                glassIor = 1.0F;
+    std::array<float, 3> glassTint{1.0F, 1.0F, 1.0F};
     uint32_t    frame = 0;
     double      time = 0.0;
     std::string camera;
@@ -1343,7 +1360,7 @@ Result<void> writeExportIndex(const std::filesystem::path& stem, const io::Neura
         std::ofstream index(partial);
         uint64_t total = 0;
         for (const ExportedPart& part : parts) {
-            total += part.gaussians;
+            total += part.gaussians + part.glassGaussians;
         }
         index << "{\n  \"name\": \"" << scene.name << "\",\n  \"upAxis\": \"" << scene.upAxis
               << "\",\n  \"metersPerUnit\": " << scene.metersPerUnit << ",\n  \"growing\": " << (growing ? "true" : "false")
@@ -1355,6 +1372,11 @@ Result<void> writeExportIndex(const std::filesystem::path& stem, const io::Neura
             if (part.frame != 0) {
                 index << ", \"frame\": " << part.frame << ", \"time\": " << part.time << ", \"camera\": \"" << part.camera
                       << "\", \"seconds\": " << part.seconds;
+            }
+            if (!part.glassFile.empty()) {
+                index << ", \"glass\": {\"file\": \"" << part.glassFile << "\", \"gaussians\": " << part.glassGaussians
+                      << ", \"ior\": " << part.glassIor << ", \"tint\": [" << part.glassTint[0] << ", "
+                      << part.glassTint[1] << ", " << part.glassTint[2] << "]}";
             }
             index << "}";
         }
@@ -1509,6 +1531,7 @@ int runShoot(const SceneOptions& all) {
             return ok();
         }
         std::vector<float> records;
+        LensRecords lenses;
         uint32_t floats = 0;
         uint32_t held = 0;
         for (const io::NeuralScenePiece& piece : scene.pieces) {
@@ -1516,7 +1539,7 @@ int runShoot(const SceneOptions& all) {
                 (piece.gaussians != 0 && piece.removed + piece.refinedCount >= piece.gaussians)) {
                 continue;
             }
-            auto kept = standingRecords(directory, piece, 0, floats, records);
+            auto kept = standingRecords(directory, piece, 0, floats, records, &lenses);
             if (!kept) return std::move(kept).error();
             held += *kept;
         }
@@ -1530,6 +1553,18 @@ int runShoot(const SceneOptions& all) {
             ExportedPart part;
             part.file = path.filename().string();
             part.gaussians = held;
+            if (lenses.count != 0) {
+                std::snprintf(name, sizeof(name), "_%03zu_glass.spz", grown.size());
+                const std::filesystem::path glassPath = all.grow + name;
+                auto glassSize = writeSpzPart(device, *discovery, *growPack, std::span<const float>(lenses.records),
+                                              lenses.count, floats, std::exp2(all.growExposure), glassPath, grownLow,
+                                              grownHigh);
+                if (!glassSize) return std::move(glassSize).error();
+                part.glassFile = glassPath.filename().string();
+                part.glassGaussians = lenses.count;
+                part.glassIor = lenses.ior;
+                part.glassTint = lenses.tint;
+            }
             part.frame = frameNumber;
             part.time = frame.time;
             part.camera = frame.camera;
@@ -2373,7 +2408,7 @@ int runBake(const SceneOptions& o) {
 /// The records of a piece that are the finest standing at look `asOf` (0: now), appended to `records`: which
 /// are kept is read off the piece's two stamp files. How many were.
 Result<uint32_t> standingRecords(const std::filesystem::path& directory, const io::NeuralScenePiece& piece,
-                                 uint32_t asOf, uint32_t& floats, std::vector<float>& records) {
+                                 uint32_t asOf, uint32_t& floats, std::vector<float>& records, LensRecords* lenses) {
     if (std::filesystem::path(piece.cloud).extension() != ".athg") {
         return Error::make(ErrorCode::Unsupported, "piece {} is not a render's (.athg)", piece.id);
     }
@@ -2404,6 +2439,19 @@ Result<uint32_t> standingRecords(const std::filesystem::path& directory, const i
             continue;
         }
         const auto first = read->records.begin() + static_cast<std::ptrdiff_t>(size_t{g} * floats);
+        // A lens's gaussians are set apart where the caller asks (which records they are is read off three
+        // of their fields, as a stamp is): a viewer shades them by what they are made of.
+        if (lenses != nullptr && floats >= render::kRenderRecordTint + 3 && first[19] >= 0.5F &&
+            first[render::kRenderRecordSheet] <= 0.5F && first[render::kRenderRecordIndex] > 1.0F) {
+            if (lenses->count == 0) {
+                lenses->ior = first[render::kRenderRecordIndex];
+                lenses->tint = {first[render::kRenderRecordTint], first[render::kRenderRecordTint + 1],
+                                first[render::kRenderRecordTint + 2]};
+            }
+            lenses->records.insert(lenses->records.end(), first, first + floats);
+            ++lenses->count;
+            continue;
+        }
         records.insert(records.end(), first, first + floats);
         ++kept;
     }
@@ -2434,6 +2482,7 @@ int runExport(const SceneOptions& o) {
     std::error_code made;
     std::filesystem::create_directories(given.parent_path(), made);
     std::vector<float> records;
+    LensRecords lenses;
     uint32_t held = 0;
     uint32_t floats = 0;
     uint64_t bytes = 0;
@@ -2453,6 +2502,19 @@ int runExport(const SceneOptions& o) {
         ExportedPart part;
         part.file = path.filename().string();
         part.gaussians = held;
+        if (lenses.count != 0) {
+            std::snprintf(name, sizeof(name), "_%03zu_glass.spz", parts.size());
+            const std::filesystem::path glassPath = given.string() + name;
+            auto glassSize = writeSpzPart(**device, *discovery, *pack, std::span<const float>(lenses.records),
+                                          lenses.count, floats, gain, glassPath, low, high);
+            if (!glassSize) return std::move(glassSize).error();
+            bytes += *glassSize;
+            part.glassFile = glassPath.filename().string();
+            part.glassGaussians = lenses.count;
+            part.glassIor = lenses.ior;
+            part.glassTint = lenses.tint;
+            lenses = LensRecords{};
+        }
         if (frame != nullptr) {
             part.frame = frameNumber;
             part.time = frame->time;
@@ -2480,7 +2542,7 @@ int runExport(const SceneOptions& o) {
                 if (!wanted(piece) || piece.foundIn < frame.firstSnapshot || piece.foundIn > frame.lastSnapshot) {
                     continue;
                 }
-                auto kept = standingRecords(directory, piece, asOf, floats, records);
+                auto kept = standingRecords(directory, piece, asOf, floats, records, &lenses);
                 if (!kept) return report(kept.error());
                 held += *kept;
             }
@@ -2492,7 +2554,7 @@ int runExport(const SceneOptions& o) {
                 continue;
             }
             std::vector<float> of;
-            auto kept = standingRecords(directory, piece, asOf, floats, of);
+            auto kept = standingRecords(directory, piece, asOf, floats, of, &lenses);
             if (!kept) return report(kept.error());
             for (uint32_t g = 0; g < *kept; ++g) {
                 const auto first = of.begin() + static_cast<std::ptrdiff_t>(size_t{g} * floats);
