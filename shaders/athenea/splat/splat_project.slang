@@ -1108,11 +1108,15 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                                          params.focalY * axisV.y + params.centreY * axisV.z, axisV.z);
         record.surfel = uint4(packHalves(hu.x, hu.y), packHalves(hu.z, hv.x), packHalves(hv.y, hv.z), asuint(hardness));
     }
-    record.colour = float4(colour, sharp                                ? kSharpMark
-                                   : sloped                             ? kSlopeMark
-                                   : kTransfer == kProjectCatcher       ? kCatcherMark
-                                   : kTransfer == kProjectLightCatcher ? kLightCatcherMark
-                                                                        : 0.0);
+    const float mark = sharp                                ? kSharpMark
+                       : sloped                             ? kSlopeMark
+                       : kTransfer == kProjectCatcher       ? kCatcherMark
+                       : kTransfer == kProjectLightCatcher ? kLightCatcherMark
+                                                            : 0.0;
+    // A sheet held up to kSheetAlpha lets what is behind it through by its
+    // own opacity, not the one it is drawn at (frame.slang's sheetRecordMark):
+    // at the floor a pane of a few layers hid most of the room behind it.
+    record.colour = float4(colour, sheet && alphaOwn < alpha ? sheetRecordMark(mark, alphaOwn / alpha) : mark);
     proj[slot] = record;
     if (params.cryptoMode != 0) {
         cryptoIds[slot] = params.cryptoMode == 1 ? cloudCrypto[p] : 0u;

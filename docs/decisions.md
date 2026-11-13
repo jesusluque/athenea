@@ -786,6 +786,24 @@ equal to 1e-4.
 - **Not done.** The paged tree; the transfer and the other payloads a cloud
   carries beside its gaussians stay the child's.
 
+### A sheet lets through what its own opacity does (13 Nov)
+
+A thin sheet of glass is drawn at `kSheetAlpha` (0.1) at least, its colour
+scaled to keep alpha x colour, so the cull and the blend's 1/255 keep its
+faint gaussians -- and each then took a tenth of what was behind it where the
+glass takes about one per cent. The record now says so: a sheet held up to the
+floor writes colour.w as -(marker index + share), share being its own alpha
+over the one it is drawn at (frame.slang's `sheetRecordMark`), and the blend
+takes `alpha x share` from the transmittance while it adds the reflection at
+the floor. `sheet_glass_draws_whole` (a pane before a dark backdrop against
+the mesh path traced): relMSE 0.0194 -> 0.0079, the frame's mean 43% -> 66%
+of the path trace's. It still fails -- the backdrop drawn bare reads 0.0047,
+and it wants the mean over 75% -- so something else still darkens the pane
+(the layers' own reflections dimming one another is one candidate). The
+`[glass]` cases pass, and a stack of sheets still returns no more light than a
+dome of radiance one gives it. The Corvette windshield's numbers are not
+measured again here.
+
 ### The splats by the device's rasteriser (`RenderSettings::quads`, `ATHENEA_SPLAT_QUADS`)
 - **Why.** On the town's flight the UE plugin draws the same cut in 6.4 to
   15.6 ms where athenea takes 43 to 66 (same RTX 3070 Laptop, D3D12, 1080p).

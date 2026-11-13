@@ -8,6 +8,10 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **A glass sheet lets through what is behind it.** Its gaussians are drawn at
+  an opacity floor so they survive the cull, and each took a tenth of what
+  was behind; they take their own opacity's share now (a pane before a dark
+  room: 43% of the path trace's brightness to 66%).
 - **`athenea render` frames a capture by its core.** Where a cloud's few far
   outliers make its box over four times the box of its central 96 %, the
   default camera frames that core (sorted on the device): botanics.sog and

@@ -262,7 +262,7 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             const uint splat = pairSplats[mine];
             sSplats[lane] = splat;
             sRecords[lane] = proj[splat];
-            const float mark = sRecords[lane].colour.w;
+            const float mark = recordMark(sRecords[lane].colour.w);
             sSlopes[lane] = abs(mark - kSlopeMark) < 0.01 || abs(mark - kSharpMark) < 0.01 ||
                                     abs(mark - kVolumeMark) < 0.01
                                 ? slopes[splat]
@@ -272,6 +272,10 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
         const uint count = min(kBatch, end - first);
         for (uint j = 0; j < count && !done; ++j) {
             const ProjRecord record = sRecords[j];
+            // A sheet's record says its marker and how much it lets through
+            // (frame.slang's sheetRecordMark); every other's, its marker.
+            const float mark = recordMark(record.colour.w);
+            const float share = recordTransmitShare(record.colour.w);
             const float4 screen = record.screen;
             // A shadow catcher lies on the layer under it, so its centre's
             // depth reads behind it as often as not: it is drawn where it is
@@ -280,13 +284,13 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             // in front of it (a mesh car's body over its own shadow, which
             // went black when every catcher gaussian was drawn).
             // A light catcher lies on it the same way (kLightCatcherMark).
-            const bool adds = abs(record.colour.w - kLightCatcherMark) < 0.01;
-            const bool catcher = abs(record.colour.w - kCatcherMark) < 0.01;
+            const bool adds = abs(mark - kLightCatcherMark) < 0.01;
+            const bool catcher = abs(mark - kCatcherMark) < 0.01;
             const bool lying = (catcher || adds) && screen.z <= underZ * 1.015;
             // A medium's gaussian whose centre is behind the layer under the
             // splats may still reach in front of it: its chord is clipped
             // there (volumeAlpha), and the walk goes on.
-            const bool medium = abs(record.colour.w - kVolumeMark) < 0.01;
+            const bool medium = abs(mark - kVolumeMark) < 0.01;
             if (underHit && screen.z >= underZ && !lying && !medium) {
                 done = true;
                 break;
@@ -299,7 +303,7 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             if (power > screen.w) {
                 continue;
             }
-            if (composite && record.colour.w > 0.5) {
+            if (composite && mark > 0.5) {
                 opaqueHit = true;
                 // A point of the opaque layer: linear, encoded here for a
                 // display blend as a splat is at its projection.
@@ -325,7 +329,7 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
                 InterlockedAdd(contribution[sSplats[j]], uint(weight * 4096.0 + 0.5));
             } else if (params.contributionMode == 2u) {
                 const float3 c = record.colour.xyz;
-                const float after = transmittance * (1.0 - alpha);
+                const float after = transmittance * (1.0 - alpha * share);
                 const float3 behind = (finalColour[at].rgb - (rgb + weight * c)) / max(after, 1.0e-4);
                 const float3 change = weight * (c - behind);
                 // In 2^-24 (a pixel capped at one), into two words: the low
@@ -361,12 +365,12 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
                 // A medium's record holds geometry in its colour; its
                 // radiance is in its `slopes` slot.
                 shade = float3(lowHalf(sSlopes[j].z), highHalf(sSlopes[j].z), lowHalf(sSlopes[j].w));
-            } else if (abs(record.colour.w - kSlopeMark) < 0.01) {
+            } else if (abs(mark - kSlopeMark) < 0.01) {
                 const uint3 w = sSlopes[j].xyz;
                 const float3 slopeX = float3(lowHalf(w.x), highHalf(w.x), lowHalf(w.y));
                 const float3 slopeY = float3(highHalf(w.y), lowHalf(w.z), highHalf(w.z));
                 shade = max(shade + slopeX * d.x + slopeY * d.y, float3(0.0));
-            } else if (abs(record.colour.w - kSharpMark) < 0.01) {
+            } else if (abs(mark - kSharpMark) < 0.01) {
                 // A SHARP LOBE, READ AT THIS PIXEL: the sky along the mirror
                 // this pixel turns to, a step from the centre's, at the
                 // lobe's own roughness (splat_project's sharp lobe). A
@@ -402,7 +406,7 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             }
             rgb += weight * shade;
             depthSum += weight * screen.z;
-            transmittance *= 1.0 - alpha;
+            transmittance *= 1.0 - alpha * share;
             if (depthAt < 0.0 && 1.0 - transmittance >= params.depthThreshold) {
                 depthAt = screen.z;
             }

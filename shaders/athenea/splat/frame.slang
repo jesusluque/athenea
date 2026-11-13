@@ -240,6 +240,29 @@ public static const float kSharpMark = 0.375;
 /// needs for that is in the record and its `slopes` slot (splat_volume says
 /// where).
 public static const float kVolumeMark = 0.4375;
+/// A THIN SHEET'S RECORD (splat_project's sheet): drawn at `kSheetAlpha` at
+/// least so the cull and the blend's 1/255 keep it, its colour scaled to keep
+/// alpha x colour, and letting through what is behind it by its own opacity:
+/// `share` = its own alpha over the alpha it is drawn at. Its colour.w is
+/// then negative, -(index + share): the index 0 for a plain splat, 1 for
+/// kSlopeMark, 2 for kSharpMark, and the share in (0, 1). Every other
+/// record's colour.w is not negative, and `recordMark` gives it back as is.
+public float sheetRecordMark(float mark, float share) {
+    const float index = abs(mark - kSlopeMark) < 0.01 ? 1.0 : (abs(mark - kSharpMark) < 0.01 ? 2.0 : 0.0);
+    return -(index + clamp(share, 1.0e-3, 0.999));
+}
+public float recordMark(float w) {
+    if (w >= 0.0) {
+        return w;
+    }
+    const float index = floor(-w);
+    return index == 1.0 ? kSlopeMark : (index == 2.0 ? kSharpMark : 0.0);
+}
+/// What share of its alpha a record takes from what is behind it: one, but
+/// for a sheet's.
+public float recordTransmitShare(float w) {
+    return w >= 0.0 ? 1.0 : -w - floor(-w);
+}
 /// A medium's gaussian stops at 3.5 deviations, as `athenea vdb2splat` fits
 /// it: squared, the furthest its least distance to a ray is counted at.
 public static const float kVolumeTruncation = 12.25;
