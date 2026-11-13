@@ -12,7 +12,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <utility>
+#include <vector>
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -766,6 +768,128 @@ uint64_t metalAllocatedSize(void* mtlDevice) {
     (void)mtlDevice;
     return 0;
 #endif
+}
+
+namespace {
+
+// The few Vulkan structures the budget query needs, as the specification
+// lays them out (checked against their sizes), so this module needs no
+// Vulkan headers.
+struct VkMemoryTypeLayout {
+    uint32_t propertyFlags;
+    uint32_t heapIndex;
+};
+struct VkMemoryHeapLayout {
+    uint64_t size;
+    uint32_t flags;
+};
+struct VkMemoryPropertiesLayout {
+    uint32_t           memoryTypeCount;
+    VkMemoryTypeLayout memoryTypes[32];
+    uint32_t           memoryHeapCount;
+    VkMemoryHeapLayout memoryHeaps[16];
+};
+static_assert(sizeof(VkMemoryPropertiesLayout) == 520);
+struct VkMemoryProperties2Layout {
+    uint32_t                 sType;   // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2
+    void*                    pNext;
+    VkMemoryPropertiesLayout memoryProperties;
+};
+struct VkMemoryBudgetLayout {
+    uint32_t sType;   // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT
+    void*    pNext;
+    uint64_t heapBudget[16];
+    uint64_t heapUsage[16];
+};
+struct VkExtensionLayout {
+    char     extensionName[256];
+    uint32_t specVersion;
+};
+constexpr uint32_t kVkMemoryProperties2 = 1000059006;
+constexpr uint32_t kVkMemoryBudget = 1000237000;
+constexpr uint32_t kVkHeapDeviceLocal = 0x1;
+
+}   // namespace
+
+bool vulkanDeviceLocalMemory(void* instance, void* physical, uint64_t& budget, uint64_t& usage) {
+    budget = 0;
+    usage = 0;
+    if (instance == nullptr || physical == nullptr) {
+        return false;
+    }
+    using GetInstanceProc = void* (*)(void*, const char*);
+    using EnumerateExtensions = int32_t (*)(void*, const char*, uint32_t*, VkExtensionLayout*);
+    using GetMemoryProperties2 = void (*)(void*, VkMemoryProperties2Layout*);
+    static GetInstanceProc getInstanceProc = [] () -> GetInstanceProc {
+#if defined(_WIN32)
+        HMODULE loader = LoadLibraryA("vulkan-1.dll");
+        return loader != nullptr ? reinterpret_cast<GetInstanceProc>(GetProcAddress(loader, "vkGetInstanceProcAddr"))
+                                 : nullptr;
+#elif defined(__APPLE__)
+        void* loader = dlopen("libvulkan.1.dylib", RTLD_NOW | RTLD_LOCAL);
+        return loader != nullptr ? reinterpret_cast<GetInstanceProc>(dlsym(loader, "vkGetInstanceProcAddr")) : nullptr;
+#else
+        void* loader = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+        return loader != nullptr ? reinterpret_cast<GetInstanceProc>(dlsym(loader, "vkGetInstanceProcAddr")) : nullptr;
+#endif
+    }();
+    if (getInstanceProc == nullptr) {
+        return false;
+    }
+    const auto enumerate =
+        reinterpret_cast<EnumerateExtensions>(getInstanceProc(instance, "vkEnumerateDeviceExtensionProperties"));
+    auto properties2 =
+        reinterpret_cast<GetMemoryProperties2>(getInstanceProc(instance, "vkGetPhysicalDeviceMemoryProperties2"));
+    if (properties2 == nullptr) {
+        properties2 =
+            reinterpret_cast<GetMemoryProperties2>(getInstanceProc(instance, "vkGetPhysicalDeviceMemoryProperties2KHR"));
+    }
+    if (enumerate == nullptr || properties2 == nullptr) {
+        return false;
+    }
+    // The budget structure may be chained only where the extension is there:
+    // asked once a physical device, since every buffer's admission asks for
+    // the usage.
+    static std::mutex knownGuard;
+    static std::vector<std::pair<void*, bool>> known;
+    bool hasBudget = false;
+    {
+        const std::lock_guard<std::mutex> held(knownGuard);
+        const auto found = std::find_if(known.begin(), known.end(), [&](const auto& k) { return k.first == physical; });
+        if (found != known.end()) {
+            hasBudget = found->second;
+        } else {
+            uint32_t count = 0;
+            if (enumerate(physical, nullptr, &count, nullptr) == 0 && count > 0) {
+                std::vector<VkExtensionLayout> extensions(count);
+                if (enumerate(physical, nullptr, &count, extensions.data()) >= 0) {
+                    hasBudget = std::any_of(extensions.begin(), extensions.begin() + count,
+                                            [](const VkExtensionLayout& e) {
+                                                return std::strncmp(e.extensionName, "VK_EXT_memory_budget",
+                                                                    sizeof e.extensionName) == 0;
+                                            });
+                }
+            }
+            known.emplace_back(physical, hasBudget);
+        }
+    }
+    if (!hasBudget) {
+        return false;
+    }
+    VkMemoryBudgetLayout memoryBudget{};
+    memoryBudget.sType = kVkMemoryBudget;
+    VkMemoryProperties2Layout props{};
+    props.sType = kVkMemoryProperties2;
+    props.pNext = &memoryBudget;
+    properties2(physical, &props);
+    const uint32_t heaps = std::min<uint32_t>(props.memoryProperties.memoryHeapCount, 16);
+    for (uint32_t h = 0; h < heaps; ++h) {
+        if ((props.memoryProperties.memoryHeaps[h].flags & kVkHeapDeviceLocal) != 0) {
+            budget += memoryBudget.heapBudget[h];
+            usage += memoryBudget.heapUsage[h];
+        }
+    }
+    return budget != 0;
 }
 
 uint64_t pageSize() {

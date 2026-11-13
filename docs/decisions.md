@@ -20425,6 +20425,17 @@ gap, which is the path tracer's own and is not this change's.
   normal map; 960x540, 128 paths) had not finished after 22 minutes when the
   machine restarted for an update; not yet explained.
 
+**Vulkan's memory (13 Nov, QA17).** What looked like a 4 GiB wall was not
+one: 256 MiB buffers fill the 3070 to 7680 MiB on Vulkan, and CUDA reaches
+12 GiB because on Windows it pages to the host. A scene past the card simply
+failed on Vulkan, since nothing knew the card's size -- the budget was "none:
+the backend does not say", so a streamed asset was read whole and splat
+shadows were always built. Vulkan's budget is now the device-local heaps'
+`VK_EXT_memory_budget` gives (7250 MiB on the 3070), and in use its usage:
+the probe (`athenea_gpu_tests "[memory-probe]"`, hidden from ctest) stops at
+7168 MiB with the budget's own message, and the engine sizes streams and
+splat shadows against it as it does on Metal.
+
 **The full ctest with Vulkan the default (13 Nov).** Two of what failed were
 Vulkan's own and are fixed:
 - **The video planes' block boxes.** A box is rounded outward to halves

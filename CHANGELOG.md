@@ -8,6 +8,10 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **Vulkan knows the card's memory.** The device's budget on Vulkan is what
+  `VK_EXT_memory_budget` reports, so streamed assets and splat shadows are
+  sized to the card as on Metal, and an allocation past it is refused with
+  the budget's message.
 - **Two zonal lobes fit what two lobes hold.** The zonal transfer's second
   lobe is refined jointly with the first (per-band least squares, several
   starts) instead of two alternating refits: the fit's residual at p99 went

@@ -13,6 +13,8 @@
 #include "GpuTest.h"
 
 #include <cstdio>
+#include <string>
+#include <vector>
 
 using namespace athenea;
 
@@ -83,4 +85,31 @@ TEST_CASE("a queue's failure is OutOfMemory where the device ran out, DeviceFail
     REQUIRE_FALSE(other);
     CHECK(other.error().code() == ErrorCode::DeviceFailure);
     CHECK(gpu::Device::queueResult(SLANG_OK, "a frame"));
+}
+
+// HOW MUCH THE DEVICE GIVES, buffer by buffer: 256 MiB device buffers until
+// one is refused or 12 GiB are held. A probe, hidden from ctest ([.]): it
+// takes the whole device. Run it alone: athenea_gpu_tests "[memory-probe]".
+TEST_CASE("the device holds buffers up to its memory, 256 MiB at a time", "[.][gpu][memory-probe]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    gpu::Device& device = *gpu->device;
+    std::vector<gpu::Buffer> held;
+    uint64_t total = 0;
+    std::string why = "12 GiB held";
+    while (total < (uint64_t{12} << 30)) {
+        gpu::BufferDesc desc;
+        desc.bytes = uint64_t{256} << 20;
+        desc.elementBytes = 4;
+        desc.label = "probe";
+        auto made = gpu::Buffer::create(device, desc);
+        if (!made) {
+            why = made.error().toString();
+            break;
+        }
+        held.push_back(std::move(*made));
+        total += desc.bytes;
+    }
+    std::printf("  %s: %llu MiB in %zu buffers before: %s\n", gpu::toString(device.backend()),
+                static_cast<unsigned long long>(total >> 20), held.size(), why.c_str());
+    CHECK(total > 0);
 }

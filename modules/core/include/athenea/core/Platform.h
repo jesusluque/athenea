@@ -193,6 +193,14 @@ void releaseMetalBuffer(void* mtlBuffer);
 /// 0 off macOS or for a null device.
 [[nodiscard]] uint64_t metalAllocatedSize(void* mtlDevice);
 
+/// A Vulkan device's local memory as VK_EXT_memory_budget tells it, summed
+/// over its DEVICE_LOCAL heaps: `budget` is what this process can use now
+/// (the driver's estimate, other processes' use taken off), `usage` what it
+/// uses. `instance` and `physical` are the VkInstance and VkPhysicalDevice.
+/// The loader is opened by name and nothing links it. False where there is no
+/// loader, no extension, or no handle.
+[[nodiscard]] bool vulkanDeviceLocalMemory(void* instance, void* physical, uint64_t& budget, uint64_t& usage);
+
 /// Physical memory the system could hand out now without swapping, in
 /// bytes: free, inactive and purgeable pages (Mach's vm statistics) on
 /// macOS, MemAvailable on Linux. 0 where it cannot be read. On unified

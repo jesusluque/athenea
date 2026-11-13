@@ -415,6 +415,21 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
                                                           : nullptr);
         budgetFrom = "Metal's recommended working set";
     }
+    // Vulkan's device-local heaps as the driver budgets them for this
+    // process. Without it nothing here knew the device had a size: a
+    // streamed asset was read whole and splat shadows were always built, and
+    // a scene past the card's memory failed where CUDA, which pages to the
+    // host on Windows, went on (QA17: the 3070's 8 GiB).
+    if (device->backend_ == Backend::Vulkan) {
+        const NativeHandles handles = device->native();
+        uint64_t usage = 0;
+        if (platform::vulkanDeviceLocalMemory(reinterpret_cast<void*>(handles.instance.value),
+                                              reinterpret_cast<void*>(handles.physical.value), budget, usage)) {
+            budgetFrom = "VK_EXT_memory_budget";
+        } else {
+            budget = 0;
+        }
+    }
     if (const std::string fromEnv = platform::env("ATHENEA_GPU_BUDGET"); !fromEnv.empty()) {
         char* end = nullptr;
         const unsigned long long mib = std::strtoull(fromEnv.c_str(), &end, 10);
@@ -453,6 +468,15 @@ void Device::releaseFreed() {
 }
 
 uint64_t Device::memoryInUse() const {
+    if (backend_ == Backend::Vulkan) {
+        const NativeHandles handles = native();
+        uint64_t budget = 0;
+        uint64_t usage = 0;
+        return platform::vulkanDeviceLocalMemory(reinterpret_cast<void*>(handles.instance.value),
+                                                 reinterpret_cast<void*>(handles.physical.value), budget, usage)
+                   ? usage
+                   : 0;
+    }
     if (backend_ != Backend::Metal) {
         return 0;
     }
