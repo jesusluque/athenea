@@ -1419,6 +1419,22 @@ identifier at all), so the difference comes from the thread's quad.
   CUDA `__shfl_xor_sync(__activemask(), v, lane)` and every other target the
   quad read. A constant-height bump path traced against the same material
   flat: max 0 on Metal and on CUDA.
+- **A normal map tilts the path tracer's reflections under the triangle**
+  (13 Nov, QA1). A normal-mapped OpenPBR sphere under an HDRI read 2.8 at 8
+  bounces where the raster and Cycles read 0.6, and more with every bounce.
+  Two causes. `throughGlass` called any dielectric glass once a sample went
+  under the shading normal -- OpenPBR's specular over an opaque base too,
+  though it only reflects -- so the path was left past the triangle, inside
+  the sphere, and filled it. It now asks for a dielectric that transmits, as
+  `entersGlass` did. And nothing checked the triangle at all: a surface that
+  only reflects (`reflectsOnly`) now carries nothing along a direction on the
+  triangle's other side from the eye (`underTriangle`, at the bounce and in
+  `gatherLight`), and its rays and shadow rays leave clear of the triangle
+  rather than of the shading normal (`leavingNormal`). A bake's point keeps
+  its own rule. The sphere: 0.55 direct, 0.66 at 1 and at 8 bounces (raster
+  0.66). Test: `athenea_usd_tests "a normal-mapped sphere path traced*"`, a
+  closed sphere with every normal tilted 40 degrees under a constant sky, one
+  bounce against eight: p99 0 (149, 3899 pixels over 2, without the fix).
 
 ### In Hydra
 

@@ -967,6 +967,120 @@ TEST_CASE("a bump material is path traced on every route, OptiX's ray generation
     CHECK(diff->max <= 1);
 }
 
+TEST_CASE("a normal-mapped sphere path traced gains nothing from more bounces: a convex shape cannot light itself",
+          "[usd][gpu][mesh][materials][rt][normalmap]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    // A normal map tilts the shading normal off the triangle's. A reflection
+    // sampled about it could go under the triangle, and a dielectric that only
+    // reflects was taken for glass there: the path was left on the far side,
+    // inside the sphere, and every bounce added light (2.8 where Cycles and
+    // the raster read 0.6 on the QA scene). Under a constant sky a convex
+    // shape sees only the sky, so one bounce and eight draw the same.
+    const fs::path png = scratch("tilted_normal.png");
+    {
+        fs::remove(png);
+        // A normal leaning 40 degrees off the surface's: (0.64, 0, 0.77),
+        // as a tangent-space texel (n + 1) / 2.
+        std::vector<uint32_t> texels(4 * 4, 0xFFE180D2u);   // ABGR: r 0xD2, g 0x80, b 0xE1
+        HioImageSharedPtr image = HioImage::OpenForWriting(png.string());
+        REQUIRE(image);
+        HioImage::StorageSpec spec;
+        spec.width = 4;
+        spec.height = 4;
+        spec.depth = 1;
+        spec.format = HioFormatUNorm8Vec4;
+        spec.data = texels.data();
+        REQUIRE(image->Write(spec));
+    }
+    const fs::path path = scratch("normalmap_sphere.usda");
+    {
+        std::ofstream out(path);
+        out << "#usda 1.0\n(\n    upAxis = \"Y\"\n)\n";
+        // A UV sphere of radius 1 at z = -4, its normals and st per vertex.
+        const int rings = 24;
+        const int segments = 48;
+        std::ostringstream points, normals, st, counts, indices;
+        for (int r = 0; r <= rings; ++r) {
+            const double v = double(r) / rings;
+            const double theta = v * 3.14159265358979;
+            for (int g = 0; g <= segments; ++g) {
+                const double u = double(g) / segments;
+                const double phi = u * 2.0 * 3.14159265358979;
+                const double x = std::sin(theta) * std::cos(phi), y = std::cos(theta), z = std::sin(theta) * std::sin(phi);
+                points << (r || g ? ", " : "") << "(" << x << ", " << y << ", " << z - 4.0 << ")";
+                normals << (r || g ? ", " : "") << "(" << x << ", " << y << ", " << z << ")";
+                st << (r || g ? ", " : "") << "(" << u << ", " << 1.0 - v << ")";
+            }
+        }
+        bool first = true;
+        for (int r = 0; r < rings; ++r) {
+            for (int g = 0; g < segments; ++g) {
+                const int a = r * (segments + 1) + g, b = a + segments + 1;
+                counts << (first ? "" : ", ") << 4;
+                indices << (first ? "" : ", ") << a << ", " << a + 1 << ", " << b + 1 << ", " << b;
+                first = false;
+            }
+        }
+        out << "def Mesh \"Sphere\" (\n    prepend apiSchemas = [\"MaterialBindingAPI\"]\n)\n{\n"
+            << "    uniform bool doubleSided = 1\n    uniform token subdivisionScheme = \"none\"\n"
+            << "    int[] faceVertexCounts = [" << counts.str() << "]\n"
+            << "    int[] faceVertexIndices = [" << indices.str() << "]\n"
+            << "    point3f[] points = [" << points.str() << "]\n"
+            << "    normal3f[] normals = [" << normals.str() << "] ( interpolation = \"vertex\" )\n"
+            << "    texCoord2f[] primvars:st = [" << st.str() << "] ( interpolation = \"vertex\" )\n"
+            << "    rel material:binding = </Materials/Mat>\n}\n"
+            << "def DomeLight \"Sky\"\n{\n    float inputs:intensity = 1\n}\n"
+            << "def Camera \"Camera\"\n{\n    float focalLength = 35\n    float horizontalAperture = 24.576\n"
+               "    float verticalAperture = 18.432\n    float2 clippingRange = (0.1, 1000)\n}\n"
+            << "def Scope \"Materials\"\n{\n    def Material \"Mat\"\n    {\n"
+               "        token outputs:surface.connect = </Materials/Mat/Surface.outputs:surface>\n"
+               "        def Shader \"Surface\"\n        {\n"
+               "            uniform token info:id = \"UsdPreviewSurface\"\n"
+               "            color3f inputs:diffuseColor = (0.8, 0.8, 0.8)\n"
+               "            float inputs:roughness = 0.3\n"
+               "            normal3f inputs:normal.connect = </Materials/Mat/Normal.outputs:rgb>\n"
+               "            token outputs:surface\n        }\n"
+               "        def Shader \"Normal\"\n        {\n"
+               "            uniform token info:id = \"UsdUVTexture\"\n"
+               "            asset inputs:file = @" << png.string() << "@\n"
+               "            float4 inputs:scale = (2, 2, 2, 2)\n            float4 inputs:bias = (-1, -1, -1, -1)\n"
+               "            token inputs:sourceColorSpace = \"raw\"\n"
+               "            float2 inputs:st.connect = </Materials/Mat/Uv.outputs:result>\n"
+               "            float3 outputs:rgb\n        }\n"
+               "        def Shader \"Uv\"\n        {\n"
+               "            uniform token info:id = \"UsdPrimvarReader_float2\"\n"
+               "            string inputs:varname = \"st\"\n            float2 outputs:result\n        }\n"
+               "    }\n}\n";
+    }
+    const auto traced = [&](uint32_t bounces) {
+        auto renderer = usd::StageRenderer::open(path);
+        if (!renderer) FAIL(renderer.error().toString());
+        (*renderer)->setPathSamples(16);
+        (*renderer)->setPathTotal(64);
+        (*renderer)->setPathBounces(bounces);
+        auto image = (*renderer)->render("/Camera", 0.0, 96, 72, "rt");
+        if (!image) FAIL(image.error().toString());
+        return std::move(*image);
+    };
+    const usd::StageImage one = traced(1);
+    const usd::StageImage eight = traced(8);
+    gpu::BufferDesc desc;
+    desc.bytes = one.rgba.size() * sizeof(float);
+    desc.elementBytes = 16;
+    auto a = gpu::Buffer::create(*gpu->device, desc, one.rgba.data());
+    auto b = gpu::Buffer::create(*gpu->device, desc, eight.rgba.data());
+    REQUIRE(a);
+    REQUIRE(b);
+    auto diff = render::compareImages(*gpu->library, *a, *b, 96, 72);
+    REQUIRE(diff);
+    const float* centre = eight.rgba.data() + (36 * 96 + 48) * 4;
+    std::printf("  normal-mapped sphere, one bounce against eight: p99 %u, max %u, %llu over 2; centre at eight %.4f\n",
+                diff->p99, diff->max, static_cast<unsigned long long>(diff->over2), double(centre[0]));
+    // Sixty-four paths a pixel either way: the noise, not a gain.
+    CHECK(diff->p99 <= 12);
+    CHECK(centre[0] < 1.0F);
+}
+
 TEST_CASE("materials bound in USD shade a mesh: MaterialX with a texture, and UsdPreviewSurface",
           "[usd][gpu][mesh][materials]") {
     ATHENEA_REQUIRE_GPU(gpu);

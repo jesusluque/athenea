@@ -8,6 +8,10 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **Normal maps no longer add light in the path tracer.** A reflection under a
+  normal map's tilted normal was taken for a glass crossing and left inside
+  the mesh; a normal-mapped sphere grew brighter with every bounce (2.8 where
+  Cycles reads 0.6). Reflections stay on the triangle's side now.
 - **A skinned cloud's view-dependent colour turns with it.** Its harmonics
   were read along the posed eye direction, not the one carried back into the
   bind pose they were trained in: a turned limb showed its rest pose's colour.

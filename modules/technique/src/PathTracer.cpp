@@ -1838,11 +1838,54 @@ float3 refractInto(float3 wi, float3 n, float ior) {
 /// (`kFlagInside`) and a reflection stays in the glass. A back face of
 /// anything else, a room seen from inside its walls, is a surface like any
 /// other: the closed furnace is one, and counted its bounces free.
+/// WHETHER A SURFACE ONLY REFLECTS: no lobe of its stack passes light
+/// through (a glass's that is not reflection alone, translucency, a hair's
+/// fibre). Only of such a surface is the triangle's own side the side light
+/// comes from and leaves to.
+bool reflectsOnly(Shaded sh) {
+    for (uint k = 0; k < sh.stack.count; ++k) {
+        const Lobe lobe = sh.stack.lobes[k];
+        if (!any(lobe.weight > float3(0.0))) {
+            continue;
+        }
+        if ((lobe.kind == kLobeDielectric && lobe.scatter != kScatterReflect) || lobe.kind == kLobeTranslucent ||
+            lobe.kind == kLobeHair) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// A DIRECTION ON THE TRIANGLE'S OTHER SIDE from the eye, off a surface that
+/// only reflects. A normal map tilts the shading normal off the triangle's,
+/// and a lobe built about it reflects into directions under the triangle
+/// itself; a ray left that way crossed the surface, and from inside a closed
+/// mesh met its inner walls and the sky beyond: energy every bounce added
+/// (a normal-mapped sphere at 2.8 where the raster and Cycles read 0.6).
+/// Such a direction carries nothing, as Cycles' reflection check has it. A
+/// bake's point is a gaussian's, with no triangle, and keeps its own rule.
+bool underTriangle(Shaded sh, float3 wi) {
+    return !kBake && dot(sh.geometricNormal, sh.geometricNormal) > 0.25 && reflectsOnly(sh) &&
+           dot(sh.geometricNormal, wi) * dot(sh.geometricNormal, sh.toEye) <= 0.0;
+}
+
+/// The normal a ray leaving the surface keeps clear of: the triangle's,
+/// where only it says which side is outside; the shading normal for a bake's
+/// point and for a surface light crosses.
+float3 leavingNormal(Shaded sh) {
+    return !kBake && dot(sh.geometricNormal, sh.geometricNormal) > 0.25 && reflectsOnly(sh) ? sh.geometricNormal
+                                                                                             : sh.inputs.normalWorld;
+}
+
 bool throughGlass(Shaded sh, float3 wi) {
     const bool crosses = dot(sh.inputs.normalWorld, wi) < 0.0;
     for (uint k = 0; k < sh.stack.count; ++k) {
         const Lobe lobe = sh.stack.lobes[k];
-        if (lobe.kind == kLobeDielectric && any(lobe.weight > float3(0.0)) &&
+        // A dielectric that only reflects (OpenPBR's specular over an
+        // opaque base) is no glass: a reflection under a normal map's tilted
+        // normal was taken for a crossing and left on the triangle's far
+        // side, inside a closed mesh.
+        if (lobe.kind == kLobeDielectric && lobe.scatter != kScatterReflect && any(lobe.weight > float3(0.0)) &&
             (crosses || (lobe.flags & kFlagInside) != 0)) {
             return true;
         }
@@ -1915,7 +1958,7 @@ float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crosse
         return float3(0.0);
     }
     const float3 f = stackEval(sh.stack, sh.toEye, ls.wi);
-    if (!any(f > float3(0.0))) {
+    if (!any(f > float3(0.0)) || underTriangle(sh, ls.wi)) {
         return float3(0.0);
     }
     // What stands between this point and the light, as the light's ShadowAPI
@@ -1927,10 +1970,10 @@ float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crosse
     // channel at a time: lerp(full shadow, none, through).
     float3 tint = float3(1.0);
     if ((light.flags & kLightShadow) != 0) {
-        float3 through = pathShadow(sh.inputs.positionWorld, sh.inputs.normalWorld, ls.wi, ls.distance,
+        float3 through = pathShadow(sh.inputs.positionWorld, leavingNormal(sh), ls.wi, ls.distance,
                                     light.shadowCategory, mask);
         if (kSplatShadows && any(through > float3(0.0))) {
-            through *= splatVisibility(sh.inputs.positionWorld, sh.inputs.normalWorld, ls.wi, ls.distance);
+            through *= splatVisibility(sh.inputs.positionWorld, leavingNormal(sh), ls.wi, ls.distance);
         }
         tint = lerp(shadowTint(light, 0.0, ls.distance), float3(1.0), saturate(through));
         if (!any(tint > float3(0.0))) {
@@ -2762,6 +2805,10 @@ const char* kBodyRest = R"(                const float3 np = cur.inputs.normalWo
             if (!pathGoesOn(bounce - crossed, crossed, cur, ms.wi)) {
                 break;
             }
+            // A reflection under the triangle (underTriangle) goes nowhere.
+            if (!through && underTriangle(cur, ms.wi)) {
+                break;
+            }
             // BELOW THE FLAT SURFACE IS THE RELIEF. A raised gaussian is
             // shaded as the relief faces, and a direction its tilt opens
             // under the flat mesh would meet that mesh from above, lit, a
@@ -2798,7 +2845,11 @@ const char* kBodyRest = R"(                const float3 np = cur.inputs.normalWo
             if (crossing) {
                 o = leaveSurface(p, cur.geometricNormal, ms.wi, margin);
             } else {
-                const float3 away = dot(n, ms.wi) < 0.0 ? -n : n;
+                // Clear of the triangle, where it says which side is out:
+                // along a tilted shading normal the origin could start on
+                // the far side of it.
+                const float3 clear = leavingNormal(cur);
+                const float3 away = dot(clear, ms.wi) < 0.0 ? -clear : clear;
                 o = p + (away + ms.wi) * margin;
             }
             d = ms.wi;
