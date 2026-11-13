@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--
+  A scene found by rendering: athenea's `neural-scene shoot` path traces a USD stage and what it leaves is
+  gaussians, not pictures. This page shows such a scene growing: every rendered frame added a part (an SPZ
+  of the gaussians that frame found), named in order by scenes/<name>.json, and the timeline shows the scene
+  as it stood after each frame. While a shoot is still running (`shoot --grow`) the index says `growing` and
+  the page keeps reading it: the scene appears as it is made.
+    ?scene=<name>   scenes/<name>.json (default sponza_growth)
+    ?unit=<metres>  the scene's unit, where its index does not say
+-->
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>A scene found by rendering · athenea neural</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./site.css">
+  <style>
+    .timeline { position: fixed; left: 10px; right: 10px; bottom: 34px; background: var(--panel); padding: 8px 12px;
+      border-radius: 8px; backdrop-filter: blur(6px); display: flex; gap: 10px; align-items: center; }
+    .timeline input[type=range] { flex: 1; accent-color: var(--accent); }
+    .timeline button { background: none; color: var(--fg); border: 1px solid var(--dim); border-radius: 6px;
+      padding: 3px 10px; font: inherit; cursor: pointer; min-width: 64px; }
+    .timeline label { color: var(--dim); white-space: nowrap; }
+    .timeline .where { font-family: ui-monospace, Menlo, monospace; white-space: nowrap; min-width: 250px; text-align: right; }
+    .live { color: #ff6b6b; font-weight: 600; }
+  </style>
+</head>
+
+<body>
+  <div class="hud">
+    <h1 id="title">A scene found by rendering</h1>
+    <p>Every point here is a gaussian that a path traced frame left behind. Each frame kept only what the scene
+      did not already hold, so the scene grows as it is rendered: drag the timeline to see it as it stood after
+      each frame. There is no mesh and no stored picture. Black is what no camera has seen yet.</p>
+    <p class="help">The <span style="color:#ffd166">yellow frustum</span> is the camera of the frame being
+      taken in; the line is the path the frames were rendered along. Drag to look · W A S D to move, Q E down
+      and up · Shift faster</p>
+    <div class="stats" id="stats">loading…</div>
+  </div>
+  <div class="timeline">
+    <button id="play">Play</button>
+    <input type="range" id="frame" min="0" max="1" value="0" step="1">
+    <button id="overview">Overview</button>
+    <label><input type="checkbox" id="follow"> ride the render camera</label>
+    <span class="where" id="where"></span>
+  </div>
+  <div class="credits">
+    Made with <a href="https://github.com/jesusluque/athenea">athenea</a> (neural branch) by jesus luque ·
+    scene: Intel Sponza by Frank Meinl and Anton Kaplanyan,
+    <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>, rendered and converted to gaussians ·
+    <a href="https://github.com/sparkjsdev/spark">Spark</a> (MIT) · <a href="https://threejs.org">three.js</a> (MIT)
+  </div>
+  <canvas id="canvas" tabindex="0"></canvas>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three/three.module.min.js",
+        "three/addons/": "./vendor/three/addons/",
+        "@sparkjsdev/spark": "./vendor/spark/150d926a74f3/spark.module.min.js"
+      }
+    }
+  </script>
+  <script type="module">
+    import * as THREE from "three";
+    import { SparkRenderer, SplatMesh, SparkControls } from "@sparkjsdev/spark";
+
+    const params = new URLSearchParams(location.search);
+    const name = (params.get("scene") ?? "sponza_growth").replace(/[^\w-]/g, "");
+    const status = document.getElementById("stats");
+    const slider = document.getElementById("frame");
+    const where = document.getElementById("where");
+    const playButton = document.getElementById("play");
+    const follow = document.getElementById("follow");
+    window.__scene = { loaded: false, error: null, parts: 0 };
+
+    const canvas = document.getElementById("canvas");
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 500);
+    scene.add(new SparkRenderer({ renderer }));
+    addEventListener("resize", () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    const readIndex = async () => (await fetch(`./scenes/${name}.json`, { cache: "no-store" })).json();
+
+    try {
+      let index = await readIndex();
+      // The scene's own space into three's: metres, y up. A stage that is z up is turned a quarter about x.
+      // An index that does not say its unit is taken as centimetres where its box is hundreds across.
+      const across = Math.max(index.max[0] - index.min[0], index.max[1] - index.min[1], index.max[2] - index.min[2]);
+      const unit = Number(params.get("unit")) || index.unit || (across > 200 ? 0.01 : 1);
+      const zUp = index.upAxis === "Z";
+      const place = (p) => zUp ? new THREE.Vector3(p[0] * unit, p[2] * unit, -p[1] * unit)
+                               : new THREE.Vector3(p[0] * unit, p[1] * unit, p[2] * unit);
+      const root = new THREE.Group();
+      if (zUp) root.rotation.x = -Math.PI / 2;
+      root.scale.setScalar(unit);
+      scene.add(root);
+
+      // The parts, in the order the scene grew. A part is a name, or what a frame added: its file, how many
+      // gaussians, and the frame, its time and the camera it was rendered through.
+      const partOf = (p) => typeof p === "string" ? { file: p, gaussians: 0 } : p;
+      const meshes = [];        // a part's mesh, once it is in
+      let parts = index.parts.map(partOf);
+      let cameras = new Map((index.cameras ?? []).map((c) => [c.name, c]));
+      let shown = 0;            // parts drawn: the scene as it stood after that many
+      let atEnd = true;         // the timeline is at its end: new parts are shown as they arrive
+      let playing = false;
+
+      // THE CAMERA BEING PROCESSED, drawn: the frustum of the frame the timeline is at -- its eye, its four
+      // edges out to a few metres and the frame at their end -- and, dimmer, the path of every frame's eye.
+      const frustum = new THREE.LineSegments(new THREE.BufferGeometry(),
+        new THREE.LineBasicMaterial({ color: 0xffd166, depthTest: false, transparent: true }));
+      frustum.renderOrder = 10;
+      frustum.frustumCulled = false;
+      scene.add(frustum);
+      const path = new THREE.Line(new THREE.BufferGeometry(),
+        new THREE.LineBasicMaterial({ color: 0x8ab4ff, depthTest: false, transparent: true, opacity: 0.55 }));
+      path.renderOrder = 9;
+      path.frustumCulled = false;
+      scene.add(path);
+      const drawPath = () => {
+        const eyes = parts.filter((p) => cameras.has(p.camera)).map((p) => place(cameras.get(p.camera).eye));
+        path.geometry.dispose();   // a path that grows wants a geometry of its new length
+        path.geometry = new THREE.BufferGeometry().setFromPoints(eyes);
+      };
+      const drawFrustum = (view) => {
+        if (!view) { frustum.visible = false; return; }
+        const eye = place(view.eye);
+        const forward = place(view.target).sub(eye).normalize();
+        const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+        const up = new THREE.Vector3().crossVectors(right, forward);
+        // The frame's lens: a focal length over a 24.576 mm aperture across, sixteen by nine.
+        const halfWide = 12.288 / (view.focal ?? 20);
+        const halfHigh = halfWide * 9 / 16;
+        const reach = Math.max(across * unit * 0.12, 1.0);
+        const corner = (x, y, d) => eye.clone().addScaledVector(forward, d).addScaledVector(right, x * halfWide * d)
+                                              .addScaledVector(up, y * halfHigh * d);
+        const far = [corner(-1, -1, reach), corner(1, -1, reach), corner(1, 1, reach), corner(-1, 1, reach)];
+        const near = [corner(-1, -1, reach * 0.08), corner(1, -1, reach * 0.08), corner(1, 1, reach * 0.08),
+                      corner(-1, 1, reach * 0.08)];
+        const lines = [];
+        for (let k = 0; k < 4; ++k) {
+          lines.push(eye, far[k], far[k], far[(k + 1) % 4], near[k], near[(k + 1) % 4]);
+        }
+        frustum.geometry.setFromPoints(lines);
+        frustum.visible = true;
+      };
+
+      const aim = (view) => {
+        camera.position.copy(place(view.eye));
+        camera.lookAt(place(view.target));
+        // The lens the frame was rendered through: a focal length over a 24.576 mm aperture, across.
+        const wide = 2 * Math.atan(12.288 / (view.focal ?? 20));
+        camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(wide / 2) / camera.aspect));
+        camera.updateProjectionMatrix();
+      };
+      const show = (count, moveCamera) => {
+        shown = Math.max(0, Math.min(count, meshes.length));
+        let gaussians = 0;
+        meshes.forEach((mesh, k) => {
+          mesh.visible = k < shown;
+          if (k < shown) gaussians += parts[k].gaussians;
+        });
+        slider.max = String(Math.max(parts.length, 1));
+        slider.value = String(shown);
+        const part = shown > 0 ? parts[shown - 1] : null;
+        const of = `${shown} of ${parts.length}${index.growing ? "+" : ""}`;
+        where.innerHTML = (index.growing ? '<span class="live">● rendering</span> · ' : "") +
+          (part && part.frame ? `frame ${of} · ${(gaussians / 1e6).toFixed(2)} M gaussians` : `part ${of}`);
+        drawFrustum(part && cameras.has(part.camera) ? cameras.get(part.camera) : null);
+        // Riding the camera, the frustum is the screen's own edge and is not drawn.
+        frustum.visible = frustum.visible && !follow.checked;
+        if (moveCamera && follow.checked && part && cameras.has(part.camera)) aim(cameras.get(part.camera));
+      };
+      // From outside and above, the whole of what the frames reached in view: where the frustum is seen at work.
+      const overview = () => {
+        const middle = place([(index.min[0] + index.max[0]) / 2, (index.min[1] + index.max[1]) / 2,
+                              (index.min[2] + index.max[2]) / 2]);
+        const far = across * unit;
+        camera.position.copy(middle).add(new THREE.Vector3(-0.8 * far, 0.95 * far, 0.8 * far));
+        camera.lookAt(middle.clone().add(new THREE.Vector3(0, -0.18 * far, 0)));
+        camera.fov = 40;
+        camera.updateProjectionMatrix();
+      };
+
+      // Parts are read in order, so the scene is seen growing while it loads too.
+      let loading = false;
+      const loadMore = async () => {
+        if (loading) return;
+        loading = true;
+        while (meshes.length < parts.length) {
+          const mesh = new SplatMesh({ url: `./scenes/${parts[meshes.length].file}` });
+          await mesh.initialized;
+          mesh.visible = false;
+          root.add(mesh);
+          meshes.push(mesh);
+          window.__scene.parts = meshes.length;
+          status.textContent = meshes.length < parts.length ? `loading… ${meshes.length} of ${parts.length} parts` : summary();
+          if (atEnd && !playing) show(meshes.length, true);
+          else show(shown, false);
+        }
+        loading = false;
+        window.__scene.loaded = true;
+      };
+      const summary = () => {
+        const total = parts.reduce((sum, p) => sum + p.gaussians, 0);
+        const seconds = parts.reduce((sum, p) => sum + (p.seconds ?? 0), 0);
+        return `${(total / 1e6).toFixed(2)} M gaussians · ${parts.length} rendered frames` +
+               (seconds > 0 ? ` · ${Math.round(seconds)} s of rendering` : "");
+      };
+
+      overview();
+      drawPath();
+      loadMore();
+      document.getElementById("overview").addEventListener("click", () => { follow.checked = false; overview(); show(shown, false); });
+      follow.addEventListener("change", () => show(shown, true));
+
+      // A SCENE STILL BEING RENDERED: its index is read again every two seconds for the parts that came.
+      const follower = setInterval(async () => {
+        if (!index.growing) { clearInterval(follower); return; }
+        try {
+          const next = await readIndex();
+          index = next;
+          parts = next.parts.map(partOf);
+          cameras = new Map((next.cameras ?? []).map((c) => [c.name, c]));
+          drawPath();
+          loadMore();
+          if (!next.growing) show(shown, false);
+        } catch (error) { /* the index is put in place whole; a failed read is tried again */ }
+      }, 2000);
+
+      slider.addEventListener("input", () => {
+        playing = false;
+        playButton.textContent = "Play";
+        show(Number(slider.value), true);
+        atEnd = shown >= meshes.length;
+      });
+      playButton.addEventListener("click", () => {
+        playing = !playing;
+        playButton.textContent = playing ? "Pause" : "Play";
+        if (playing && shown >= meshes.length) show(0, true);
+      });
+
+      const controls = new SparkControls({ canvas });
+      controls.fpsMovement.moveSpeed = 2.0;
+      let last = performance.now();
+      let since = 0;
+      renderer.setAnimationLoop((now) => {
+        const dt = Math.min((now - last) / 1000, 0.1);
+        last = now;
+        if (playing) {
+          // Ten frames a second: the scene as it grew.
+          since += dt;
+          if (since >= 0.1) {
+            since = 0;
+            if (shown < meshes.length) show(shown + 1, true);
+            else if (!index.growing) { playing = false; playButton.textContent = "Play"; }
+            atEnd = shown >= meshes.length;
+          }
+        }
+        if (!(playing && follow.checked)) controls.update(camera);
+        renderer.render(scene, camera);
+      });
+    } catch (error) {
+      window.__scene.error = String(error);
+      status.textContent = `could not load the scene: ${error}`;
+    }
+  </script>
+</body>
+</html>

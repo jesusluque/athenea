@@ -22248,3 +22248,33 @@ debugging port. Publishing it is sysop's, with the user's leave to it.
   by hand.
 - Levels of detail on the web: the export is the finest level, drawn whole.
 - Glass, which the page draws as the picture a pane kept or the cover it was given.
+
+## A file that grows, and the scene watched as it is made (13 Nov)
+
+The user: an interface to see the creation, a kind of growing file, the reconstruction as it renders; and the
+frustum of the camera being processed.
+
+The scene's index for a viewer (`<stem>.json`) names its parts in order, and a part may be a frame's: its file,
+how many gaussians, the frame, its time, the camera it was rendered through, what it took. `neural-scene export
+--by-frame` writes a scene that way after the fact -- a part a frame, what that frame found and still stands.
+`neural-scene shoot --grow <stem>` writes it while it renders: when a frame is whole its part is written and the
+index is put in place again, written whole and renamed, saying `growing`; a reader never sees half an index, and
+when the shoot ends the index says so. The page (`scripts/examples/neural-scene-viewer`, Spark and three.js)
+reads the parts in order and keeps the first N visible: a timeline over the frames, a play at ten frames a
+second, and while the index says `growing` it reads it again every two seconds and shows what came. The camera of
+the frame the timeline is at is drawn as a frustum, with the path of every frame's eye; "ride the render camera"
+looks through it instead, and an overview stands outside to watch it work.
+
+The walk of a hundred frames by frame: 100 parts, 22.6 MB, the first 233 485 gaussians and the rest 16 to 30
+thousand each. A shoot of twelve frames of Sponza with `--grow`, the page open on it: twelve parts, 0.87 million
+gaussians, 113 s. The first export of the walk is published at neural.lucab.co.uk, by sysop with the user's leave.
+
+### Not done
+
+- **What a later frame takes out.** A part holds what its frame found and, written live, is not gone back to: the
+  growth shown is of what was added, and the few hundredths later frames stamped gone stay in the earlier parts
+  until the scene is exported again when it is whole.
+- **Within a frame.** The page grows a frame at a time; the coarse looks a frame takes while it gathers are not
+  written to the file.
+- **Live on the web.** A shoot is followed where its files are served; the published page plays a growth back.
+- The frame's aspect, which the page takes as sixteen by nine, and the scene's unit, which it guesses from the box.
