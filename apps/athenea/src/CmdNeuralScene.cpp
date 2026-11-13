@@ -37,6 +37,9 @@
 #include "athenea/io/NeuralFile.h"
 #include "athenea/gpu/Texture.h"
 #include "athenea/io/NeuralScene.h"
+#include "athenea/lod/Athc.h"
+#include "athenea/lod/Lod.h"
+#include "athenea/core/Platform.h"
 #include "athenea/io/Png.h"
 #include "athenea/io/SplatWriters.h"
 #include "athenea/render/Discovery.h"
@@ -1767,6 +1770,95 @@ int runRenderStored(const SceneOptions& o, const io::NeuralScene& scene) {
     return 0;
 }
 
+/// THE SCENE AS IT STOOD, FROZEN INTO A .ATHC: every gaussian standing at a snapshot, one cloud, with the
+/// engine's own levels of detail built over it (lod::LodBuilder: Morton order, a merged gaussian a cell a
+/// level) -- what `athenea render --lod`, a stage and a stream draw by how large a cell is on the screen.
+/// It is what the scene is handed on as, not what it is kept as: a .athc has no room for when a gaussian
+/// came or went, nor for what it is made of beyond its shading normal.
+int runBake(const SceneOptions& o) {
+    const std::filesystem::path directory = o.directory;
+    auto scene = io::readNeuralScene(directory);
+    if (!scene) return report(scene.error());
+    if (o.output.empty() || !lod::isAthc(o.output)) {
+        err("neural-scene bake wants -o a .athc\n");
+        return kExitFailure;
+    }
+    const uint32_t asOf = o.snapshot != 0 ? o.snapshot : o.at >= 0.0 ? snapshotAt(*scene, o.at) : 0u;
+    // The standing records, piece after piece: which are kept is read off each piece's stamps; nothing
+    // of a record is computed.
+    std::vector<float> records;
+    uint32_t count = 0;
+    uint32_t pieces = 0;
+    for (const io::NeuralScenePiece& piece : scene->pieces) {
+        if (asOf != 0 && piece.foundIn > asOf) {
+            continue;
+        }
+        if (asOf == 0 && piece.removed != 0 && piece.removed >= piece.gaussians) {
+            continue;
+        }
+        if (std::filesystem::path(piece.cloud).extension() != ".athg") {
+            err("piece %s is not a render's (.athg): neural-scene bake freezes what neural-scene shoot found\n",
+                piece.id.c_str());
+            return kExitFailure;
+        }
+        auto held = io::readGaussians(directory / piece.cloud);
+        if (!held) return report(held.error());
+        if (held->floats != render::kRenderRecord) {
+            err("piece %s: records of %u floats\n", piece.id.c_str(), held->floats);
+            return kExitFailure;
+        }
+        std::vector<uint32_t> gone;
+        if (!piece.gone.empty()) {
+            auto words = io::readSeen(directory / piece.gone, held->count);
+            if (!words) return report(words.error());
+            gone = std::move(*words);
+        }
+        uint32_t kept = 0;
+        for (uint32_t k = 0; k < held->count; ++k) {
+            const uint32_t went = gone.empty() ? 0u : gone[k];
+            if (went != 0 && (asOf == 0 || went <= asOf)) {
+                continue;
+            }
+            const auto first = held->records.begin() + static_cast<std::ptrdiff_t>(size_t{k} * held->floats);
+            records.insert(records.end(), first, first + held->floats);
+            ++kept;
+        }
+        count += kept;
+        pieces += kept != 0 ? 1 : 0;
+    }
+    if (count == 0) {
+        err("nothing stands in the scene at that snapshot\n");
+        return kExitFailure;
+    }
+    auto device = gpu::Device::create();
+    if (!device) return report(device.error());
+    gpu::ShaderLibrary library(*device);
+    auto loader = scene::CloudLoader::create(library);
+    if (!loader) return report(loader.error());
+    io::RawSplats raw;
+    raw.source = directory.string();
+    raw.count = count;
+    raw.encoding = render::Discovery::renderEncoding();
+    raw.records = std::move(records);
+    auto splats = loader->upload(raw, 0);
+    if (!splats) return report(splats.error());
+    const auto began = std::chrono::steady_clock::now();
+    auto builder = lod::LodBuilder::create(library);
+    if (!builder) return report(builder.error());
+    auto built = builder->build(*splats);
+    if (!built) return report(built.error());
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count();
+    auto written = platform::writeAtomically(o.output, [&](const std::filesystem::path& partial) {
+        return lod::writeAthc(library.device(), *built, partial);
+    });
+    if (!written) return report(written.error());
+    std::error_code ignored;
+    out("%s: %u gaussians standing in %u pieces, built into %zu levels of detail in %.2f s; wrote %s (%.0f MB)\n",
+        scene->name.c_str(), splats->count, pieces, built->levels.size(), seconds, o.output.c_str(),
+        static_cast<double>(std::filesystem::file_size(o.output, ignored)) / 1048576.0);
+    return 0;
+}
+
 int runRender(const SceneOptions& given) {
     SceneOptions o = given;
     const std::filesystem::path directory = o.directory;
@@ -2139,6 +2231,13 @@ void addNeuralScene(CLI::App& app) {
     shoot->add_option("--source", o.source, "what the stage is");
     shoot->add_option("--licence", o.licence, "what the source asks of whoever uses it");
     run(shoot, options, runShoot);
+
+    CLI::App* bake = cmd->add_subcommand("bake", "the scene as it stood, frozen into a .athc with the engine's levels of detail");
+    bake->add_option("scene", o.directory, "the scene's directory")->required();
+    bake->add_option("--at", o.at, "the scene as it stood at this time (default: as it stands)");
+    bake->add_option("--snapshot", o.snapshot, "the same by a snapshot of the manifest's, counted from one");
+    bake->add_option("-o,--output", o.output, "the .athc")->required();
+    run(bake, options, runBake);
 
     CLI::App* info = cmd->add_subcommand("info", "what the manifest holds");
     info->add_option("scene", o.directory, "the scene's directory")->required();

@@ -21994,3 +21994,34 @@ hundredth frame as at the second. The stored frames against the path tracer's ar
   sizes, the lift): a walk's hundred pieces are a hundred instances. Pieces merged as they settle would draw as one.
 - Two sessions on one device without the queue between them: this shoot ran out of memory twice beside another
   session's tests, and its times above carry their spikes (a frame of 21 s among frames of 6).
+
+## The found scene and levels of detail (13 Nov)
+
+The user's question: a zoom or a dolly raises the detail, so trees of levels could be made of it -- how should
+the information be kept? The analysis is the plan of that date; in short. A gaussian a look makes is born at a
+scale, its pixel at its distance, and that scale is an octree level: the scene is a sparse pyramid built by
+looking, not a flat cloud with stamps. Three relations now share the one stamp `gone` and want one each: time (the
+surface changed), detail (finer gaussians came; the coarse one is still right from far, and is their parent) and
+freshness (the children were repainted and the parent is from before). With the scale as the level no pointers
+are needed: a gaussian is drawn where it is alive at the time asked, its parent's projected size is over the
+threshold, and its own is under it or nothing finer came. A look then asks whether its cell holds a node at its
+own level, which is a yes or a no where `--refine` is a ratio that leaves gaps; a frame's coarse looks are the
+levels above its last and are kept, not ended; and pieces are cut by place, each with its levels coarse to fine.
+
+What the engine has (`modules/lod`): Morton order and a merged gaussian a cell a level, the cut by a cell's
+projected edge, `.athc` and its streaming. Its builder takes a cloud whole, its leaves are all at the finest
+level, its parents are computed and never observed, ten levels of a scene's cube are 3 cm in a building, and a
+`.athc` carries no stamps.
+
+**The first step, taken: `neural-scene bake`.** The scene as it stood at a snapshot frozen into a `.athc` by the
+builder as it is -- records read, those gone by then left out, one cloud, `LodBuilder::build`, `writeAthc`. The
+sequence's scene: 2 578 221 gaussians, a `.athc` of 170 MB (the pieces are 368 MB). Drawn whole from the
+three-quarter view at 1920 x 1080 (`athenea bench --lod` at a threshold of nothing): 31.4 ms a frame.
+
+### Not done
+
+- **The cut measured.** The thresholds of 1, 2 and 4 pixels, from far and from inside, against the scene drawn
+  flat: the run stopped at its second command, when the toolchain the binaries load (`~/tools/usd-26.08-mx`, slang,
+  OpenColorIO, OIDN) left the disk under it. Nothing of this branch removed it.
+- Everything after the first step: the scale as the level and the stamp `refined`, the cut a gaussian, the frame's
+  pyramid, pieces by place, stale parents.
