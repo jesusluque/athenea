@@ -1830,6 +1830,20 @@ public float3x3 splatRotation(float4 q) {
                     2.0 * (x * z - w * y), 2.0 * (y * z + w * x), 1.0 - 2.0 * (x * x + y * y));
 }
 
+/// A direction of a posed cloud's space carried into its bind pose, where the
+/// harmonics were trained: `restWord` and `posedWord` are the gaussian's
+/// packed quaternion at rest and as the skeleton turned it (shape word 0 of
+/// the rest cloud and of the posed one). A cloud no skeleton carries binds
+/// its own frames as the rest ones, and the two words are the same.
+public float3 splatRestDirection(uint posedWord, uint restWord, float3 d) {
+    if (posedWord == restWord) {
+        return d;
+    }
+    const float3x3 posed = splatRotation(decodeQuaternion(posedWord));
+    const float3x3 rest = splatRotation(decodeQuaternion(restWord));
+    return mul(rest, mul(transpose(posed), d));
+}
+
 /// The normal a splat stands for: its shortest axis, turned towards the eye.
 /// `rotation` is the frame's three columns, `scale` its three sizes.
 /// Which side of a gaussian the eye is on, before the normal is turned

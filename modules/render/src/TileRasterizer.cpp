@@ -423,6 +423,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             projectVolume_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
                 cursor["positions"].setBinding(cloud->positions.rhi());
                 cursor["shape"].setBinding(cloud->shape.rhi());
+                cursor["restShape"].setBinding(cloud->restShapeOr().rhi());
                 cursor["volume"].setBinding(cloud->volume.rhi());
                 cursor["volumeRadiance"].setBinding(look.radiance != nullptr ? look.radiance->rhi()
                                                                              : cloud->volume.rhi());
@@ -566,6 +567,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             cursor["params"]["polishPlane"].setData(splatCapacity_);
             cursor["positions"].setBinding(cloud->positions.rhi());
             cursor["shape"].setBinding(cloud->shape.rhi());
+            cursor["restShape"].setBinding(cloud->restShapeOr().rhi());
             cursor["sh"].setBinding(cloud->sh.rhi());
             cursor["proj"].setBinding(proj_.rhi());
             cursor["visible"].setBinding(visible_.rhi());

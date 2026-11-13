@@ -8,6 +8,9 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **A skinned cloud's view-dependent colour turns with it.** Its harmonics
+  were read along the posed eye direction, not the one carried back into the
+  bind pose they were trained in: a turned limb showed its rest pose's colour.
 - **Vulkan knows the card's memory.** The device's budget on Vulkan is what
   `VK_EXT_memory_budget` reports, so streamed assets and splat shadows are
   sized to the card as on Metal, and an allocation past it is refused with

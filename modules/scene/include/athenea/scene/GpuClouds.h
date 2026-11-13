@@ -49,6 +49,11 @@ struct GpuSplats {
     uint32_t    shWords = 0;
     gpu::Buffer positions;          ///< float4
     gpu::Buffer shape;              ///< uint * 4
+    /// A posed cloud's bind pose `shape` (SplatSkinner wrote `shape`): the
+    /// harmonics are evaluated along the eye carried back into it. Unset
+    /// otherwise, and `restShapeOr()` is `shape` then.
+    gpu::Buffer restShape;
+    [[nodiscard]] const gpu::Buffer& restShapeOr() const noexcept { return restShape.valid() ? restShape : shape; }
     gpu::Buffer sh;                 ///< uint * shWords (one dummy word at degree 0)
     /// What each splat reflects with, where the cloud carries it: one uint a
     /// splat, metallic in the low byte and roughness in the next. Empty for a

@@ -871,6 +871,7 @@ Result<void> GaussianRayTracer::prepareFrame(std::span<const SplatInstance> inst
         shade_.dispatch(batch, {shade.cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["positions"].setBinding(shade.cloud->positions.rhi());
             cursor["shape"].setBinding(shade.cloud->shape.rhi());
+            cursor["restShape"].setBinding(shade.cloud->restShapeOr().rhi());
             cursor["sh"].setBinding(shade.cloud->sh.rhi());
             cursor["colours"].setBinding(colours_.rhi());
             // Every name a shader declares must be bound whether it is read

@@ -26,6 +26,7 @@ import rt_common;
 
 StructuredBuffer<float4>   positions;
 StructuredBuffer<uint>     shape;
+StructuredBuffer<uint>     restShape;   // the bind pose's, for a posed cloud; `shape` otherwise
 StructuredBuffer<uint>     sh;
 StructuredBuffer<uint>     pbr;      // metallic and roughness a splat, where the cloud carries them
 // The shading normal a splat, where the cloud carries one (`params.hasNormals`).
@@ -85,7 +86,9 @@ void rtShade(uint3 tid: SV_DispatchThreadID) {
     const uint degree = min(degreeOf(params.restPerColour), params.shLimit);
     const float3 eye = float3(params.v03, params.v13, params.v23);
     const float3 dir = normalize(p.xyz - eye);
-    float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree, dir), params.linearCloud != 0);
+    float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree,
+                                                   splatRestDirection(shape[row], restShape[row], dir)),
+                               params.linearCloud != 0);
     if (params.relight != 0) {
         // In the world, where the lights are: the cloud's own space is where
         // its harmonics were trained, and a light stands somewhere else.

@@ -26,6 +26,10 @@ static const float kSheetAlpha = 0.1;
 
 StructuredBuffer<float4>    positions;
 StructuredBuffer<uint>      shape;
+/// The bind pose's shape words where `shape` is a posed cloud's (the
+/// harmonics read the eye in the frame they were trained in); `shape` itself
+/// otherwise.
+StructuredBuffer<uint>      restShape;
 StructuredBuffer<uint>      sh;
 StructuredBuffer<uint>      pbr;      // metallic and roughness a splat, where the cloud carries them
 // The shading normal a splat, where the cloud carries one (`params.hasNormals`).
@@ -778,7 +782,8 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
                                highHalf(shape[row + 3]));
     const uint degree = min(degreeOf(params.restPerColour), params.shLimit);
     const float3 dir = normalize(posOpacity.xyz - float3(params.eyeX, params.eyeY, params.eyeZ));
-    float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree, dir), params.linearCloud != 0);
+    const float3 restDir = splatRestDirection(shape[row], restShape[row], dir);
+    float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree, restDir), params.linearCloud != 0);
     // A parameter drawn in place of the light (athenea:splatView): what the
     // relit branch reads off its surface, kept for after it.
     const float3 baked = colour;
@@ -1315,7 +1320,8 @@ float3 flatShown<let kTransfer : int>(uint i, uint slot, float4 posOpacity, floa
                                       float leastRoughness, EditFate fate, float3 omega) {
     const float3 omegaCloud = normalize(mul(toCloud, omega));
     const float3 eyeCloud = posOpacity.xyz + omegaCloud;
-    float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree, -omegaCloud),
+    float3 colour = cloudLight(base + evaluateRest(sh, i * params.shWords, degree,
+                                                   splatRestDirection(shape[i * 4], restShape[i * 4], -omegaCloud)),
                                params.linearCloud != 0);
     if (params.relight != 0) {
         const float3 cloudNormal = splatShadingNormal(r, scale, posOpacity.xyz, eyeCloud, params.hasNormals != 0,

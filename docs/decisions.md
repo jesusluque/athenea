@@ -6486,6 +6486,19 @@ as the **bind pose** and writes the posed one into buffers of its own -- a
 writes neither -- so what a renderer holds never changes identity between
 frames. And it runs `scene::SplatSkinner` over the cloud.
 
+*13 Nov:* sharing the harmonics left them read in the wrong frame. They were
+trained in the bind pose, and the eye direction a posed cloud evaluates them
+along is the posed one: a turned limb showed the colour its rest pose showed
+toward that eye, not toward the eye turned with it. The test that says so
+(`athenea_usd_tests "a skinned cloud's zonal transfer turns with it*"`, a
+degree 1 cloud carried by a joint against the same cloud turned by its
+prim) had read relMSE 1.7e-2 since it was written. The posed cloud now keeps
+the bind pose's `shape` as `restShape`, and the projection, the flatten and
+the ray tracer's shade carry the eye back by the gaussian's own turn,
+`R_rest R_posed^T` (`splatRestDirection`), before the harmonics: relMSE
+2.0e-7 raster, 2.8e-7 traced. A cloud no skeleton carries binds its own
+`shape` there and the turn is skipped.
+
 **Two things the measurement turned up**, both of which would have been wrong
 in any route that posed a cloud:
 
