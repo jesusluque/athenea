@@ -430,7 +430,9 @@ athenea neural-scene render hall.aths --camera door --at 0 -o then.png   # la es
 | `--up-to` | `render` | entero | `0` | `--discovered`: solo las miradas hasta esta, contadas desde uno en el orden de `snapshots`; `0` son todas |
 | `--at`, `--snapshot` | `render` | tiempo, entero | —, — | la escena como estaba: en un tiempo, el último snapshot tomado hasta entonces; o un snapshot del manifest, contado desde uno. Las piezas que habían entrado hasta él, menos las gaussianas que se habían ido hasta él. Sin ninguno, la escena como está ahora |
 | `--frame` | `render` | entero | — | un frame que la escena almacenó (`shoot`), contado desde uno: se dibuja de nuevo por su cámara, a su tamaño, con la escena como estaba cuando entró su última mirada. En lugar de `--camera`, `--size` y `--snapshot` |
-| `--lod` | `render` | píxeles | `0` | levels of detail: la escena cortada para la vista. Una gaussiana más estrecha que esto en pantalla se dibuja en lugar de las más finas que miradas posteriores pusieron encima, y estas solo donde aquello sobre lo que se pusieron es más ancho; `0` dibuja lo más fino en todas partes. De `1.2` a `1.5` es una gaussiana de alrededor de un píxel; `2` o más es una imagen dibujada con gaussianas de ese ancho. El corte se compacta: lo que no se dibuja no llega al rasterizador. Con `--views` cada vista se corta para sí misma |
+| `--lod` | `render` | píxeles | `0` | levels of detail: la escena cortada para la vista. Una gaussiana más estrecha que esto en pantalla se dibuja en lugar de las más finas que miradas posteriores pusieron encima, y estas solo donde aquello sobre lo que se pusieron es más ancho; `0` dibuja lo más fino en todas partes. De `1.2` a `1.5` es una gaussiana de alrededor de un píxel; `2` o más es una imagen dibujada con gaussianas de ese ancho. El corte se reúne en una sola nube, sean cuales sean las piezas de la escena: lo que no se dibuja no llega al rasterizador. Con `--views` cada vista se corta para sí misma |
+| `--budget` | `render` | gaussianas | — | levels of detail por un número, en lugar de `--lod`: el umbral más fino que no dibuja más de esas gaussianas desde la vista, leído de un histograma al que cada pieza a la vista suma sus gaussianas (256 umbrales, dieciséis por octava desde un octavo de píxel) sin hacer ningún corte para encontrarlo. Imprime el umbral y lo que dibuja, que queda unas centésimas por debajo del presupuesto. Con `--views`, el de cada vista |
+| `--morph` | `render` | fracción | `0` | `--lod`, `--budget`: una gaussiana se mueve hacia aquello sobre lo que se puso -- su ancho, su color, su opacidad cedida según va quedando sobre sus vecinas -- a lo largo de esta fracción del umbral por encima del punto en que eso se dibuja en su lugar, de modo que el corte salte entre dos imágenes casi iguales cuando el ojo se aleja. Ablanda una imagen fija tanto como mueve: de `0.25` a `0.5` para una cámara que se mueve, `0` para una fija |
 | `--frames` | `render` | dos enteros | — | los frames almacenados de FIRST a LAST como imágenes en una sola ejecución, con la escena leída una vez y cada pieza la primera vez que un frame la pide: `-o` es un prefijo, se escribe `<stem>_NNNN.png` o `.exr` |
 | `--exposure` | `render` | stops | `0` | `-o` con un `.png`: sobre la luz de la escena, antes del view transform estándar |
 | `stage`, `scene` | `shoot` | rutas | — | el stage USD, y el directorio de la escena: se crea, o se le añade |
@@ -3586,14 +3588,15 @@ sella.
 
 Un `.athg` son dieciséis bytes -- `ATHG`, una versión (1), cuántas gaussianas y
 cuántos floats cada una, uint32 little endian -- y después los registros,
-float32. El registro de un render son 27 floats (26 en una escena hecha antes de añadir el último): la posición (3), el logit de
+float32. El registro de un render son 30 floats (26 y 27 en escenas hechas antes de añadir los últimos): la posición (3), el logit de
 la opacidad, los logaritmos de las escalas (3), la rotación (w x y z), el primer
 armónico como guarda un color una captura (3), la normal de la superficie en el
 mundo (3), la fracción de metal, la roughness, la transmisión, y después la fila
 del material en el frame que la creó más uno (0 para lo visto a través de
 vidrio), su índice de refracción, 1 para una lámina sin interior, lo que deja
 pasar en un cruce (r g b), y el ancho de las gaussianas más gruesas sobre las que
-se puso, 0 donde no había nada: el de su padre, que lee `render --lod`.
+se puso, 0 donde no había nada -- el de su padre, que lee `render --lod` -- y su
+color (r g b, como se guarda un color base), hacia el que la mueve `--morph`.
 
 Un `.refined` es un registro como un `.gone` para otra cosa: la mirada que hizo
 gaussianas más finas donde está esta. No se ha ido. Una mirada la hizo tan ancha

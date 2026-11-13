@@ -31,7 +31,7 @@
 // them (render::Discovery::renderEncoding).
 module scene_render;
 
-public static const uint kRenderRecord = 27;
+public static const uint kRenderRecord = 30;
 
 // A record's fields.
 static const uint kAtPosition = 0;       // x y z
@@ -48,6 +48,7 @@ static const uint kAtIndex = 21;         // its index of refraction
 static const uint kAtSheet = 22;         // 1: a sheet with no inside (or nothing that bends)
 static const uint kAtTint = 23;          // r g b: what the surface lets through one crossing, before Fresnel
 static const uint kAtParent = 26;        // the width of the coarser gaussians it was laid over, 0 where over nothing: its level's parent
+static const uint kAtParentColour = 27;  // and their colour, as a base colour is kept (display-encoded): what it is moved towards in the cut's band
 
 // technique::PathAux's planes.
 static const uint kPlaneNormal = 1;
@@ -100,6 +101,7 @@ StructuredBuffer<float>    knownFirst;   // where it begins: a pane's own depth
 StructuredBuffer<float4>   knownSize;    // the scene drawn with each gaussian's size as its colour
 StructuredBuffer<float4>   beforeSize;   // the same before this look took anything out: what a gaussian made now is laid over
 StructuredBuffer<float>    beforeDepth;
+StructuredBuffer<float4>   beforeColour; // and its colour there
 RWStructuredBuffer<uint>   made;         // a cell: how many gaussians it makes (none, one, two)
 StructuredBuffer<uint>     madeRead;
 RWStructuredBuffer<uint>   which;        // a cell: 1 its surface's, 2 what stands behind it
@@ -468,6 +470,11 @@ void renderPack(uint3 tid: SV_DispatchThreadID) {
             const float wide = was.r / max(was.a, 1.0e-3);
             if (was.a > 0.5 && abs(beforeDepth[at] - z) <= params.tolerance * z && wide > 1.2 * across) {
                 records[row + kAtParent] = wide;
+                const float4 held = beforeColour[at];
+                const float3 parent = held.rgb / max(held.a, 1.0e-3);
+                records[row + kAtParentColour + 0] = encoded(parent.r);
+                records[row + kAtParentColour + 1] = encoded(parent.g);
+                records[row + kAtParentColour + 2] = encoded(parent.b);
                 laidOver = true;
             }
         }
@@ -486,6 +493,11 @@ void renderPack(uint3 tid: SV_DispatchThreadID) {
                                    abs(knownDepth[at2] - z2) <= params.tolerance * z2;
             if (there && !heldThere) {
                 records[row + kAtParent] = 2.0 * across;
+                // The level above is this frame's own mean over a cell twice as wide: this gaussian's
+                // colour stands for it here.
+                records[row + kAtParentColour + 0] = encoded(own.r);
+                records[row + kAtParentColour + 1] = encoded(own.g);
+                records[row + kAtParentColour + 2] = encoded(own.b);
             }
         }
         const float3 tint = plane(kPlaneTint, at).rgb;

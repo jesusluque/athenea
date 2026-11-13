@@ -103,6 +103,8 @@ struct SceneOptions {
     unsigned                 snapshot = 0;
     unsigned                 storedFrame = 0;
     float                    lod = 0.0F;
+    uint64_t                 budget = 0;
+    float                    morph = 0.0F;
     float                    exposure = 0.0F;
     // shoot
     std::string              stage;
@@ -131,6 +133,12 @@ bool sizeOf(const std::string& text, uint32_t& width, uint32_t& height) {
 }
 
 /// A piece's gaussians on the device: a USD ParticleField, or a splat file.
+/// The sizes a render's record has had: 26 floats, 27 with its parent's width, 30 with its parent's colour.
+bool renderRecordOf(uint32_t floats) {
+    return floats == render::kRenderRecord || floats == render::kRenderRecordParent ||
+           floats == render::kRenderRecordParentColour;
+}
+
 /// With `parent`, a render's piece also gives the width of what each gaussian was laid over (left
 /// invalid where the file has none).
 Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& loader,
@@ -145,17 +153,24 @@ Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& l
         if (!held) return std::move(held).error();
         // 26 floats before a gaussian kept its parent's width, 27 since: the fields the loader reads are
         // the same.
-        if (held->floats != render::kRenderRecord && held->floats != render::kRenderRecordParent) {
+        if (!renderRecordOf(held->floats)) {
             return Error::make(ErrorCode::Unsupported, "{}: records of {} floats, and a render's are {}", path.string(),
                                held->floats, render::kRenderRecord);
         }
         if (parent != nullptr && held->floats > render::kRenderRecordParent) {
-            // The parent's width of each, laid side by side: nothing is computed.
-            std::vector<float> widths(held->count);
+            // What each was laid over, a float4 a gaussian -- its colour and (w) its width -- laid side by
+            // side out of the records: nothing is computed. A record with the width alone leaves it black.
+            const bool coloured = held->floats >= render::kRenderRecordParentColour + 3;
+            std::vector<std::array<float, 4>> over(held->count);
             for (uint32_t k = 0; k < held->count; ++k) {
-                widths[k] = held->records[size_t{k} * held->floats + render::kRenderRecordParent];
+                const float* record = &held->records[size_t{k} * held->floats];
+                over[k] = {coloured ? record[render::kRenderRecordParentColour] : 0.0F,
+                           coloured ? record[render::kRenderRecordParentColour + 1] : 0.0F,
+                           coloured ? record[render::kRenderRecordParentColour + 2] : 0.0F,
+                           record[render::kRenderRecordParent]};
             }
-            auto made = gpu::Buffer::fromSpan<float>(library.device(), std::span<const float>(widths), "piece.parent");
+            auto made = gpu::Buffer::fromSpan<std::array<float, 4>>(
+                library.device(), std::span<const std::array<float, 4>>(over), "piece.parent");
             if (!made) return std::move(made).error();
             *parent = *made;
         }
@@ -198,31 +213,120 @@ Result<scene::GpuSplats> loadPiece(gpu::ShaderLibrary& library, scene::CloudLoad
     return cloud;
 }
 
-/// A piece cut for a view (Discovery::cut): the gaussians to draw from there at `threshold` pixels, as the
-/// scene stood at look `upTo`.
-Result<scene::GpuSplats> cutPiece(gpu::ShaderLibrary& library, scene::CloudLoader& loader, render::Discovery& discovery,
-                                  const std::filesystem::path& directory, const io::NeuralScenePiece& piece,
-                                  const render::Projection& projection, float threshold, uint32_t upTo) {
-    gpu::Buffer parent;
-    auto cloud = load(library, loader, directory / piece.cloud, &parent);
-    if (!cloud) {
-        return cloud;
-    }
-    gpu::Buffer records[2];
+bool boxInView(const std::array<float, 3>& min, const std::array<float, 3>& max, const render::Projection& projection,
+               uint32_t width, uint32_t height);
+
+/// A piece as the cut reads it: its gaussians, its two records and what each gaussian was laid over.
+struct PieceForCut {
+    scene::GpuSplats cloud;
+    gpu::Buffer      gone;
+    gpu::Buffer      refined;
+    gpu::Buffer      parent;
+};
+
+Result<PieceForCut> loadForCut(gpu::ShaderLibrary& library, scene::CloudLoader& loader, render::Discovery& discovery,
+                               const std::filesystem::path& directory, const io::NeuralScenePiece& piece) {
+    PieceForCut held;
+    auto cloud = load(library, loader, directory / piece.cloud, &held.parent);
+    if (!cloud) return std::move(cloud).error();
+    held.cloud = std::move(*cloud);
     const std::string* files[2] = {&piece.gone, &piece.refined};
     for (int k = 0; k < 2; ++k) {
         if (files[k]->empty()) {
             continue;
         }
-        auto held = io::readSeen(directory / *files[k], cloud->count);
-        if (!held) return std::move(held).error();
-        auto record = discovery.record(cloud->count, *held);
+        auto words = io::readSeen(directory / *files[k], held.cloud.count);
+        if (!words) return std::move(words).error();
+        auto record = discovery.record(held.cloud.count, *words);
         if (!record) return std::move(record).error();
-        records[k] = *record;
+        (k == 0 ? held.gone : held.refined) = *record;
     }
-    // Gathered: what is not drawn from here is not in the cloud handed back.
-    return discovery.cut(*cloud, records[0].valid() ? &records[0] : nullptr, records[1].valid() ? &records[1] : nullptr,
-                         parent.valid() ? &parent : nullptr, projection, threshold, upTo, true);
+    return held;
+}
+
+/// A piece cut for a view (Discovery::cut): the gaussians to draw from there at `threshold` pixels, as the
+/// scene stood at look `upTo`. Gathered: what is not drawn from here is not in the cloud handed back.
+Result<scene::GpuSplats> cutPiece(gpu::ShaderLibrary& library, scene::CloudLoader& loader, render::Discovery& discovery,
+                                  const std::filesystem::path& directory, const io::NeuralScenePiece& piece,
+                                  const render::Projection& projection, float threshold, uint32_t upTo,
+                                  float morph = 0.0F) {
+    auto held = loadForCut(library, loader, discovery, directory, piece);
+    if (!held) return std::move(held).error();
+    return discovery.cut(held->cloud, held->gone.valid() ? &held->gone : nullptr,
+                         held->refined.valid() ? &held->refined : nullptr,
+                         held->parent.valid() ? &held->parent : nullptr, projection, threshold, upTo, true, morph);
+}
+
+/// THE SCENE CUT FOR A VIEW, AS ONE CLOUD: every piece in view planned, room made for what they draw
+/// together, and each gathered into it at its place. One cloud to draw, whatever the pieces: a cut of a
+/// cloud a piece drew a twentieth of the gaussians in no less time than the scene whole.
+Result<scene::GpuSplats> cutScene(gpu::ShaderLibrary& library, scene::CloudLoader& loader, render::Discovery& discovery,
+                                  const std::filesystem::path& directory, const io::NeuralScene& scene,
+                                  const render::Projection& projection, uint32_t width, uint32_t height,
+                                  float threshold, uint32_t upTo, float morph) {
+    std::vector<PieceForCut> held;
+    std::vector<render::Discovery::CutPlan> plans;
+    uint32_t total = 0;
+    std::array<float, 3> low{1.0e30F, 1.0e30F, 1.0e30F};
+    std::array<float, 3> high{-1.0e30F, -1.0e30F, -1.0e30F};
+    for (const io::NeuralScenePiece& piece : scene.pieces) {
+        if ((upTo != 0 && piece.foundIn > upTo) || (piece.gaussians != 0 && piece.removed >= piece.gaussians) ||
+            !boxInView(piece.boundsMin, piece.boundsMax, projection, width, height)) {
+            continue;
+        }
+        auto loaded = loadForCut(library, loader, discovery, directory, piece);
+        if (!loaded) return std::move(loaded).error();
+        auto plan = discovery.planCut(loaded->cloud, loaded->gone.valid() ? &loaded->gone : nullptr,
+                                      loaded->refined.valid() ? &loaded->refined : nullptr,
+                                      loaded->parent.valid() ? &loaded->parent : nullptr, projection, threshold, upTo);
+        if (!plan) return std::move(plan).error();
+        if (plan->drawn == 0) {
+            continue;
+        }
+        total += plan->drawn;
+        for (size_t axis = 0; axis < 3; ++axis) {
+            low[axis] = std::min(low[axis], piece.boundsMin[axis]);
+            high[axis] = std::max(high[axis], piece.boundsMax[axis]);
+        }
+        held.push_back(std::move(*loaded));
+        plans.push_back(std::move(*plan));
+    }
+    if (held.empty()) {
+        return scene::GpuSplats{};
+    }
+    auto cloud = discovery.cutCloud(held.front().cloud, total);
+    if (!cloud) return cloud;
+    cloud->bounds.min = low;
+    cloud->bounds.max = high;
+    uint32_t base = 0;
+    for (size_t k = 0; k < held.size(); ++k) {
+        ATHENEA_TRY(discovery.gatherCut(held[k].cloud, held[k].parent.valid() ? &held[k].parent : nullptr, plans[k],
+                                        projection, threshold, morph, *cloud, base));
+        base += plans[k].drawn;
+    }
+    return cloud;
+}
+
+/// THE THRESHOLD A BUDGET ASKS FOR: every piece in view adds its gaussians' spans into one histogram, and the
+/// finest threshold that draws no more than `budget` of them is read off it (Discovery::thresholdFor).
+Result<float> thresholdForBudget(gpu::ShaderLibrary& library, scene::CloudLoader& loader, render::Discovery& discovery,
+                                 const std::filesystem::path& directory, const io::NeuralScene& scene,
+                                 const render::Projection& projection, uint32_t width, uint32_t height,
+                                 uint32_t upTo, uint64_t budget, uint64_t& drawn) {
+    auto histogram = discovery.cutHistogram();
+    if (!histogram) return std::move(histogram).error();
+    for (const io::NeuralScenePiece& piece : scene.pieces) {
+        if ((upTo != 0 && piece.foundIn > upTo) || (piece.gaussians != 0 && piece.removed >= piece.gaussians) ||
+            !boxInView(piece.boundsMin, piece.boundsMax, projection, width, height)) {
+            continue;
+        }
+        auto held = loadForCut(library, loader, discovery, directory, piece);
+        if (!held) return std::move(held).error();
+        ATHENEA_TRY(discovery.spans(held->cloud, held->gone.valid() ? &held->gone : nullptr,
+                                    held->refined.valid() ? &held->refined : nullptr,
+                                    held->parent.valid() ? &held->parent : nullptr, projection, upTo, *histogram));
+    }
+    return discovery.thresholdFor(*histogram, budget, &drawn);
 }
 
 /// A FRAME OF THE SCENE WRITTEN: an EXR as it is (linear, with its depth), or -- `path` ending in .png --
@@ -1545,6 +1649,7 @@ int runShoot(const SceneOptions& all) {
         if (hasBefore) {
             held.beforeSize = &beforeSize.colour;
             held.beforeDepth = &before.depth;
+            held.beforeColour = &before.colour;
         }
         render::RenderLookSettings how;
         how.tolerance = all.tolerance;
@@ -1918,7 +2023,7 @@ int runRenderStored(const SceneOptions& o, const io::NeuralScene& scene) {
                 auto then = discovery->cut(*held[k].cloud, held[k].gone.valid() ? &held[k].gone : nullptr,
                                            held[k].refined.valid() ? &held[k].refined : nullptr,
                                            held[k].parent.valid() ? &held[k].parent : nullptr, projection, o.lod,
-                                           frame.lastSnapshot, o.lod > 0.0F);
+                                           frame.lastSnapshot, o.lod > 0.0F, o.morph);
                 if (!then) return report(then.error());
                 if (then->count == 0) {
                     continue;
@@ -1985,7 +2090,7 @@ int runBake(const SceneOptions& o) {
         }
         auto held = io::readGaussians(directory / piece.cloud);
         if (!held) return report(held.error());
-        if (held->floats != render::kRenderRecord && held->floats != render::kRenderRecordParent) {
+        if (!renderRecordOf(held->floats)) {
             err("piece %s: records of %u floats\n", piece.id.c_str(), held->floats);
             return kExitFailure;
         }
@@ -2105,7 +2210,38 @@ int runRender(const SceneOptions& given) {
         err("the scene has no snapshot by time %g\n", o.at);
         return kExitFailure;
     }
+    if (o.budget != 0 && o.views.empty()) {
+        // A BUDGET (--budget): the threshold is the one that draws no more than that many from this view.
+        uint64_t drawn = 0;
+        auto threshold = thresholdForBudget(library, *loader, *discovery, directory, *scene,
+                                            render::projectionFor(camera, width, height), width, height, asOf, o.budget,
+                                            drawn);
+        if (!threshold) return report(threshold.error());
+        o.lod = *threshold;
+        out("a budget of %llu gaussians: a threshold of %.2f pixels, which draws %llu\n",
+            static_cast<unsigned long long>(o.budget), o.lod, static_cast<unsigned long long>(drawn));
+    }
+    std::unique_ptr<scene::GpuSplats> wholeCut;
+    if (o.lod > 0.0F && o.views.empty()) {
+        // THE SCENE CUT FOR THE VIEW (--lod, --budget): each gaussian drawn where it is the level the view
+        // wants, a coarse one in place of the finer ones laid over it from where those are under the
+        // threshold -- gathered into one cloud.
+        auto cut = cutScene(library, *loader, *discovery, directory, *scene, render::projectionFor(camera, width, height),
+                            width, height, o.lod, asOf, o.morph);
+        if (!cut) return report(cut.error());
+        if (cut->count != 0) {
+            wholeCut = std::make_unique<scene::GpuSplats>(std::move(*cut));
+            clouds.push_back(std::make_unique<scene::GpuSplats>(*wholeCut));
+            render::SplatInstance instance{clouds.back().get(), render::Mat4::identity(), {}};
+            byHarmonics.push_back(instance);
+            byLatents.push_back(instance);
+            looks.emplace_back();
+        }
+    }
     for (const io::NeuralScenePiece& piece : scene->pieces) {
+        if (o.lod > 0.0F) {
+            break;   // the cut above is the scene; a walk cuts for each of its views
+        }
         if (asOf != 0 && piece.foundIn > asOf) {
             continue;
         }
@@ -2120,11 +2256,7 @@ int runRender(const SceneOptions& given) {
             !boxInView(piece.boundsMin, piece.boundsMax, render::projectionFor(camera, width, height), width, height)) {
             continue;
         }
-        // THE SCENE CUT FOR THE VIEW (--lod): each gaussian drawn where it is the level the view wants,
-        // a coarse one in place of the finer ones laid over it from where those are under the threshold.
-        auto cloud = o.lod > 0.0F ? cutPiece(library, *loader, *discovery, directory, piece,
-                                             render::projectionFor(camera, width, height), o.lod, asOf)
-                                  : loadPiece(library, *loader, *discovery, directory, piece, asOf);
+        auto cloud = loadPiece(library, *loader, *discovery, directory, piece, asOf);
         if (!cloud) return report(cloud.error());
         if (cloud->count == 0) {
             continue;   // nothing of it is drawn from here
@@ -2197,6 +2329,7 @@ int runRender(const SceneOptions& given) {
         std::string line;
         uint32_t frames = 0;
         uint64_t walkDrawn = 0;
+        float walkThreshold = 0.0F;
         double least = 1.0e30;
         double sum = 0.0;
         while (std::getline(in, line)) {
@@ -2222,28 +2355,35 @@ int runRender(const SceneOptions& given) {
             // stands (read again from the disk, which the time below does not count).
             std::vector<scene::GpuSplats> cutClouds;
             std::vector<render::SplatInstance> cutInstances;
-            if (o.lod > 0.0F) {
+            float lod = o.lod;
+            if (o.budget != 0) {
+                uint64_t drawn = 0;
+                auto threshold = thresholdForBudget(library, *loader, *discovery, directory, *scene,
+                                                    render::projectionFor(view, width, height), width, height, asOf,
+                                                    o.budget, drawn);
+                if (!threshold) return report(threshold.error());
+                lod = *threshold;
+                walkThreshold = lod;
+            }
+            if (lod > 0.0F) {
                 const render::Projection projection = render::projectionFor(view, width, height);
-                cutClouds.reserve(scene->pieces.size());
-                walkDrawn = 0;
-                for (const io::NeuralScenePiece& piece : scene->pieces) {
-                    if ((asOf != 0 && piece.foundIn > asOf) ||
-                        (piece.gaussians != 0 && piece.removed >= piece.gaussians) ||
-                        !boxInView(piece.boundsMin, piece.boundsMax, projection, width, height)) {
-                        continue;
-                    }
-                    auto cut = cutPiece(library, *loader, *discovery, directory, piece, projection, o.lod, asOf);
-                    if (!cut) return report(cut.error());
-                    if (cut->count == 0) {
-                        continue;
-                    }
-                    walkDrawn += cut->count;
+                auto cut = cutScene(library, *loader, *discovery, directory, *scene, projection, width, height, lod, asOf,
+                                    o.morph);
+                if (!cut) return report(cut.error());
+                walkDrawn = cut->count;
+                if (cut->count != 0) {
                     cutClouds.push_back(std::move(*cut));
                     cutInstances.push_back(render::SplatInstance{&cutClouds.back(), render::Mat4::identity(), {}});
                 }
             }
-            auto stats = raster->render(view, o.lod > 0.0F ? cutInstances : drawnAs, waited, frame);
+            auto stats = raster->render(view, lod > 0.0F ? cutInstances : drawnAs, waited, frame);
             if (!stats) return report(stats.error());
+            if (lod > 0.0F) {
+                // A cut's clouds are new to the rasteriser, and a first frame of anything pays for that: the
+                // frame timed is the one after, as a scene drawn flat is timed from its second view on.
+                stats = raster->render(view, cutInstances, waited, frame);
+                if (!stats) return report(stats.error());
+            }
             least = std::min(least, stats->totalMs);
             sum += stats->totalMs;
             ++frames;
@@ -2263,8 +2403,12 @@ int runRender(const SceneOptions& given) {
         for (const auto& cloud : clouds) {
             held += cloud->count;
         }
-        if (o.lod > 0.0F) {
+        if (o.lod > 0.0F || o.budget != 0) {
             held = walkDrawn;   // the last view's cut
+        }
+        if (o.budget != 0) {
+            out("a budget of %llu gaussians: the last view's threshold %.2f pixels\n",
+                static_cast<unsigned long long>(o.budget), walkThreshold);
         }
         out("%s: %u frames of %ux%u, %llu gaussians: %.2f ms a frame at least, %.2f ms on average\n",
             scene->name.c_str(), frames, width, height, static_cast<unsigned long long>(held), least,
@@ -2393,6 +2537,8 @@ void addNeuralScene(CLI::App& app) {
     render->add_option("--exposure", o.exposure, "-o a .png: stops over the scene's light");
     render->add_option("--frame", o.storedFrame, "a frame the scene stored (neural-scene shoot), counted from one: its camera, its size, the scene as it stood then");
     render->add_option("--lod", o.lod, "levels of detail: a gaussian narrower than this many pixels on the screen is drawn in place of the finer ones laid over it (0: the finest everywhere)");
+    render->add_option("--budget", o.budget, "levels of detail by a count: the finest threshold that draws no more than this many gaussians from the view, in place of --lod");
+    render->add_option("--morph", o.morph, "--lod, --budget: a gaussian is moved towards what it was laid over across this share of the threshold before that is drawn in its place (0: a step)");
     render->add_option("--frames", o.storedFrames, "the stored frames FIRST to LAST as pictures, the scene read once: -o a prefix, written <stem>_NNNN.png or .exr")->expected(2);
     render->add_option("--snapshot", o.snapshot, "the same by a snapshot of the manifest's, counted from one");
     render->add_flag("--compare", o.compare, "both ways: the latents against the harmonics, and a frame's time by each");

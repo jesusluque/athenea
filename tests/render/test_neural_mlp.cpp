@@ -1289,8 +1289,10 @@ TEST_CASE("a scene cut for a view draws a coarse look's gaussians from far and t
     const std::vector<uint32_t> two(coarse.count, 2u);
     auto refined = discovery->record(coarse.count, two);
     REQUIRE(refined);
-    const std::vector<float> widths(fine.count, static_cast<float>(12.0 / fromFar.focalX));
-    auto parent = gpu::Buffer::fromSpan<float>(*gpu->device, std::span<const float>(widths), "test.parent");
+    const std::vector<std::array<float, 4>> widths(
+        fine.count, std::array<float, 4>{0.5F, 0.5F, 0.5F, static_cast<float>(12.0 / fromFar.focalX)});
+    auto parent = gpu::Buffer::fromSpan<std::array<float, 4>>(
+        *gpu->device, std::span<const std::array<float, 4>>(widths), "test.parent");
     REQUIRE(parent);
     const auto drawn = [&](const scene::GpuSplats& of, const gpu::Buffer* refinedOf, const gpu::Buffer* parentOf,
                            const render::Projection& projection, float threshold, uint32_t upTo = 0) {
@@ -1314,4 +1316,26 @@ TEST_CASE("a scene cut for a view draws a coarse look's gaussians from far and t
     CHECK(drawn(coarse, &*refined, nullptr, fromFar, 0.0F) == 0);
     CHECK(drawn(fine, nullptr, &*parent, fromFar, 0.0F) == fine.count);
     CHECK(drawn(coarse, &*refined, nullptr, fromNear, 1.5F, 1) == coarse.count);
+
+    // A BUDGET: both pieces' spans in one histogram, and the threshold read off it draws no more than was
+    // asked -- from far, where the coarse level is enough, a budget of the coarse count is met.
+    auto histogram = discovery->cutHistogram();
+    REQUIRE(histogram);
+    REQUIRE(discovery->spans(coarse, nullptr, &*refined, nullptr, fromFar, 0, *histogram));
+    REQUIRE(discovery->spans(fine, nullptr, nullptr, &*parent, fromFar, 0, *histogram));
+    uint64_t said = 0;
+    auto threshold = discovery->thresholdFor(*histogram, coarse.count + coarse.count / 10, &said);
+    REQUIRE(threshold);
+    const uint32_t within = drawn(coarse, &*refined, nullptr, fromFar, *threshold) +
+                            drawn(fine, nullptr, &*parent, fromFar, *threshold);
+    std::printf("  a budget of %u from far: a threshold of %.2f pixels, said to draw %llu, drawing %u\n",
+                coarse.count + coarse.count / 10, *threshold, static_cast<unsigned long long>(said), within);
+    CHECK(within <= coarse.count + coarse.count / 10 + coarse.count / 20);   // the bins are a twentieth of an octave wide
+    CHECK(within > coarse.count / 2);
+    // MOVED TOWARDS ITS PARENT: gathered in the band, a fine gaussian is as many as before and wider.
+    auto stepped = discovery->cut(fine, nullptr, nullptr, &*parent, fromNear, 2.0F, 0, true, 0.0F);
+    auto moved = discovery->cut(fine, nullptr, nullptr, &*parent, fromNear, 2.0F, 0, true, 1.0F);
+    REQUIRE(stepped);
+    REQUIRE(moved);
+    CHECK(moved->count == stepped->count);
 }

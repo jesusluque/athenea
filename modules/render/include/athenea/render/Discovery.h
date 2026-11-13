@@ -47,7 +47,7 @@ inline constexpr uint32_t kFrameRecord = 62;
 /// what it is made of (`Discovery::renderEncoding`), and after those the
 /// material's row in the frame that made it, its index, whether it is a
 /// sheet, and what it lets through a crossing.
-inline constexpr uint32_t kRenderRecord = 27;
+inline constexpr uint32_t kRenderRecord = 30;
 inline constexpr uint32_t kRenderRecordRow = 20;
 inline constexpr uint32_t kRenderRecordIndex = 21;
 inline constexpr uint32_t kRenderRecordSheet = 22;
@@ -56,6 +56,10 @@ inline constexpr uint32_t kRenderRecordTint = 23;   ///< r g b: what the surface
 /// nothing: what `Discovery::cut` reads as its parent's. A record of 26
 /// floats (a scene shot before 13 Nov) has none.
 inline constexpr uint32_t kRenderRecordParent = 26;
+/// And their colour, three floats, as a base colour is kept: what the cut
+/// moves a gaussian towards before its parent is drawn in its place. A record
+/// of 27 floats has the width alone.
+inline constexpr uint32_t kRenderRecordParentColour = 27;
 
 /// The scene as it is known, drawn through the look's camera.
 struct KnownScene {
@@ -67,6 +71,7 @@ struct KnownScene {
     /// gaussians it makes are laid over, and so their parents. Null: none.
     const gpu::Buffer* beforeSize = nullptr;
     const gpu::Buffer* beforeDepth = nullptr;
+    const gpu::Buffer* beforeColour = nullptr;   ///< and its colour there; null: the parent's colour is left black
 };
 
 /// How a render's look is taken (scene_render.slang).
@@ -197,13 +202,51 @@ public:
     /// it was laid over (null: none has, or none is). `threshold` is in
     /// pixels: a gaussian narrower than it on the screen stands for the finer
     /// ones laid over it; 0 draws the finest everywhere.
+    /// `parent` is a float4 a gaussian: the colour and (w) the width of what
+    /// it was laid over.
     /// With `gathered`, the cloud returned holds only the gaussians to draw
     /// -- positions, shape and harmonics, nothing else of them -- so that
-    /// what is not drawn costs nothing; its count may be none.
+    /// what is not drawn costs nothing; its count may be none. And with
+    /// `morph`, a gathered gaussian is moved towards what it was laid over --
+    /// its width, its colour, its opacity given up as it comes to lie over
+    /// its neighbours -- across that share of the threshold above the point
+    /// where its parent is drawn in its place: the step from children to
+    /// parent is then between two pictures all but the same.
     [[nodiscard]] Result<scene::GpuSplats> cut(const scene::GpuSplats& cloud, const gpu::Buffer* gone,
                                                const gpu::Buffer* refined, const gpu::Buffer* parent,
                                                const Projection& projection, float threshold, uint32_t upTo = 0,
-                                               bool gathered = false);
+                                               bool gathered = false, float morph = 0.0F);
+
+    /// A SCENE'S CUT AS ONE CLOUD. A cut gathered a piece at a time is as
+    /// many clouds as the scene has pieces, and a rasteriser pays for each:
+    /// a view from far drew a twentieth of the gaussians in no less time.
+    /// `planCut` flags a piece's gaussians and counts them; `cutCloud` makes
+    /// a cloud with room for every piece's; `gatherCut` copies a piece's into
+    /// it from `base` on (and moves them, with `morph`).
+    struct CutPlan {
+        gpu::Buffer flags;      ///< a uint a gaussian: drawn
+        gpu::Buffer places;     ///< its place among the piece's drawn
+        uint32_t    drawn = 0;
+    };
+    [[nodiscard]] Result<CutPlan> planCut(const scene::GpuSplats& cloud, const gpu::Buffer* gone,
+                                          const gpu::Buffer* refined, const gpu::Buffer* parent,
+                                          const Projection& projection, float threshold, uint32_t upTo = 0);
+    [[nodiscard]] Result<scene::GpuSplats> cutCloud(const scene::GpuSplats& like, uint32_t count);
+    [[nodiscard]] Result<void> gatherCut(const scene::GpuSplats& cloud, const gpu::Buffer* parent, const CutPlan& plan,
+                                         const Projection& projection, float threshold, float morph,
+                                         scene::GpuSplats& into, uint32_t base);
+
+    /// HOW MANY GAUSSIANS EVERY THRESHOLD DRAWS (discoverCutSpans): a piece's
+    /// gaussians each added into `histogram` (made by `cutHistogram`, shared
+    /// by a scene's pieces) where the span of thresholds it is drawn between
+    /// begins and taken where it ends. `thresholdFor` then reads the finest
+    /// threshold, in pixels, that draws no more than `budget` gaussians, and
+    /// how many it draws -- the only thing read back, a few hundred counts.
+    [[nodiscard]] Result<gpu::Buffer> cutHistogram();
+    [[nodiscard]] Result<void> spans(const scene::GpuSplats& cloud, const gpu::Buffer* gone, const gpu::Buffer* refined,
+                                     const gpu::Buffer* parent, const Projection& projection, uint32_t upTo,
+                                     gpu::Buffer& histogram);
+    [[nodiscard]] Result<float> thresholdFor(const gpu::Buffer& histogram, uint64_t budget, uint64_t* drawn = nullptr);
 
     /// A piece without the gaussians its record `gone` stamps: the same
     /// cloud, those given no opacity. With `upTo`, only those stamped by a
@@ -225,7 +268,7 @@ private:
 
     gpu::ShaderLibrary* library_ = nullptr;
     gpu::ComputeKernel  clear_, mark_, count_, mask_, gone_, sizes_, frameValid_, framePack_, frameThrough_;
-    gpu::ComputeKernel  renderValid_, renderPack_, renderSpare_, cut_, cutFlags_, gather_;
+    gpu::ComputeKernel  renderValid_, renderPack_, renderSpare_, cut_, cutFlags_, gather_, cutSpans_;
     std::optional<gpu::PrefixSum> prefix_;
     gpu::Buffer         counters_, spareWords_, spareFloats_;
 };

@@ -32,7 +32,10 @@ struct DiscoverParams {
     float4 viewZ;
     // discoverCut: pixels a unit of x over z, the threshold in pixels, and the last look that counts
     // (`upTo`; 0: all).
-    float focal; float threshold2; uint pad3; uint pad4;
+    float focal; float threshold2;
+    // discoverGather: over how much of the threshold's band a gaussian is moved towards what it was laid
+    // over before that is drawn in its place (0: not moved; 1: from twice the threshold on).
+    float morph; uint pad4;
 };
 
 StructuredBuffer<uint>     contribution;   // a uint a slot, as the blend summed it
@@ -46,7 +49,7 @@ RWStructuredBuffer<float>  sizes;          // discoverSizes: a neural cloud's la
 RWStructuredBuffer<float4> positionsOut;
 RWStructuredBuffer<uint>   cleared;
 StructuredBuffer<uint>     refinedRead;    // discoverCut: the look that laid finer gaussians over each, 0 while it is the finest
-StructuredBuffer<float>    parentRead;     // discoverCut: the width of what each was laid over, 0 where over nothing
+StructuredBuffer<float4>   parentRead;     // discoverCut: what each was laid over: its colour (as a base colour is kept) and its width, 0 where over nothing
 StructuredBuffer<uint>     harmonics;      // discoverGather: a cloud's, `stamp` words a gaussian
 RWStructuredBuffer<uint>   shapeOut;
 RWStructuredBuffer<uint>   harmonicsOut;
@@ -189,11 +192,64 @@ bool cutDraws(uint i) {
     const float z = max(dot(params.viewZ.xyz, p.xyz) + params.viewZ.w, 1.0e-6);
     const float pixels = params.focal / z;
     const float own = exp(discWidth(i * 4)) * pixels;
-    const float over = parentRead[i] * pixels;
+    const float over = parentRead[i].w * pixels;
     // Nine tenths of the threshold on the parent's side: where the two tests fall between a parent and its
     // children, both are drawn rather than neither.
-    const bool parentTooCoarse = parentRead[i] <= 0.0 || over >= 0.9 * params.threshold2;
+    const bool parentTooCoarse = parentRead[i].w <= 0.0 || over >= 0.9 * params.threshold2;
     return parentTooCoarse && (finest || own < params.threshold2);
+}
+
+/// The thresholds a gaussian is drawn between, in pixels: over `x` (its own width on the screen; 0 where
+/// nothing finer came) and up to `y` (what it was laid over, by nine tenths; none where it was laid over
+/// nothing, written as a very large one). Nothing where it does not stand.
+bool cutSpan(uint i, out float2 span) {
+    span = float2(0.0, 1.0e30);
+    const float4 p = positions[i];
+    if (!(seenRead[i] == 0u || (params.upTo != 0u && seenRead[i] > params.upTo))) {
+        return false;
+    }
+    const bool finest = refinedRead[i] == 0u || (params.upTo != 0u && refinedRead[i] > params.upTo);
+    const float z = max(dot(params.viewZ.xyz, p.xyz) + params.viewZ.w, 1.0e-6);
+    const float pixels = params.focal / z;
+    if (!finest) {
+        span.x = exp(discWidth(i * 4)) * pixels;
+    }
+    if (parentRead[i].w > 0.0) {
+        span.y = parentRead[i].w * pixels / 0.9;
+    }
+    return span.y > span.x;
+}
+
+/// A threshold's place among kCutBins, sixteen to the octave from an eighth of a pixel.
+static const uint kCutBins = 256;
+uint cutBin(float pixels) {
+    return uint(clamp(floor((log2(max(pixels, 1.0e-6)) + 3.0) * 16.0), 0.0, float(kCutBins - 1u)));
+}
+
+/// HOW MANY GAUSSIANS EVERY THRESHOLD DRAWS, IN ONE PASS. A gaussian is drawn for the thresholds of a span,
+/// so it adds one where its span begins and takes one where it ends: `seen` is then a histogram of
+/// differences over the thresholds' bins, whose running sum is the cut's size at each -- every piece adds
+/// into the one histogram, and the threshold that draws no more than a budget is read off it, with no cut
+/// made to find it (the Morton report's 113).
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void discoverCutSpans(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    float2 span;
+    if (!cutSpan(i, span)) {
+        return;
+    }
+    // Drawn from the bin after its own width's up to its parent's: bins first..last.
+    const uint first = span.x > 0.0 ? cutBin(span.x) + 1u : 0u;
+    const uint last = span.y < 1.0e29 ? cutBin(span.y) : kCutBins - 1u;
+    if (first > last) {
+        return;
+    }
+    InterlockedAdd(seen[first], 1u);
+    InterlockedAdd(seen[last + 1u], 0xFFFFFFFFu);   // one less, from the bin after
 }
 
 [shader("compute")]
@@ -227,11 +283,43 @@ void discoverGather(uint3 tid: SV_DispatchThreadID) {
     if (i >= params.count || contribution[i] == 0u) {
         return;
     }
-    const uint to = lifted[i];
-    positionsOut[to] = positions[i];
-    for (uint k = 0; k < 4u; ++k) {
-        shapeOut[to * 4u + k] = shape[i * 4u + k];
+    const uint to = params.base + lifted[i];   // `base`: where this piece's begin in a cloud of several
+    float4 place = positions[i];
+    uint4 form = uint4(shape[i * 4u], shape[i * 4u + 1u], shape[i * 4u + 2u], shape[i * 4u + 3u]);
+    // MOVED TOWARDS WHAT IT WAS LAID OVER, across the band before that is drawn in its place (the Morton
+    // report's 116C): as the eye draws off, a gaussian widens to its parent's width and takes its parent's
+    // colour, and gives up opacity as it comes to lie over its neighbours, so that where the cut steps from
+    // the children to the parent the two are all but the same picture. The parent is not read: a gaussian
+    // keeps its width and its colour.
+    if (params.morph > 0.0 && params.threshold2 > 0.0 && parentRead[i].w > 0.0) {
+        const float z = max(dot(params.viewZ.xyz, place.xyz) + params.viewZ.w, 1.0e-6);
+        const float over = parentRead[i].w * params.focal / z;   // the parent's width, in pixels
+        // The parent takes over at 0.9 of the threshold; the band above it is `morph` of that again.
+        const float edge = 0.9 * params.threshold2;
+        const float t = saturate((edge * (1.0 + params.morph) - over) / max(edge * params.morph, 1.0e-6));
+        if (t > 0.0) {
+            const float own = exp(discWidth(i * 4u));
+            const float wider = lerp(1.0, max(parentRead[i].w / max(own, 1.0e-12), 1.0), t);
+            const float grow = log(wider);
+            const float a = lowHalf(form.y) + grow;
+            const float b = highHalf(form.y) + grow;
+            const float c = lowHalf(form.z) + grow;
+            // A record that kept its parent's width and not its colour (a scene shot before the colour was
+            // kept) moves in width alone.
+            const float3 own3 = float3(highHalf(form.z), lowHalf(form.w), highHalf(form.w));
+            const float3 base = any(parentRead[i].rgb != float3(0.0)) ? lerp(own3, parentRead[i].rgb, t) : own3;
+            form.y = packHalves(a, b);
+            form.z = packHalves(c, base.r);
+            form.w = packHalves(base.g, base.b);
+            // As many of them lie under a point as their width squared: each lets through its share.
+            place.w = 1.0 - pow(max(1.0 - place.w, 1.0e-4), 1.0 / (wider * wider));
+        }
     }
+    positionsOut[to] = place;
+    shapeOut[to * 4u + 0u] = form.x;
+    shapeOut[to * 4u + 1u] = form.y;
+    shapeOut[to * 4u + 2u] = form.z;
+    shapeOut[to * 4u + 3u] = form.w;
     for (uint w = 0; w < params.stamp; ++w) {
         harmonicsOut[to * params.stamp + w] = harmonics[i * params.stamp + w];
     }

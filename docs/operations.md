@@ -426,7 +426,9 @@ athenea neural-scene render hall.aths --camera door --at 0 -o then.png   # the s
 | `--up-to` | `render` | integer | `0` | `--discovered`: only the looks up to this one, counted from one in the order of `snapshots`; `0` is all of them |
 | `--at`, `--snapshot` | `render` | time, integer | —, — | the scene as it stood: at a time, the last snapshot taken by then; or a snapshot of the manifest's, counted from one. The pieces that had come in by it, less the gaussians that had gone by it. Without either, the scene as it stands now |
 | `--frame` | `render` | integer | — | a frame the scene stored (`shoot`), counted from one: drawn again through its camera, at its size, from the scene as it stood when its last look was in. In place of `--camera`, `--size` and `--snapshot` |
-| `--lod` | `render` | pixels | `0` | levels of detail: the scene cut for the view. A gaussian narrower than this on the screen is drawn in place of the finer ones later looks laid over it, and those only where what they were laid over is wider; `0` draws the finest everywhere. `1.2` to `1.5` is a gaussian about a pixel wide; `2` and over is a picture drawn with gaussians that wide. The cut is gathered: what is not drawn is not handed to the rasteriser. With `--views` each view is cut for itself |
+| `--lod` | `render` | pixels | `0` | levels of detail: the scene cut for the view. A gaussian narrower than this on the screen is drawn in place of the finer ones later looks laid over it, and those only where what they were laid over is wider; `0` draws the finest everywhere. `1.2` to `1.5` is a gaussian about a pixel wide; `2` and over is a picture drawn with gaussians that wide. The cut is gathered into one cloud, whatever the scene's pieces: what is not drawn is not handed to the rasteriser. With `--views` each view is cut for itself |
+| `--budget` | `render` | gaussians | — | levels of detail by a count, in place of `--lod`: the finest threshold that draws no more than this many gaussians from the view, read off a histogram every piece in view adds its gaussians to (256 thresholds, sixteen to the octave from an eighth of a pixel) with no cut made to find it. Prints the threshold and what it draws, which is within a few hundredths under the budget. With `--views`, each view's own |
+| `--morph` | `render` | share | `0` | `--lod`, `--budget`: a gaussian is moved towards what it was laid over -- its width, its colour, its opacity given up as it comes to lie over its neighbours -- across this share of the threshold above the point where that is drawn in its place, so that the cut steps between two pictures all but the same as the eye draws off. It softens a still by as much as it moves: `0.25` to `0.5` for a camera that moves, `0` for a still |
 | `--frames` | `render` | two integers | — | the stored frames FIRST to LAST as pictures in one run, the scene read once and each piece the first time a frame wants it: `-o` is a prefix, written `<stem>_NNNN.png` or `.exr` |
 | `--exposure` | `render` | stops | `0` | `-o` a `.png`: over the scene's light, before the standard view transform |
 | `stage`, `scene` | `shoot` | paths | — | the USD stage, and the scene's directory: made, or added to |
@@ -3476,14 +3478,15 @@ stamps.
 
 A `.athg` is sixteen bytes -- `ATHG`, a version (1), how many gaussians and how
 many floats each, uint32 little endian -- and then the records, float32. A
-render's record is 27 floats (26 in a scene shot before the last was added): the position (3), the opacity's logit, the
+render's record is 30 floats (26 and 27 in scenes shot before the last were added): the position (3), the opacity's logit, the
 scales' logs (3), the rotation (w x y z), the first harmonic as a capture
 keeps a colour (3), the surface's normal in the world (3), the metal's share,
 the roughness, the transmission, and then the material's row in the frame that
 made it plus one (0 for what was seen through glass), its index of refraction,
 1 for a sheet with no inside, what it lets through one crossing (r g b), and
-the width of the coarser gaussians it was laid over, 0 where over nothing:
-its parent's, which `render --lod` reads.
+the width of the coarser gaussians it was laid over, 0 where over nothing --
+its parent's, which `render --lod` reads -- and their colour (r g b, as a base
+colour is kept), which `--morph` moves it towards.
 
 A `.refined` is a `.gone`'s kind of record for another thing: the look that
 made finer gaussians where this one stands. It is not gone. A look made it as

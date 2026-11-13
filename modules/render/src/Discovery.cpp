@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 
 #include "aofx/Transform.h"
 #include "athenea/gpu/Device.h"
@@ -40,6 +41,7 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(d.cut_, "discoverCut"));
     ATHENEA_TRY(make(d.cutFlags_, "discoverCutFlags"));
     ATHENEA_TRY(make(d.gather_, "discoverGather"));
+    ATHENEA_TRY(make(d.cutSpans_, "discoverCutSpans"));
     {
         auto valid = gpu::ComputeKernel::create(library, "athenea/neural/scene_frame", "frameValid");
         if (!valid) return std::move(valid).error();
@@ -254,6 +256,7 @@ Result<void> Discovery::sparePanes(gpu::Buffer& mask, const gpu::Buffer& aux, ui
         cursor["knownSize"].setBinding(spareFloats_.rhi());
         cursor["beforeSize"].setBinding(spareFloats_.rhi());
         cursor["beforeDepth"].setBinding(spareFloats_.rhi());
+        cursor["beforeColour"].setBinding(spareFloats_.rhi());
         cursor["made"].setBinding(spareWords_.rhi());
         cursor["madeRead"].setBinding(spareWords_.rhi());
         cursor["which"].setBinding(spareWords_.rhi());
@@ -282,7 +285,7 @@ io::SplatEncoding Discovery::renderEncoding() {
     e.transmission = 19;
     e.restBase = 0;
     e.restPerColour = 0;
-    return e;
+    return e;   // floatsPerRecord is the newest record's; a file of fewer says its own
 }
 
 Result<RenderLook> Discovery::fromRender(const gpu::Buffer& colour, const gpu::Buffer& depth, const gpu::Buffer& aux,
@@ -316,6 +319,8 @@ Result<RenderLook> Discovery::fromRender(const gpu::Buffer& colour, const gpu::B
         const bool hasBefore = known.beforeSize != nullptr && known.beforeDepth != nullptr;
         cursor["beforeSize"].setBinding(hasBefore ? known.beforeSize->rhi() : colour.rhi());
         cursor["beforeDepth"].setBinding(hasBefore ? known.beforeDepth->rhi() : depth.rhi());
+        cursor["beforeColour"].setBinding(hasBefore && known.beforeColour != nullptr ? known.beforeColour->rhi()
+                                                                                      : spareFloats_.rhi());
         cursor["params"]["hasBefore"].setData(uint32_t{hasBefore ? 1u : 0u});
         cursor["made"].setBinding(spareWords_.rhi());
         cursor["madeRead"].setBinding(made->rhi());
@@ -515,7 +520,8 @@ Result<scene::GpuSplats> Discovery::without(const scene::GpuSplats& cloud, const
 
 Result<scene::GpuSplats> Discovery::cut(const scene::GpuSplats& cloud, const gpu::Buffer* gone,
                                         const gpu::Buffer* refined, const gpu::Buffer* parent,
-                                        const Projection& projection, float threshold, uint32_t upTo, bool gathered) {
+                                        const Projection& projection, float threshold, uint32_t upTo, bool gathered,
+                                        float morph) {
     gpu::Device& device = library_->device();
     gpu::BufferDesc desc;
     desc.bytes = std::max<uint64_t>(cloud.count, 1) * 16;
@@ -526,7 +532,8 @@ Result<scene::GpuSplats> Discovery::cut(const scene::GpuSplats& cloud, const gpu
     // A record or a width a piece does not have reads as zeros: nothing gone, nothing refined, no parent.
     gpu::Buffer zeros;
     if (gone == nullptr || refined == nullptr || parent == nullptr) {
-        auto made = words(device, cloud.count, 4, "discover.none");
+        // Four words a gaussian: a parent is a float4.
+        auto made = words(device, uint64_t{cloud.count} * 4, 4, "discover.none");
         if (!made) return std::move(made).error();
         zeros = *made;
     }
@@ -537,6 +544,7 @@ Result<scene::GpuSplats> Discovery::cut(const scene::GpuSplats& cloud, const gpu
         cursor["seenRead"].setBinding(gone != nullptr ? gone->rhi() : zeros.rhi());
         cursor["refinedRead"].setBinding(refined != nullptr ? refined->rhi() : zeros.rhi());
         cursor["parentRead"].setBinding(parent != nullptr ? parent->rhi() : zeros.rhi());
+        cursor["params"]["morph"].setData(morph);
         cursor["params"]["count"].setData(cloud.count);
         cursor["params"]["upTo"].setData(upTo);
         cursor["params"]["focal"].setData(static_cast<float>(projection.focalX));
@@ -600,9 +608,7 @@ Result<scene::GpuSplats> Discovery::cut(const scene::GpuSplats& cloud, const gpu
     {
         gpu::CommandBatch batch(device);
         gather_.dispatch(batch, {cloud.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
-            bind(cursor);
-            cursor["positions"].setBinding(cloud.positions.rhi());
-            cursor["shape"].setBinding(cloud.shape.rhi());
+            asked(cursor);   // the cut's own view and records: a gathered gaussian may be moved by them
             cursor["harmonics"].setBinding(cloud.sh.rhi());
             cursor["contribution"].setBinding(flags->rhi());
             cursor["lifted"].setBinding(dest->rhi());
@@ -610,6 +616,7 @@ Result<scene::GpuSplats> Discovery::cut(const scene::GpuSplats& cloud, const gpu
             cursor["shapeOut"].setBinding(outShape->rhi());
             cursor["harmonicsOut"].setBinding(outSh->rhi());
             cursor["params"]["count"].setData(cloud.count);
+            cursor["params"]["base"].setData(uint32_t{0});
             cursor["params"]["stamp"].setData(shWords);
         });
         ATHENEA_TRY(batch.submit(true));
@@ -618,6 +625,180 @@ Result<scene::GpuSplats> Discovery::cut(const scene::GpuSplats& cloud, const gpu
     kept.shape = *outShape;
     kept.sh = *outSh;
     return kept;
+}
+
+Result<Discovery::CutPlan> Discovery::planCut(const scene::GpuSplats& cloud, const gpu::Buffer* gone,
+                                              const gpu::Buffer* refined, const gpu::Buffer* parent,
+                                              const Projection& projection, float threshold, uint32_t upTo) {
+    gpu::Device& device = library_->device();
+    gpu::Buffer zeros;
+    if (gone == nullptr || refined == nullptr || parent == nullptr) {
+        auto made = words(device, uint64_t{cloud.count} * 4, 4, "discover.none");
+        if (!made) return std::move(made).error();
+        zeros = *made;
+    }
+    auto flags = words(device, cloud.count, 4, "discover.cutFlags");
+    if (!flags) return std::move(flags).error();
+    auto places = words(device, cloud.count, 4, "discover.cutPlaces");
+    if (!places) return std::move(places).error();
+    auto total = words(device, 4, 4, "discover.cutTotal");
+    if (!total) return std::move(total).error();
+    gpu::CommandBatch batch(device);
+    cutFlags_.dispatch(batch, {cloud.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        bind(cursor);
+        cursor["positions"].setBinding(cloud.positions.rhi());
+        cursor["shape"].setBinding(cloud.shape.rhi());
+        cursor["seenRead"].setBinding(gone != nullptr ? gone->rhi() : zeros.rhi());
+        cursor["refinedRead"].setBinding(refined != nullptr ? refined->rhi() : zeros.rhi());
+        cursor["parentRead"].setBinding(parent != nullptr ? parent->rhi() : zeros.rhi());
+        cursor["cleared"].setBinding(flags->rhi());
+        cursor["params"]["count"].setData(cloud.count);
+        cursor["params"]["upTo"].setData(upTo);
+        cursor["params"]["focal"].setData(static_cast<float>(projection.focalX));
+        cursor["params"]["threshold2"].setData(threshold);
+        const std::array<float, 4> viewZ{static_cast<float>(projection.worldToView.at(2, 0)),
+                                         static_cast<float>(projection.worldToView.at(2, 1)),
+                                         static_cast<float>(projection.worldToView.at(2, 2)),
+                                         static_cast<float>(projection.worldToView.at(2, 3))};
+        cursor["params"]["viewZ"].setData(viewZ);
+    });
+    ATHENEA_TRY(prefix_->apply(batch, *flags, *places, *total, cloud.count));
+    ATHENEA_TRY(batch.submit(true));
+    CutPlan plan;
+    plan.flags = *flags;
+    plan.places = *places;
+    ATHENEA_TRY(total->read(device, 0, sizeof(plan.drawn), &plan.drawn));
+    return plan;
+}
+
+Result<scene::GpuSplats> Discovery::cutCloud(const scene::GpuSplats& like, uint32_t count) {
+    gpu::Device& device = library_->device();
+    scene::GpuSplats cloud;
+    cloud.source = like.source;
+    cloud.count = count;
+    cloud.declared = count;
+    cloud.restPerColour = like.restPerColour;
+    cloud.shWords = like.shWords;
+    cloud.linear = like.linear;
+    cloud.bounds = like.bounds;
+    cloud.antialiased = like.antialiased;
+    const uint32_t shWords = std::max<uint32_t>(like.shWords, 1);
+    gpu::BufferDesc desc;
+    desc.bytes = std::max<uint64_t>(count, 1) * 16;
+    desc.elementBytes = 16;
+    desc.label = "discover.cut.positions";
+    auto positions = gpu::Buffer::create(device, desc);
+    if (!positions) return std::move(positions).error();
+    auto shape = words(device, std::max<uint64_t>(count, 1) * 4, 4, "discover.cut.shape");
+    if (!shape) return std::move(shape).error();
+    auto sh = words(device, std::max<uint64_t>(count, 1) * shWords, 4, "discover.cut.sh");
+    if (!sh) return std::move(sh).error();
+    cloud.positions = *positions;
+    cloud.shape = *shape;
+    cloud.sh = *sh;
+    return cloud;
+}
+
+Result<void> Discovery::gatherCut(const scene::GpuSplats& cloud, const gpu::Buffer* parent, const CutPlan& plan,
+                                  const Projection& projection, float threshold, float morph, scene::GpuSplats& into,
+                                  uint32_t base) {
+    if (plan.drawn == 0) {
+        return ok();
+    }
+    gpu::Device& device = library_->device();
+    gpu::Buffer zeros;
+    if (parent == nullptr) {
+        auto made = words(device, uint64_t{cloud.count} * 4, 4, "discover.none");
+        if (!made) return std::move(made).error();
+        zeros = *made;
+    }
+    gpu::CommandBatch batch(device);
+    gather_.dispatch(batch, {cloud.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        bind(cursor);
+        cursor["positions"].setBinding(cloud.positions.rhi());
+        cursor["shape"].setBinding(cloud.shape.rhi());
+        cursor["harmonics"].setBinding(cloud.sh.rhi());
+        cursor["parentRead"].setBinding(parent != nullptr ? parent->rhi() : zeros.rhi());
+        cursor["contribution"].setBinding(plan.flags.rhi());
+        cursor["lifted"].setBinding(plan.places.rhi());
+        cursor["positionsOut"].setBinding(into.positions.rhi());
+        cursor["shapeOut"].setBinding(into.shape.rhi());
+        cursor["harmonicsOut"].setBinding(into.sh.rhi());
+        cursor["params"]["count"].setData(cloud.count);
+        cursor["params"]["base"].setData(base);
+        cursor["params"]["stamp"].setData(std::max<uint32_t>(cloud.shWords, 1));
+        cursor["params"]["focal"].setData(static_cast<float>(projection.focalX));
+        cursor["params"]["threshold2"].setData(threshold);
+        cursor["params"]["morph"].setData(morph);
+        const std::array<float, 4> viewZ{static_cast<float>(projection.worldToView.at(2, 0)),
+                                         static_cast<float>(projection.worldToView.at(2, 1)),
+                                         static_cast<float>(projection.worldToView.at(2, 2)),
+                                         static_cast<float>(projection.worldToView.at(2, 3))};
+        cursor["params"]["viewZ"].setData(viewZ);
+    });
+    return batch.submit(true);
+}
+
+Result<gpu::Buffer> Discovery::cutHistogram() {
+    return words(library_->device(), 264, 4, "discover.cutHistogram");
+}
+
+Result<void> Discovery::spans(const scene::GpuSplats& cloud, const gpu::Buffer* gone, const gpu::Buffer* refined,
+                              const gpu::Buffer* parent, const Projection& projection, uint32_t upTo,
+                              gpu::Buffer& histogram) {
+    gpu::Device& device = library_->device();
+    gpu::Buffer zeros;
+    if (gone == nullptr || refined == nullptr || parent == nullptr) {
+        auto made = words(device, uint64_t{cloud.count} * 4, 4, "discover.none");
+        if (!made) return std::move(made).error();
+        zeros = *made;
+    }
+    gpu::CommandBatch batch(device);
+    cutSpans_.dispatch(batch, {cloud.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        bind(cursor);
+        cursor["positions"].setBinding(cloud.positions.rhi());
+        cursor["shape"].setBinding(cloud.shape.rhi());
+        cursor["seenRead"].setBinding(gone != nullptr ? gone->rhi() : zeros.rhi());
+        cursor["refinedRead"].setBinding(refined != nullptr ? refined->rhi() : zeros.rhi());
+        cursor["parentRead"].setBinding(parent != nullptr ? parent->rhi() : zeros.rhi());
+        cursor["seen"].setBinding(histogram.rhi());
+        cursor["params"]["count"].setData(cloud.count);
+        cursor["params"]["upTo"].setData(upTo);
+        cursor["params"]["focal"].setData(static_cast<float>(projection.focalX));
+        const std::array<float, 4> viewZ{static_cast<float>(projection.worldToView.at(2, 0)),
+                                         static_cast<float>(projection.worldToView.at(2, 1)),
+                                         static_cast<float>(projection.worldToView.at(2, 2)),
+                                         static_cast<float>(projection.worldToView.at(2, 3))};
+        cursor["params"]["viewZ"].setData(viewZ);
+    });
+    return batch.submit(true);
+}
+
+Result<float> Discovery::thresholdFor(const gpu::Buffer& histogram, uint64_t budget, uint64_t* drawn) {
+    // scene_discover.slang's bins: sixteen to the octave from an eighth of a pixel, 256 of them.
+    std::array<uint32_t, 257> differences{};
+    ATHENEA_TRY(histogram.read(library_->device(), 0, sizeof(differences), differences.data()));
+    // The differences summed are each threshold's count; the finest threshold within the budget is the first.
+    uint32_t running = 0;
+    uint32_t chosen = 255;
+    uint64_t count = 0;
+    bool found = false;
+    for (uint32_t bin = 0; bin < 256; ++bin) {
+        running += differences[bin];   // wraps as the kernel's "one less" does
+        if (!found && running <= budget) {
+            chosen = bin;
+            count = running;
+            found = true;
+        }
+        if (bin == 255 && !found) {
+            count = running;
+        }
+    }
+    if (drawn != nullptr) {
+        *drawn = count;
+    }
+    // The bin's middle, as a threshold in pixels.
+    return static_cast<float>(std::exp2((static_cast<double>(chosen) + 0.5) / 16.0 - 3.0));
 }
 
 Result<NeuralCloud> Discovery::sizes(const scene::GpuSplats& cloud) {

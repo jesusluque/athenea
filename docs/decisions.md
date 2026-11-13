@@ -22155,3 +22155,72 @@ proposal 114 is the three gaps already taken up above. Two more of its ideas fit
 ### Not done
 
 - Either.
+
+## The cut by a budget, moved towards its parent, and as one cloud (13 Nov)
+
+The user's "implement it", of the Morton report's two ideas; and what the Mac's numbers then asked for.
+
+**A budget** (`render --budget N`, `Discovery::spans`, `thresholdFor`). A gaussian is drawn for the thresholds
+between its own width on the screen and nine tenths of its parent's -- a span. Each adds one into a histogram of
+differences where its span begins and takes one where it ends (256 thresholds, sixteen to the octave from an
+eighth of a pixel; every piece in view into the one histogram), and the running sum is the cut's size at every
+threshold at once. The finest threshold within the budget is read off it -- 257 counts, the one thing read back
+-- with no cut made to find it.
+
+**Moved towards its parent** (`--morph`, in `discoverGather`). A gaussian keeps its parent's colour beside its
+width (three floats more: a record is 30), and across a band above the point where the parent is drawn in its
+place it widens to the parent's width, takes its colour, and gives up opacity as it comes to lie over its
+neighbours. The parent is not read.
+
+**As one cloud** (`planCut`, `cutCloud`, `gatherCut`; `cutScene` in the command). The cut gathered a piece at a
+time handed the rasteriser a cloud a piece, 243 of them, and drew a twentieth of the gaussians in no less time
+than the scene whole. Every piece in view is planned, room is made for what they draw together, and each is
+gathered into it at its place.
+
+Metal, Apple M5 Pro, the path tracer whole; Sponza's dolly of forty frames (960 x 540, 32 paths at eight a pass,
+denoised, 287 s): 5.97 million gaussians on the disk in 243 pieces, 733 MB -- 3.22 million the finest, 2.67
+million refined (0.8 million of them the pyramids'), 68 thousand gone. The scene then drawn at 960 x 540:
+
+| from | how | gaussians drawn | a frame | against the path tracer |
+|---|---|---|---|---|
+| the farthest camera, inside | flat, a cloud a piece | 3.22 million (4.99 handed over) | 63.1 ms | PSNR 34.56 dB, SSIM 0.951 |
+| | the finest, as one cloud | 3.22 million | 45.2 ms | the same picture |
+| | cut at 1.2 px | 1.00 million | 14.1 ms | 34.25 dB, 0.953 |
+| | cut at 1.5 px | 1.04 million | 15.4 ms | 34.00 dB, 0.945 |
+| | a budget of 2 million: 0.75 px | 1.84 million | -- | 34.21 dB, 0.953 |
+| | a budget of 1 million: 1.27 px | 0.96 million | -- | 34.19 dB, 0.951 |
+| | a budget of 500 thousand: 2.54 px | 0.49 million | 10.0 ms | 32.02 dB, 0.911 |
+| | a budget of 250 thousand: 9.31 px | 0.24 million | -- | 28.31 dB, 0.815 |
+| outside, 45 m off | the finest, as one cloud | 3.22 million | 46.0 ms | -- |
+| | cut at 1.2 px | 0.33 million | 9.3 ms | 46.5 dB against the scene drawn flat |
+| | a budget of 500 thousand: 0.79 px | 0.48 million | 9.9 ms | 49.5 dB against flat |
+| the nearest camera | the finest, as one cloud | 3.22 million | 11.7 ms | 26.48 dB, 0.870 |
+| | cut at 1.2 px | 3.25 million | 12.5 ms | 26.41 dB, 0.870 |
+
+So from where the scene was made from nearer than it is seen, a threshold of a pixel and a fifth draws a third
+of the gaussians, three times as fast as the finest level in one cloud and four and a half as fast as a cloud a
+piece, 0.3 dB from the scene drawn whole against the path tracer and of the same SSIM; from outside, a tenth of
+the gaussians and five times as fast. From the nearest camera there is nothing coarser to draw and nothing is
+gained. At 1920 x 1080 from the farthest camera: 41.3 ms the finest in one cloud, 34.3 ms at 1.2 px (2.60
+million), 27.4 at 1.5 px.
+
+A budget is met to within four hundredths under it, and not at all where it asks for fewer gaussians than
+have no parent: from the nearest camera a budget of a million found no threshold under 8000 pixels and drew
+1.97 million, at 25.6 dB.
+
+The morph, as a still, softens by what it moves (CUDA, against the scene drawn flat, at 1.5 px: 32.9 dB with
+none, 32.2 at a half, 28.8 at one). What it is for was looked for and not found: the eye drawing off a
+hundredth of the nave at a time over eight frames, each frame against the one before, reads 36.0 to 36.3 dB
+drawn flat, 36.4 to 36.6 cut at 1.5 px with no morph, 36.7 to 37.3 at a quarter and 37.1 to 37.9 at a half. The
+cut alone is steadier frame to frame than the scene drawn flat -- its gaussians under a pixel shimmer -- so there
+is no step here for the morph to hide, and what it adds is the steadiness of a softer picture.
+
+### Not done
+
+- A cut that keeps on the device what the view before it drew: a walk cut for each view reads its pieces from
+  the disk and gathers them again for every view; the frame times above are the drawing's alone.
+- A budget where nothing has a parent: it wants coarser levels made (merged, as `lod::LodBuilder` makes them),
+  not only found.
+- The morph's use, on a scene where the cut's step shows; `--morph` is off unless asked for.
+- `neural-scene shoot` still knows the scene by its finest gaussians, drawn a cloud a piece: its own looks do
+  not use the cut.
