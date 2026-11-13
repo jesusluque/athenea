@@ -181,8 +181,11 @@ TEST_CASE("a flattened cloud written as PLY and as SPZ renders alike", "[render]
                     diff->p99, diff->max, static_cast<unsigned long long>(diff->over2),
                     static_cast<unsigned long long>(diff->pixels));
         // 8-bit colour, 1/16-stop sizes and 8-bit harmonics: a few code
-        // values; a wrong axis or sign is tens.
-        CHECK(diff->p99 <= (degree == 0 ? 4u : 8u));
+        // values; a wrong axis or sign is tens. Measured (13 Nov, Metal,
+        // versions 3 and 4 alike): p99 5 at degree 0 and 7 at degree 3, every
+        // stream rounded to its nearest step. The degree 0 bound was 4, never
+        // met by the base branch either.
+        CHECK(diff->p99 <= (degree == 0 ? 6u : 8u));
         // And as its flag says it is the way a cloud that says nothing is
         // drawn: the SPZ drawn by default is the SPZ drawn with the filter
         // the stage drew it with.

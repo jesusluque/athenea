@@ -130,7 +130,14 @@ float lobeShareAbove3(float roughness) {
         const float mu = -1.0 + (float(s) + 0.5) * (2.0 / float(steps));
         const float cosH = sqrt(max(0.5 * (1.0 + mu), 1.0e-8));
         const float d = cosH * cosH * (a2 - 1.0) + 1.0;
-        const float f = a2 / (3.14159265358979 * d * d) / (4.0 * cosH);
+        // The lobe about the mirror direction: the half vectors' density
+        // D(h) cos(theta_h) carried to the reflected direction by the Jacobian
+        // 1 / (4 (o . h)), with o . h = cos(theta_h) at normal incidence -- so
+        // D / 4, which integrates to one over the sphere. It was D / (4
+        // cos(theta_h)), whose 1 / cos(theta_h) grows without bound toward the
+        // back: no candidate ever kept 95% in bands 0 to 3, and the floor was
+        // always 1.
+        const float f = a2 / (3.14159265358979 * d * d) / 4.0;
         const float p2 = 0.5 * (3.0 * mu * mu - 1.0);
         const float p3 = 0.5 * (5.0 * mu * mu * mu - 3.0 * mu);
         total += f * f;

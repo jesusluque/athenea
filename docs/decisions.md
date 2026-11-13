@@ -15304,6 +15304,16 @@ needed; only the TX cloud and the lights.
   (`flattenRoughnessFloor`, Legendre projection on the device). It blurs
   instead of ringing, and keeps the highlight's energy. `--no-roughness-floor`
   is the variant to measure it against.
+  *Fixed 13 Nov:* the lobe was integrated as `D / (4 cos theta_h)`, whose
+  `1 / cos theta_h` grows without bound toward the back, so the share left
+  above band 3 never fell under 13% (it rose again past roughness 0.75) and
+  the floor was always the last candidate, 1 -- every flatten clamped its
+  roughness to 1. The density about the mirror direction at normal
+  incidence is `D cos theta_h / (4 (o . h)) = D / 4`, which integrates to one
+  over the sphere; with it the share falls monotonically and the floor is
+  0.594 (candidate 37). `athenea_render_tests "[flatten]"` passes; its SPZ
+  bound at degree 0 is p99 6, measured 5 with every stream rounded (it was 4,
+  met by no branch).
 - **A shadow catcher** is flattened as what the frame draws: black (the DC
   is `-0.5/C0`) at `catcherOpacity`'s opacity under the export sky, so a car
   and its ground shadow leave as one standard file.

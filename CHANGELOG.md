@@ -8,6 +8,10 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **`athenea flatten`'s roughness floor is 0.594, not 1.** The lobe it measures
+  was integrated with a stray `1 / cos` toward the back, so no candidate ever
+  passed and every flattened cloud had its roughness clamped to 1: highlights
+  blurred far past what degree 3 harmonics can hold.
 - **OpenGL for Storm and usdImagingGL on Windows.** The headless context
   that Storm and `UsdImagingGLEngine` need is made through WGL on Windows as
   through EGL on Linux; without it the host test crashed.
