@@ -66,8 +66,8 @@ if(APPLE)
 else()
     target_link_libraries(athenea_io PRIVATE ZLIB::ZLIB)
 endif()
-find_path(ATHENEA_WEBP_INCLUDE webp/decode.h HINTS /opt/homebrew/opt/webp/include /usr/local/opt/webp/include)
-find_library(ATHENEA_WEBP_LIB webp HINTS /opt/homebrew/opt/webp/lib /usr/local/opt/webp/lib)
+# cmake/Dependencies.cmake decides where libwebp comes from: the system's or
+# the one it fetched.
 if(ATHENEA_WEBP_INCLUDE AND ATHENEA_WEBP_LIB)
     target_include_directories(athenea_io SYSTEM PRIVATE ${ATHENEA_WEBP_INCLUDE})
     target_link_libraries(athenea_io PRIVATE ${ATHENEA_WEBP_LIB})

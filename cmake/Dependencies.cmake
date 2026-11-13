@@ -224,9 +224,18 @@ endif()
 # the ones third_party/spz and modules/io make; their cached results are what
 # those read.
 option(ATHENEA_FETCH_CODECS "build zstd and libwebp from source when the system has none" ON)
-find_path(ATHENEA_ZSTD_INCLUDE zstd.h HINTS /opt/homebrew/opt/zstd/include /usr/local/opt/zstd/include)
-find_library(ATHENEA_ZSTD_LIB zstd HINTS /opt/homebrew/opt/zstd/lib /usr/local/opt/zstd/lib)
-if(ATHENEA_FETCH_CODECS AND NOT (ATHENEA_ZSTD_INCLUDE AND ATHENEA_ZSTD_LIB))
+# What the system has is looked for in variables of its own: the fetched
+# library's target name used to be written into the one find_library caches,
+# and the next configure took that name for a found library, skipped the
+# fetch, and linked against a file nobody built (LNK1104 on Windows).
+find_path(ATHENEA_ZSTD_SYSTEM_INCLUDE zstd.h HINTS /opt/homebrew/opt/zstd/include /usr/local/opt/zstd/include)
+find_library(ATHENEA_ZSTD_SYSTEM_LIB zstd HINTS /opt/homebrew/opt/zstd/lib /usr/local/opt/zstd/lib)
+unset(ATHENEA_ZSTD_INCLUDE CACHE)
+unset(ATHENEA_ZSTD_LIB CACHE)
+if(ATHENEA_ZSTD_SYSTEM_INCLUDE AND ATHENEA_ZSTD_SYSTEM_LIB)
+    set(ATHENEA_ZSTD_INCLUDE "${ATHENEA_ZSTD_SYSTEM_INCLUDE}")
+    set(ATHENEA_ZSTD_LIB "${ATHENEA_ZSTD_SYSTEM_LIB}")
+elseif(ATHENEA_FETCH_CODECS)
     FetchContent_Declare(zstd
         URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
         SOURCE_SUBDIR build/cmake
@@ -238,13 +247,18 @@ if(ATHENEA_FETCH_CODECS AND NOT (ATHENEA_ZSTD_INCLUDE AND ATHENEA_ZSTD_LIB))
     set(ZSTD_LEGACY_SUPPORT OFF CACHE INTERNAL "")
     FetchContent_MakeAvailable(zstd)
     set_target_properties(libzstd_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
-    set(ATHENEA_ZSTD_INCLUDE "${zstd_SOURCE_DIR}/lib" CACHE PATH "zstd.h, from the fetched zstd" FORCE)
-    set(ATHENEA_ZSTD_LIB libzstd_static CACHE STRING "the fetched zstd's static library target" FORCE)
+    set(ATHENEA_ZSTD_INCLUDE "${zstd_SOURCE_DIR}/lib")
+    set(ATHENEA_ZSTD_LIB libzstd_static)
     message(STATUS "zstd: built from source (1.5.7)")
 endif()
-find_path(ATHENEA_WEBP_INCLUDE webp/decode.h HINTS /opt/homebrew/opt/webp/include /usr/local/opt/webp/include)
-find_library(ATHENEA_WEBP_LIB webp HINTS /opt/homebrew/opt/webp/lib /usr/local/opt/webp/lib)
-if(ATHENEA_FETCH_CODECS AND NOT (ATHENEA_WEBP_INCLUDE AND ATHENEA_WEBP_LIB))
+find_path(ATHENEA_WEBP_SYSTEM_INCLUDE webp/decode.h HINTS /opt/homebrew/opt/webp/include /usr/local/opt/webp/include)
+find_library(ATHENEA_WEBP_SYSTEM_LIB webp HINTS /opt/homebrew/opt/webp/lib /usr/local/opt/webp/lib)
+unset(ATHENEA_WEBP_INCLUDE CACHE)
+unset(ATHENEA_WEBP_LIB CACHE)
+if(ATHENEA_WEBP_SYSTEM_INCLUDE AND ATHENEA_WEBP_SYSTEM_LIB)
+    set(ATHENEA_WEBP_INCLUDE "${ATHENEA_WEBP_SYSTEM_INCLUDE}")
+    set(ATHENEA_WEBP_LIB "${ATHENEA_WEBP_SYSTEM_LIB}")
+elseif(ATHENEA_FETCH_CODECS)
     FetchContent_Declare(libwebp
         URL https://github.com/webmproject/libwebp/archive/refs/tags/v1.5.0.tar.gz
         SYSTEM)
@@ -257,8 +271,8 @@ if(ATHENEA_FETCH_CODECS AND NOT (ATHENEA_WEBP_INCLUDE AND ATHENEA_WEBP_LIB))
             set_target_properties(${target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
         endif()
     endforeach()
-    set(ATHENEA_WEBP_INCLUDE "${libwebp_SOURCE_DIR}/src" CACHE PATH "webp/decode.h, from the fetched libwebp" FORCE)
-    set(ATHENEA_WEBP_LIB webp CACHE STRING "the fetched libwebp's library target" FORCE)
+    set(ATHENEA_WEBP_INCLUDE "${libwebp_SOURCE_DIR}/src")
+    set(ATHENEA_WEBP_LIB webp)
     message(STATUS "libwebp: built from source (1.5.0)")
 endif()
 

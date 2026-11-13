@@ -17,8 +17,12 @@
 #
 # Needs zlib (SPZ v1-3) and zstd (v4). Without zstd the target is not defined
 # and .spz is refused with a message; .ply and .splat are unaffected.
-find_path(ATHENEA_ZSTD_INCLUDE zstd.h HINTS /opt/homebrew/opt/zstd/include /usr/local/opt/zstd/include)
-find_library(ATHENEA_ZSTD_LIB zstd HINTS /opt/homebrew/opt/zstd/lib /usr/local/opt/zstd/lib)
+# cmake/Dependencies.cmake has said where zstd is (the system's or one it
+# fetched); looked for here only where nothing has.
+if(NOT (ATHENEA_ZSTD_INCLUDE AND ATHENEA_ZSTD_LIB))
+    find_path(ATHENEA_ZSTD_INCLUDE zstd.h HINTS /opt/homebrew/opt/zstd/include /usr/local/opt/zstd/include)
+    find_library(ATHENEA_ZSTD_LIB zstd HINTS /opt/homebrew/opt/zstd/lib /usr/local/opt/zstd/lib)
+endif()
 find_package(ZLIB)
 if(ATHENEA_ZSTD_INCLUDE AND ATHENEA_ZSTD_LIB AND ZLIB_FOUND)
     add_library(athenea_spz STATIC load-spz.cc splat-types.cc splat-extensions.cc coordinate-system-adobe.cc
