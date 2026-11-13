@@ -109,6 +109,17 @@ struct ExtraHeader {
 };
 static_assert(sizeof(ExtraHeader) == 32);
 constexpr uint64_t kExtraHeaderAt = sizeof(FileHeader);
+/// After the extra header's place, whether or not it is there: what the
+/// cloud's source said of itself that no block carries. Page 0's padding was
+/// always zeros, which is "unsaid", so every file written before reads as it
+/// did and every reader that does not know these words skips them -- no flag
+/// bit, which an older reader would refuse.
+struct SourceWords {
+    uint32_t antialiased;     // 0 unsaid, 1 fitted without the Mip-Splatting filter, 2 with it (SPZ's flag)
+    uint32_t pad[7];
+};
+static_assert(sizeof(SourceWords) == 32);
+constexpr uint64_t kSourceAt = kExtraHeaderAt + sizeof(ExtraHeader);
 
 /// A member of a cloud, as a pointer: named once, since MSVC does not parse
 /// `gpu::Buffer scene::GpuSplats::*` as a template argument.
@@ -161,6 +172,7 @@ bool keepsEmission(const FileHeader& h) {
 struct Layout {
     FileHeader              header{};
     ExtraHeader             extra{};
+    SourceWords             source{};
     std::vector<LevelEntry> levels;
     std::vector<ChunkEntry> chunks;
 };
@@ -197,6 +209,10 @@ Result<Layout> parse(const platform::MappedFile& file, const std::filesystem::pa
             ((h.flags & kHasCurvature) != 0) != (x.curvatureWords == 1) || x.curvatureWords > 1) {
             return bad(path, "inconsistent extra header");
         }
+    }
+    std::memcpy(&layout.source, bytes.data() + kSourceAt, sizeof layout.source);
+    if (layout.source.antialiased > 2) {
+        return bad(path, "source antialiasing " + std::to_string(layout.source.antialiased) + ", this reads 0 to 2");
     }
     if ((h.flags & ~kKnownFlags) != 0) {
         std::string bits;
@@ -315,6 +331,7 @@ ChunkFormat formatOf(const Layout& layout) {
     f.normals = keepsNormals(h);
     f.emission = keepsEmission(h);
     f.linear = (h.flags & kLinear) != 0;
+    f.antialiased = layout.source.antialiased == 0 ? int8_t{-1} : int8_t(layout.source.antialiased == 2 ? 1 : 0);
     f.pbrWords = x.pbrWords;
     f.lobesWords = x.lobesWords;
     f.transferCount = x.transferCount;
@@ -348,6 +365,9 @@ scene::GpuSplats splatsLike(const ChunkFormat& f, const scene::Bounds& bounds, c
     s.restPerColour = f.restPerColour;
     s.shWords = f.shWords;
     s.linear = f.linear;
+    if (f.antialiased >= 0) {
+        s.antialiased = f.antialiased != 0;
+    }
     s.bounds = bounds;
     return s;
 }
@@ -359,11 +379,8 @@ scene::Bounds boundsOf(const FileHeader& h) {
     return b;
 }
 
-scene::GpuSplats splatsLike(const FileHeader& h, const ExtraHeader& x, const std::filesystem::path& path) {
-    Layout layout;
-    layout.header = h;
-    layout.extra = x;
-    return splatsLike(formatOf(layout), boundsOf(h), path.filename().string());
+scene::GpuSplats splatsLike(const Layout& layout, const std::filesystem::path& path) {
+    return splatsLike(formatOf(layout), boundsOf(layout.header), path.filename().string());
 }
 
 /// The cloud but its chunks: header fields, levels and starts on the device.
@@ -380,7 +397,7 @@ Result<LodCloud> cloudOf(gpu::Device& device, const platform::MappedFile& file, 
         const Block b = blockAt(base + e.offset, e.groups, h.shWords, keepsNormals(h), keepsEmission(h), layout.extra);
         LodLevel level;
         level.level = e.level;
-        level.gaussians = splatsLike(h, layout.extra, path);
+        level.gaussians = splatsLike(layout, path);
         level.gaussians.count = e.groups;
         level.gaussians.declared = e.groups;
         auto p = deviceBuffer(device, e.groups, 16, "athc.level", b.positions);
@@ -647,6 +664,12 @@ Result<void> writeAthc(gpu::Device& device, const LodCloud& cloud, const std::fi
     if ((h.flags & kExtraFlags) != 0) {
         put(&x, sizeof x);
     }
+    SourceWords source{};
+    if (cloud.splats.antialiased.has_value()) {
+        source.antialiased = *cloud.splats.antialiased ? 2u : 1u;
+    }
+    padTo(kSourceAt);
+    put(&source, sizeof source);
     padTo(h.levelTable);
     put(levels.data(), levels.size() * sizeof(LevelEntry));
     put(chunks.data(), chunks.size() * sizeof(ChunkEntry));

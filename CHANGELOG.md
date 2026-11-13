@@ -8,6 +8,12 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **A `.athc` keeps its source's Mip-Splatting fit.** SPZ says whether a
+  cloud was trained with the filter; a `.athc` dropped it, so an `.spz` fitted
+  without the filter was drawn with the compensation once converted (cat.spz
+  at full detail: 31.6 dB against the `.spz`, now 54.6). It travels in page
+  0's padding at offset 136, which older files hold as zeros ("unsaid") and
+  older readers skip.
 - **The path tracer draws bump materials on CUDA.** OptiX refused the
   quad read a bump's screen derivatives take (a shuffle over the whole warp
   rather than its active lanes), so on CUDA any stage with a bump gave no

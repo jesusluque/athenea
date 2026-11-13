@@ -54,6 +54,7 @@ struct ChunkFormat {
     bool     normals = false;     ///< a normal word an element
     bool     emission = false;    ///< an RGB9E5 word an element
     bool     linear = false;      ///< colours in linear light (GpuSplats::linear)
+    int8_t   antialiased = -1;    ///< the source's Mip-Splatting fit (GpuSplats::antialiased): -1 unsaid, 0 no, 1 yes
     uint32_t pbrWords = 0;        ///< 1 where the cloud carries a material
     uint32_t lobesWords = 0;      ///< 3 where it carries the material's layers
     uint32_t transferCount = 0;

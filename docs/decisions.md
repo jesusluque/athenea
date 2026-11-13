@@ -10553,6 +10553,22 @@ clear), so the surface does not open where the relief is steep, which is what
   version 2 header with bits 0 and 3 through `migrateLrtc`.
   Test: the header of `normals.athc` reads 2 and 1, that of a cloud without
   normals 1 and 0, and that one reads back.
+- **What the source said, without a flag bit (13 Nov).** SPZ's
+  `antialiased` -- whether the cloud was trained with the Mip-Splatting
+  filter, which decides whether it is drawn with the filter's compensation --
+  reached a `.athc` and was dropped, so every `.spz` fitted without the filter
+  was drawn with the compensation once converted: 26 to 54 dB against the
+  `.spz` itself at full detail on six SPZ captures (cat 31.6), each colour
+  about 5 % dark, where `.ply` and `.sog` sources gave 72 to 84. It is not
+  something a block carries but how all of them are drawn, as `linear` is;
+  a flag bit would have had every reader before it refuse every file from
+  an `.spz`. So it is a word in page 0's padding at offset 136 (0 unsaid, 1
+  no, 2 yes), which every file before held as zero and every reader before
+  skips. `formatOf` turns it into `ChunkFormat::antialiased`, and every
+  `GpuSplats` a file or a stream builds takes it. Test:
+  `athenea_lod_tests "a .athc keeps what its source said*"` -- unsaid, no and
+  yes, read whole, its levels, and through `StreamingPool::open`. cat.spz
+  converted and drawn at full detail: 31.6 -> 54.6 dB against the `.spz`.
 
 What it costs: four bytes a gaussian on the device and twelve in the file
 (the pawn's relit conversion, 730 559 gaussians, 40.9 -> 49.7 MB), one word

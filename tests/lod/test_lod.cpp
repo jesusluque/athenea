@@ -586,6 +586,40 @@ TEST_CASE("a .athc header with a flag bit this reader does not know is refused, 
 // same for every gaussian, so every merged level holds them unchanged -- the
 // mean of a transfer is that transfer, the bits set everywhere stay set --
 // and a .athc written and read back holds them in its store and its levels.
+TEST_CASE("a .athc keeps what its source said of its Mip-Splatting fit, read whole or streamed", "[lod][athc][gpu]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    // SPZ says whether a cloud was trained with the Mip-Splatting filter, and
+    // it is drawn with the filter's compensation or without by what it says.
+    // A .athc dropped it, so an .spz fitted without the filter came back
+    // drawn with it: 31.6 dB against the .spz at full detail, every colour 5 %
+    // dark. It now travels in page 0's padding, which every older file holds
+    // as zeros -- "unsaid".
+    auto h = harness(gpu);
+    for (const std::optional<bool> said : {std::optional<bool>{}, std::optional<bool>{false}, std::optional<bool>{true}}) {
+        CAPTURE(said.has_value(), said.value_or(false));
+        CloudBuilder built = randomCloud(3000, 53, 0.003F, 0.05F);
+        built.raw.antialiased = said;
+        auto cloud = h->loader.upload(built.raw, 3);
+        REQUIRE(cloud);
+        CHECK(cloud->antialiased == said);
+        lod::LodBuildSettings chunked;
+        chunked.chunkSplats = 1000;
+        auto lod = h->builder.build(*cloud, chunked);
+        if (!lod) FAIL(lod.error().toString());
+        const std::filesystem::path path = std::filesystem::temp_directory_path() / "athenea_test_antialiased.athc";
+        REQUIRE(lod::writeAthc(*gpu->device, *lod, path));
+        auto whole = lod::readAthc(*gpu->device, path);
+        if (!whole) FAIL(whole.error().toString());
+        CHECK(whole->splats.antialiased == said);
+        for (const lod::LodLevel& level : whole->levels) {
+            CHECK(level.gaussians.antialiased == said);
+        }
+        auto pool = lod::StreamingPool::open(*gpu->device, path, {uint64_t{1} << 20, 2});
+        if (!pool) FAIL(pool.error().toString());
+        CHECK((*pool)->cloud().splats.antialiased == said);
+    }
+}
+
 TEST_CASE("a transfer, a material and a curvature go through the levels of detail and a .athc",
           "[lod][gpu][athc][transfer]") {
     ATHENEA_REQUIRE_GPU(gpu);

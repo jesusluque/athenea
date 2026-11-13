@@ -191,7 +191,8 @@ Lo escriben `athenea convert` (§2.4 de `docs/operations.md`) y `writeAthc`
 ### 3.1 Disposición
 
 ```
-offset 0      cabecera (104 bytes), y después la cabecera extra (32 bytes) donde está el bit 4, 5 o 6 de los flags
+offset 0      cabecera (104 bytes), y después la cabecera extra (32 bytes) donde está el bit 4, 5 o 6 de los flags,
+              y después las palabras de origen (32 bytes) en el 136, en todos los ficheros
 página 1      la tabla de niveles, y después la tabla de chunks
 alineado      los inicios de los grupos del nivel más fino
 alineado      cada nivel, el más grueso primero: un bloque
@@ -257,6 +258,16 @@ Cualquier otro bit se rechaza.
 | 120 | u32 | shadowWords | 0, 2, 8 o 32 |
 | 124 | u32 | curvatureWords | 1 si y solo si el bit 6 |
 | 128 | u32 × 2 | pad | cero |
+
+**Palabras de origen** (en el offset 136, en todos los ficheros; ceros en uno
+escrito antes, que se leen como «sin decir»): lo que el origen de la nube decía
+de sí misma y no lleva ningún bloque. Son el padding de la página 0, así que un
+lector que no las conoce se las salta; ningún bit de flags dice que están.
+
+| Offset | Tipo | Campo | Restricción |
+|---|---|---|---|
+| 136 | u32 | antialiased | 0 sin decir, 1 ajustada sin el filtro de Mip-Splatting, 2 con él (el flag de SPZ); un lector rechaza cualquier otro valor |
+| 140 | u32 × 7 | pad | cero |
 
 ### 3.3 Tablas
 
@@ -342,6 +353,9 @@ splats y ningún grupo.
 
 - **Versión 1**: sin flags (la palabra es padding).
 - **Versión 2**: `flags` y, con los bits 4–6, la cabecera extra.
+- **Palabras de origen** (13 nov 2026, sin cambio de versión): el
+  antialiasing en el offset 136. Los ficheros escritos antes tienen ceros ahí
+  y se leen como sin decir.
 - **`.lrtc`** (lucabRTrender, el nombre anterior del motor): la versión 1 de
   esta disposición con el magic `LRTC`. `athenea` lo lee como un `.athc` y
   `migrateLrtc` reescribe solo la cabecera.

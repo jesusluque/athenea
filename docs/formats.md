@@ -185,7 +185,8 @@ chunk by `StreamingPool` (`modules/lod/include/athenea/lod/Athc.h`).
 ### 3.1 Layout
 
 ```
-offset 0      header (104 bytes), then the extra header (32 bytes) where flag bit 4, 5 or 6 is set
+offset 0      header (104 bytes), then the extra header (32 bytes) where flag bit 4, 5 or 6 is set,
+              then the source words (32 bytes) at 136 in every file
 page 1        the level table, then the chunk table
 aligned       the finest level's group starts
 aligned       each level, coarsest first: one block
@@ -251,6 +252,16 @@ Any other bit is refused.
 | 120 | u32 | shadowWords | 0, 2, 8 or 32 |
 | 124 | u32 | curvatureWords | 1 if and only if bit 6 |
 | 128 | u32 × 2 | pad | zero |
+
+**Source words** (at offset 136, in every file; zeros in one written before
+them, which reads as "unsaid"): what the cloud's source said of itself that no
+block carries. They are page 0's padding, so a reader that does not know them
+skips them; no flag bit says they are there.
+
+| Offset | Type | Field | Constraint |
+|---|---|---|---|
+| 136 | u32 | antialiased | 0 unsaid, 1 fitted without the Mip-Splatting filter, 2 with it (SPZ's flag); a reader refuses anything else |
+| 140 | u32 × 7 | pad | zero |
 
 ### 3.3 Tables
 
@@ -333,6 +344,8 @@ draws every splat and no group.
 
 - **Version 1**: no flags (the word is padding).
 - **Version 2**: `flags` and, with bits 4–6, the extra header.
+- **Source words** (13 Nov 2026, no version change): the antialiasing at
+  offset 136. Files written before hold zeros there and read as unsaid.
 - **`.lrtc`** (lucabRTrender, the engine's earlier name): version 1 of this
   layout under the magic `LRTC`. `athenea` reads it as a `.athc` and
   `migrateLrtc` rewrites the header alone.

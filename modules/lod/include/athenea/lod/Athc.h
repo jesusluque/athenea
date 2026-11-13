@@ -15,6 +15,9 @@
 // and bit 2 that the emitted radiance follows them (one RGB9E5 word an
 // element, GpuSplats::emission). Version 1 files, which have none, are still read.
 // A flag bit the reader does not know is refused: it may add a block.
+// Page 0's padding holds the source words at offset 136 (Athc.cpp's
+// SourceWords): what the source said of itself that no block carries, zeros
+// ("unsaid") in every file written before them, skipped by older readers.
 //
 // Every block starts on a 4096-byte page, so a chunk maps and faults in alone.
 // Little-endian, the device's own packing (athenea/common/packing.slang).
