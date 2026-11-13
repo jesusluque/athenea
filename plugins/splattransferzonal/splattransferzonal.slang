@@ -113,6 +113,89 @@ float kept(float f[9], float3 a) {
     return dot(z, z);
 }
 
+/// TWO LOBES AT ONCE: for axes `a0` and `a1` the best coefficients of both,
+/// and what they keep of `f`. The bands are apart -- band l of either lobe
+/// touches band l of `f` alone -- and a lobe's band column is a unit vector
+/// (the addition theorem), so each band is a 2 x 2 least squares with Gram
+/// (1 c; c 1). Where the two columns are the same (band 0 always is: Y_00 is
+/// a constant) the first lobe takes it all.
+float keptTwo(float f[9], float3 a0, float3 a1, out float3 z0, out float3 z1) {
+    float3 p = float3(0.0), q = float3(0.0), c = float3(0.0);
+    [unroll] for (uint k = 0; k < 9; ++k) {
+        const uint l = bandOf(k);
+        const float u = bandScale(l) * basis(k, a0);
+        const float w = bandScale(l) * basis(k, a1);
+        p[l] += u * f[k];
+        q[l] += w * f[k];
+        c[l] += u * w;
+    }
+    // A ridge of kRidge on the Gram's diagonal: two columns almost alike
+    // would otherwise be given large coefficients that cancel, which the
+    // halves they are stored in cannot carry. Two lobes have ten numbers for
+    // nine, so a fit that keeps them small loses nothing that matters.
+    const float kRidge = 1.0e-3;
+    [unroll] for (uint l = 0; l < 3; ++l) {
+        const float d = 1.0 + kRidge;
+        const float det = d * d - c[l] * c[l];
+        if (det > 1.0e-6) {
+            z0[l] = (d * p[l] - c[l] * q[l]) / det;
+            z1[l] = (d * q[l] - c[l] * p[l]) / det;
+        } else {
+            z0[l] = p[l];
+            z1[l] = 0.0;
+        }
+    }
+    // What the pair keeps: |f|^2 less the residual, with the ridge's z.
+    float3 r = float3(0.0);
+    [unroll] for (uint k = 0; k < 9; ++k) {
+        const uint l = bandOf(k);
+        const float g = bandScale(l) * (z0[l] * basis(k, a0) + z1[l] * basis(k, a1));
+        r[l] += (f[k] - g) * (f[k] - g);
+    }
+    float whole = 0.0;
+    [unroll] for (uint k = 0; k < 9; ++k) {
+        whole += f[k] * f[k];
+    }
+    return whole - (r.x + r.y + r.z);
+}
+
+/// Both axes walked together, each step trying either axis in four
+/// directions, on what the two keep jointly: the alternating refits above
+/// stop in places where moving one axis alone keeps less but moving it with
+/// its coefficients refitted beside the other keeps more.
+void refineTwo(float f[9], inout float3 a0, inout float3 a1, out float3 z0, out float3 z1) {
+    float most = keptTwo(f, a0, a1, z0, z1);
+    float step = 0.2;
+    for (uint walk = 0; walk < 64 && step > 1.0e-4; ++walk) {
+        bool moved = false;
+        [unroll] for (uint which = 0; which < 2; ++which) {
+            const float3 base = which == 0 ? a0 : a1;
+            const float3 helper = abs(base.z) < 0.9 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
+            const float3 t = normalize(cross(helper, base));
+            const float3 b = cross(base, t);
+            [unroll] for (uint n = 0; n < 4; ++n) {
+                const float3 towards = (n & 1) != 0 ? ((n & 2) != 0 ? -b : b) : ((n & 2) != 0 ? -t : t);
+                const float3 d = normalize(base + towards * step);
+                float3 y0, y1;
+                const float k = which == 0 ? keptTwo(f, d, a1, y0, y1) : keptTwo(f, a0, d, y0, y1);
+                if (k > most) {
+                    most = k;
+                    if (which == 0) {
+                        a0 = d;
+                    } else {
+                        a1 = d;
+                    }
+                    moved = true;
+                }
+            }
+        }
+        if (!moved) {
+            step *= 0.5;
+        }
+    }
+    keptTwo(f, a0, a1, z0, z1);
+}
+
 void takeAway(inout float f[9], float3 a, float3 z) {
     [unroll] for (uint k = 0; k < 9; ++k) {
         f[k] -= z[bandOf(k)] * bandScale(bandOf(k)) * basis(k, a);
@@ -256,6 +339,30 @@ void tzFit(uint3 tid: SV_DispatchThreadID) {
                 takeAway(other, axis0, z0);
                 axis1 = bestAxis(other, axis1, -normal);
                 z1 = zonalAbout(other, axis1);
+            }
+            // The joint walk from where the refits stopped, and from twelve
+            // other second axes (a Fibonacci hemisphere): the pair's
+            // landscape has places the walk cannot leave, and the best of a
+            // few starts is out of them.
+            refineTwo(f, axis0, axis1, z0, z1);
+            float3 y0, y1;
+            float most = keptTwo(f, axis0, axis1, y0, y1);
+            for (uint start = 0; start < 12; ++start) {
+                const float zz = 1.0 - (float(start) + 0.5) / 12.0;
+                const float rr = sqrt(max(1.0 - zz * zz, 0.0));
+                const float phi = float(start) * 2.39996322972865332;
+                float3 a = axis0;
+                float3 b = float3(rr * cos(phi), rr * sin(phi), zz);
+                float3 w0, w1;
+                refineTwo(f, a, b, w0, w1);
+                const float k = keptTwo(f, a, b, y0, y1);
+                if (k > most) {
+                    most = k;
+                    axis0 = a;
+                    axis1 = b;
+                    z0 = w0;
+                    z1 = w1;
+                }
             }
         }
         float error[9] = f;

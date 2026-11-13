@@ -8,6 +8,10 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **Two zonal lobes fit what two lobes hold.** The zonal transfer's second
+  lobe is refined jointly with the first (per-band least squares, several
+  starts) instead of two alternating refits: the fit's residual at p99 went
+  from 4.4 % to 0.33 %.
 - **`athenea flatten`'s roughness floor is 0.594, not 1.** The lobe it measures
   was integrated with a stray `1 / cos` toward the back, so no candidate ever
   passed and every flattened cloud had its roughness clamped to 1: highlights

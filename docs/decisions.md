@@ -13940,6 +13940,15 @@ them through `transferValue` exactly as they read stored ones.
   along `w`, and so does turning the instance's rows; the sun's share through
   the re-laid bits is the same under the turn; a frame equal to the world's
   keeps its bits exactly. Run with one lobe and with two.
+- *13 Nov.* The two-lobe check had never passed (769 of 2048 off by more
+  than 0.5%, the base branch's count too): two alternating refits leave the
+  pair where moving one axis alone keeps less. The pair is now refined
+  jointly -- for two axes each band is a 2 x 2 least squares (the bands are
+  apart and a lobe's band column is a unit vector), with a ridge of 1e-3
+  against coefficients that cancel -- walking both axes from where the
+  refits stopped and from twelve other second axes. The fit's own residual
+  at p99: 4.4% -> 0.33%; off after the halves: 769 -> 11, the worst 5.2%,
+  which the fit does not explain (QA29). The check holds at most 16.
 - `athenea_usd_tests "[zonal]"`: 512 gaussians with a zonal transfer, carried
   by one joint whose transform at time 1 is a rotation of 60 degrees about (1,
   2, 0.5), against the same cloud still under an Xform of that rotation, under a
