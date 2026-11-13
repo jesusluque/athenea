@@ -263,6 +263,12 @@ foreach(case "pair;a.exr;b.exr" "swapped;b.exr;a.exr" "window;a.exr;b.exr;--wind
         ENVIRONMENT "ATHENEA_SHADER_DIR=${ATHENEA_SHADER_OUTPUT_DIR}"
         LABELS gpe)
 endforeach()
+# The raw strings kernels are generated from, against MSVC's limit on a
+# literal piece: the Windows build is the only one that would notice.
+file(GLOB_RECURSE athenea_generator_sources ${PROJECT_SOURCE_DIR}/modules/*.cpp ${PROJECT_SOURCE_DIR}/apps/*.cpp)
+add_test(NAME literal_pieces_fit_msvc
+    COMMAND ${CMAKE_COMMAND} "-DSOURCES=${athenea_generator_sources}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckLiteralPieces.cmake)
 # The SDK headers against their recorded hashes: aofx compatibility is mandatory.
 add_test(NAME aofx_sdk_manifest
     COMMAND ${CMAKE_COMMAND} -DSDK_DIR=${ATHENEA_AOFX_DIR}/sdk/include/aofx

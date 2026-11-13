@@ -587,7 +587,9 @@ Nineteen binaries, one per area, all under `tests/`.
 | `athenea_coverage_tests` | what a converted surface covers against its mesh (`tests/data/coverage`); needs the `mesh2splat_coverage` fixture, which ctest runs first, and skips without it; label `gpe` |
 | `athenea_sched_tests` | the frame clock and PTP |
 
-Plus nine tests that are not Catch2: `aofx_sdk_manifest` (the SDK's hashes),
+Plus ten tests that are not Catch2: `aofx_sdk_manifest` (the SDK's hashes),
+`literal_pieces_fit_msvc` (every raw string piece the kernels are generated
+from under MSVC's 16380 characters, `tests/CheckLiteralPieces.cmake`),
 `single_tbb` (one TBB in the process), the two `mesh2splat_density_*`
 that run the real CLI and assert on the line it prints, the four
 `compare_cli_*`, which run `athenea compare` on two fixture renders
