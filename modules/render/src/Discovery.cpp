@@ -61,6 +61,9 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
         auto renderSpare = gpu::ComputeKernel::create(library, "athenea/neural/scene_render", "renderSparePanes");
         if (!renderSpare) return std::move(renderSpare).error();
         d.renderSpare_ = std::move(*renderSpare);
+        auto exportFlat = gpu::ComputeKernel::create(library, "athenea/neural/scene_export", "exportFlat");
+        if (!exportFlat) return std::move(exportFlat).error();
+        d.exportFlat_ = std::move(*exportFlat);
         auto prefix = gpu::PrefixSum::create(library);
         if (!prefix) return std::move(prefix).error();
         d.prefix_.emplace(std::move(*prefix));
@@ -269,6 +272,26 @@ Result<void> Discovery::sparePanes(gpu::Buffer& mask, const gpu::Buffer& aux, ui
         cursor["params"]["height"].setData(height);
     });
     return batch.submit(true);
+}
+
+Result<gpu::Buffer> Discovery::flatRecords(const gpu::Buffer& records, uint32_t count, uint32_t floats, float gain) {
+    gpu::Device& device = library_->device();
+    gpu::BufferDesc desc;
+    desc.bytes = std::max<uint64_t>(count, 1) * 64 * sizeof(float);   // Flatten.h's kFlatStride
+    desc.elementBytes = sizeof(float);
+    desc.label = "discover.flat";
+    auto flat = gpu::Buffer::create(device, desc);
+    if (!flat) return std::move(flat).error();
+    gpu::CommandBatch batch(device);
+    exportFlat_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["records"].setBinding(records.rhi());
+        cursor["flat"].setBinding(flat->rhi());
+        cursor["params"]["count"].setData(count);
+        cursor["params"]["stride"].setData(floats);
+        cursor["params"]["gain"].setData(gain);
+    });
+    ATHENEA_TRY(batch.submit(true));
+    return *flat;
 }
 
 io::SplatEncoding Discovery::renderEncoding() {

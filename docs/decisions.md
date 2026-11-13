@@ -22224,3 +22224,27 @@ is no step here for the morph to hide, and what it adds is the steadiness of a s
 - The morph's use, on a scene where the cut's step shows; `--morph` is off unless asked for.
 - `neural-scene shoot` still knows the scene by its finest gaussians, drawn a cloud a piece: its own looks do
   not use the cut.
+
+## A found scene on the web (13 Nov)
+
+The user asked for a scene the web could show, at neural.lucab.co.uk, and that it be the generated one. `athenea
+neural-scene export` hands the scene on as standard splat files: the finest gaussians standing, a render's record
+laid out as the engine's flattened record is (`scene_export.slang`: the same position, shape and first
+harmonic, an opacity for its logit, the light scaled by `--exposure` before it is encoded) and packed as SPZ by
+what `athenea flatten` already packs with (`FlattenPack::spz`), with no harmonics above the first -- a gaussian a
+look made has one colour -- in parts under a host's limit a file, and a JSON beside them naming the parts, the
+box, the up axis and the cameras.
+
+The walk of a hundred frames: 2 578 221 gaussians in three parts, 22.3 MB (10.3, 10.7 and 1.3 MB; 8.6 bytes a
+gaussian where the scene's own files are 104), exposed 4.64 stops. The page that shows it is Spark's WebGL
+renderer and three.js, vendored, as the sites beside it are built; it turns the stage's z up to its own y,
+scales centimetres to metres, opens on the first rendered frame through that frame's lens, is walked with the
+keyboard, and replays the cameras the frames were rendered from. Seen whole in a headless Chrome driven over its
+debugging port. Publishing it is sysop's, with the user's leave to it.
+
+### Not done
+
+- The scene's unit: the manifest does not take the stage's `metersPerUnit`, and the page's index was given it
+  by hand.
+- Levels of detail on the web: the export is the finest level, drawn whole.
+- Glass, which the page draws as the picture a pane kept or the cover it was given.

@@ -157,6 +157,13 @@ public:
     /// the scene through glass, whose depth is not the scene's there.
     [[nodiscard]] Result<void> sparePanes(gpu::Buffer& mask, const gpu::Buffer& aux, uint32_t width, uint32_t height);
 
+    /// A render's records (`count` of `floats` floats each, on the device)
+    /// as the engine's flattened records (Flatten.h's kFlatStride floats
+    /// each: what FlattenPack makes a PLY, an SPZ or a glTF of), the light
+    /// scaled by `gain` on the way (scene_export.slang).
+    [[nodiscard]] Result<gpu::Buffer> flatRecords(const gpu::Buffer& records, uint32_t count, uint32_t floats,
+                                                  float gain = 1.0F);
+
     /// How a record of `fromRender`'s is laid out, for scene::CloudLoader.
     [[nodiscard]] static io::SplatEncoding renderEncoding();
 
@@ -268,7 +275,7 @@ private:
 
     gpu::ShaderLibrary* library_ = nullptr;
     gpu::ComputeKernel  clear_, mark_, count_, mask_, gone_, sizes_, frameValid_, framePack_, frameThrough_;
-    gpu::ComputeKernel  renderValid_, renderPack_, renderSpare_, cut_, cutFlags_, gather_, cutSpans_;
+    gpu::ComputeKernel  renderValid_, renderPack_, renderSpare_, cut_, cutFlags_, gather_, cutSpans_, exportFlat_;
     std::optional<gpu::PrefixSum> prefix_;
     gpu::Buffer         counters_, spareWords_, spareFloats_;
 };

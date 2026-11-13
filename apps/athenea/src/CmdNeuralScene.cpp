@@ -43,6 +43,7 @@
 #include "athenea/io/Png.h"
 #include "athenea/io/SplatWriters.h"
 #include "athenea/render/Discovery.h"
+#include "athenea/render/Flatten.h"
 #include "athenea/render/NeuralAppearance.h"
 #include "athenea/render/NeuralFit.h"
 #include "athenea/render/ReferenceRenderer.h"
@@ -104,6 +105,7 @@ struct SceneOptions {
     unsigned                 storedFrame = 0;
     float                    lod = 0.0F;
     uint64_t                 budget = 0;
+    unsigned                 part = 1200000;
     float                    morph = 0.0F;
     float                    exposure = 0.0F;
     // shoot
@@ -2159,6 +2161,151 @@ int runBake(const SceneOptions& o) {
     return 0;
 }
 
+/// THE SCENE HANDED ON AS STANDARD SPLAT FILES: the gaussians that are the finest standing at a snapshot,
+/// as SPZ -- what a viewer on the web reads -- in parts of no more than --part gaussians each (a file a
+/// part, <stem>_NNN.spz, and <stem>.json naming them), the light scaled by --exposure stops on the way. A
+/// part is a run of the scene's pieces in their order; the parts together are the scene.
+int runExport(const SceneOptions& o) {
+    const std::filesystem::path directory = o.directory;
+    auto scene = io::readNeuralScene(directory);
+    if (!scene) return report(scene.error());
+    if (o.output.empty()) {
+        err("neural-scene export wants -o a path with no extension: <stem>_NNN.spz and <stem>.json\n");
+        return kExitFailure;
+    }
+    const uint32_t asOf = o.snapshot != 0 ? o.snapshot : o.at >= 0.0 ? snapshotAt(*scene, o.at) : 0u;
+    auto device = gpu::Device::create();
+    if (!device) return report(device.error());
+    gpu::ShaderLibrary library(*device);
+    auto discovery = render::Discovery::create(library);
+    if (!discovery) return report(discovery.error());
+    auto pack = render::FlattenPack::create(library);
+    if (!pack) return report(pack.error());
+    const std::filesystem::path given = o.output;
+    std::error_code made;
+    std::filesystem::create_directories(given.parent_path(), made);
+    std::vector<float> records;
+    uint32_t held = 0;
+    uint32_t floats = 0;
+    uint32_t parts = 0;
+    uint64_t total = 0;
+    uint64_t bytes = 0;
+    std::vector<std::string> names;
+    std::array<float, 3> low{1.0e30F, 1.0e30F, 1.0e30F};
+    std::array<float, 3> high{-1.0e30F, -1.0e30F, -1.0e30F};
+    const auto flush = [&]() -> Result<void> {
+        if (held == 0) {
+            return ok();
+        }
+        auto onDevice = gpu::Buffer::fromSpan<float>(**device, std::span<const float>(records), "export.records");
+        if (!onDevice) return std::move(onDevice).error();
+        auto flat = discovery->flatRecords(*onDevice, held, floats, std::exp2(o.exposure));
+        if (!flat) return std::move(flat).error();
+        render::FlatCloud cloud;
+        cloud.count = held;
+        cloud.records = *flat;
+        const std::vector<render::FlatCloud> clouds{cloud};
+        auto stats = pack->stats(clouds, -30.0F);
+        if (!stats) return std::move(stats).error();
+        auto streams = pack->spz(clouds, stats->fractionalBits, 8, 8);
+        if (!streams) return std::move(streams).error();
+        io::SpzHeader header;
+        header.version = 3;
+        header.count = held;
+        // A gaussian a look made has one colour: no harmonics above the first are written.
+        header.shDegree = 0;
+        header.fractionalBits = stats->fractionalBits;
+        header.antialiased = render::RenderSettings{}.antialias;
+        streams->streams[5].clear();
+        char name[32];
+        std::snprintf(name, sizeof(name), "_%03u.spz", parts);
+        const std::filesystem::path path = given.string() + name;
+        ATHENEA_TRY(io::writeSpz(path, header, streams->streams));
+        std::error_code ignored;
+        const uint64_t size = std::filesystem::file_size(path, ignored);
+        out("  %s: %u gaussians, %.1f MB\n", path.filename().string().c_str(), held, static_cast<double>(size) / 1048576.0);
+        for (size_t axis = 0; axis < 3; ++axis) {
+            low[axis] = std::min(low[axis], stats->min[axis]);
+            high[axis] = std::max(high[axis], stats->max[axis]);
+        }
+        names.push_back(path.filename().string());
+        bytes += size;
+        total += held;
+        ++parts;
+        held = 0;
+        records.clear();
+        return ok();
+    };
+    for (const io::NeuralScenePiece& piece : scene->pieces) {
+        if ((asOf != 0 && piece.foundIn > asOf) ||
+            (asOf == 0 && piece.gaussians != 0 && piece.removed + piece.refinedCount >= piece.gaussians)) {
+            continue;
+        }
+        if (std::filesystem::path(piece.cloud).extension() != ".athg") {
+            err("piece %s is not a render's (.athg)\n", piece.id.c_str());
+            return kExitFailure;
+        }
+        auto read = io::readGaussians(directory / piece.cloud);
+        if (!read) return report(read.error());
+        if (!renderRecordOf(read->floats) || (floats != 0 && read->floats != floats)) {
+            err("piece %s: records of %u floats among records of %u\n", piece.id.c_str(), read->floats, floats);
+            return kExitFailure;
+        }
+        floats = read->floats;
+        std::vector<uint32_t> stamps[2];
+        const std::string* files[2] = {&piece.gone, &piece.refined};
+        for (int k = 0; k < 2; ++k) {
+            if (!files[k]->empty()) {
+                auto words = io::readSeen(directory / *files[k], read->count);
+                if (!words) return report(words.error());
+                stamps[k] = std::move(*words);
+            }
+        }
+        // The finest standing: which records are kept is read off the piece's stamps.
+        for (uint32_t g = 0; g < read->count; ++g) {
+            bool kept = true;
+            for (int k = 0; k < 2; ++k) {
+                const uint32_t stamp = stamps[k].empty() ? 0u : stamps[k][g];
+                kept = kept && !(stamp != 0 && (asOf == 0 || stamp <= asOf));
+            }
+            if (!kept) {
+                continue;
+            }
+            const auto first = read->records.begin() + static_cast<std::ptrdiff_t>(size_t{g} * floats);
+            records.insert(records.end(), first, first + floats);
+            if (++held >= o.part) {
+                if (auto done = flush(); !done) return report(done.error());
+            }
+        }
+    }
+    if (auto done = flush(); !done) return report(done.error());
+    if (total == 0) {
+        err("nothing stands in the scene at that snapshot\n");
+        return kExitFailure;
+    }
+    // What a viewer needs beside the parts: their names, the box, the up axis and the unit, and a view to
+    // open on -- the manifest's first camera.
+    std::ofstream index(given.string() + ".json");
+    index << "{\n  \"name\": \"" << scene->name << "\",\n  \"upAxis\": \"" << scene->upAxis
+          << "\",\n  \"metersPerUnit\": " << scene->metersPerUnit << ",\n  \"gaussians\": " << total
+          << ",\n  \"min\": [" << low[0] << ", " << low[1] << ", " << low[2] << "],\n  \"max\": [" << high[0] << ", "
+          << high[1] << ", " << high[2] << "],\n  \"parts\": [";
+    for (size_t k = 0; k < names.size(); ++k) {
+        index << (k != 0 ? ", " : "") << "\"" << names[k] << "\"";
+    }
+    index << "],\n  \"cameras\": [";
+    for (size_t k = 0; k < scene->cameras.size(); ++k) {
+        const io::NeuralSceneCamera& c = scene->cameras[k];
+        index << (k != 0 ? ", " : "") << "{\"name\": \"" << c.name << "\", \"eye\": [" << c.eye[0] << ", " << c.eye[1]
+              << ", " << c.eye[2] << "], \"target\": [" << c.target[0] << ", " << c.target[1] << ", " << c.target[2]
+              << "], \"focal\": " << c.focal << "}";
+    }
+    index << "]\n}\n";
+    out("%s: %llu gaussians in %u parts, %.1f MB; wrote %s.json\n", scene->name.c_str(),
+        static_cast<unsigned long long>(total), parts, static_cast<double>(bytes) / 1048576.0, given.string().c_str());
+    return 0;
+}
+
 int runRender(const SceneOptions& given) {
     SceneOptions o = given;
     const std::filesystem::path directory = o.directory;
@@ -2618,6 +2765,15 @@ void addNeuralScene(CLI::App& app) {
     bake->add_option("--snapshot", o.snapshot, "the same by a snapshot of the manifest's, counted from one");
     bake->add_option("-o,--output", o.output, "the .athc")->required();
     run(bake, options, runBake);
+
+    CLI::App* exported = cmd->add_subcommand("export", "the scene as standard splat files (SPZ) in parts, for a viewer on the web");
+    exported->add_option("scene", o.directory, "the scene's directory")->required();
+    exported->add_option("--at", o.at, "the scene as it stood at this time (default: as it stands)");
+    exported->add_option("--snapshot", o.snapshot, "the same by a snapshot of the manifest's, counted from one");
+    exported->add_option("--part", o.part, "the most gaussians a file holds");
+    exported->add_option("--exposure", o.exposure, "stops on the scene's light before it is encoded");
+    exported->add_option("-o,--output", o.output, "a path with no extension: <stem>_NNN.spz and <stem>.json")->required();
+    run(exported, options, runExport);
 
     CLI::App* info = cmd->add_subcommand("info", "what the manifest holds");
     info->add_option("scene", o.directory, "the scene's directory")->required();
