@@ -430,6 +430,7 @@ athenea neural-scene render hall.aths --camera door --at 0 -o then.png   # la es
 | `--up-to` | `render` | entero | `0` | `--discovered`: solo las miradas hasta esta, contadas desde uno en el orden de `snapshots`; `0` son todas |
 | `--at`, `--snapshot` | `render` | tiempo, entero | —, — | la escena como estaba: en un tiempo, el último snapshot tomado hasta entonces; o un snapshot del manifest, contado desde uno. Las piezas que habían entrado hasta él, menos las gaussianas que se habían ido hasta él. Sin ninguno, la escena como está ahora |
 | `--frame` | `render` | entero | — | un frame que la escena almacenó (`shoot`), contado desde uno: se dibuja de nuevo por su cámara, a su tamaño, con la escena como estaba cuando entró su última mirada. En lugar de `--camera`, `--size` y `--snapshot` |
+| `--lod` | `render` | píxeles | `0` | levels of detail: la escena cortada para la vista. Una gaussiana más estrecha que esto en pantalla se dibuja en lugar de las más finas que miradas posteriores pusieron encima, y estas solo donde aquello sobre lo que se pusieron es más ancho; `0` dibuja lo más fino en todas partes. De `1.2` a `1.5` es una gaussiana de alrededor de un píxel; `2` o más es una imagen dibujada con gaussianas de ese ancho. El corte se compacta: lo que no se dibuja no llega al rasterizador. Con `--views` cada vista se corta para sí misma |
 | `--frames` | `render` | dos enteros | — | los frames almacenados de FIRST a LAST como imágenes en una sola ejecución, con la escena leída una vez y cada pieza la primera vez que un frame la pide: `-o` es un prefijo, se escribe `<stem>_NNNN.png` o `.exr` |
 | `--exposure` | `render` | stops | `0` | `-o` con un `.png`: sobre la luz de la escena, antes del view transform estándar |
 | `stage`, `scene` | `shoot` | rutas | — | el stage USD, y el directorio de la escena: se crea, o se le añade |
@@ -3572,6 +3573,7 @@ relativas al directorio, así que una escena se mueve como se mueve un directori
   pieces/<id>.athn         su apariencia neural, una vez ajustada
   pieces/<id>.seen         qué mirada vio primero cada gaussiana
   pieces/<id>.gone         qué mirada encontró ida cada gaussiana
+  pieces/<id>.refined      qué mirada puso gaussianas más finas sobre cada una
   pieces/<id>.athg         las gaussianas que dejó un render del propio motor (neural-scene shoot)
 ```
 
@@ -3583,13 +3585,23 @@ sella.
 
 Un `.athg` son dieciséis bytes -- `ATHG`, una versión (1), cuántas gaussianas y
 cuántos floats cada una, uint32 little endian -- y después los registros,
-float32. El registro de un render son 26 floats: la posición (3), el logit de
+float32. El registro de un render son 27 floats (26 en una escena hecha antes de añadir el último): la posición (3), el logit de
 la opacidad, los logaritmos de las escalas (3), la rotación (w x y z), el primer
 armónico como guarda un color una captura (3), la normal de la superficie en el
 mundo (3), la fracción de metal, la roughness, la transmisión, y después la fila
 del material en el frame que la creó más uno (0 para lo visto a través de
-vidrio), su índice de refracción, 1 para una lámina sin interior, y lo que deja
-pasar en un cruce (r g b).
+vidrio), su índice de refracción, 1 para una lámina sin interior, lo que deja
+pasar en un cruce (r g b), y el ancho de las gaussianas más gruesas sobre las que
+se puso, 0 donde no había nada: el de su padre, que lee `render --lod`.
+
+Un `.refined` es un registro como un `.gone` para otra cosa: la mirada que hizo
+gaussianas más finas donde está esta. No se ha ido. Una mirada la hizo tan ancha
+como era su píxel a su distancia, una mirada más cercana o una focal más larga
+hizo otras más estrechas encima, y de lejos sigue siendo la que hay que dibujar.
+Una mirada conoce la escena por sus gaussianas más finas, así que las refinadas
+quedan fuera de lo que dibujan una mirada y un `render` normal; `render --lod`
+elige entre una gaussiana y lo que se puso encima según lo ancha que es cada una
+en pantalla.
 
 La escena se conserva, no se sustituye: una mirada añade piezas y sella lo que
 encontró ido, y nada se quita del disco. Así la escena como estaba en un
@@ -3604,6 +3616,7 @@ gaussianas cuyo sello en `.gone` no es posterior (`neural-scene render --at`,
 | `source` | `stage`: de qué se convirtieron las piezas; `licence`: qué pide a quien lo use |
 | `bounds` | `min`, `max`: la caja que envuelve las de todas las piezas, escrita y no leída |
 | `pieces[]` | `id`; `prim` (de dónde salió); `cloud` (su fichero); `gaussians`; `bounds`; `transform` (objeto a mundo, dieciséis números por filas); `revision`, `movedAt`, `paintedAt`; `static`; `origin`; y, una vez ajustada, `appearance` |
+| `pieces[].refined`, `refinedCount` | su `.refined` y cuántas gaussianas tienen otras más finas encima; ausente hasta que hay alguna |
 | `pieces[].gone`, `removed` | su `.gone` y cuántas gaussianas vieron a través miradas posteriores; ausentes hasta que una lo hace. Retirar gaussianas sube la `revision` y el `movedAt` de la pieza |
 | `pieces[].seen`, `discovered` | su `.seen` y cuántas gaussianas han encontrado las miradas; ausentes hasta que se toma una mirada |
 | `pieces[].origin` | `kind`: `"converted"` (de geometría, entera), `"discovered"` (las gaussianas que vio una cámara) o `"generated"` (rellenada por otro sistema); `camera` y `time`: qué la encontró y cuándo; `snapshot`: el snapshot en que entró, contado desde uno (ausente: estaba antes de cualquier mirada); `footprint`: el lado en píxeles de la celda de la que se hizo cada una de sus gaussianas (las de un render) |

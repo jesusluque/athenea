@@ -35,7 +35,11 @@ struct FrameParams {
     /// wide as the disc this frame would make there is not held -- seen from far and now seen from near --
     /// and is taken out and made again, finer. 0: held however coarse.
     float refine;
-    uint pad2;
+    /// frameSeenThrough: which of its reasons the mask is of. 0, all of them. 1, what says the world
+    /// changed: seen past, nothing where something was, the same place another colour. 2, what says only
+    /// that this look is finer: the same place, held by coarser gaussians -- which are not gone but
+    /// refined, and stay the scene's from far (scene_discover.slang's discoverCut).
+    uint only;
 };
 
 StructuredBuffer<float4>   colour;       // the frame: linear light, premultiplied
@@ -138,9 +142,14 @@ void frameSeenThrough(uint3 tid: SV_DispatchThreadID) {
     // A frame with nothing at a pixel where the scene has something sees through it too.
     const bool empty = !(z > 0.0) && colour[at].a < 0.5 && knownColour[at].a > 0.5;
     // And a surface that is where it was and is another colour is taken out to be made again.
-    const bool again = z > 0.0 && colour[at].a > 0.5 && knownColour[at].a > 0.5 &&
-                       abs(knownDepth[at] - z) <= params.tolerance * z && (repainted(at) || coarser(at, z));
-    seenThrough[at] = (past || empty || again) ? 1.0 : 0.0;
+    const bool same = z > 0.0 && colour[at].a > 0.5 && knownColour[at].a > 0.5 &&
+                      abs(knownDepth[at] - z) <= params.tolerance * z;
+    const bool painted = same && repainted(at);
+    // Only finer: where it was, the colour it had, held by coarser gaussians.
+    const bool finer = same && !painted && coarser(at, z);
+    const bool again = painted || finer;
+    const bool changed = past || empty || painted;
+    seenThrough[at] = (params.only == 1u ? changed : params.only == 2u ? finer : (changed || finer)) ? 1.0 : 0.0;
     if (past || empty) {
         InterlockedAdd(counters[2], 1u);
     }

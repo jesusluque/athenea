@@ -236,6 +236,12 @@ cada una):
   donde el loader le dé uso, o uno después de esos, que solo guarda el fichero.
   `athenea neural-scene shoot` (`CmdNeuralScene.cpp`) es el bucle: una
   pasada del render cada vez, y una mirada cuando están los caminos de una huella.
+  El ancho de una gaussiana es su level of detail: aquello sobre lo que se pone
+  una mirada más fina se sella como refinado y no como ido (el `only` de
+  `frameSeenThrough`, en un registro propio), cada gaussiana más fina guarda en su
+  registro el ancho de su padre, y `Discovery::cut` (`discoverCut`) elige una
+  gaussiana o lo que se puso encima según sus anchos en pantalla, sin recorrer
+  ni guardar ningún árbol.
 
 Un kernel que añade algo a `shaders/athenea/neural/neural_appearance.slang` lo añade a
 las dos pasadas: la forward y, a mano, la backward junto a ella, y las diferencias

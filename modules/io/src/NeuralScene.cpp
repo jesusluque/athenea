@@ -159,6 +159,8 @@ Result<NeuralScene> readNeuralScene(const std::filesystem::path& directory) {
             p.isStatic = from.value("static", true);
             p.gone = from.value("gone", std::string{});
             p.removed = from.value("removed", 0u);
+            p.refined = from.value("refined", std::string{});
+            p.refinedCount = from.value("refinedCount", 0u);
             p.seen = from.value("seen", std::string{});
             p.discovered = from.value("discovered", 0u);
             p.movedAt = from.value("movedAt", p.revision);
@@ -273,6 +275,10 @@ Result<void> writeNeuralScene(const std::filesystem::path& directory, const Neur
         piece["transform"] = listOf(p.transform);
         piece["revision"] = p.revision;
         piece["static"] = p.isStatic;
+        if (!p.refined.empty()) {
+            piece["refined"] = p.refined;
+            piece["refinedCount"] = p.refinedCount;
+        }
         if (!p.gone.empty()) {
             piece["gone"] = p.gone;
             piece["removed"] = p.removed;

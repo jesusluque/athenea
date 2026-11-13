@@ -37,6 +37,9 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(d.mask_, "discoverMask"));
     ATHENEA_TRY(make(d.gone_, "discoverGone"));
     ATHENEA_TRY(make(d.sizes_, "discoverSizes"));
+    ATHENEA_TRY(make(d.cut_, "discoverCut"));
+    ATHENEA_TRY(make(d.cutFlags_, "discoverCutFlags"));
+    ATHENEA_TRY(make(d.gather_, "discoverGather"));
     {
         auto valid = gpu::ComputeKernel::create(library, "athenea/neural/scene_frame", "frameValid");
         if (!valid) return std::move(valid).error();
@@ -84,6 +87,11 @@ void Discovery::bind(rhi::ShaderCursor cursor) const {
     cursor["sizes"].setBinding(spareFloats_.rhi());
     cursor["positionsOut"].setBinding(spareFloats_.rhi());
     cursor["cleared"].setBinding(spareWords_.rhi());
+    cursor["refinedRead"].setBinding(spareWords_.rhi());
+    cursor["parentRead"].setBinding(spareFloats_.rhi());
+    cursor["harmonics"].setBinding(spareWords_.rhi());
+    cursor["shapeOut"].setBinding(spareWords_.rhi());
+    cursor["harmonicsOut"].setBinding(spareWords_.rhi());
 }
 
 Result<gpu::Buffer> Discovery::record(uint32_t count, std::span<const uint32_t> held) {
@@ -244,6 +252,8 @@ Result<void> Discovery::sparePanes(gpu::Buffer& mask, const gpu::Buffer& aux, ui
         cursor["knownDepth"].setBinding(spareFloats_.rhi());
         cursor["knownFirst"].setBinding(spareFloats_.rhi());
         cursor["knownSize"].setBinding(spareFloats_.rhi());
+        cursor["beforeSize"].setBinding(spareFloats_.rhi());
+        cursor["beforeDepth"].setBinding(spareFloats_.rhi());
         cursor["made"].setBinding(spareWords_.rhi());
         cursor["madeRead"].setBinding(spareWords_.rhi());
         cursor["which"].setBinding(spareWords_.rhi());
@@ -303,6 +313,10 @@ Result<RenderLook> Discovery::fromRender(const gpu::Buffer& colour, const gpu::B
         cursor["knownDepth"].setBinding(hasKnown ? known.depth->rhi() : depth.rhi());
         cursor["knownFirst"].setBinding(hasKnown && known.first != nullptr ? known.first->rhi() : depth.rhi());
         cursor["knownSize"].setBinding(hasKnown && known.size != nullptr ? known.size->rhi() : colour.rhi());
+        const bool hasBefore = known.beforeSize != nullptr && known.beforeDepth != nullptr;
+        cursor["beforeSize"].setBinding(hasBefore ? known.beforeSize->rhi() : colour.rhi());
+        cursor["beforeDepth"].setBinding(hasBefore ? known.beforeDepth->rhi() : depth.rhi());
+        cursor["params"]["hasBefore"].setData(uint32_t{hasBefore ? 1u : 0u});
         cursor["made"].setBinding(spareWords_.rhi());
         cursor["madeRead"].setBinding(made->rhi());
         cursor["which"].setBinding(spareWords_.rhi());
@@ -386,7 +400,7 @@ Result<gpu::Buffer> Discovery::seenThrough(const gpu::Buffer& colour, const gpu:
                                            uint32_t height, const gpu::Buffer& knownColour,
                                            const gpu::Buffer& knownDepth, float tolerance, uint32_t& pixels,
                                            float repaint, uint32_t* repainted, const gpu::Buffer* knownSize,
-                                           float refine, const Projection* projection, float spread) {
+                                           float refine, const Projection* projection, float spread, uint32_t only) {
     gpu::Device& device = library_->device();
     gpu::BufferDesc desc;
     desc.bytes = std::max<uint64_t>(uint64_t{width} * height, 4) * sizeof(float);
@@ -421,6 +435,7 @@ Result<gpu::Buffer> Discovery::seenThrough(const gpu::Buffer& colour, const gpu:
         p["repaint"].setData(repaint);
         const bool sized = knownSize != nullptr && projection != nullptr;
         p["refine"].setData(sized ? refine : 0.0F);
+        p["only"].setData(only);
         p["spread"].setData(spread);
         p["focalX"].setData(sized ? static_cast<float>(projection->focalX) : 1.0F);
     });
@@ -436,7 +451,7 @@ Result<gpu::Buffer> Discovery::seenThrough(const gpu::Buffer& colour, const gpu:
 
 Result<uint32_t> Discovery::markGone(const gpu::Buffer& lifted, uint32_t base, gpu::Buffer& gone, uint32_t count,
                                      uint32_t stamp, float threshold, const scene::GpuSplats* cloud,
-                                     const Projection* projection, float coarse) {
+                                     const Projection* projection, float coarse, float most) {
     gpu::Device& device = library_->device();
     gpu::CommandBatch batch(device);
     clear_.dispatch(batch, {4, 1, 1}, [&](rhi::ShaderCursor cursor) {
@@ -465,6 +480,7 @@ Result<uint32_t> Discovery::markGone(const gpu::Buffer& lifted, uint32_t base, g
         }
         // The lift's sums are in 1/1024 of a pixel.
         cursor["params"]["threshold"].setData(static_cast<uint32_t>(std::max(threshold, 0.0F) * 1024.0F + 0.5F));
+        cursor["params"]["most"].setData(most);
     });
     ATHENEA_TRY(batch.submit(true));
     std::array<uint32_t, 4> read{};
@@ -493,6 +509,113 @@ Result<scene::GpuSplats> Discovery::without(const scene::GpuSplats& cloud, const
     ATHENEA_TRY(batch.submit(true));
     scene::GpuSplats kept = cloud;
     kept.positions = *positions;
+    return kept;
+}
+
+Result<scene::GpuSplats> Discovery::cut(const scene::GpuSplats& cloud, const gpu::Buffer* gone,
+                                        const gpu::Buffer* refined, const gpu::Buffer* parent,
+                                        const Projection& projection, float threshold, uint32_t upTo, bool gathered) {
+    gpu::Device& device = library_->device();
+    gpu::BufferDesc desc;
+    desc.bytes = std::max<uint64_t>(cloud.count, 1) * 16;
+    desc.elementBytes = 16;
+    desc.label = "discover.cut";
+    auto positions = gpu::Buffer::create(device, desc);
+    if (!positions) return std::move(positions).error();
+    // A record or a width a piece does not have reads as zeros: nothing gone, nothing refined, no parent.
+    gpu::Buffer zeros;
+    if (gone == nullptr || refined == nullptr || parent == nullptr) {
+        auto made = words(device, cloud.count, 4, "discover.none");
+        if (!made) return std::move(made).error();
+        zeros = *made;
+    }
+    const auto asked = [&](rhi::ShaderCursor cursor) {
+        bind(cursor);
+        cursor["positions"].setBinding(cloud.positions.rhi());
+        cursor["shape"].setBinding(cloud.shape.rhi());
+        cursor["seenRead"].setBinding(gone != nullptr ? gone->rhi() : zeros.rhi());
+        cursor["refinedRead"].setBinding(refined != nullptr ? refined->rhi() : zeros.rhi());
+        cursor["parentRead"].setBinding(parent != nullptr ? parent->rhi() : zeros.rhi());
+        cursor["params"]["count"].setData(cloud.count);
+        cursor["params"]["upTo"].setData(upTo);
+        cursor["params"]["focal"].setData(static_cast<float>(projection.focalX));
+        cursor["params"]["threshold2"].setData(threshold);
+        const std::array<float, 4> viewZ{static_cast<float>(projection.worldToView.at(2, 0)),
+                                         static_cast<float>(projection.worldToView.at(2, 1)),
+                                         static_cast<float>(projection.worldToView.at(2, 2)),
+                                         static_cast<float>(projection.worldToView.at(2, 3))};
+        cursor["params"]["viewZ"].setData(viewZ);
+    };
+    if (!gathered) {
+        gpu::CommandBatch batch(device);
+        cut_.dispatch(batch, {cloud.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            asked(cursor);
+            cursor["positionsOut"].setBinding(positions->rhi());
+        });
+        ATHENEA_TRY(batch.submit(true));
+        scene::GpuSplats kept = cloud;
+        kept.positions = *positions;
+        return kept;
+    }
+    // GATHERED: the gaussians to draw flagged, counted by a prefix sum, and copied each to its place.
+    auto flags = words(device, cloud.count, 4, "discover.cutFlags");
+    if (!flags) return std::move(flags).error();
+    auto dest = words(device, cloud.count, 4, "discover.cutDest");
+    if (!dest) return std::move(dest).error();
+    auto total = words(device, 4, 4, "discover.cutTotal");
+    if (!total) return std::move(total).error();
+    {
+        gpu::CommandBatch batch(device);
+        cutFlags_.dispatch(batch, {cloud.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            asked(cursor);
+            cursor["cleared"].setBinding(flags->rhi());
+        });
+        ATHENEA_TRY(prefix_->apply(batch, *flags, *dest, *total, cloud.count));
+        ATHENEA_TRY(batch.submit(true));
+    }
+    uint32_t drawn = 0;
+    ATHENEA_TRY(total->read(device, 0, sizeof(drawn), &drawn));
+    scene::GpuSplats kept;
+    kept.source = cloud.source;
+    kept.count = drawn;
+    kept.declared = cloud.declared;
+    kept.restPerColour = cloud.restPerColour;
+    kept.shWords = cloud.shWords;
+    kept.linear = cloud.linear;
+    kept.bounds = cloud.bounds;
+    kept.antialiased = cloud.antialiased;
+    if (drawn == 0) {
+        return kept;
+    }
+    const uint32_t shWords = std::max<uint32_t>(cloud.shWords, 1);
+    desc.bytes = uint64_t{drawn} * 16;
+    desc.label = "discover.cut.positions";
+    auto outPositions = gpu::Buffer::create(device, desc);
+    if (!outPositions) return std::move(outPositions).error();
+    auto outShape = words(device, uint64_t{drawn} * 4, 4, "discover.cut.shape");
+    if (!outShape) return std::move(outShape).error();
+    auto outSh = words(device, uint64_t{drawn} * shWords, 4, "discover.cut.sh");
+    if (!outSh) return std::move(outSh).error();
+    {
+        gpu::CommandBatch batch(device);
+        gather_.dispatch(batch, {cloud.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            bind(cursor);
+            cursor["positions"].setBinding(cloud.positions.rhi());
+            cursor["shape"].setBinding(cloud.shape.rhi());
+            cursor["harmonics"].setBinding(cloud.sh.rhi());
+            cursor["contribution"].setBinding(flags->rhi());
+            cursor["lifted"].setBinding(dest->rhi());
+            cursor["positionsOut"].setBinding(outPositions->rhi());
+            cursor["shapeOut"].setBinding(outShape->rhi());
+            cursor["harmonicsOut"].setBinding(outSh->rhi());
+            cursor["params"]["count"].setData(cloud.count);
+            cursor["params"]["stamp"].setData(shWords);
+        });
+        ATHENEA_TRY(batch.submit(true));
+    }
+    kept.positions = *outPositions;
+    kept.shape = *outShape;
+    kept.sh = *outSh;
     return kept;
 }
 

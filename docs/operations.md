@@ -426,6 +426,7 @@ athenea neural-scene render hall.aths --camera door --at 0 -o then.png   # the s
 | `--up-to` | `render` | integer | `0` | `--discovered`: only the looks up to this one, counted from one in the order of `snapshots`; `0` is all of them |
 | `--at`, `--snapshot` | `render` | time, integer | —, — | the scene as it stood: at a time, the last snapshot taken by then; or a snapshot of the manifest's, counted from one. The pieces that had come in by it, less the gaussians that had gone by it. Without either, the scene as it stands now |
 | `--frame` | `render` | integer | — | a frame the scene stored (`shoot`), counted from one: drawn again through its camera, at its size, from the scene as it stood when its last look was in. In place of `--camera`, `--size` and `--snapshot` |
+| `--lod` | `render` | pixels | `0` | levels of detail: the scene cut for the view. A gaussian narrower than this on the screen is drawn in place of the finer ones later looks laid over it, and those only where what they were laid over is wider; `0` draws the finest everywhere. `1.2` to `1.5` is a gaussian about a pixel wide; `2` and over is a picture drawn with gaussians that wide. The cut is gathered: what is not drawn is not handed to the rasteriser. With `--views` each view is cut for itself |
 | `--frames` | `render` | two integers | — | the stored frames FIRST to LAST as pictures in one run, the scene read once and each piece the first time a frame wants it: `-o` is a prefix, written `<stem>_NNNN.png` or `.exr` |
 | `--exposure` | `render` | stops | `0` | `-o` a `.png`: over the scene's light, before the standard view transform |
 | `stage`, `scene` | `shoot` | paths | — | the USD stage, and the scene's directory: made, or added to |
@@ -3462,6 +3463,7 @@ relative to the directory, so a scene moves as a directory does.
   pieces/<id>.athn         its neural appearance, once fitted
   pieces/<id>.seen         which look first saw each gaussian
   pieces/<id>.gone         which look found each gaussian gone
+  pieces/<id>.refined      which look laid finer gaussians over each
   pieces/<id>.athg         the gaussians a render of the engine's own left (neural-scene shoot)
 ```
 
@@ -3473,12 +3475,22 @@ stamps.
 
 A `.athg` is sixteen bytes -- `ATHG`, a version (1), how many gaussians and how
 many floats each, uint32 little endian -- and then the records, float32. A
-render's record is 26 floats: the position (3), the opacity's logit, the
+render's record is 27 floats (26 in a scene shot before the last was added): the position (3), the opacity's logit, the
 scales' logs (3), the rotation (w x y z), the first harmonic as a capture
 keeps a colour (3), the surface's normal in the world (3), the metal's share,
 the roughness, the transmission, and then the material's row in the frame that
 made it plus one (0 for what was seen through glass), its index of refraction,
-1 for a sheet with no inside, and what it lets through one crossing (r g b).
+1 for a sheet with no inside, what it lets through one crossing (r g b), and
+the width of the coarser gaussians it was laid over, 0 where over nothing:
+its parent's, which `render --lod` reads.
+
+A `.refined` is a `.gone`'s kind of record for another thing: the look that
+made finer gaussians where this one stands. It is not gone. A look made it as
+wide as its pixel was at its distance, a nearer look or a longer lens made
+narrower ones over it, and from far it is still the right one to draw. A look
+knows the scene by its finest gaussians, so those refined are left out of
+what a look and a plain `render` draw; `render --lod` chooses between a
+gaussian and what was laid over it by how wide each is on the screen.
 
 The scene is kept, not replaced: a look adds pieces and stamps what it found
 gone, and nothing is taken off the disk. So the scene as it stood at a
@@ -3492,6 +3504,7 @@ whose `.gone` stamp is no later (`neural-scene render --at`, `--snapshot`).
 | `source` | `stage`: what the pieces were converted from; `licence`: what it asks of whoever uses it |
 | `bounds` | `min`, `max`: the box round every piece's, written and not read |
 | `pieces[]` | `id`; `prim` (where it came from); `cloud` (its file); `gaussians`; `bounds`; `transform` (object to world, sixteen numbers row major); `revision`, `movedAt`, `paintedAt`; `static`; `origin`; and, once fitted, `appearance` |
+| `pieces[].refined`, `refinedCount` | its `.refined` and how many gaussians finer looks were laid over; absent until one is |
 | `pieces[].gone`, `removed` | its `.gone` and how many gaussians later looks saw through; absent until one does. Taking gaussians out raises the piece's `revision` and `movedAt` |
 | `pieces[].seen`, `discovered` | its `.seen` and how many gaussians the looks have found; absent until a look is taken |
 | `pieces[].origin` | `kind`: `"converted"` (from geometry, whole), `"discovered"` (the gaussians a camera saw) or `"generated"` (filled in by another system); `camera` and `time`: what found it and when; `snapshot`: the snapshot it came in at, counted from one (absent: it was there before any look); `footprint`: the side in pixels of the cell each of its gaussians was made of (a render's) |

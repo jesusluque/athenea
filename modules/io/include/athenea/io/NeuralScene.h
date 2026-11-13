@@ -15,6 +15,7 @@
 //     pieces/<id>.seen           which look first saw each gaussian: a uint32 a gaussian, little
 //                                endian, the snapshot's place in `snapshots` counted from one, 0 for none
 //     pieces/<id>.gone           which look found each gaussian gone, the same way
+//     pieces/<id>.refined        which look laid finer gaussians over each, the same way
 //     pieces/<id>.athg           the gaussians a render of the engine's own left (`neural-scene shoot`):
 //                                "ATHG", a version, how many and how many floats each (four uint32,
 //                                little endian), then the records as render::Discovery lays them out
@@ -102,6 +103,13 @@ struct NeuralScenePiece {
     /// many that is. Those gaussians are drawn by nothing.
     std::string            gone;
     uint32_t               removed = 0;
+    /// What finer looks were laid over: its `.refined`, a uint32 a gaussian
+    /// as a `.gone` is (the look that made finer gaussians over it, 0 while
+    /// it is the finest there), and how many that is. They are not gone:
+    /// they are the level above, drawn from where the finer ones are too
+    /// fine to matter.
+    std::string            refined;
+    uint32_t               refinedCount = 0;
     /// The snapshot the piece came in at, counted from one (0: it was there
     /// before any look), and the side in pixels of the cell each of its
     /// gaussians was made of (0: not a render's).

@@ -102,6 +102,7 @@ struct SceneOptions {
     double                   at = -1.0;
     unsigned                 snapshot = 0;
     unsigned                 storedFrame = 0;
+    float                    lod = 0.0F;
     float                    exposure = 0.0F;
     // shoot
     std::string              stage;
@@ -129,8 +130,10 @@ bool sizeOf(const std::string& text, uint32_t& width, uint32_t& height) {
 }
 
 /// A piece's gaussians on the device: a USD ParticleField, or a splat file.
+/// With `parent`, a render's piece also gives the width of what each gaussian was laid over (left
+/// invalid where the file has none).
 Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& loader,
-                              const std::filesystem::path& path) {
+                              const std::filesystem::path& path, gpu::Buffer* parent = nullptr) {
     const std::string ext = path.extension().string();
     if (ext == ".usda" || ext == ".usdc" || ext == ".usd") {
         return usd::uploadParticleField(library, loader, path);
@@ -139,14 +142,27 @@ Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& l
         // What a render of the engine's own left: records as render::Discovery lays them out.
         auto held = io::readGaussians(path);
         if (!held) return std::move(held).error();
-        if (held->floats != render::kRenderRecord) {
+        // 26 floats before a gaussian kept its parent's width, 27 since: the fields the loader reads are
+        // the same.
+        if (held->floats != render::kRenderRecord && held->floats != render::kRenderRecordParent) {
             return Error::make(ErrorCode::Unsupported, "{}: records of {} floats, and a render's are {}", path.string(),
                                held->floats, render::kRenderRecord);
+        }
+        if (parent != nullptr && held->floats > render::kRenderRecordParent) {
+            // The parent's width of each, laid side by side: nothing is computed.
+            std::vector<float> widths(held->count);
+            for (uint32_t k = 0; k < held->count; ++k) {
+                widths[k] = held->records[size_t{k} * held->floats + render::kRenderRecordParent];
+            }
+            auto made = gpu::Buffer::fromSpan<float>(library.device(), std::span<const float>(widths), "piece.parent");
+            if (!made) return std::move(made).error();
+            *parent = *made;
         }
         io::RawSplats raw;
         raw.source = path.string();
         raw.count = held->count;
         raw.encoding = render::Discovery::renderEncoding();
+        raw.encoding.floatsPerRecord = held->floats;
         raw.records = std::move(held->records);
         loader.keepFaint(true);   // a record of what is gone counts every gaussian the file holds
         auto cloud = loader.upload(raw, 0);
@@ -162,14 +178,50 @@ Result<scene::GpuSplats> loadPiece(gpu::ShaderLibrary& library, scene::CloudLoad
                                    const std::filesystem::path& directory, const io::NeuralScenePiece& piece,
                                    uint32_t upTo = 0) {
     auto cloud = load(library, loader, directory / piece.cloud);
-    if (!cloud || piece.gone.empty()) {
+    if (!cloud) {
         return cloud;
     }
-    auto held = io::readSeen(directory / piece.gone, cloud->count);
-    if (!held) return std::move(held).error();
-    auto record = discovery.record(cloud->count, *held);
-    if (!record) return std::move(record).error();
-    return discovery.without(*cloud, *record, upTo);
+    // The finest there is: less what is gone, and less what finer looks were laid over.
+    for (const std::string* file : {&piece.gone, &piece.refined}) {
+        if (file->empty()) {
+            continue;
+        }
+        auto held = io::readSeen(directory / *file, cloud->count);
+        if (!held) return std::move(held).error();
+        auto record = discovery.record(cloud->count, *held);
+        if (!record) return std::move(record).error();
+        auto less = discovery.without(*cloud, *record, upTo);
+        if (!less) return less;
+        cloud = std::move(less);
+    }
+    return cloud;
+}
+
+/// A piece cut for a view (Discovery::cut): the gaussians to draw from there at `threshold` pixels, as the
+/// scene stood at look `upTo`.
+Result<scene::GpuSplats> cutPiece(gpu::ShaderLibrary& library, scene::CloudLoader& loader, render::Discovery& discovery,
+                                  const std::filesystem::path& directory, const io::NeuralScenePiece& piece,
+                                  const render::Projection& projection, float threshold, uint32_t upTo) {
+    gpu::Buffer parent;
+    auto cloud = load(library, loader, directory / piece.cloud, &parent);
+    if (!cloud) {
+        return cloud;
+    }
+    gpu::Buffer records[2];
+    const std::string* files[2] = {&piece.gone, &piece.refined};
+    for (int k = 0; k < 2; ++k) {
+        if (files[k]->empty()) {
+            continue;
+        }
+        auto held = io::readSeen(directory / *files[k], cloud->count);
+        if (!held) return std::move(held).error();
+        auto record = discovery.record(cloud->count, *held);
+        if (!record) return std::move(record).error();
+        records[k] = *record;
+    }
+    // Gathered: what is not drawn from here is not in the cloud handed back.
+    return discovery.cut(*cloud, records[0].valid() ? &records[0] : nullptr, records[1].valid() ? &records[1] : nullptr,
+                         parent.valid() ? &parent : nullptr, projection, threshold, upTo, true);
 }
 
 /// A FRAME OF THE SCENE WRITTEN: an EXR as it is (linear, with its depth), or -- `path` ending in .png --
@@ -403,6 +455,9 @@ int runInfo(const SceneOptions& o) {
         }
         if (!p.gone.empty()) {
             out(", %u gone", p.removed);
+        }
+        if (p.refinedCount != 0) {
+            out(", %u refined", p.refinedCount);
         }
         if (p.appearance.empty()) {
             out(", by its harmonics\n");
@@ -1132,12 +1187,14 @@ int runShoot(const SceneOptions& all) {
     std::vector<render::SplatInstance> instances;
     std::vector<size_t> pieceOf;             // an instance's piece in the manifest
     std::vector<gpu::Buffer> gone;           // its record, once one is needed
+    std::vector<gpu::Buffer> refined;        // and its record of what finer looks were laid over
     std::vector<std::unique_ptr<render::NeuralCloud>> sizedOf;   // its cloud of sizes, made once while it is here
     const auto drop = [&](size_t k) {
         instances.erase(instances.begin() + static_cast<std::ptrdiff_t>(k));
         clouds.erase(clouds.begin() + static_cast<std::ptrdiff_t>(k));
         pieceOf.erase(pieceOf.begin() + static_cast<std::ptrdiff_t>(k));
         gone.erase(gone.begin() + static_cast<std::ptrdiff_t>(k));
+        refined.erase(refined.begin() + static_cast<std::ptrdiff_t>(k));
         sizedOf.erase(sizedOf.begin() + static_cast<std::ptrdiff_t>(k));
     };
     // WHAT THE NEXT VIEW STILL SEES STAYS. A view is brought in by dropping the pieces its frustum does not
@@ -1158,8 +1215,8 @@ int runShoot(const SceneOptions& all) {
         }
         for (size_t k = 0; k < scene.pieces.size(); ++k) {
             const io::NeuralScenePiece& piece = scene.pieces[k];
-            if (piece.removed != 0 && piece.removed >= piece.gaussians) {
-                continue;   // nothing of it stands
+            if (piece.gaussians != 0 && piece.removed + piece.refinedCount >= piece.gaussians) {
+                continue;   // nothing of it is the finest there is
             }
             if (std::find(pieceOf.begin(), pieceOf.end(), k) != pieceOf.end()) {
                 continue;   // here already
@@ -1174,6 +1231,7 @@ int runShoot(const SceneOptions& all) {
             instances.push_back(render::SplatInstance{clouds.back().get(), render::Mat4::identity(), {}});
             pieceOf.push_back(k);
             gone.emplace_back();
+            refined.emplace_back();
             sizedOf.emplace_back();
             ++piecesRead;
         }
@@ -1246,12 +1304,54 @@ int runShoot(const SceneOptions& all) {
         const render::Projection projection = render::projectionFor(camera, width, height);
         const float disc = all.spread * static_cast<float>(footprint);
         uint32_t taken = 0;
+        uint32_t refinedNow = 0;
         uint32_t firstThrough = 0;
         uint32_t firstAgain = 0;
+        // The scene as it stood when the look began, by its sizes and its depth: what the gaussians this look
+        // makes are laid over, and so their parents'.
+        render::RenderTargets before;
+        render::RenderTargets beforeSize;
+        bool hasBefore = false;
         if (!instances.empty()) {
             if (auto drawn = drawKnown(); !drawn) return report(drawn.error());
-            // What the render sees through, and what it would make finer, is taken out first, layer by layer.
-            std::vector<uint32_t> newly(instances.size(), 0);
+            {
+                auto drawnBefore = raster->render(camera, instances, settings, before);
+                if (!drawnBefore) return report(drawnBefore.error());
+                std::vector<render::SplatInstance> bySize;
+                for (size_t k = 0; k < clouds.size(); ++k) {
+                    auto instance = bySizeOf(k);
+                    if (!instance) return report(instance.error());
+                    bySize.push_back(*instance);
+                }
+                auto sizesBefore = raster->render(camera, bySize, settings, beforeSize);
+                if (!sizesBefore) return report(sizesBefore.error());
+                hasBefore = true;
+            }
+            // A piece's record, on the device the first time it is marked in: what a file held, or nothing.
+            const auto recordOf = [&](std::vector<gpu::Buffer>& records, size_t k, const std::string& file) -> Result<void> {
+                if (records[k].valid()) {
+                    return ok();
+                }
+                const uint32_t count = clouds[k]->count;
+                std::vector<uint32_t> words;
+                if (!file.empty()) {
+                    auto read = io::readSeen(directory / file, count);
+                    if (!read) return std::move(read).error();
+                    words = std::move(*read);
+                }
+                auto record = discovery->record(count, words);
+                if (!record) return std::move(record).error();
+                records[k] = *record;
+                return ok();
+            };
+            // WHAT THE RENDER SEES THROUGH IS GONE, AND WHAT IT MAKES FINER IS REFINED. Two things a look
+            // finds of what the scene held, kept apart: a surface that is no longer there or no longer that
+            // colour went at a time, and is stamped gone; a surface that is there, held by coarser gaussians
+            // than this look makes, is still the scene's from far -- its gaussians are stamped refined, kept,
+            // and drawn where the finer ones are too fine to matter (Discovery::cut). Either way they leave
+            // the scene as a look knows it, which is the finest there is.
+            std::vector<uint32_t> newlyGone(instances.size(), 0);
+            std::vector<uint32_t> newlyRefined(instances.size(), 0);
             for (uint32_t pass = 0; pass < 8; ++pass) {
                 uint32_t through = 0;
                 uint32_t again = 0;
@@ -1266,159 +1366,156 @@ int runShoot(const SceneOptions& all) {
                 if (through + again == 0) {
                     break;
                 }
-                uint32_t slots = 0;
-                for (const auto& cloud : clouds) {
-                    slots += cloud->count;
-                }
-                // THIS FRAME'S OWN LOOKS AND WHAT WAS THERE BEFORE ARE JUDGED APART. The frame's coarse looks
-                // are judged in the scene whole, by the mask as it is: a finer look replaces their discs,
-                // glass's pictures among them. What earlier frames found is judged as it stood without
-                // them: a coarse disc laid in a gap covers its neighbours too, and under it the fine
-                // gaussians a frame before had made -- right where they are -- read as coarser than this
-                // look and went (a camera a step on kept half the scene and made the rest again). And
-                // nothing found before is taken out through glass, where the scene's depth is not the
-                // surface's and the mask would reach the pane and all that is seen through it.
                 uint32_t now = 0;
-                for (int older = 0; older < 2; ++older) {
-                std::vector<render::SplatInstance> judged;
-                std::vector<size_t> judgedAt;
-                for (size_t k = 0; k < instances.size(); ++k) {
-                    if (older == 0 || scene.pieces[pieceOf[k]].foundIn < frameFirst) {
-                        judged.push_back(instances[k]);
-                        judgedAt.push_back(k);
-                    }
-                }
-                if (judged.empty()) {
-                    continue;
-                }
-                gpu::Buffer carriedMask = *mask;
-                if (older == 1) {
-                    render::RenderTargets before;
-                    render::RenderTargets beforeSize;
-                    auto drawn = raster->render(camera, judged, settings, before);
-                    if (!drawn) return report(drawn.error());
-                    std::vector<render::SplatInstance> bySize;
+                // A mask carried to the gaussians of `judged` by the blend, and those most of whose weight it
+                // fell on stamped in `records`.
+                const auto carry = [&](const gpu::Buffer& carried, const std::vector<size_t>& judgedAt,
+                                       std::vector<gpu::Buffer>& records, bool refining, float most) -> Result<void> {
+                    std::vector<render::SplatInstance> judged;
+                    uint32_t slots = 0;
                     for (const size_t k : judgedAt) {
+                        judged.push_back(instances[k]);
+                        slots += clouds[k]->count;
+                    }
+                    auto lift = render::makeSplatLift(device, slots);
+                    if (!lift) return std::move(lift).error();
+                    render::RenderSettings carrying = settings;
+                    render::liftWhileBlending(carrying, *lift, carried);
+                    render::RenderTargets drawn;
+                    auto lifted = raster->render(camera, judged, carrying, drawn);
+                    if (!lifted) return std::move(lifted).error();
+                    uint32_t base = 0;
+                    for (const size_t k : judgedAt) {
+                        const io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
+                        const uint32_t count = clouds[k]->count;
+                        ATHENEA_TRY(recordOf(records, k, refining ? piece.refined : piece.gone));
+                        auto marked = discovery->markGone(lift->sums, base, records[k], count, stamp, 0.05F,
+                                                          clouds[k].get(), &projection, all.refine * disc, most);
+                        if (!marked) return std::move(marked).error();
+                        if (*marked > 0) {
+                            auto kept = discovery->without(*clouds[k], records[k]);
+                            if (!kept) return std::move(kept).error();
+                            *clouds[k] = std::move(*kept);
+                            (refining ? newlyRefined : newlyGone)[k] += *marked;
+                            now += *marked;
+                        }
+                        base += count;
+                    }
+                    return ok();
+                };
+                std::vector<size_t> own;
+                std::vector<size_t> older;
+                for (size_t k = 0; k < instances.size(); ++k) {
+                    (scene.pieces[pieceOf[k]].foundIn >= frameFirst ? own : older).push_back(k);
+                }
+                // THIS FRAME'S OWN LOOKS are judged in the scene whole, by the mask as it is, and what a finer
+                // look replaces of them is refined: a frame's coarse looks are the levels above its last.
+                if (!own.empty()) {
+                    if (auto done = carry(*mask, own, refined, true, 0.0F); !done) return report(done.error());
+                }
+                // WHAT EARLIER FRAMES FOUND is judged as it stood without them (a coarse disc laid in a gap
+                // covers its neighbours, under which the fine gaussians of the frame before read as coarse),
+                // and never through glass, where the scene's depth is not the surface's.
+                if (!older.empty()) {
+                    std::vector<render::SplatInstance> judged;
+                    std::vector<render::SplatInstance> bySize;
+                    for (const size_t k : older) {
+                        judged.push_back(instances[k]);
                         auto instance = bySizeOf(k);
                         if (!instance) return report(instance.error());
                         bySize.push_back(*instance);
                     }
-                    auto drawnSize = raster->render(camera, bySize, settings, beforeSize);
+                    render::RenderTargets alone;
+                    render::RenderTargets aloneSize;
+                    auto drawn = raster->render(camera, judged, settings, alone);
+                    if (!drawn) return report(drawn.error());
+                    auto drawnSize = raster->render(camera, bySize, settings, aloneSize);
                     if (!drawnSize) return report(drawnSize.error());
-                    uint32_t throughBefore = 0;
-                    uint32_t againBefore = 0;
-                    auto alone = discovery->seenThrough(frameColour, frameDepth, width, height, before.colour,
-                                                        before.depth, all.tolerance, throughBefore, all.repaint,
-                                                        &againBefore, &beforeSize.colour, all.refine, &projection, disc);
-                    if (!alone) return report(alone.error());
-                    if (throughBefore + againBefore == 0) {
-                        continue;
-                    }
-                    if (auto spared = discovery->sparePanes(*alone, planes, width, height); !spared) return report(spared.error());
-                    carriedMask = *alone;
-                }
-                uint32_t judgedSlots = 0;
-                for (const render::SplatInstance& instance : judged) {
-                    judgedSlots += instance.splats->count;
-                }
-                auto lift = render::makeSplatLift(device, judgedSlots);
-                if (!lift) return report(lift.error());
-                render::RenderSettings carrying = settings;
-                render::liftWhileBlending(carrying, *lift, carriedMask);
-                render::RenderTargets carried;
-                auto lifted = raster->render(camera, judged, carrying, carried);
-                if (!lifted) return report(lifted.error());
-                uint32_t base = 0;
-                for (size_t k = 0; k < instances.size(); ++k) {
-                    const io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
-                    const uint32_t count = clouds[k]->count;
-                    const bool own = piece.foundIn >= frameFirst;
-                    if (older == 1 && own) {
-                        continue;   // not among those judged: it has no slot in this lift
-                    }
-                    if (older == 0 && !own) {
-                        base += count;
-                        continue;
-                    }
-                    if (!gone[k].valid()) {
-                        std::vector<uint32_t> held;
-                        if (!piece.gone.empty()) {
-                            auto read = io::readSeen(directory / piece.gone, count);
-                            if (!read) return report(read.error());
-                            held = std::move(*read);
+                    for (uint32_t reason = 1; reason <= 2; ++reason) {
+                        uint32_t flagged = 0;
+                        uint32_t flaggedAgain = 0;
+                        auto only = discovery->seenThrough(frameColour, frameDepth, width, height, alone.colour,
+                                                           alone.depth, all.tolerance, flagged, all.repaint,
+                                                           &flaggedAgain, &aloneSize.colour, all.refine, &projection,
+                                                           disc, reason);
+                        if (!only) return report(only.error());
+                        if (flagged + flaggedAgain == 0) {
+                            continue;
                         }
-                        auto record = discovery->record(count, held);
-                        if (!record) return report(record.error());
-                        gone[k] = *record;
+                        if (auto spared = discovery->sparePanes(*only, planes, width, height); !spared) return report(spared.error());
+                        // Gone, by the rule there was. Refined, only where nine tenths of a gaussian lie under
+                        // finer ones: a parent a look covered part of stays the surface's where it did not reach.
+                        if (auto done = carry(*only, older, reason == 1 ? gone : refined, reason == 2,
+                                              reason == 2 ? 0.9F : 0.0F);
+                            !done) {
+                            return report(done.error());
+                        }
                     }
-                    auto marked = discovery->markGone(lift->sums, base, gone[k], count, stamp, 0.05F, clouds[k].get(),
-                                                      &projection, all.refine * disc);
-                    if (!marked) return report(marked.error());
-                    if (*marked > 0) {
-                        auto kept = discovery->without(*clouds[k], gone[k]);
-                        if (!kept) return report(kept.error());
-                        *clouds[k] = std::move(*kept);
-                        newly[k] += *marked;
-                        now += *marked;
-                    }
-                    base += count;
-                }
                 }
                 if (now == 0) {
                     break;
                 }
-                taken += now;
                 if (auto again2 = drawKnown(); !again2) return report(again2.error());
             }
-            for (size_t k = 0; k < instances.size(); ++k) {
-                if (newly[k] == 0) {
-                    continue;
-                }
-                io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
-                auto words = gone[k].readAll<uint32_t>(device);
-                if (!words) return report(words.error());
-                words->resize(clouds[k]->count);
-                piece.gone = "pieces/" + piece.id + ".gone";
-                if (auto written = io::writeSeen(directory / piece.gone, *words); !written) return report(written.error());
-                piece.removed += newly[k];
-                ++piece.revision;
-                piece.movedAt = piece.revision;
-            }
-            // THE FRAME'S COARSE LOOKS END WITH ITS LAST. Every pixel of the whole frame is now either held by
-            // what was there before or about to be made at one pixel: whatever a coarse look's disc still
-            // covers is covered better. What the take-out left of them -- a few of thousands, each a file a
-            // later view read whole -- is stamped gone with the rest.
+            // THE FRAME'S COARSE LOOKS ARE THE LEVELS ABOVE ITS LAST. Every pixel of the whole frame is now
+            // held by what was there before or about to be made at one pixel, so whatever is left of a coarse
+            // look's discs has finer gaussians over all of it: refined, with the rest.
             if (last) {
                 for (size_t k = 0; k < instances.size(); ++k) {
                     io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
-                    if (piece.foundIn < frameFirst || piece.removed >= piece.gaussians) {
+                    if (piece.foundIn < frameFirst) {
                         continue;
                     }
-                    std::vector<uint32_t> words(clouds[k]->count, 0u);
-                    if (gone[k].valid()) {
-                        auto held = gone[k].readAll<uint32_t>(device);
-                        if (!held) return report(held.error());
-                        held->resize(clouds[k]->count);
-                        words = std::move(*held);
-                    }
-                    for (uint32_t& word : words) {
+                    if (auto has = recordOf(refined, k, piece.refined); !has) return report(has.error());
+                    auto words = refined[k].readAll<uint32_t>(device);
+                    if (!words) return report(words.error());
+                    words->resize(clouds[k]->count);
+                    uint32_t sealed = 0;
+                    for (uint32_t& word : *words) {
                         if (word == 0u) {
                             word = stamp;
+                            ++sealed;
                         }
                     }
+                    // Those already stamped gone are counted there, not here.
+                    const uint32_t left = piece.gaussians - std::min(piece.gaussians, piece.removed + piece.refinedCount +
+                                                                                          newlyGone[k] + newlyRefined[k]);
+                    auto record = discovery->record(clouds[k]->count, *words);
+                    if (!record) return report(record.error());
+                    refined[k] = *record;
+                    newlyRefined[k] += std::min(sealed, left);
+                }
+            }
+            for (size_t k = 0; k < instances.size(); ++k) {
+                io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
+                if (newlyGone[k] != 0) {
+                    auto words = gone[k].readAll<uint32_t>(device);
+                    if (!words) return report(words.error());
+                    words->resize(clouds[k]->count);
                     piece.gone = "pieces/" + piece.id + ".gone";
-                    if (auto written = io::writeSeen(directory / piece.gone, words); !written) return report(written.error());
-                    taken += piece.gaussians - piece.removed;
-                    piece.removed = piece.gaussians;
+                    if (auto written = io::writeSeen(directory / piece.gone, *words); !written) return report(written.error());
+                    piece.removed += newlyGone[k];
+                    taken += newlyGone[k];
+                }
+                if (newlyRefined[k] != 0) {
+                    auto words = refined[k].readAll<uint32_t>(device);
+                    if (!words) return report(words.error());
+                    words->resize(clouds[k]->count);
+                    piece.refined = "pieces/" + piece.id + ".refined";
+                    if (auto written = io::writeSeen(directory / piece.refined, *words); !written) return report(written.error());
+                    piece.refinedCount += newlyRefined[k];
+                    refinedNow += newlyRefined[k];
+                }
+                if (newlyGone[k] + newlyRefined[k] != 0) {
                     ++piece.revision;
                     piece.movedAt = piece.revision;
                 }
             }
-            // A piece nothing stands of leaves the device. The disk keeps it, with the stamp each of its
-            // gaussians went at.
+            // A piece nothing of which is the finest any more leaves the device: a look knows the scene by
+            // its finest. The disk keeps it, each gaussian with the look it went or was refined at.
             for (size_t k = instances.size(); k-- > 0;) {
                 const io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
-                if (piece.removed >= piece.gaussians) {
+                if (piece.removed + piece.refinedCount >= piece.gaussians) {
                     drop(k);
                 }
             }
@@ -1435,6 +1532,10 @@ int runShoot(const SceneOptions& all) {
             held.depth = &known.depth;
             held.first = &knownFirst.depth;
             held.size = &knownSize.colour;
+        }
+        if (hasBefore) {
+            held.beforeSize = &beforeSize.colour;
+            held.beforeDepth = &before.depth;
         }
         render::RenderLookSettings how;
         how.tolerance = all.tolerance;
@@ -1482,6 +1583,7 @@ int runShoot(const SceneOptions& all) {
             instances.push_back(render::SplatInstance{clouds.back().get(), render::Mat4::identity(), {}});
             pieceOf.push_back(scene.pieces.size() - 1);
             gone.emplace_back();
+            refined.emplace_back();
             sizedOf.emplace_back();
         }
         // The manifest is written when the frame is whole (shootView), not a look: by the hundredth frame it
@@ -1490,11 +1592,11 @@ int runShoot(const SceneOptions& all) {
             if (auto written = io::writeNeuralScene(directory, scene); !written) return report(written.error());
         }
         out("  %s at %g, %u paths a pixel, cells of %u: %u hold a surface, the scene held %u (%.1f%%), %u let the eye "
-            "through; %u gaussians made (%u of them behind glass), %u taken out (seen through at %u pixels, finer at "
-            "%u); %.2f s\n",
+            "through; %u gaussians made (%u of them behind glass), %u gone and %u refined (seen through at %u "
+            "pixels, finer at %u); %.2f s\n",
             name.c_str(), time, samples, footprint, look->surfaces, look->held,
             look->surfaces > 0 ? 100.0 * look->held / look->surfaces : 0.0, look->panes, look->made, look->behind,
-            taken, firstThrough, firstAgain,
+            taken, refinedNow, firstThrough, firstAgain,
             std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count());
         return 0;
     };
@@ -1566,7 +1668,7 @@ int runShoot(const SceneOptions& all) {
         }
         uint32_t standing = 0;
         for (const io::NeuralScenePiece& piece : scene.pieces) {
-            standing += piece.gaussians - std::min(piece.removed, piece.gaussians);
+            standing += piece.gaussians - std::min(piece.removed + piece.refinedCount, piece.gaussians);
         }
         // The frame is stored: what it took, by which camera and when, and the snapshots that are its looks.
         io::NeuralSceneFrame frame;
@@ -1683,7 +1785,9 @@ int runRenderStored(const SceneOptions& o, const io::NeuralScene& scene) {
     if (!discovery) return report(discovery.error());
     struct Held {
         std::unique_ptr<scene::GpuSplats> cloud;
-        gpu::Buffer                       gone;   // its record, where it has one
+        gpu::Buffer                       gone;      // its record, where it has one
+        gpu::Buffer                       refined;   // its record of what finer looks were laid over
+        gpu::Buffer                       parent;    // the width of what each was laid over
     };
     std::vector<Held> held(scene.pieces.size());
     // The snapshot a coarse look's piece was wholly replaced by: its frame's last.
@@ -1718,30 +1822,41 @@ int runRenderStored(const SceneOptions& o, const io::NeuralScene& scene) {
             if (piece.foundIn > frame.lastSnapshot) {
                 continue;
             }
-            if (piece.removed >= piece.gaussians && piece.gaussians != 0 && piece.footprint > 1 &&
-                endsAt(piece) <= frame.lastSnapshot) {
-                continue;   // a coarse look its own frame replaced
+            if (o.lod <= 0.0F && piece.removed + piece.refinedCount >= piece.gaussians && piece.gaussians != 0 &&
+                piece.footprint > 1 && endsAt(piece) <= frame.lastSnapshot) {
+                continue;   // a coarse look its own frame refined: drawn flat, nothing of it is the finest
             }
             if (piece.origin == "discovered" &&
                 !boxInView(piece.boundsMin, piece.boundsMax, projection, frame.width, frame.height)) {
                 continue;
             }
             if (!held[k].cloud) {
-                auto cloud = load(library, *loader, directory / piece.cloud);
+                auto cloud = load(library, *loader, directory / piece.cloud, &held[k].parent);
                 if (!cloud) return report(cloud.error());
                 held[k].cloud = std::make_unique<scene::GpuSplats>(std::move(*cloud));
-                if (!piece.gone.empty()) {
-                    auto words = io::readSeen(directory / piece.gone, held[k].cloud->count);
+                for (int which = 0; which < 2; ++which) {
+                    const std::string& file = which == 0 ? piece.gone : piece.refined;
+                    if (file.empty()) {
+                        continue;
+                    }
+                    auto words = io::readSeen(directory / file, held[k].cloud->count);
                     if (!words) return report(words.error());
                     auto record = discovery->record(held[k].cloud->count, *words);
                     if (!record) return report(record.error());
-                    held[k].gone = *record;
+                    (which == 0 ? held[k].gone : held[k].refined) = *record;
                 }
                 ++read;
             }
-            if (held[k].gone.valid()) {
-                auto then = discovery->without(*held[k].cloud, held[k].gone, frame.lastSnapshot);
+            if (held[k].gone.valid() || held[k].refined.valid() || o.lod > 0.0F) {
+                // The piece as the frame's look knew it, cut for the frame's view: a kernel over what is here.
+                auto then = discovery->cut(*held[k].cloud, held[k].gone.valid() ? &held[k].gone : nullptr,
+                                           held[k].refined.valid() ? &held[k].refined : nullptr,
+                                           held[k].parent.valid() ? &held[k].parent : nullptr, projection, o.lod,
+                                           frame.lastSnapshot, o.lod > 0.0F);
                 if (!then) return report(then.error());
+                if (then->count == 0) {
+                    continue;
+                }
                 drawn.push_back(std::move(*then));
             } else {
                 drawn.push_back(*held[k].cloud);
@@ -1789,6 +1904,7 @@ int runBake(const SceneOptions& o) {
     std::vector<float> records;
     uint32_t count = 0;
     uint32_t pieces = 0;
+    uint32_t floats = render::kRenderRecord;
     for (const io::NeuralScenePiece& piece : scene->pieces) {
         if (asOf != 0 && piece.foundIn > asOf) {
             continue;
@@ -1803,20 +1919,32 @@ int runBake(const SceneOptions& o) {
         }
         auto held = io::readGaussians(directory / piece.cloud);
         if (!held) return report(held.error());
-        if (held->floats != render::kRenderRecord) {
+        if (held->floats != render::kRenderRecord && held->floats != render::kRenderRecordParent) {
             err("piece %s: records of %u floats\n", piece.id.c_str(), held->floats);
             return kExitFailure;
         }
+        floats = held->floats;
         std::vector<uint32_t> gone;
         if (!piece.gone.empty()) {
             auto words = io::readSeen(directory / piece.gone, held->count);
             if (!words) return report(words.error());
             gone = std::move(*words);
         }
+        // The finest there is: the builder makes the levels above it itself.
+        std::vector<uint32_t> refined;
+        if (!piece.refined.empty()) {
+            auto words = io::readSeen(directory / piece.refined, held->count);
+            if (!words) return report(words.error());
+            refined = std::move(*words);
+        }
         uint32_t kept = 0;
         for (uint32_t k = 0; k < held->count; ++k) {
             const uint32_t went = gone.empty() ? 0u : gone[k];
             if (went != 0 && (asOf == 0 || went <= asOf)) {
+                continue;
+            }
+            const uint32_t over = refined.empty() ? 0u : refined[k];
+            if (over != 0 && (asOf == 0 || over <= asOf)) {
                 continue;
             }
             const auto first = held->records.begin() + static_cast<std::ptrdiff_t>(size_t{k} * held->floats);
@@ -1839,6 +1967,7 @@ int runBake(const SceneOptions& o) {
     raw.source = directory.string();
     raw.count = count;
     raw.encoding = render::Discovery::renderEncoding();
+    raw.encoding.floatsPerRecord = floats;
     raw.records = std::move(records);
     auto splats = loader->upload(raw, 0);
     if (!splats) return report(splats.error());
@@ -1914,8 +2043,10 @@ int runRender(const SceneOptions& given) {
         if (asOf != 0 && piece.foundIn > asOf) {
             continue;
         }
-        // Nothing of it stands: every gaussian it held has gone.
-        if (asOf == 0 && piece.removed != 0 && piece.removed >= piece.gaussians) {
+        // Nothing of it stands: every gaussian it held has gone. And drawn flat, nothing of it is the
+        // finest: finer looks were laid over all of it.
+        if (asOf == 0 && piece.gaussians != 0 &&
+            (o.lod > 0.0F ? piece.removed : piece.removed + piece.refinedCount) >= piece.gaussians) {
             continue;
         }
         // One view of a found scene reads the pieces its frustum meets, and no others.
@@ -1923,8 +2054,15 @@ int runRender(const SceneOptions& given) {
             !boxInView(piece.boundsMin, piece.boundsMax, render::projectionFor(camera, width, height), width, height)) {
             continue;
         }
-        auto cloud = loadPiece(library, *loader, *discovery, directory, piece, asOf);
+        // THE SCENE CUT FOR THE VIEW (--lod): each gaussian drawn where it is the level the view wants,
+        // a coarse one in place of the finer ones laid over it from where those are under the threshold.
+        auto cloud = o.lod > 0.0F ? cutPiece(library, *loader, *discovery, directory, piece,
+                                             render::projectionFor(camera, width, height), o.lod, asOf)
+                                  : loadPiece(library, *loader, *discovery, directory, piece, asOf);
         if (!cloud) return report(cloud.error());
+        if (cloud->count == 0) {
+            continue;   // nothing of it is drawn from here
+        }
         if (o.discovered) {
             // THE SCENE AS IT IS KNOWN: only what the looks found, up to one of them. A piece no look
             // has been taken of is not drawn at all.
@@ -1992,6 +2130,7 @@ int runRender(const SceneOptions& given) {
         waited.timeStages = true;
         std::string line;
         uint32_t frames = 0;
+        uint64_t walkDrawn = 0;
         double least = 1.0e30;
         double sum = 0.0;
         while (std::getline(in, line)) {
@@ -2013,7 +2152,31 @@ int runRender(const SceneOptions& given) {
             render::Camera view = render::Camera::lookingAt({e[0], e[1], e[2]}, {t[0], t[1], t[2]}, up);
             view.lens.focal = o.focal > 0.0 ? o.focal : 35.0;
             render::RenderTargets frame;
-            auto stats = raster->render(view, drawnAs, waited, frame);
+            // With levels of detail the cut is the view's own: each piece cut again for where this view
+            // stands (read again from the disk, which the time below does not count).
+            std::vector<scene::GpuSplats> cutClouds;
+            std::vector<render::SplatInstance> cutInstances;
+            if (o.lod > 0.0F) {
+                const render::Projection projection = render::projectionFor(view, width, height);
+                cutClouds.reserve(scene->pieces.size());
+                walkDrawn = 0;
+                for (const io::NeuralScenePiece& piece : scene->pieces) {
+                    if ((asOf != 0 && piece.foundIn > asOf) ||
+                        (piece.gaussians != 0 && piece.removed >= piece.gaussians) ||
+                        !boxInView(piece.boundsMin, piece.boundsMax, projection, width, height)) {
+                        continue;
+                    }
+                    auto cut = cutPiece(library, *loader, *discovery, directory, piece, projection, o.lod, asOf);
+                    if (!cut) return report(cut.error());
+                    if (cut->count == 0) {
+                        continue;
+                    }
+                    walkDrawn += cut->count;
+                    cutClouds.push_back(std::move(*cut));
+                    cutInstances.push_back(render::SplatInstance{&cutClouds.back(), render::Mat4::identity(), {}});
+                }
+            }
+            auto stats = raster->render(view, o.lod > 0.0F ? cutInstances : drawnAs, waited, frame);
             if (!stats) return report(stats.error());
             least = std::min(least, stats->totalMs);
             sum += stats->totalMs;
@@ -2033,6 +2196,9 @@ int runRender(const SceneOptions& given) {
         uint64_t held = 0;
         for (const auto& cloud : clouds) {
             held += cloud->count;
+        }
+        if (o.lod > 0.0F) {
+            held = walkDrawn;   // the last view's cut
         }
         out("%s: %u frames of %ux%u, %llu gaussians: %.2f ms a frame at least, %.2f ms on average\n",
             scene->name.c_str(), frames, width, height, static_cast<unsigned long long>(held), least,
@@ -2160,6 +2326,7 @@ void addNeuralScene(CLI::App& app) {
     render->add_option("--at", o.at, "the scene as it stood at this time: the pieces found by then, less what had gone by then");
     render->add_option("--exposure", o.exposure, "-o a .png: stops over the scene's light");
     render->add_option("--frame", o.storedFrame, "a frame the scene stored (neural-scene shoot), counted from one: its camera, its size, the scene as it stood then");
+    render->add_option("--lod", o.lod, "levels of detail: a gaussian narrower than this many pixels on the screen is drawn in place of the finer ones laid over it (0: the finest everywhere)");
     render->add_option("--frames", o.storedFrames, "the stored frames FIRST to LAST as pictures, the scene read once: -o a prefix, written <stem>_NNNN.png or .exr")->expected(2);
     render->add_option("--snapshot", o.snapshot, "the same by a snapshot of the manifest's, counted from one");
     render->add_flag("--compare", o.compare, "both ways: the latents against the harmonics, and a frame's time by each");

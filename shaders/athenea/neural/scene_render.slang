@@ -31,7 +31,7 @@
 // them (render::Discovery::renderEncoding).
 module scene_render;
 
-public static const uint kRenderRecord = 26;
+public static const uint kRenderRecord = 27;
 
 // A record's fields.
 static const uint kAtPosition = 0;       // x y z
@@ -47,6 +47,7 @@ static const uint kAtRow = 20;           // the material's row + 1 in the frame 
 static const uint kAtIndex = 21;         // its index of refraction
 static const uint kAtSheet = 22;         // 1: a sheet with no inside (or nothing that bends)
 static const uint kAtTint = 23;          // r g b: what the surface lets through one crossing, before Fresnel
+static const uint kAtParent = 26;        // the width of the coarser gaussians it was laid over, 0 where over nothing: its level's parent
 
 // technique::PathAux's planes.
 static const uint kPlaneNormal = 1;
@@ -82,6 +83,8 @@ struct RenderLookParams {
     /// since the finer look that follows takes a disc out by its depth and a pane has none the scene's
     /// depth stops at.
     uint  panes;
+    uint  hasBefore;                 // beforeSize and beforeDepth are bound
+    uint  pad1; uint pad2; uint pad3;
 };
 
 StructuredBuffer<float4>   colour;       // the frame: linear light, premultiplied
@@ -91,6 +94,8 @@ StructuredBuffer<float4>   knownColour;  // the scene as it is known, from the s
 StructuredBuffer<float>    knownDepth;   // where it is all but opaque
 StructuredBuffer<float>    knownFirst;   // where it begins: a pane's own depth
 StructuredBuffer<float4>   knownSize;    // the scene drawn with each gaussian's size as its colour
+StructuredBuffer<float4>   beforeSize;   // the same before this look took anything out: what a gaussian made now is laid over
+StructuredBuffer<float>    beforeDepth;
 RWStructuredBuffer<uint>   made;         // a cell: how many gaussians it makes (none, one, two)
 StructuredBuffer<uint>     madeRead;
 RWStructuredBuffer<uint>   which;        // a cell: 1 its surface's, 2 what stands behind it
@@ -450,6 +455,16 @@ void renderPack(uint3 tid: SV_DispatchThreadID) {
         records[row + kAtNormal + 0] = shading.x;
         records[row + kAtNormal + 1] = shading.y;
         records[row + kAtNormal + 2] = shading.z;
+        // WHAT IT IS LAID OVER. Where the scene, before this look took anything out, held this surface
+        // with coarser gaussians, their width is this one's parent's: the level above it, which is drawn in
+        // its place from where this one is too fine to matter (scene_discover.slang's discoverCut).
+        if (params.hasBefore != 0u) {
+            const float4 was = beforeSize[at];
+            const float wide = was.r / max(was.a, 1.0e-3);
+            if (was.a > 0.5 && abs(beforeDepth[at] - z) <= params.tolerance * z && wide > 1.2 * across) {
+                records[row + kAtParent] = wide;
+            }
+        }
         const float3 tint = plane(kPlaneTint, at).rgb;
         records[row + kAtTint + 0] = tint.r;
         records[row + kAtTint + 1] = tint.g;

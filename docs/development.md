@@ -230,6 +230,11 @@ each measured):
   where the loader has a use for it, or one after those, which only the file
   keeps. `athenea neural-scene shoot` (`CmdNeuralScene.cpp`) is the loop: a
   pass of the render at a time, and a look whenever a footprint's paths are in.
+  A gaussian's width is its level of detail: what a finer look is laid over
+  is stamped refined and not gone (`frameSeenThrough`'s `only`, a record of
+  its own), each finer gaussian keeps its parent's width in its record, and
+  `Discovery::cut` (`discoverCut`) chooses a gaussian or what was laid over
+  it by their widths on the screen, with no tree walked and none stored.
 
 A kernel that adds to `shaders/athenea/neural/neural_appearance.slang` adds to
 both passes: the forward one and, by hand, the backward one beside it, and

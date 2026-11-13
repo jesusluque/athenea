@@ -22041,3 +22041,63 @@ three-quarter view at 1920 x 1080 (`athenea bench --lod` at a threshold of nothi
   observed parent that goes on being drawn and children that complete it. It would spare the seam where a
   parent's colour, seen by one eye, gives way to its children's, at the price of drawing both; to be weighed
   when the cut is measured.
+
+## A gaussian's width is its level: refined, not gone, and a cut with no tree (13 Nov)
+
+The second step of the plan for levels of detail, on the Intel building. On CUDA (RTX 3070 Laptop, WSL), the
+Mac's toolchain being rebuilt; that device has no ray queries, so its path tracer's frames are direct light alone
+and the numbers against it are between renders of that kind.
+
+**Refined is not gone.** `frameSeenThrough` says which of its reasons a mask is of (`only`): what says the world
+changed -- seen past, nothing where something was, another colour -- and what says only that the look is finer
+than what holds the surface. The first stamps `.gone` as before. The second stamps a record of its own,
+`.refined`, and only where nine tenths of a gaussian's weight lie under finer ones (`discoverGone`'s `most`), so
+that a parent a look covered part of stays the surface's where the look did not reach -- the gap athenea-research
+named. A frame's own coarse looks are refined by its last, not ended: they are the levels above it. A look still
+knows the scene by its finest: a piece all gone or refined leaves the device and is not read by a later view.
+
+**A gaussian keeps its parent's width** (the record's twenty-seventh float): what the scene held there, by its
+sizes drawn before the look took anything out, where that was wider than the gaussian by a fifth.
+
+**The cut** (`Discovery::cut`, `discoverCut`): a gaussian is drawn where it stands at the look asked for, what it
+was laid over would be over the threshold on the screen (or it was laid over nothing), and it is under the
+threshold itself or nothing finer came. Each decides alone, from its own record: no tree is walked and none is
+stored, and the tree may be as ragged as the looks left it. Gathered (a prefix sum and a copy of positions,
+shape and harmonics): what is not drawn costs nothing.
+
+Measured: a dolly of forty frames down Sponza's nave to its far wall (960 x 540, 16 paths at eight a pass,
+denoised), 136 s in all. 5.05 million gaussians on the disk in 42 pieces, 558 MB: 3.16 million the finest, 1.83
+million refined, 66 thousand gone. The scene then drawn at 1920 x 1080:
+
+| from | threshold | gaussians drawn | a frame | against the scene drawn flat (at 960 x 540) |
+|---|---|---|---|---|
+| the dolly's first camera, the farthest | none (flat) | 3.16 million (4.91 million handed over) | 178 to 187 ms | -- |
+| | 1.2 px | 2.45 million | 81 to 111 ms | PSNR 34.0 dB, SSIM 0.945 |
+| | 1.5 px | 1.71 million | 77 to 82 ms | 34.0 dB, 0.945 |
+| | 2 px | 1.35 million | 48 to 54 ms | 29.0 dB, 0.815 |
+| outside the building, three quarters, 45 m off | none | the same 4.91 million | 151 to 155 ms | -- |
+| | 1.2 px | 0.56 million | 41 ms | 37.8 dB, 0.987 |
+| | 1.5 px | 0.51 million | 25 ms | 36.5 dB, 0.985 |
+| the dolly's last camera, the nearest | 1.5 px | 3.16 million: the finest, all of it | as flat | 42.3 dB, 0.986 |
+
+From the first camera, against the path tracer's frame from there: flat 27.08 dB and SSIM 0.767; at 1.2 and
+1.5 px, 27.05 dB and 0.764. So a threshold of a pixel and a half draws half as many gaussians from inside and a
+tenth as many from outside, two to six times as fast, and is as close to the path tracer as the scene drawn
+whole; from two pixels up it is what it says, a picture drawn with gaussians two pixels wide. The frame times
+above move by a third between runs on that machine.
+
+`[lod]` (tests/render/test_neural_mlp.cpp): a look from 12 refined by a look from 6, cut at 1.5 px: from far all
+49 754 coarse gaussians are drawn and none of the 76 800 fine; from near none of the coarse and all the fine;
+with no threshold the finest everywhere; and as the scene stood before the second look, the coarse ones.
+
+### Not done
+
+- **The low 27 dB**: on that device the scene's frames are darker and flatter than the path tracer's own (the
+  dolly's first frame drawn back from the scene), which they are not on Metal. Not looked into.
+- **A frame's coarse looks are noisy parents**: taken at a sixty-fourth and a sixteenth of the paths, undenoised,
+  they carry fireflies, seen at thresholds of two pixels and over. The levels above a frame's last look should
+  be made of the whole frame when it is in (the plan's pyramid), and the looks taken while it gathered ended.
+- **Parents above eight pixels**: a view from very far has nothing coarser to draw than a frame's widest cells.
+- The question "does my cell hold a node at my level" is still `--refine`'s ratio, asked on the screen.
+- A walk cut for each view reads its pieces again from the disk for every view.
+- Metal: nothing of this section has run there.

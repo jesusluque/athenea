@@ -47,11 +47,15 @@ inline constexpr uint32_t kFrameRecord = 62;
 /// what it is made of (`Discovery::renderEncoding`), and after those the
 /// material's row in the frame that made it, its index, whether it is a
 /// sheet, and what it lets through a crossing.
-inline constexpr uint32_t kRenderRecord = 26;
+inline constexpr uint32_t kRenderRecord = 27;
 inline constexpr uint32_t kRenderRecordRow = 20;
 inline constexpr uint32_t kRenderRecordIndex = 21;
 inline constexpr uint32_t kRenderRecordSheet = 22;
 inline constexpr uint32_t kRenderRecordTint = 23;   ///< r g b: what the surface lets through one crossing
+/// The width of the coarser gaussians a gaussian was laid over, 0 where over
+/// nothing: what `Discovery::cut` reads as its parent's. A record of 26
+/// floats (a scene shot before 13 Nov) has none.
+inline constexpr uint32_t kRenderRecordParent = 26;
 
 /// The scene as it is known, drawn through the look's camera.
 struct KnownScene {
@@ -59,6 +63,10 @@ struct KnownScene {
     const gpu::Buffer* depth = nullptr;    ///< view z where the scene is all but opaque
     const gpu::Buffer* first = nullptr;    ///< view z where it begins (a pane's own depth); null: `depth`
     const gpu::Buffer* size = nullptr;     ///< the scene drawn by `Discovery::sizes`; null: nothing is refined
+    /// The scene's sizes and depth before the look took anything out: what the
+    /// gaussians it makes are laid over, and so their parents. Null: none.
+    const gpu::Buffer* beforeSize = nullptr;
+    const gpu::Buffer* beforeDepth = nullptr;
 };
 
 /// How a render's look is taken (scene_render.slang).
@@ -151,12 +159,16 @@ public:
     /// `repaint`, also where the scene's surface is at the frame's depth and
     /// its colour is off the frame's by more than that share (`repainted`
     /// counts those): what is there is to be taken out and made again.
+    /// `only` 1 keeps the mask to what says the world changed (seen past,
+    /// nothing where something was, repainted) and 2 to what says only that
+    /// the frame is finer than what holds the surface.
     [[nodiscard]] Result<gpu::Buffer> seenThrough(const gpu::Buffer& colour, const gpu::Buffer& depth, uint32_t width,
                                                   uint32_t height, const gpu::Buffer& knownColour,
                                                   const gpu::Buffer& knownDepth, float tolerance, uint32_t& pixels,
                                                   float repaint = 0.0F, uint32_t* repainted = nullptr,
                                                   const gpu::Buffer* knownSize = nullptr, float refine = 0.0F,
-                                                  const Projection* projection = nullptr, float spread = 1.0F);
+                                                  const Projection* projection = nullptr, float spread = 1.0F,
+                                                  uint32_t only = 0);
 
     /// The gaussians of one piece that a frame saw through: `lifted` is that
     /// mask carried to the scene's gaussians by the blend (SplatLift.h's
@@ -165,10 +177,30 @@ public:
     /// With `cloud` and `projection` and a `coarse` ratio, a gaussian wider
     /// than that many of the look's own discs at its depth goes on a fifth
     /// of its weight: it is what a finer look is laid over.
+    /// With `most` over nothing, only where that share of its weight fell on
+    /// the mask, whatever its width: the rule for `gone` being a record of
+    /// what a finer look refined, where a parent part covered is left.
     [[nodiscard]] Result<uint32_t> markGone(const gpu::Buffer& lifted, uint32_t base, gpu::Buffer& gone,
                                             uint32_t count, uint32_t stamp, float threshold = 0.05F,
                                             const scene::GpuSplats* cloud = nullptr,
-                                            const Projection* projection = nullptr, float coarse = 0.0F);
+                                            const Projection* projection = nullptr, float coarse = 0.0F,
+                                            float most = 0.0F);
+
+    /// THE PIECE CUT FOR A VIEW (scene_discover.slang's discoverCut): the same
+    /// cloud with no opacity on the gaussians that are not the ones to draw --
+    /// gone by look `upTo` (0: by any), or refined and too fine a level to be
+    /// needed, or too coarse where finer ones came. `gone` and `refined` are
+    /// the piece's records and `parent` a float a gaussian, the width of what
+    /// it was laid over (null: none has, or none is). `threshold` is in
+    /// pixels: a gaussian narrower than it on the screen stands for the finer
+    /// ones laid over it; 0 draws the finest everywhere.
+    /// With `gathered`, the cloud returned holds only the gaussians to draw
+    /// -- positions, shape and harmonics, nothing else of them -- so that
+    /// what is not drawn costs nothing; its count may be none.
+    [[nodiscard]] Result<scene::GpuSplats> cut(const scene::GpuSplats& cloud, const gpu::Buffer* gone,
+                                               const gpu::Buffer* refined, const gpu::Buffer* parent,
+                                               const Projection& projection, float threshold, uint32_t upTo = 0,
+                                               bool gathered = false);
 
     /// A piece without the gaussians its record `gone` stamps: the same
     /// cloud, those given no opacity. With `upTo`, only those stamped by a
@@ -190,7 +222,7 @@ private:
 
     gpu::ShaderLibrary* library_ = nullptr;
     gpu::ComputeKernel  clear_, mark_, count_, mask_, gone_, sizes_, frameValid_, framePack_, frameThrough_;
-    gpu::ComputeKernel  renderValid_, renderPack_, renderSpare_;
+    gpu::ComputeKernel  renderValid_, renderPack_, renderSpare_, cut_, cutFlags_, gather_;
     std::optional<gpu::PrefixSum> prefix_;
     gpu::Buffer         counters_, spareWords_, spareFloats_;
 };

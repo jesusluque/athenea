@@ -1243,3 +1243,75 @@ TEST_CASE("a piece's gaussians are written and read as they are, and a scene say
     CHECK(back->snapshots[1].taken == "2026-11-12T12:00:05Z");
     CHECK(back->snapshots[1].pieces == std::vector<std::string>{"a"});
 }
+
+TEST_CASE("a scene cut for a view draws a coarse look's gaussians from far and the finer ones laid over them from near",
+          "[render][gpu][neural][scene][shoot][lod]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto discovery = render::Discovery::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!discovery) FAIL(discovery.error().toString());
+    test::CloudBuilder builder = test::randomCloud(6000, 21, 0.05F, 0.2F);
+    auto cloud = loader->upload(builder.raw, 3);
+    REQUIRE(cloud);
+    const render::SplatInstance instance{&*cloud, render::Mat4::identity()};
+    render::RenderSettings settings;
+    settings.width = 320;
+    settings.height = 240;
+    settings.depth = render::RenderSettings::Depth::Threshold;
+    settings.depthThreshold = 0.5F;
+    const uint32_t pixels = settings.width * settings.height;
+    const gpu::Buffer matt = planesOf(*gpu->device, pixels, false);
+    // Two looks at the same thing: one from far, whose gaussians are the coarse level, and one from half as
+    // far, whose gaussians are laid over those.
+    const auto lookFrom = [&](double distance, render::Projection& projection) {
+        const render::Camera camera = render::Camera::lookingAt({0.0, 0.0, distance}, {0.0, 0.0, 0.0});
+        render::RenderTargets frame;
+        REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&instance, 1), settings, frame));
+        projection = render::projectionFor(camera, settings.width, settings.height);
+        auto made = discovery->fromRender(frame.colour, frame.depth, matt, settings.width, settings.height, projection,
+                                          {}, {});
+        if (!made) FAIL(made.error().toString());
+        loader->keepFaint(true);
+        auto uploaded = loader->upload(made->records, made->made, render::Discovery::renderEncoding(), "test", 0);
+        loader->keepFaint(false);
+        if (!uploaded) FAIL(uploaded.error().toString());
+        return std::move(*uploaded);
+    };
+    render::Projection fromFar;
+    render::Projection fromNear;
+    const scene::GpuSplats coarse = lookFrom(12.0, fromFar);
+    const scene::GpuSplats fine = lookFrom(6.0, fromNear);
+    // The coarse ones were all refined by look 2; each fine one keeps the width of what it was laid over --
+    // a coarse gaussian's, which at the cloud's middle is a pixel of the far look: 12 over its focal length.
+    const std::vector<uint32_t> two(coarse.count, 2u);
+    auto refined = discovery->record(coarse.count, two);
+    REQUIRE(refined);
+    const std::vector<float> widths(fine.count, static_cast<float>(12.0 / fromFar.focalX));
+    auto parent = gpu::Buffer::fromSpan<float>(*gpu->device, std::span<const float>(widths), "test.parent");
+    REQUIRE(parent);
+    const auto drawn = [&](const scene::GpuSplats& of, const gpu::Buffer* refinedOf, const gpu::Buffer* parentOf,
+                           const render::Projection& projection, float threshold, uint32_t upTo = 0) {
+        auto cut = discovery->cut(of, nullptr, refinedOf, parentOf, projection, threshold, upTo, true);
+        if (!cut) FAIL(cut.error().toString());
+        return cut->count;
+    };
+    const uint32_t coarseFar = drawn(coarse, &*refined, nullptr, fromFar, 1.5F);
+    const uint32_t fineFar = drawn(fine, nullptr, &*parent, fromFar, 1.5F);
+    const uint32_t coarseNear = drawn(coarse, &*refined, nullptr, fromNear, 1.5F);
+    const uint32_t fineNear = drawn(fine, nullptr, &*parent, fromNear, 1.5F);
+    std::printf("  a coarse look of %u gaussians refined by a look of %u: cut at 1.5 pixels from far, %u coarse and %u "
+                "fine are drawn; from near, %u coarse and %u fine\n",
+                coarse.count, fine.count, coarseFar, fineFar, coarseNear, fineNear);
+    CHECK(coarseFar > coarse.count * 9 / 10);    // from far the coarse level stands for the fine
+    CHECK(fineFar < fine.count / 10);
+    CHECK(coarseNear < coarse.count / 10);       // and from near the fine one is drawn in its place
+    CHECK(fineNear > fine.count * 9 / 10);
+    // With no threshold, the finest there is, everywhere; and as the scene stood before look 2 refined
+    // anything, the coarse ones were the finest.
+    CHECK(drawn(coarse, &*refined, nullptr, fromFar, 0.0F) == 0);
+    CHECK(drawn(fine, nullptr, &*parent, fromFar, 0.0F) == fine.count);
+    CHECK(drawn(coarse, &*refined, nullptr, fromNear, 1.5F, 1) == coarse.count);
+}
