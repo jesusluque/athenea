@@ -16,8 +16,13 @@ if(NOT headers)
 endif()
 list(SORT headers)
 set(lines "")
+# Hashed as text with LF line ends: a Windows checkout (core.autocrlf) holds
+# the same headers with CRLF, which is not a change to the ABI. On an LF file
+# this is the file's own SHA-256.
 foreach(header IN LISTS headers)
-    file(SHA256 "${SDK_DIR}/${header}" hash)
+    file(READ "${SDK_DIR}/${header}" text)
+    string(REPLACE "\r\n" "\n" text "${text}")
+    string(SHA256 hash "${text}")
     string(APPEND lines "${hash}  ${header}\n")
 endforeach()
 if(RECORD)
@@ -26,6 +31,7 @@ if(RECORD)
     return()
 endif()
 file(READ "${MANIFEST}" recorded)
+string(REPLACE "\r\n" "\n" recorded "${recorded}")
 if(NOT recorded STREQUAL lines)
     message(FATAL_ERROR "the aofx SDK headers differ from ${MANIFEST}.\n"
                         "recorded:\n${recorded}\nnow:\n${lines}\n"
