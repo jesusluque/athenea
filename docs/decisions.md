@@ -4852,6 +4852,13 @@ backends, fixed where it lives rather than excused.
   GL 4.5 *compatibility* context -- HgiGL issues calls a core profile rejects
   as an invalid enum. The Storm oracle runs before `CreatePlatformDefaultHgi`
   with it, and Kitchen_set against Storm passes on the L4.
+  On Windows (13 Nov) the same function makes it through WGL on a hidden 1x1
+  window (opengl32 loaded by name; a 4.5 compatibility context through
+  `wglCreateContextAttribsARB`, refused below 4.5). Before, nothing was made
+  there and `UsdImagingGLEngine` went on without a context and crashed
+  (ctest #444, a segmentation fault over ssh); the host test now runs over ssh
+  on the RTX 3070 and passes. A session with only Microsoft's OpenGL 1.1 gets
+  no context and the tests skip.
 - **The denoiser runs on Vulkan through OIDN's CUDA device.** OIDN has no
   Vulkan device, but its CUDA device imports external memory: the staging
   buffers are created `BufferUsage::Shared`, slang-rhi exports their memory

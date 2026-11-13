@@ -8,6 +8,9 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **OpenGL for Storm and usdImagingGL on Windows.** The headless context
+  that Storm and `UsdImagingGLEngine` need is made through WGL on Windows as
+  through EGL on Linux; without it the host test crashed.
 - **Video planes on Vulkan.** A block's box, rounded outward to halves, was
   not rounded on Vulkan (the compiler took the half round trip for the float
   itself) and a few splats fell outside it, up to 8 steps off. The half is

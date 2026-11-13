@@ -113,10 +113,10 @@ std::vector<uint8_t> mapped(HdRenderBuffer* buffer) {
 
 Outputs storm(const fs::path& stagePath, const render::Camera& camera, uint32_t w, uint32_t h, bool colour = false,
               double time = 0.0, bool stateDome = true, bool ids = true) {
-#if defined(__linux__)
+#if !defined(__APPLE__)
     // Storm draws through OpenGL here, and HgiGL expects a context current.
     if (!platform::makeHeadlessGlContextCurrent()) {
-        SKIP("no OpenGL context could be made for Storm (EGL on a GPU device)");
+        SKIP("no OpenGL 4.5 context could be made for Storm (EGL on a GPU device, or WGL)");
     }
 #endif
     HgiUniquePtr hgi = Hgi::CreatePlatformDefaultHgi();
@@ -208,7 +208,12 @@ TEST_CASE("Kitchen_set's geometry matches Storm's on every visibility route: pri
     if (!caps.rasterization || !caps.rayQuery) {
         SKIP("needs rasterisation and ray queries, to compare all three routes with Storm's");
     }
-    const fs::path kitchen = fs::path(std::getenv("HOME")) / "tools/assets/Kitchen_set/Kitchen_set.usd";
+    // HOME, or on Windows USERPROFILE where HOME is not set: a null path is undefined.
+    const char* home = std::getenv("HOME") != nullptr ? std::getenv("HOME") : std::getenv("USERPROFILE");
+    if (home == nullptr) {
+        SKIP("neither HOME nor USERPROFILE is set, so Kitchen_set cannot be looked for");
+    }
+    const fs::path kitchen = fs::path(home) / "tools/assets/Kitchen_set/Kitchen_set.usd";
     if (!fs::exists(kitchen)) {
         SKIP("Pixar's Kitchen_set is not at " << kitchen.string());
     }

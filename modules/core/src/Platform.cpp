@@ -402,6 +402,88 @@ bool makeHeadlessGlContextCurrent() {
         }
     }
     return context != EGL_NO_CONTEXT && eglMakeCurrent(display, surface, surface, context) == EGL_TRUE;
+#elif defined(_WIN32)
+    // A hidden 1x1 window and a 4.5 compatibility context through WGL,
+    // opengl32 loaded by name so nothing links it. A session with no GPU
+    // driver's OpenGL -- a service, an ssh login -- has only Microsoft's
+    // OpenGL 1.1, with no wglCreateContextAttribsARB: then none is made,
+    // rather than one HgiGL refuses after it has started.
+    using CreateContext = HGLRC(WINAPI*)(HDC);
+    using MakeCurrent = BOOL(WINAPI*)(HDC, HGLRC);
+    using DeleteContext = BOOL(WINAPI*)(HGLRC);
+    using GetProc = PROC(WINAPI*)(LPCSTR);
+    using GetString = const unsigned char*(WINAPI*)(unsigned);
+    using CreateWithAttributes = HGLRC(WINAPI*)(HDC, HGLRC, const int*);
+    static HDC dc = nullptr;
+    static HGLRC context = nullptr;
+    static MakeCurrent makeCurrent = nullptr;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        HMODULE gl = LoadLibraryA("opengl32.dll");
+        if (gl == nullptr) {
+            return false;
+        }
+        const auto create = reinterpret_cast<CreateContext>(GetProcAddress(gl, "wglCreateContext"));
+        makeCurrent = reinterpret_cast<MakeCurrent>(GetProcAddress(gl, "wglMakeCurrent"));
+        const auto destroy = reinterpret_cast<DeleteContext>(GetProcAddress(gl, "wglDeleteContext"));
+        const auto getProc = reinterpret_cast<GetProc>(GetProcAddress(gl, "wglGetProcAddress"));
+        const auto getString = reinterpret_cast<GetString>(GetProcAddress(gl, "glGetString"));
+        if (create == nullptr || makeCurrent == nullptr || destroy == nullptr || getProc == nullptr ||
+            getString == nullptr) {
+            return false;
+        }
+        WNDCLASSA windowClass{};
+        windowClass.lpfnWndProc = DefWindowProcA;
+        windowClass.hInstance = GetModuleHandleA(nullptr);
+        windowClass.lpszClassName = "atheneaHeadlessGl";
+        RegisterClassA(&windowClass);
+        HWND window = CreateWindowA(windowClass.lpszClassName, "", WS_OVERLAPPEDWINDOW, 0, 0, 1, 1, nullptr, nullptr,
+                                    windowClass.hInstance, nullptr);
+        if (window == nullptr) {
+            return false;
+        }
+        dc = GetDC(window);
+        PIXELFORMATDESCRIPTOR pixels{};
+        pixels.nSize = sizeof pixels;
+        pixels.nVersion = 1;
+        pixels.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+        pixels.iPixelType = PFD_TYPE_RGBA;
+        pixels.cColorBits = 32;
+        pixels.cDepthBits = 24;
+        const int format = ChoosePixelFormat(dc, &pixels);
+        if (format == 0 || !SetPixelFormat(dc, format, &pixels)) {
+            return false;
+        }
+        // A legacy context first: wglCreateContextAttribsARB is only found
+        // with one current.
+        HGLRC legacy = create(dc);
+        if (legacy == nullptr || !makeCurrent(dc, legacy)) {
+            return false;
+        }
+        const auto withAttributes = reinterpret_cast<CreateWithAttributes>(getProc("wglCreateContextAttribsARB"));
+        if (withAttributes != nullptr) {
+            // WGL_CONTEXT_MAJOR_VERSION_ARB 4, MINOR 5, PROFILE_MASK
+            // COMPATIBILITY: compatibility for the reason given above.
+            const int version[] = {0x2091, 4, 0x2092, 5, 0x9126, 0x2, 0};
+            context = withAttributes(dc, nullptr, version);
+        }
+        makeCurrent(nullptr, nullptr);
+        destroy(legacy);
+        if (context == nullptr) {
+            return false;
+        }
+        int major = 0;
+        int minor = 0;
+        const char* said = makeCurrent(dc, context) ? reinterpret_cast<const char*>(getString(0x1F02)) : nullptr;
+        if (said == nullptr || std::sscanf(said, "%d.%d", &major, &minor) != 2 || major * 10 + minor < 45) {
+            makeCurrent(nullptr, nullptr);
+            destroy(context);
+            context = nullptr;
+            return false;
+        }
+    }
+    return context != nullptr && makeCurrent(dc, context) == TRUE;
 #else
     return false;
 #endif

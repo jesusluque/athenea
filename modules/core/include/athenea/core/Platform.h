@@ -98,11 +98,13 @@ size_t removeStaleSharedMemory(const std::string& prefix) noexcept;
 /// timer slack goes to 1 ns.
 void sleepPrecisely(std::chrono::nanoseconds duration);
 
-/// An OpenGL 4.5 context made current on this thread with no window, for a
-/// library that draws with OpenGL itself -- USD's Storm on Linux, whose
-/// HgiGL expects one current. Through EGL on a GPU device (EGL_EXT_platform_
-/// device), with a 1x1 pbuffer; made once per process. False where none can
-/// be made, or on macOS, where Storm draws through Metal and needs none.
+/// An OpenGL 4.5 context made current on this thread with no window shown,
+/// for a library that draws with OpenGL itself -- USD's Storm and
+/// UsdImagingGLEngine, whose HgiGL expects one current. On Linux through EGL
+/// on a GPU device (EGL_EXT_platform_device), with a 1x1 pbuffer; on Windows
+/// through WGL on a hidden 1x1 window. Made once per process. False where
+/// none can be made -- a Windows session with only Microsoft's OpenGL 1.1, a
+/// service or an ssh login -- or on macOS, where Storm draws through Metal.
 [[nodiscard]] bool makeHeadlessGlContextCurrent();
 
 /// A second descriptor for the same open file or memory object, for a

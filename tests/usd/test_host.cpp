@@ -96,10 +96,11 @@ TEST_CASE("usdImagingGL drives the plugin, and a shutter opened after a frame bl
     if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
         SKIP("needs rasterisation and ray queries");
     }
-#if defined(__linux__)
-    // UsdImagingGLEngine makes a HgiGL, which wants a context current.
+#if !defined(__APPLE__)
+    // UsdImagingGLEngine makes a HgiGL, which wants a context current; with
+    // none (Windows over ssh) it went on and crashed.
     if (!platform::makeHeadlessGlContextCurrent()) {
-        SKIP("no OpenGL context could be made for the host's Hgi (EGL on a GPU device)");
+        SKIP("no OpenGL 4.5 context could be made for the host's Hgi (EGL on a GPU device, or WGL)");
     }
 #endif
     PlugRegistry::GetInstance().RegisterPlugins(fs::path(ATHENEA_HYDRA_PLUGIN_DIR).string());
