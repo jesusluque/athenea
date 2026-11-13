@@ -22399,3 +22399,14 @@ title (an `i` opens it) with the credits inside it; the controls are a bar at th
 timeline across the first, clear of the browser's bar (`env(safe-area-inset-bottom)`, `100dvh`), each 44 px
 high; and a touch screen is told its own gestures in place of the keys. Seen at 500 px in Chrome; not on a
 phone.
+
+**Turning about a point, by touch (same day).** The user: one finger fixes the point of rotation and a second
+turns about it. A first finger kept within ten pixels for 280 ms fixes the point -- the gaussian under it by
+Spark's ray through the splats, or as far along the finger's ray as the scene's middle where there is none --
+and a ring marks it; a second finger then turns the camera about it, sideways about the scene's up and up and
+down about the camera's right, short of the poles. Spark's own gestures are off while the point is held, and
+what they kept of the fingers is dropped on both sides so the view does not jump. Driven with synthesized
+touches in Chrome: the point lands on the knight under the finger (2.67 m), and after a drag the eye has moved
+(8.8 1.1 -1.2 to 9.83 0.62 -2.39) at the same 2.669 m with the point at the same place on the screen. Spark's
+ray starts itself on the first one asked and answers from the second: the page asks one when the scene is in.
+Not tried on a phone.

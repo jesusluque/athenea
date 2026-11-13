@@ -61,7 +61,8 @@
     <p class="help">The <span style="color:#ffd166">yellow frustum</span> is the camera of the frame being
       taken in; the line is the path the frames were rendered along.
       <span class="keys">Drag to look · W A S D to move, Q E down and up · Shift faster</span><span class="touch">Drag
-      to look · two fingers to move: pinch forward and back, drag sideways</span></p>
+      to look · two fingers to move: pinch forward and back, drag sideways · hold one finger still on a point and
+      drag a second to turn about it</span></p>
     <div class="stats" id="stats">loading…</div>
   </div>
   <div class="timeline">
@@ -237,7 +238,7 @@
           const size = box.getSize(new THREE.Vector3()).length();
           const texture = await spark.renderCubeMap({ scene, worldCenter: middle, size: 512, near: 0.02,
                                                       far: Math.max(across * unit * 2, 10),
-                                                      hideObjects: [...lenses.filter(Boolean), frustum, path] });
+                                                      hideObjects: [...lenses.filter(Boolean), frustum, path, ...scene.children.filter((o) => o.isMesh && o.renderOrder === 11)] });
           glassRoom.value = texture;
           glassMiddle.value.copy(middle);
           glassReach.value = Math.max(size * 2.0, 0.5);
@@ -362,6 +363,9 @@
         }
         loading = false;
         window.__scene.loaded = true;
+        // Spark's ray through the gaussians starts itself on the first one asked and answers from the
+        // second: one is asked here, so that the first finger laid on the scene finds what is under it.
+        if (meshes.length > 0) new THREE.Raycaster(camera.position, new THREE.Vector3(0, 0, -1)).intersectObject(meshes[0], false);
       };
       const summary = () => {
         const total = parts.reduce((sum, p) => sum + p.gaussians + (p.glass?.gaussians ?? 0), 0);
@@ -404,6 +408,96 @@
 
       const controls = new SparkControls({ canvas });
       controls.fpsMovement.moveSpeed = 2.0;
+
+      // TURNING ABOUT A POINT, on a touch screen. A first finger laid down and kept still fixes a point --
+      // the gaussian under it, or where the view is aimed if there is none -- and a second finger then
+      // turns the camera about that point: sideways about the scene's up, up and down about the camera's
+      // own right. The point stays where it is on the screen. With no finger held still the gestures are
+      // the ones there were (one finger looks, two move).
+      const pivot = { finger: null, at: null, timer: 0, held: false, turner: null, point: new THREE.Vector3() };
+      window.__pivot = pivot;
+      const marker = new THREE.Mesh(new THREE.RingGeometry(0.72, 1, 40),
+        new THREE.MeshBasicMaterial({ color: 0xffd166, depthTest: false, transparent: true, opacity: 0.95,
+                                      side: THREE.DoubleSide }));
+      marker.renderOrder = 11;
+      marker.visible = false;
+      marker.raycast = () => {};
+      scene.add(marker);
+      const quiet = () => {
+        // Spark's own gestures saw the same fingers: what it kept of them is dropped, so it does not jump.
+        const own = controls.pointerControls;
+        own.rotating = null;
+        own.sliding = null;
+        own.dualPress = false;
+        for (const name of ["moveVelocity", "rotateVelocity"]) own[name]?.set?.(0, 0, 0);
+      };
+      const fixPoint = () => {
+        const box = canvas.getBoundingClientRect();
+        const ndc = new THREE.Vector2((pivot.at.x - box.left) / box.width * 2 - 1,
+                                      -((pivot.at.y - box.top) / box.height) * 2 + 1);
+        const ray = new THREE.Raycaster();
+        ray.setFromCamera(ndc, camera);
+        const hits = ray.intersectObjects([...meshes, ...lenses.filter(Boolean)].filter((m) => m.visible), false);
+        if (hits.length > 0) pivot.point.copy(hits[0].point);
+        else {
+          // Nothing under the finger: as far along it as the middle of the scene is from the eye.
+          const middle = place([(index.min[0] + index.max[0]) / 2, (index.min[1] + index.max[1]) / 2,
+                                (index.min[2] + index.max[2]) / 2]);
+          pivot.point.copy(ray.ray.origin).addScaledVector(ray.ray.direction, Math.max(camera.position.distanceTo(middle), 1));
+        }
+        pivot.held = true;
+        controls.pointerControls.enable = false;
+        quiet();
+        marker.visible = true;
+      };
+      const release = () => {
+        clearTimeout(pivot.timer);
+        if (pivot.held) { controls.pointerControls.enable = true; quiet(); }
+        pivot.finger = null; pivot.held = false; pivot.turner = null;
+        marker.visible = false;
+      };
+      canvas.addEventListener("pointerdown", (event) => {
+        if (event.pointerType !== "touch") return;
+        if (pivot.finger === null) {
+          pivot.finger = event.pointerId;
+          pivot.at = { x: event.clientX, y: event.clientY };
+          pivot.timer = setTimeout(fixPoint, 280);
+        } else if (pivot.held && pivot.turner === null) {
+          pivot.turner = { id: event.pointerId, x: event.clientX, y: event.clientY };
+        } else if (!pivot.held) {
+          clearTimeout(pivot.timer);   // a second finger before the first was still long enough: two fingers move
+        }
+      }, true);
+      addEventListener("pointermove", (event) => {
+        if (event.pointerType !== "touch") return;
+        if (event.pointerId === pivot.finger && !pivot.held &&
+            Math.hypot(event.clientX - pivot.at.x, event.clientY - pivot.at.y) > 10) {
+          clearTimeout(pivot.timer);   // it moved: a finger that looks
+        }
+        if (pivot.held && pivot.turner && event.pointerId === pivot.turner.id) {
+          const dx = event.clientX - pivot.turner.x;
+          const dy = event.clientY - pivot.turner.y;
+          pivot.turner.x = event.clientX;
+          pivot.turner.y = event.clientY;
+          const up = new THREE.Vector3(0, 1, 0);
+          const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+          const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+          // Not over the top: the tilt stops short of looking straight along the scene's up.
+          const tilt = Math.asin(THREE.MathUtils.clamp(forward.dot(up), -1, 1));
+          const pitch = THREE.MathUtils.clamp(-dy * 0.005, -1.45 - tilt, 1.45 - tilt);
+          const turn = new THREE.Quaternion().setFromAxisAngle(up, -dx * 0.005)
+            .multiply(new THREE.Quaternion().setFromAxisAngle(right, pitch));
+          camera.position.sub(pivot.point).applyQuaternion(turn).add(pivot.point);
+          camera.quaternion.premultiply(turn);
+        }
+      }, true);
+      const lifted = (event) => {
+        if (event.pointerType !== "touch") return;
+        if (event.pointerId === pivot.finger) release();
+        else if (pivot.turner && event.pointerId === pivot.turner.id) pivot.turner = null;
+      };
+      addEventListener("pointerup", lifted, true);
+      addEventListener("pointercancel", lifted, true);
       let last = performance.now();
       let since = 0;
       renderer.setAnimationLoop((now) => {
@@ -420,6 +514,11 @@
           }
         }
         if (!(playing && follow.checked)) controls.update(camera);
+        if (marker.visible) {
+          marker.position.copy(pivot.point);
+          marker.quaternion.copy(camera.quaternion);
+          marker.scale.setScalar(camera.position.distanceTo(pivot.point) * 0.018);
+        }
         // The eye moved, or the cube is new: the glass is shaded again. A gaussian's colour is made when
         // its mesh says it changed, and a value handed to the shader does not say so by itself.
         if (glassReady && (!glassEye.value.equals(camera.position) || glassFresh)) {
