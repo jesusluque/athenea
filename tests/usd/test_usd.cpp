@@ -9126,6 +9126,54 @@ TEST_CASE("a cloud its file says a skeleton carries moves with it", "[usd][gpu][
 // rotation -- under a sky whose image is not the same in any two directions.
 // And the same turned cloud without its transfer must shade otherwise: that is
 // what says the transfer is what the comparison compares.
+// A FIXTURE FOR THE UNREAL PLUGIN, not a check: the same cloud as the case
+// below -- degree 1 harmonics drawn at random -- carried by one joint that
+// turns 60 degrees about (1, 2, 0.5) at time 1, plain (no relight, no
+// transfer), so its colour is its harmonics alone. Written to
+// $ATHENEA_FIXTURE_DIR/skinned_sh.usda; the plugin's
+// Athenea.Frame.SkinnedTurned draws it posed against itself at rest turned.
+// Hidden from ctest ([.]).
+TEST_CASE("the Unreal plugin's skinned harmonics fixture", "[.][fixture][skinning]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const std::string dir = platform::env("ATHENEA_FIXTURE_DIR");
+    if (dir.empty()) {
+        SKIP("ATHENEA_FIXTURE_DIR is not set");
+    }
+    const io::RawSplats raw = cloud(512);
+    const double angle = 60.0 * 3.14159265358979 / 180.0;
+    const double ax = 1.0 / std::sqrt(5.25), ay = 2.0 / std::sqrt(5.25), az = 0.5 / std::sqrt(5.25);
+    const double c = std::cos(angle), sn = std::sin(angle), t = 1.0 - c;
+    const double r[3][3] = {{t * ax * ax + c, t * ax * ay - sn * az, t * ax * az + sn * ay},
+                            {t * ax * ay + sn * az, t * ay * ay + c, t * ay * az - sn * ax},
+                            {t * ax * az - sn * ay, t * ay * az + sn * ax, t * az * az + c}};
+    std::array<float, 16> turned{};
+    for (int row = 0; row < 4; ++row) {
+        for (int column = 0; column < 4; ++column) {
+            turned[static_cast<size_t>(row * 4 + column)] =
+                static_cast<float>(row < 3 && column < 3 ? r[column][row] : (row == column ? 1.0 : 0.0));
+        }
+    }
+    usd::SplatSkinning rig;
+    rig.skeleton = "/Root/Skel";
+    rig.joints = 1;
+    rig.influences.resize(size_t{raw.count} * 8, 0.0F);
+    for (uint32_t k = 0; k < raw.count; ++k) {
+        rig.influences[size_t{k} * 8 + 1] = 1.0F;
+    }
+    rig.times = {0.0, 1.0};
+    rig.xforms.assign(32, 0.0F);
+    rig.xforms[0] = rig.xforms[5] = rig.xforms[10] = rig.xforms[15] = 1.0F;
+    std::copy(turned.begin(), turned.end(), rig.xforms.begin() + 16);
+    REQUIRE(rig.valid());
+    usd::ExportOptions options;
+    options.addCamera = false;
+    options.skinning = &rig;
+    const fs::path out = fs::path(dir) / "skinned_sh.usda";
+    REQUIRE(usd::writeParticleFieldStage(*gpu->library, raw, out, options));
+    std::printf("  wrote %s: %u gaussians, the joint 60 degrees about (1, 2, 0.5) at time 1\n",
+                out.string().c_str(), raw.count);
+}
+
 TEST_CASE("a skinned cloud's zonal transfer turns with it as a turned still cloud's does",
           "[usd][gpu][skinning][transfer][zonal]") {
     ATHENEA_REQUIRE_GPU(gpu);
