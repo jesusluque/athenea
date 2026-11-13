@@ -22392,3 +22392,10 @@ not say so: the glass kept the colours of the eye it was first shaded from. The 
 (`updateVersion`) whenever the camera's position changed or a cube was drawn. Checked by driving the page:
 the camera set at one place and then another gives, pixel for pixel, the frame of the page opened at the
 second.
+
+**The page on a phone (same day).** The user, with a picture from an iPhone: the text took the top third, the
+credits lay over the controls and the controls ran off the right edge. Under 640 px the text is folded to its
+title (an `i` opens it) with the credits inside it; the controls are a bar at the bottom in two rows, the
+timeline across the first, clear of the browser's bar (`env(safe-area-inset-bottom)`, `100dvh`), each 44 px
+high; and a touch screen is told its own gestures in place of the keys. Seen at 500 px in Chrome; not on a
+phone.

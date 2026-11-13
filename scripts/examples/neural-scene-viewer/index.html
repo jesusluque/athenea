@@ -11,7 +11,7 @@
 -->
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>A scene found by rendering · athenea neural</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="./site.css">
@@ -24,28 +24,54 @@
     .timeline label { color: var(--dim); white-space: nowrap; }
     .timeline .where { font-family: ui-monospace, Menlo, monospace; white-space: nowrap; min-width: 250px; text-align: right; }
     .live { color: #ff6b6b; font-weight: 600; }
+    .touch { display: none; }
+    .short { display: none; }
+    @media (pointer: coarse) { .keys { display: none; } .touch { display: inline; } }
+    /* A PHONE: the text folds to its title (the i opens it, and the credits are inside it, off the
+       controls); the controls are a bar at the bottom in two rows, the timeline whole across the first,
+       clear of the browser's own bar; what is pressed is 44 px high. */
+    @media (max-width: 640px) {
+      html, body { height: 100dvh; overflow: hidden; }
+      .hud { top: calc(8px + env(safe-area-inset-top)); left: 8px; right: 8px; max-width: none; padding: 8px 10px;
+        max-height: calc(100dvh - 190px); overflow-y: auto; }
+      .hud h1 { display: flex; align-items: center; justify-content: space-between; font-size: 15px; margin: 0; }
+      .hud:not(.folded) h1 { margin-bottom: 6px; }
+      .hud-toggle { width: 34px; height: 34px; border-radius: 17px; font: italic 17px / 30px Georgia, serif; flex: none; }
+      .hud .credits { position: static; margin-top: 8px; font-size: 10px; line-height: 1.5; text-shadow: none;
+        pointer-events: auto; }
+      .hud.folded .credits { display: none; }
+      .timeline { left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); padding: 8px 10px;
+        flex-wrap: wrap; gap: 8px; }
+      .timeline input[type=range] { order: 1; flex: 1 0 100%; height: 44px; margin: 0; }
+      .timeline button { order: 2; min-height: 44px; min-width: 76px; padding: 0 12px; font-size: 14px; }
+      .timeline label { order: 3; min-height: 44px; display: flex; align-items: center; gap: 6px; font-size: 14px; }
+      .timeline label input { width: 22px; height: 22px; }
+      .long { display: none; } .short { display: inline; }
+      .timeline .where { order: 4; flex: 1 0 100%; min-width: 0; text-align: left; white-space: normal; font-size: 12px; }
+    }
   </style>
 </head>
 
 <body>
   <div class="hud">
-    <h1 id="title">A scene found by rendering</h1>
+    <h1 id="title"><span>A scene found by rendering</span><button class="hud-toggle" id="fold" aria-label="About this scene" aria-expanded="true">i</button></h1>
     <p>Every point here is a gaussian that a path traced frame left behind. Each frame kept only what the scene
       did not already hold, so the scene grows as it is rendered: drag the timeline to see it as it stood after
       each frame. There is no mesh and no stored picture. Black is what no camera has seen yet.</p>
     <p class="help">The <span style="color:#ffd166">yellow frustum</span> is the camera of the frame being
-      taken in; the line is the path the frames were rendered along. Drag to look · W A S D to move, Q E down
-      and up · Shift faster</p>
+      taken in; the line is the path the frames were rendered along.
+      <span class="keys">Drag to look · W A S D to move, Q E down and up · Shift faster</span><span class="touch">Drag
+      to look · two fingers to move: pinch forward and back, drag sideways</span></p>
     <div class="stats" id="stats">loading…</div>
   </div>
   <div class="timeline">
     <button id="play">Play</button>
     <input type="range" id="frame" min="0" max="1" value="0" step="1">
     <button id="overview">Overview</button>
-    <label><input type="checkbox" id="follow"> ride the render camera</label>
+    <label><input type="checkbox" id="follow"> <span class="long">ride the render camera</span><span class="short">ride camera</span></label>
     <span class="where" id="where"></span>
   </div>
-  <div class="credits">
+  <div class="credits" id="credits">
     Made with <a href="https://github.com/jesusluque/athenea">athenea</a> (neural branch) by jesus luque ·
     scene: Intel Sponza by Frank Meinl and Anton Kaplanyan,
     <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>, rendered and converted to gaussians ·
@@ -76,6 +102,24 @@
     const playButton = document.getElementById("play");
     const follow = document.getElementById("follow");
     window.__scene = { loaded: false, error: null, parts: 0 };
+
+    // On a phone the text is folded to its title and the credits go inside it: the bottom is the controls'.
+    const hud = document.querySelector(".hud");
+    const fold = document.getElementById("fold");
+    const narrow = matchMedia("(max-width: 640px)");
+    const arrange = () => {
+      const credits = document.getElementById("credits");
+      if (narrow.matches) hud.appendChild(credits);
+      else document.body.insertBefore(credits, document.getElementById("canvas"));
+    };
+    const setFolded = (folded) => {
+      hud.classList.toggle("folded", folded);
+      fold.setAttribute("aria-expanded", String(!folded));
+    };
+    arrange();
+    setFolded(narrow.matches || matchMedia("(pointer: coarse)").matches);
+    narrow.addEventListener("change", arrange);
+    fold.addEventListener("click", () => setFolded(!hud.classList.contains("folded")));
 
     const canvas = document.getElementById("canvas");
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
