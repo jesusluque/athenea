@@ -346,18 +346,35 @@ public uint blockBytes(VideoPlanesParams p) {
 public uint blockWordOf(VideoPlanesParams p, uint i, uint axis) {
     return ((i % p.chunkSplats) / p.positionBlock) * 3u + axis;
 }
+/// A half's value from its bits by integer arithmetic alone. The outward
+/// rounding below compares a half with the float it came from, and
+/// f16tof32(f32tof16(v)) is a round trip a compiler may take for v itself
+/// (relaxed precision), so that the comparison never fires.
+public float halfValueExact(uint h) {
+    const uint sign = (h & 0x8000u) << 16u;
+    const uint e = (h >> 10u) & 0x1Fu;
+    const uint m = h & 0x3FFu;
+    if (e == 0u) {   // zero or subnormal: m * 2^-24, exactly a float
+        return asfloat(sign | asuint(float(m) * 5.9604644775390625e-8));
+    }
+    if (e == 31u) {
+        return asfloat(sign | 0x7F800000u | (m << 13u));
+    }
+    return asfloat(sign | ((e + 112u) << 23u) | (m << 13u));
+}
+
 /// The half at or below `v`, and at or above: a box rounded outward, so it
 /// holds what it was taken over.
 public uint halfBelow(float v) {
     uint h = f32tof16(v) & 0xFFFFu;
-    if (f16tof32(h) > v) {
+    if (halfValueExact(h) > v) {
         h = (h & 0x8000u) != 0 ? h + 1u : (h == 0u ? 0x8001u : h - 1u);
     }
     return h;
 }
 public uint halfAbove(float v) {
     uint h = f32tof16(v) & 0xFFFFu;
-    if (f16tof32(h) < v) {
+    if (halfValueExact(h) < v) {
         h = (h & 0x8000u) != 0 ? (h == 0x8000u ? 1u : h - 1u) : h + 1u;
     }
     return h;

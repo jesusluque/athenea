@@ -8,6 +8,10 @@ merged work; a patch version fixes what a minor one shipped.
 
 ## Unreleased
 
+- **Video planes on Vulkan.** A block's box, rounded outward to halves, was
+  not rounded on Vulkan (the compiler took the half round trip for the float
+  itself) and a few splats fell outside it, up to 8 steps off. The half is
+  decoded by integer arithmetic now.
 - **A `.athc` keeps its source's Mip-Splatting fit.** SPZ says whether a
   cloud was trained with the filter; a `.athc` dropped it, so an `.spz` fitted
   without the filter was drawn with the compensation once converted (cat.spz

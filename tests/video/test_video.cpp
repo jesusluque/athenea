@@ -450,7 +450,8 @@ TEST_CASE("the geometry layer's motion: the decoder holds what the encoder held"
 }
 
 TEST_CASE("the hardware video codec keeps the position high parts exact", "[video][gpu][codec]") {
-    ATHENEA_REQUIRE_GPU(gpu);
+    // NVENC and NVDEC share a CUDA context: the device `athenea video` opens.
+    ATHENEA_REQUIRE_SHARED_GPU(gpu);
     gpu::Device& device = *gpu->device;
     auto loader = scene::CloudLoader::create(*gpu->library);
     REQUIRE(loader);
@@ -500,7 +501,8 @@ TEST_CASE("the hardware video codec keeps the position high parts exact", "[vide
 }
 
 TEST_CASE("an encoder that reads device memory gives the units its host samples give", "[video][gpu][codec]") {
-    ATHENEA_REQUIRE_GPU(gpu);
+    // NVENC and NVDEC share a CUDA context: the device `athenea video` opens.
+    ATHENEA_REQUIRE_SHARED_GPU(gpu);
     gpu::Device& device = *gpu->device;
     auto loader = scene::CloudLoader::create(*gpu->library);
     REQUIRE(loader);

@@ -483,6 +483,11 @@ gpu::ComputeKernel check = test::kernel(*gpu, "athenea/test/thing_check");
 std::array<uint32_t, 8> row = test::reduceStats(*gpu, stats, rows);
 ```
 
+Un test de algo que comparte el dispositivo con gpe o con los códecs de vídeo
+(NVENC, NVDEC) usa `ATHENEA_REQUIRE_SHARED_GPU(gpu)`: el dispositivo que abren
+esos programas (`DevicePurpose::Shared`), CUDA en Windows, donde el dispositivo
+de los tests es Vulkan.
+
 `test::dumpPpm` y los volcados a EXR escriben solo cuando `ATHENEA_TEST_DUMP`
 nombra un directorio, y no se afirma nada sobre ellos: son para que los mire
 una persona.

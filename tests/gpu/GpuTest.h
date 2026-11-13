@@ -54,6 +54,30 @@ inline Gpu* gpuOrNull() {
         SKIP("no GPU device");                         \
     }
 
+/// The device a program that shares it with gpe or the video codecs opens
+/// (DevicePurpose::Shared: CUDA first on Windows, where the test device is
+/// Vulkan), or null. Elsewhere the order is the test device's, but it is a
+/// device of its own all the same.
+inline Gpu* sharedGpuOrNull() {
+    static std::unique_ptr<Gpu> kGpu = [] () -> std::unique_ptr<Gpu> {
+        auto device = gpu::Device::create({.purpose = gpu::DevicePurpose::Shared});
+        if (!device) {
+            return nullptr;
+        }
+        auto made = std::make_unique<Gpu>();
+        made->device = *device;
+        made->library = std::make_unique<gpu::ShaderLibrary>(made->device);
+        return made;
+    }();
+    return kGpu.get();
+}
+
+#define ATHENEA_REQUIRE_SHARED_GPU(name)                         \
+    ::athenea::test::Gpu* name = ::athenea::test::sharedGpuOrNull(); \
+    if (name == nullptr) {                                    \
+        SKIP("no GPU device");                                \
+    }
+
 /// A buffer of `count` zeroed words: a counter a kernel adds to, a worst
 /// case it maxes. Zeroed on purpose -- a buffer nobody wrote is not a
 /// buffer of zeros on CUDA, and a counter that starts from what the device

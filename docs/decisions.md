@@ -20392,6 +20392,21 @@ gap, which is the path tracer's own and is not this change's.
   normal map; 960x540, 128 paths) had not finished after 22 minutes when the
   machine restarted for an update; not yet explained.
 
+**The full ctest with Vulkan the default (13 Nov).** Two of what failed were
+Vulkan's own and are fixed:
+- **The video planes' block boxes.** A box is rounded outward to halves
+  (`halfBelow`, `halfAbove`: round, and step one half out where the half came
+  back past the float). The test is `f16tof32(f32tof16(v)) > v`, and on
+  Vulkan that round trip was taken for `v` itself, so the step never came and
+  a few splats fell outside their box: 7.9 steps where 0.75 is the bound
+  (#240, #241). The half is now decoded by integer arithmetic
+  (`halfValueExact`), which nothing folds. Both pass on Vulkan, CUDA and Metal.
+- **The hardware codec's tests ran on the drawing device.** NVENC and NVDEC
+  need CUDA, which `athenea video` asks for (`DevicePurpose::Shared`) and the
+  tests did not: on Windows their device became Vulkan and NVDEC's textures
+  refused it (#244). They take `ATHENEA_REQUIRE_SHARED_GPU` now. All 11 video
+  cases pass with the default backend on ixwin.
+
 ## Lights from Blender: the spot's cone, and the sun's factor of four (12 Nov)
 
 Each light of a Blender scene alone, Cycles (Blender 5.3.0, 256 samples)
