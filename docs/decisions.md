@@ -22622,3 +22622,11 @@ black. The page has a colour for what is behind the scene (black as it was, kept
 glass and chrome read are drawn over it, so a mirror shows it. It is also what shows through where no camera
 has seen -- which reads as sky where it is floor nobody looked at. The scene's own sky is not kept by `shoot`
 (the manifest's `lights` is empty), so the colour is the viewer's to choose.
+
+**The chrome knight shot again with the day's fixes** (Metal, 60 frames at 1080, 6 244 s). 9.72 million
+gaussians standing where the shoot before left 8.90: 565 thousand of glass (423 before), 1.34 million of
+chrome. The black holes on the pillar beside the knights are gone from the held views. Levels of 3.73, 1.78,
+0.96 and 0.53 million, and glass in every one of them (90, 37, 28 and 22 thousand gaussians): in the page a
+coarse level's glass knight is shaded as glass where it was a milky picture. Levels 1 and 3 at 60 frames a
+second in Chrome on the RTX 3070. `render --glass` on it: 565 thousand glass gaussians, the tree over 9.7
+million 2.7 s, the rays 0.23 s.
