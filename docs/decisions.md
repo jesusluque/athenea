@@ -22914,3 +22914,45 @@ Not done: the outline is fainter, not gone; and **the head keeps layers of where
 colour that turns within the depth tolerance leaves gaussians the frame's depth takes for the surface and
 whose colour is the surface's, so neither rule ends them. A textured mesh would be repainted; this one waits
 for a rule that knows a gaussian's surface moved (what the engine knows: the mesh was skinned this frame).
+
+**The Fox, the chess set and the kitchen on Vulkan** (Windows, 640x360, 16 paths): the plain Fox over time
+33.57 dB at frame 1 and 32.27 at frame 24 (33.58, 32.86, 32.59 between), 156 543 gaussians standing -- the
+same fall as on Metal; the chess set 12 frames in 34 s, 48 710 gaussians, 20.74 and 19.78 dB at its first two
+held views; the kitchen 12 frames in 41 s, 77 051 gaussians, 22.61 and 22.67. `[scene]` (238 assertions) and
+the 26 workflows pass there and on CUDA after the two changes above.
+
+**The options of `shoot`, one at a time** (`scripts/examples/neural-scene-qa/qa_options.py`: one stage, one
+walk, the held views path traced once, then the walk shot with one option changed; a row an option). The
+materials stage at 640x360, one view in two of its walk (12), 27 rows, every one ends well. The frame where
+the scene holds something at the first and the third held view, and how much of it that is:
+
+| option | seconds | gaussians | h0: dB, held | h2: dB, held |
+|---|---|---|---|---|
+| the defaults (32 paths in passes of 8, 3 bounces, denoised) | 131 | 431 242 | 23.05, 0.902 | 23.42, 0.998 |
+| `--spread 0.7` | 130 | 459 799 | 25.75, 0.881 | 25.09, 0.972 |
+| `--spread 1.3` | 131 | 425 874 | 20.79, 0.906 | 21.74, 1.000 |
+| `--turned 0.75` | 130 | 438 312 | 24.93, 0.897 | 24.51, 0.992 |
+| `--turned 1` | 131 | 456 803 | 25.76, 0.888 | 25.00, 0.982 |
+| `--refine 1` | 135 | 546 621 | 22.09, 0.902 | 22.80, 0.999 |
+| `--refine 3` | 128 | 392 723 | 23.58, 0.902 | 22.96, 0.998 |
+| `--repaint 0.3` | 134 | 397 942 | 21.66, 0.898 | 23.70, 0.997 |
+| `--tolerance 0.02`, `0.15` | 130 | 432 852, 427 631 | 23.07, 22.96 | 23.39, 23.33 |
+| `--bounces 1`, `6` | 82, 155 | 431 242 | 22.71, 23.06 | 22.56, 23.42 |
+| no `--denoise` | 130 | 431 242 | 22.88 (SSIM 0.812 for 0.837) | 23.24 |
+| `--coarsest 1`, `2`, `16`; `--pyramid 8`; `--covered-enough 0.98`; `--glass-opacity 0.2`; `--free-each-frame` | 131 to 140 | 431 242 | as the defaults, to the digit | as the defaults |
+
+- The coarse looks and the pyramid change nothing of what stands at the finest: the last look refines what
+  they made, and they are there for what is drawn while a frame gathers. `--free-each-frame` gives the same
+  scene, read back from the disk. The stage has no pane, so `--glass-opacity` has nothing to say.
+- **The paths are not what the figure follows; the passes are.** 8, 16, 32, 64 and 128 paths in passes of 8
+  read 22.17, 22.61, 23.05, 22.02 and 22.53 dB at h0; 32 paths in one pass reads as 8 in one (22.16, the
+  same 430 662 gaussians), and 64 in passes of 16 as 32 in passes of 8 (23.01, the same 431 242). What a
+  count of passes changes is which looks a frame takes and when, and so which frame of the walk each
+  gaussian of a ball is left from: a ball is a patchwork of the walk's eyes, each with its own highlight,
+  and one schedule's patchwork is not another's (the two frames differ by 32.5 to 34.1 dB between
+  themselves, in blotches over every ball). So **a dB either way between two rows of this table is the
+  patchwork's, not the option's**: the width and the stretch (two to three dB) are over it; `--refine`,
+  `--repaint`, the tolerance and the bounces are not shown to be.
+
+Not done: the same pass on a second stage; a patchwork that does not depend on the schedule (a gaussian's
+colour as what does not move with the eye, its highlight worked out a view: the lobes are in its record).
