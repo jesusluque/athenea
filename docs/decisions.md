@@ -22691,13 +22691,16 @@ glass knight's was: the knights are a small share of it. The rays take 0.36 to 0
 2.2 to 2.7 s, which is paid a view.
 
 Not done, and seen here:
-- **The scene is darker than the reference**, and it is not the bounces: its mean light is 0.65 and 0.78 of
-  the reference's in these two views (0.00163 against 0.00249, 0.00181 against 0.00232), and the reference
-  path traced at the shoot's 3 bounces reads the same as at 8 (0.00248 and 0.00230; 27.52 and 27.89 dB). By
-  thirds of the frame, bottom to top, the scene holds 0.83, 0.74 and 0.38 of the reference's light in the
-  first view (covering 0.99, 0.91 and 0.89 of it) and 0.81, 0.95 and 0.61 in the second (0.94, 0.99, 0.99):
-  what it does not cover is part of it, not all -- a band covered to 0.99 reads 0.61. The reference's
-  brightest pixel is 1.0 to 1.8 and the scene's 0.2 to 0.9. Where the light is lost is not found (NEU19).
+- **The scene's mean light is under the reference's, and it is the reference's brightest pixels**: 0.64
+  and 0.77 of it in these two views, and 0.74 and 1.08 from two views the walk took (k10, k45). Not the
+  bounces: the reference path traced at the shoot's 3 reads as at 8 (27.52 and 27.89 dB). With each pixel
+  held to 0.02 (ten times the mean; `oiiotool --clamp`, a statistic of the files and no kernel's) the scene
+  holds 0.95 and 1.01 of the reference in the two views not taken and 1.01 and 1.10 in the two taken: the
+  light is the same, less a few pixels. Side by side at one gain, the reference draws white lines along
+  edges -- arches, door frames, the step, where meshes meet -- up to 2.3 where the frame's mean is 0.003,
+  and the scene keeps little of them (its brightest is 0.2 to 0.9). Whether those lines are the stage's (sun
+  through a seam) or the path tracer's is not found (NEU19); a frame measured against them loses what they
+  weigh, in dB too.
 - **The glass knight looks noisier with `--glass`** than its stored picture from these views, though the
   figures do not say so; no measure over the knight alone was taken.
 - **The tree is built again each view** though the scene does not change between views of a walk.
