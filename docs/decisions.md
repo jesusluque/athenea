@@ -22709,3 +22709,7 @@ Not done, and seen here:
   what SSIM takes back on the glass. A ray that read a footprint's worth of gaussians is not written.
 - **The tree is built again each view** though the scene does not change between views of a walk.
 - **A rough metal** (roughness over 0.12) stays the picture the look left.
+
+**The chrome on the three backends.** The plate's test and the rest of `[scene]` -- 238 assertions in 10
+cases -- pass on Metal (M5 Pro), on CUDA under Linux and on Vulkan under Windows (ixwin, RTX 3070): the plate
+reads (0.72, 0.04, 0.01) from the right and (0.04, 0.04, 0.20) from the left on all three.
