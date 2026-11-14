@@ -250,6 +250,11 @@ cada una):
   sobre esa nube (`GaussianRayTracer::treeOf`, los recorridos de
   `rt/rt_glass.slang`). Un kernel que quiere un rayo a través de las gaussianas
   de una nube toma el árbol de ahí; no construye uno.
+  Lo que `neural-scene export` entrega se elige también en el dispositivo:
+  `Discovery::recordsOf` (`scene_level.slang`) reúne los registros de una pieza
+  por clase -- lente, espejo, el resto -- donde un corte los dibuja, y
+  `Discovery::worldWidths` es la proyección bajo la cual ese corte es un level
+  of detail en las unidades de la escena, sea cual sea el ojo.
 
 Un kernel que añade algo a `shaders/athenea/neural/neural_appearance.slang` lo añade a
 las dos pasadas: la forward y, a mano, la backward junto a ella, y las diferencias

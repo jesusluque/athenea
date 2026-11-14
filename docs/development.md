@@ -243,6 +243,11 @@ each measured):
   that cloud (`GaussianRayTracer::treeOf`, `rt/rt_glass.slang`'s walks). A
   kernel that wants a ray through a cloud's gaussians takes the tree from
   there; it does not build one.
+  What `neural-scene export` hands on is chosen on the device too:
+  `Discovery::recordsOf` (`scene_level.slang`) gathers a piece's records by
+  kind -- lens, mirror, the rest -- where a cut draws them, and
+  `Discovery::worldWidths` is the projection under which that cut is a level
+  of detail in the scene's own units, whatever the eye.
 
 A kernel that adds to `shaders/athenea/neural/neural_appearance.slang` adds to
 both passes: the forward one and, by hand, the backward one beside it, and

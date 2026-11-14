@@ -64,6 +64,12 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
         auto exportFlat = gpu::ComputeKernel::create(library, "athenea/neural/scene_export", "exportFlat");
         if (!exportFlat) return std::move(exportFlat).error();
         d.exportFlat_ = std::move(*exportFlat);
+        auto levelFlags = gpu::ComputeKernel::create(library, "athenea/neural/scene_level", "levelFlags");
+        if (!levelFlags) return std::move(levelFlags).error();
+        d.levelFlags_ = std::move(*levelFlags);
+        auto levelGather = gpu::ComputeKernel::create(library, "athenea/neural/scene_level", "levelGather");
+        if (!levelGather) return std::move(levelGather).error();
+        d.levelGather_ = std::move(*levelGather);
         auto prefix = gpu::PrefixSum::create(library);
         if (!prefix) return std::move(prefix).error();
         d.prefix_.emplace(std::move(*prefix));
@@ -292,6 +298,75 @@ Result<gpu::Buffer> Discovery::flatRecords(const gpu::Buffer& records, uint32_t 
     });
     ATHENEA_TRY(batch.submit(true));
     return *flat;
+}
+
+Result<Discovery::RecordSet> Discovery::recordsOf(const gpu::Buffer& records, uint32_t count, uint32_t floats,
+                                                  const gpu::Buffer& drawn, RecordKind kind) {
+    RecordSet set;
+    if (count == 0) {
+        return set;
+    }
+    gpu::Device& device = library_->device();
+    auto kept = words(device, count, 4, "level.kept");
+    if (!kept) return std::move(kept).error();
+    auto places = words(device, count, 4, "level.places");
+    if (!places) return std::move(places).error();
+    auto total = words(device, 4, 4, "level.total");
+    if (!total) return std::move(total).error();
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{count} * floats * sizeof(float);
+    desc.elementBytes = sizeof(float);
+    desc.label = "level.records";
+    auto gathered = gpu::Buffer::create(device, desc);
+    if (!gathered) return std::move(gathered).error();
+    // Every name the module declares, each dispatch; what a kernel writes is named after.
+    const auto bindAll = [&](rhi::ShaderCursor cursor) {
+        cursor["records"].setBinding(records.rhi());
+        cursor["drawn"].setBinding(drawn.rhi());
+        cursor["kept"].setBinding(total->rhi());
+        cursor["keptRead"].setBinding(drawn.rhi());
+        cursor["places"].setBinding(drawn.rhi());
+        cursor["gathered"].setBinding(gathered->rhi());
+        cursor["params"]["count"].setData(count);
+        cursor["params"]["stride"].setData(floats);
+        cursor["params"]["kind"].setData(static_cast<uint32_t>(kind));
+    };
+    {
+        gpu::CommandBatch batch(device);
+        levelFlags_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            bindAll(cursor);
+            cursor["kept"].setBinding(kept->rhi());
+        });
+        ATHENEA_TRY(prefix_->apply(batch, *kept, *places, *total, count));
+        ATHENEA_TRY(batch.submit(true));
+    }
+    ATHENEA_TRY(total->read(device, 0, sizeof(set.count), &set.count));
+    if (set.count == 0) {
+        return set;
+    }
+    gpu::CommandBatch batch(device);
+    levelGather_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        bindAll(cursor);
+        cursor["keptRead"].setBinding(kept->rhi());
+        cursor["places"].setBinding(places->rhi());
+    });
+    ATHENEA_TRY(batch.submit(true));
+    set.records = *gathered;
+    return set;
+}
+
+Projection Discovery::worldWidths() {
+    // The cut reads a gaussian's depth as the third row of this and its width on the screen as its width
+    // times the focal length over that depth: a depth of one and a focal length of one leave the width.
+    Projection p;
+    p.worldToView = Mat4::identity();
+    p.worldToView.at(2, 0) = 0.0;
+    p.worldToView.at(2, 1) = 0.0;
+    p.worldToView.at(2, 2) = 0.0;
+    p.worldToView.at(2, 3) = 1.0;
+    p.focalX = 1.0;
+    p.focalY = 1.0;
+    return p;
 }
 
 io::SplatEncoding Discovery::renderEncoding() {

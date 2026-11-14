@@ -164,6 +164,24 @@ public:
     [[nodiscard]] Result<gpu::Buffer> flatRecords(const gpu::Buffer& records, uint32_t count, uint32_t floats,
                                                   float gain = 1.0F);
 
+    /// WHAT A PIECE HANDS ON, BY KIND (scene_level.slang). Of `count` records on
+    /// the device, those `drawn` flags (a cut's: `CutPlan::flags`) and that
+    /// are of `kind`, gathered in their order: a lens (solid glass), a
+    /// mirror (a polished metal), the rest, or every kind.
+    enum class RecordKind : uint32_t { All = 0, Matter = 1, Lens = 2, Mirror = 3 };
+    struct RecordSet {
+        gpu::Buffer records;
+        uint32_t    count = 0;
+    };
+    [[nodiscard]] Result<RecordSet> recordsOf(const gpu::Buffer& records, uint32_t count, uint32_t floats,
+                                              const gpu::Buffer& drawn, RecordKind kind);
+
+    /// A projection under which a width on the screen is a width in the
+    /// scene's own units: the cut asked with it (`planCut`, `spans`) is a
+    /// level of detail whatever the eye -- a gaussian narrower than the
+    /// threshold, in units, drawn in place of the finer ones laid over it.
+    [[nodiscard]] static Projection worldWidths();
+
     /// How a record of `fromRender`'s is laid out, for scene::CloudLoader.
     [[nodiscard]] static io::SplatEncoding renderEncoding();
 
@@ -275,7 +293,7 @@ private:
 
     gpu::ShaderLibrary* library_ = nullptr;
     gpu::ComputeKernel  clear_, mark_, count_, mask_, gone_, sizes_, frameValid_, framePack_, frameThrough_;
-    gpu::ComputeKernel  renderValid_, renderPack_, renderSpare_, cut_, cutFlags_, gather_, cutSpans_, exportFlat_;
+    gpu::ComputeKernel  renderValid_, renderPack_, renderSpare_, cut_, cutFlags_, gather_, cutSpans_, exportFlat_, levelFlags_, levelGather_;
     std::optional<gpu::PrefixSum> prefix_;
     gpu::Buffer         counters_, spareWords_, spareFloats_;
 };

@@ -1475,3 +1475,63 @@ TEST_CASE("a found scene's glass shows what stands behind it from where the eye 
     CHECK(left[0] < 0.2);
     CHECK(left[1] < 0.15);
 }
+
+TEST_CASE("a piece's records are handed on by kind: its lenses, its mirrors and the rest, where the cut draws them",
+          "[render][gpu][neural][scene][level]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto discovery = render::Discovery::create(*gpu->library);
+    if (!discovery) FAIL(discovery.error().toString());
+    // Nine records as a render's look leaves them, of which only what says the kind is filled: three matt
+    // surfaces, two of solid glass, a sheet of glass (which bends nothing: the rest), two of polished metal
+    // and one of rough metal (which shows something of its own: the rest).
+    const uint32_t stride = render::kRenderRecord;
+    std::vector<float> records;
+    const auto record = [&](float metallic, float roughness, float transmission, float index, float sheet) {
+        const size_t at = records.size();
+        records.resize(at + stride, 0.0F);
+        records[at + 17] = metallic;
+        records[at + 18] = roughness;
+        records[at + 19] = transmission;
+        records[at + render::kRenderRecordIndex] = index;
+        records[at + render::kRenderRecordSheet] = sheet;
+    };
+    for (int k = 0; k < 3; ++k) record(0.0F, 0.8F, 0.0F, 1.0F, 1.0F);
+    for (int k = 0; k < 2; ++k) record(0.0F, 0.0F, 1.0F, 1.5F, 0.0F);
+    record(0.0F, 0.0F, 1.0F, 1.5F, 1.0F);
+    for (int k = 0; k < 2; ++k) record(1.0F, 0.03F, 0.0F, 1.0F, 1.0F);
+    record(1.0F, 0.6F, 0.0F, 1.0F, 1.0F);
+    const uint32_t count = static_cast<uint32_t>(records.size() / stride);
+    auto onDevice = gpu::Buffer::fromSpan<float>(*gpu->device, std::span<const float>(records), "test.records");
+    REQUIRE(onDevice);
+    // The cut draws all but the first lens.
+    std::vector<uint32_t> flags(count, 1u);
+    flags[3] = 0u;
+    auto drawn = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, std::span<const uint32_t>(flags), "test.drawn");
+    REQUIRE(drawn);
+    const auto of = [&](render::Discovery::RecordKind kind) {
+        auto set = discovery->recordsOf(*onDevice, count, stride, *drawn, kind);
+        if (!set) FAIL(set.error().toString());
+        return set->count;
+    };
+    const uint32_t all = of(render::Discovery::RecordKind::All);
+    const uint32_t matter = of(render::Discovery::RecordKind::Matter);
+    const uint32_t lens = of(render::Discovery::RecordKind::Lens);
+    const uint32_t mirror = of(render::Discovery::RecordKind::Mirror);
+    std::printf("  nine records, eight drawn: %u of every kind; %u matter, %u lens, %u mirror\n", all, matter, lens, mirror);
+    CHECK(all == 8);
+    CHECK(matter == 5);
+    CHECK(lens == 1);
+    CHECK(mirror == 2);
+    CHECK(matter + lens + mirror == all);
+
+    // A LEVEL WHATEVER THE EYE: asked with widths in the scene's own units, the cut of a cloud that has
+    // nothing laid over it draws all of it, at any width and from nowhere in particular.
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    test::CloudBuilder builder = test::randomCloud(2000, 5, 0.05F, 0.2F);
+    auto cloud = loader->upload(builder.raw, 3);
+    REQUIRE(cloud);
+    auto plan = discovery->planCut(*cloud, nullptr, nullptr, nullptr, render::Discovery::worldWidths(), 0.5F);
+    if (!plan) FAIL(plan.error().toString());
+    CHECK(plan->drawn == cloud->count);
+}

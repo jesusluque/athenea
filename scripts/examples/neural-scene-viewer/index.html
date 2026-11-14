@@ -2,12 +2,15 @@
 <html lang="en">
 <!--
   A scene found by rendering: athenea's `neural-scene shoot` path traces a USD stage and what it leaves is
-  gaussians, not pictures. This page shows such a scene growing: every rendered frame added a part (an SPZ
-  of the gaussians that frame found), named in order by scenes/<name>.json, and the timeline shows the scene
-  as it stood after each frame. While a shoot is still running (`shoot --grow`) the index says `growing` and
-  the page keeps reading it: the scene appears as it is made.
-    ?scene=<name>   scenes/<name>.json (default sponza_growth)
-    ?unit=<metres>  the scene's unit, where its index does not say
+  gaussians, not pictures. This page shows such a scene: every rendered frame added a part (an SPZ of the
+  gaussians that frame found), named in order by scenes/<name>.json, and the timeline shows the scene as it
+  stood after each frame. While a shoot is still running (`shoot --grow`) the index says `growing` and the
+  page keeps reading it. Where the index carries levels of detail (`neural-scene export --levels`) the page
+  draws the one the device can hold, and a coarser one if frames come too slowly.
+    ?scene=<name>    scenes/<name>.json (default sponza_growth)
+    ?detail=<n>      full, auto, or a level counted from one
+    ?unit=<metres>   the scene's unit, where its index does not say
+    ?glass=0         glass and mirrors drawn as the pictures they were found with
 -->
 <head>
   <meta charset="utf-8">
@@ -17,19 +20,39 @@
   <link rel="stylesheet" href="./site.css">
   <style>
     .timeline { position: fixed; left: 10px; right: 10px; bottom: 34px; background: var(--panel); padding: 8px 12px;
-      border-radius: 8px; backdrop-filter: blur(6px); display: flex; gap: 10px; align-items: center; }
+      border-radius: 8px; backdrop-filter: blur(6px); display: flex; gap: 10px; align-items: center; z-index: 3; }
     .timeline input[type=range] { flex: 1; accent-color: var(--accent); }
-    .timeline button { background: none; color: var(--fg); border: 1px solid var(--dim); border-radius: 6px;
-      padding: 3px 10px; font: inherit; cursor: pointer; min-width: 64px; }
+    .timeline button, .options button { background: none; color: var(--fg); border: 1px solid var(--dim);
+      border-radius: 6px; padding: 3px 10px; font: inherit; cursor: pointer; min-width: 64px; }
     .timeline label { color: var(--dim); white-space: nowrap; }
     .timeline .where { font-family: ui-monospace, Menlo, monospace; white-space: nowrap; min-width: 250px; text-align: right; }
+    .timeline input:disabled { opacity: 0.35; }
     .live { color: #ff6b6b; font-weight: 600; }
     .touch { display: none; }
     .short { display: none; }
     @media (pointer: coarse) { .keys { display: none; } .touch { display: inline; } }
+
+    /* THE OPTIONS: a panel at the right, opened by the button in the bar. */
+    .options { position: fixed; top: 10px; right: 10px; width: 300px; max-height: calc(100dvh - 110px); overflow-y: auto;
+      background: var(--panel); padding: 10px 12px 12px; border-radius: 8px; backdrop-filter: blur(6px); z-index: 4;
+      display: none; }
+    .options.open { display: block; }
+    .options h2 { font-size: 13px; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; }
+    .options h3 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim);
+      margin: 12px 0 4px; font-weight: 600; }
+    .options .row { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+    .options .row > span:first-child { flex: 0 0 104px; color: var(--dim); }
+    .options .row select, .options .row input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
+    .options .row select { background: #15151d; color: var(--fg); border: 1px solid var(--dim); border-radius: 5px;
+      padding: 3px 4px; font: inherit; }
+    .options .row output { flex: 0 0 44px; text-align: right; font: 11px ui-monospace, Menlo, monospace; }
+    .options .row input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
+    .options .note { color: var(--dim); font-size: 10px; margin: 2px 0 0; }
+    .options .close { min-width: 0; padding: 0 8px; }
+
     /* A PHONE: the text folds to its title (the i opens it, and the credits are inside it, off the
        controls); the controls are a bar at the bottom in two rows, the timeline whole across the first,
-       clear of the browser's own bar; what is pressed is 44 px high. */
+       clear of the browser's own bar; what is pressed is 44 px high; the options are a sheet over the bar. */
     @media (max-width: 640px) {
       html, body { height: 100dvh; overflow: hidden; }
       .hud { top: calc(8px + env(safe-area-inset-top)); left: 8px; right: 8px; max-width: none; padding: 8px 10px;
@@ -43,11 +66,17 @@
       .timeline { left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); padding: 8px 10px;
         flex-wrap: wrap; gap: 8px; }
       .timeline input[type=range] { order: 1; flex: 1 0 100%; height: 44px; margin: 0; }
-      .timeline button { order: 2; min-height: 44px; min-width: 76px; padding: 0 12px; font-size: 14px; }
+      .timeline button { order: 2; min-height: 44px; min-width: 64px; padding: 0 10px; font-size: 14px; }
       .timeline label { order: 3; min-height: 44px; display: flex; align-items: center; gap: 6px; font-size: 14px; }
       .timeline label input { width: 22px; height: 22px; }
       .long { display: none; } .short { display: inline; }
       .timeline .where { order: 4; flex: 1 0 100%; min-width: 0; text-align: left; white-space: normal; font-size: 12px; }
+      .options { top: auto; left: 8px; right: 8px; width: auto; bottom: calc(8px + env(safe-area-inset-bottom));
+        max-height: calc(100dvh - 80px - env(safe-area-inset-top)); z-index: 6; font-size: 14px; }
+      .options .row { min-height: 44px; }
+      .options .row input[type=checkbox] { width: 22px; height: 22px; }
+      .options .row select { min-height: 36px; }
+      .options button { min-height: 44px; }
     }
   </style>
 </head>
@@ -70,15 +99,40 @@
     <input type="range" id="frame" min="0" max="1" value="0" step="1">
     <button id="overview">Overview</button>
     <label><input type="checkbox" id="follow"> <span class="long">ride the render camera</span><span class="short">ride camera</span></label>
+    <button id="optionsButton" aria-controls="options" aria-expanded="false">Options</button>
     <span class="where" id="where"></span>
+  </div>
+  <div class="options" id="options">
+    <h2><span>Options</span><button class="close" id="optionsClose" aria-label="Close the options">✕</button></h2>
+    <h3>Scene</h3>
+    <div class="row"><span>Scene</span><select id="optScene"></select></div>
+    <div class="row"><span>Detail</span><select id="optDetail"></select></div>
+    <p class="note" id="detailNote"></p>
+    <h3>Picture</h3>
+    <div class="row"><span>Resolution</span><input type="range" id="optPixels" min="0.5" max="2" step="0.25"><output id="outPixels"></output></div>
+    <div class="row"><span>Field of view</span><input type="range" id="optFov" min="20" max="100" step="1"><output id="outFov"></output></div>
+    <div class="row"><span>Glass and chrome</span><input type="checkbox" id="optGlass"><span class="note">shaded by where the eye is</span></div>
+    <div class="row"><span>Reflections</span><select id="optCube"><option value="256">256</option><option value="512">512</option><option value="1024">1024</option></select></div>
+    <h3>Camera</h3>
+    <div class="row"><span>Move speed</span><input type="range" id="optSpeed" min="0.25" max="10" step="0.25"><output id="outSpeed"></output></div>
+    <div class="row"><span>Render frustum</span><input type="checkbox" id="optFrustum"></div>
+    <div class="row"><span>Camera path</span><input type="checkbox" id="optPath"></div>
+    <div class="row"><span>Pivot marker</span><input type="checkbox" id="optMarker"></div>
+    <h3>Playback</h3>
+    <div class="row"><span>Frames a second</span><input type="range" id="optRate" min="1" max="30" step="1"><output id="outRate"></output></div>
+    <div class="row"><span>Loop</span><input type="checkbox" id="optLoop"></div>
+    <h3>Readout</h3>
+    <div class="row"><span>Frame rate</span><input type="checkbox" id="optFps"></div>
+    <div class="row"><span></span><button id="optReset">Reset the options</button></div>
   </div>
   <div class="credits" id="credits">
     Made with <a href="https://github.com/jesusluque/athenea">athenea</a> (neural branch) by jesus luque ·
     scene: Intel Sponza by Frank Meinl and Anton Kaplanyan,
     <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>, rendered and converted to gaussians ·
-    the glass knights (sponza_knight, sponza_knights): <a href="https://github.com/usd-wg/assets/tree/main/full_assets/OpenChessSet">Open Chess Set</a>
+    the chess knights: <a href="https://github.com/usd-wg/assets/tree/main/full_assets/OpenChessSet">Open Chess Set</a>
     by Moeen and Mujtaba Sayed, © Academy Software Foundation,
-    <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>, placed in the scene as glass (one under a crown made here) and converted to gaussians ·
+    <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>, placed in the scene as glass and as chrome
+    (in one scene under a crown made here) and converted to gaussians ·
     <a href="https://github.com/sparkjsdev/spark">Spark</a> (MIT) · <a href="https://threejs.org">three.js</a> (MIT)
   </div>
   <canvas id="canvas" tabindex="0"></canvas>
@@ -97,37 +151,53 @@
 
     const params = new URLSearchParams(location.search);
     const name = (params.get("scene") ?? "sponza_growth").replace(/[^\w-]/g, "");
-    const status = document.getElementById("stats");
-    const slider = document.getElementById("frame");
-    const where = document.getElementById("where");
-    const playButton = document.getElementById("play");
-    const follow = document.getElementById("follow");
+    const $ = (id) => document.getElementById(id);
+    const status = $("stats");
+    const slider = $("frame");
+    const where = $("where");
+    const playButton = $("play");
+    const follow = $("follow");
     window.__scene = { loaded: false, error: null, parts: 0 };
 
     // On a phone the text is folded to its title and the credits go inside it: the bottom is the controls'.
     const hud = document.querySelector(".hud");
-    const fold = document.getElementById("fold");
+    const fold = $("fold");
     const narrow = matchMedia("(max-width: 640px)");
+    const touchScreen = matchMedia("(pointer: coarse)").matches;
     const arrange = () => {
-      const credits = document.getElementById("credits");
+      const credits = $("credits");
       if (narrow.matches) hud.appendChild(credits);
-      else document.body.insertBefore(credits, document.getElementById("canvas"));
+      else document.body.insertBefore(credits, $("canvas"));
     };
     const setFolded = (folded) => {
       hud.classList.toggle("folded", folded);
       fold.setAttribute("aria-expanded", String(!folded));
     };
     arrange();
-    setFolded(narrow.matches || matchMedia("(pointer: coarse)").matches);
+    setFolded(narrow.matches || touchScreen);
     narrow.addEventListener("change", arrange);
     fold.addEventListener("click", () => setFolded(!hud.classList.contains("folded")));
 
-    const canvas = document.getElementById("canvas");
+    // THE OPTIONS, kept between visits where the browser lets them be: what the panel sets.
+    const phone = narrow.matches || (touchScreen && Math.min(screen.width, screen.height) < 700);
+    const defaults = {
+      detail: "auto",                                  // auto, full, or a level counted from one
+      pixels: Math.min(devicePixelRatio || 1, phone ? 1.5 : 2),
+      fov: 40, glass: true, cube: phone ? 256 : 512, speed: 2, frustum: true, path: true, marker: true,
+      rate: 10, loop: false, fps: false,
+    };
+    const stored = (() => { try { return JSON.parse(localStorage.getItem("neural-player") ?? "{}"); } catch { return {}; } })();
+    const settings = { ...defaults, ...stored };
+    if (params.get("detail")) settings.detail = params.get("detail");
+    if (params.get("glass") === "0") settings.glass = false;
+    const remember = () => { try { localStorage.setItem("neural-player", JSON.stringify(settings)); } catch { /* private mode */ } };
+
+    const canvas = $("canvas");
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setPixelRatio(settings.pixels);
     renderer.setSize(innerWidth, innerHeight);
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 500);
+    const camera = new THREE.PerspectiveCamera(settings.fov, innerWidth / innerHeight, 0.05, 500);
     window.__camera = camera;   // for whoever drives the page from outside
     const spark = new SparkRenderer({ renderer });
     scene.add(spark);
@@ -153,44 +223,62 @@
       root.scale.setScalar(unit);
       scene.add(root);
 
-      // The parts, in the order the scene grew. A part is a name, or what a frame added: its file, how many
-      // gaussians, and the frame, its time and the camera it was rendered through.
+      // WHAT IS DRAWN. The parts in the order the scene grew (a part is a name, or what a frame added: its
+      // file, how many gaussians, and the frame, its time and the camera it was rendered through); or, at a
+      // level of detail, the scene whole in that level's parts. A part's mesh, and beside it the meshes of
+      // its glass and of its mirrors where it has them.
       const partOf = (p) => typeof p === "string" ? { file: p, gaussians: 0 } : p;
-      const meshes = [];        // a part's mesh, once it is in
-      const lenses = [];        // and, where the part holds solid glass, the mesh of that (null where none)
+      const countOf = (p) => p.gaussians + (p.glass?.gaussians ?? 0) + (p.mirror?.gaussians ?? 0);
+      const levels = index.levels ?? [];
+      let detail = 0;           // 0: the scene as it grew; k: the k-th level of detail
+      let parts = [];
+      let meshes = [];          // a part's mesh, once it is in
+      let shaded = [];          // and its glass and mirrors: [{ mesh, kind }]
+      let generation = 0;       // what is being loaded: a change of detail leaves the older load behind
+      let cameras = new Map((index.cameras ?? []).map((c) => [c.name, c]));
+      let shown = 0;            // parts drawn: the scene as it stood after that many
+      let atEnd = true;         // the timeline is at its end: new parts are shown as they arrive
+      let playing = false;
+      let loading = false;
+      const timed = () => detail === 0 && parts.some((p) => p.frame);
+      const totalOf = (list) => list.reduce((sum, p) => sum + countOf(partOf(p)), 0);
+      const fullCount = index.gaussians || totalOf(index.parts);
 
-      // SOLID GLASS, SHADED BY THE EYE. A part's glass comes in a file of its own with its index and its
-      // tint (the index's `glass`): what those gaussians are made of, which is theirs whatever the eye. What
-      // they show is worked out here, a frame: the scene without its glass is drawn into a cube from the
-      // glass's middle, and each glass gaussian takes the cube along the eye's ray mirrored at its disc and
-      // along it bent into the glass -- so the room behind turns as the camera does. One bend, at the face
-      // the eye meets, and a room read from one point: a lens's far face and what is near it are not there.
-      const room = { value: new THREE.WebGLCubeRenderTarget(1).texture };
-      const glassEye = dyno.dynoVec3(new THREE.Vector3());
-      const glassMiddle = dyno.dynoVec3(new THREE.Vector3());
-      const glassReach = dyno.dynoFloat(1.0);
-      const glassRoom = dyno.dynoSamplerCube(room.value);
-      let glassReady = false;     // a cube has been drawn
-      let glassStale = false;     // what is shown changed: the cube is drawn again
-      let glassBusy = false;
-      let glassFresh = false;     // a cube was just drawn: the glass is shaded from it
-      const lensShading = (ior, tint) => {
+      // GLASS AND CHROME, SHADED BY THE EYE. A part's solid glass and its polished metal come in files of
+      // their own (the index's `glass`, with its index and tint, and `mirror`): what those gaussians are
+      // made of, which is theirs whatever the eye. What they show is worked out here: the scene without
+      // them is drawn into a cube from their middle, and each gaussian takes the cube along the eye's ray
+      // mirrored at its disc and, for glass, along it bent in -- so the room turns as the camera does. Each
+      // kind has its cube, drawn with the other kind in it: the chrome shows the glass and the glass the
+      // chrome. One bend at the face the eye meets and a room read from one point: a lens's far face and
+      // whatever stands near are not there.
+      const kindOf = (which) => ({
+        which, eye: dyno.dynoVec3(new THREE.Vector3()), middle: dyno.dynoVec3(new THREE.Vector3()),
+        reach: dyno.dynoFloat(1.0), room: dyno.dynoSamplerCube(new THREE.WebGLCubeRenderTarget(1).texture),
+        ready: false, target: null,
+      });
+      const kinds = { glass: kindOf("glass"), mirror: kindOf("mirror") };
+      let shadeStale = false;   // what is shown changed: the cubes are drawn again
+      let shadeBusy = false;
+      let shadeFresh = false;   // a cube was just drawn: the gaussians are shaded from it
+      const shadingOf = (kind, ior, tint) => {
         const index = dyno.dynoFloat(ior);
         const through = dyno.dynoVec3(new THREE.Vector3(tint[0], tint[1], tint[2]));
+        const mirror = kind.which === "mirror";
         return dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
           const shade = new dyno.Dyno({
             inTypes: { gsplat: dyno.Gsplat, eye: "vec3", middle: "vec3", reach: "float", room: "samplerCube",
                        index: "float", through: "vec3" },
             outTypes: { gsplat: dyno.Gsplat },
-            inputs: { gsplat, eye: glassEye, middle: glassMiddle, reach: glassReach, room: glassRoom, index, through },
+            inputs: { gsplat, eye: kind.eye, middle: kind.middle, reach: kind.reach, room: kind.room, index, through },
             globals: () => [dyno.defineGsplat, dyno.unindent(`
               vec3 lensAxis(vec4 q, vec3 scales) {
                 vec3 axis = scales.x <= scales.y ? (scales.x <= scales.z ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0))
                                                  : (scales.y <= scales.z ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0));
                 return normalize(axis + 2.0 * cross(q.xyz, cross(q.xyz, axis) + q.w * axis));
               }
-              // The cube was drawn from the glass's middle: a ray from elsewhere is read where it would meet
-              // a ball of the room's reach about that middle.
+              // The cube was drawn from the middle of what is shaded: a ray from elsewhere is read where it
+              // would meet a ball of the room's reach about that middle.
               vec3 lensLook(vec3 from, vec3 along, vec3 middle, float reach) {
                 vec3 o = from - middle;
                 float b = dot(o, along);
@@ -207,6 +295,9 @@
                 vec3 v = normalize(p - ${inputs.eye});
                 vec3 n = lensAxis(${inputs.gsplat}.quaternion, ${inputs.gsplat}.scales);
                 if (dot(n, v) > 0.0) { n = -n; }
+                vec3 seenMirrored = texture(${inputs.room}, lensLook(p, reflect(v, n), ${inputs.middle}, ${inputs.reach})).rgb;
+                ${mirror ? `
+                vec3 light = ${inputs.through} * seenMirrored;` : `
                 float cosine = clamp(-dot(n, v), 0.0, 1.0);
                 float f0 = (${inputs.index} - 1.0) / (${inputs.index} + 1.0);
                 f0 *= f0;
@@ -214,8 +305,7 @@
                 vec3 bent = refract(v, n, 1.0 / ${inputs.index});
                 if (dot(bent, bent) < 1.0e-6) { bent = v; }
                 vec3 seenBehind = texture(${inputs.room}, lensLook(p, bent, ${inputs.middle}, ${inputs.reach})).rgb;
-                vec3 seenMirrored = texture(${inputs.room}, lensLook(p, reflect(v, n), ${inputs.middle}, ${inputs.reach})).rgb;
-                vec3 light = mirrored * seenMirrored + (1.0 - mirrored) * ${inputs.through} * ${inputs.through} * seenBehind;
+                vec3 light = mirrored * seenMirrored + (1.0 - mirrored) * ${inputs.through} * ${inputs.through} * seenBehind;`}
                 ${outputs.gsplat}.rgba.rgb = lensEncoded(light);
               }
             `),
@@ -223,37 +313,14 @@
           return { gsplat: shade.outputs.gsplat };
         });
       };
-      // The cube, drawn again when what is shown changed: the room as it stands, without its glass or the
-      // lines this page draws over it, from the middle of the glass that is shown.
-      const drawRoom = async () => {
-        const seen = lenses.filter((lens, k) => lens && k < shown);
-        if (glassBusy || seen.length === 0) return;
-        glassBusy = true;
-        glassStale = false;
-        try {
-          root.updateMatrixWorld(true);
-          const box = new THREE.Box3();
-          for (const lens of seen) box.union(lens.getBoundingBox(true).clone().applyMatrix4(lens.matrixWorld));
-          const middle = box.getCenter(new THREE.Vector3());
-          const size = box.getSize(new THREE.Vector3()).length();
-          const texture = await spark.renderCubeMap({ scene, worldCenter: middle, size: 512, near: 0.02,
-                                                      far: Math.max(across * unit * 2, 10),
-                                                      hideObjects: [...lenses.filter(Boolean), frustum, path, ...scene.children.filter((o) => o.isMesh && o.renderOrder === 11)] });
-          glassRoom.value = texture;
-          glassMiddle.value.copy(middle);
-          glassReach.value = Math.max(size * 2.0, 0.5);
-          glassFresh = true;
-          if (!glassReady) {
-            glassReady = true;
-            for (const lens of lenses) if (lens) { lens.worldModifier = lens.userData.shading; lens.updateGenerator(); }
-          }
-        } finally { glassBusy = false; }
+      const shadedShown = (which) => shaded.flatMap((list, k) => k < shown ? list.filter((s) => s.kind === which) : []);
+      // By the eye, or as the picture each was found with: the option's.
+      const applyShading = () => {
+        for (const list of shaded) for (const s of list) {
+          const wanted = settings.glass && kinds[s.kind].ready ? s.shading : undefined;
+          if (s.mesh.worldModifier !== wanted) { s.mesh.worldModifier = wanted; s.mesh.updateGenerator(); }
+        }
       };
-      let parts = index.parts.map(partOf);
-      let cameras = new Map((index.cameras ?? []).map((c) => [c.name, c]));
-      let shown = 0;            // parts drawn: the scene as it stood after that many
-      let atEnd = true;         // the timeline is at its end: new parts are shown as they arrive
-      let playing = false;
 
       // THE CAMERA BEING PROCESSED, drawn: the frustum of the frame the timeline is at -- its eye, its four
       // edges out to a few metres and the frame at their end -- and, dimmer, the path of every frame's eye.
@@ -267,12 +334,22 @@
       path.renderOrder = 9;
       path.frustumCulled = false;
       scene.add(path);
+      const marker = new THREE.Mesh(new THREE.RingGeometry(0.72, 1, 40),
+        new THREE.MeshBasicMaterial({ color: 0xffd166, depthTest: false, transparent: true, opacity: 0.95,
+                                      side: THREE.DoubleSide }));
+      marker.renderOrder = 11;
+      marker.visible = false;
+      marker.raycast = () => {};
+      scene.add(marker);
+      let frustumOf = null;     // the view the frustum is drawn for, when there is one
       const drawPath = () => {
-        const eyes = parts.filter((p) => cameras.has(p.camera)).map((p) => place(cameras.get(p.camera).eye));
+        const source = index.parts.map(partOf);
+        const eyes = source.filter((p) => cameras.has(p.camera)).map((p) => place(cameras.get(p.camera).eye));
         path.geometry.dispose();   // a path that grows wants a geometry of its new length
         path.geometry = new THREE.BufferGeometry().setFromPoints(eyes);
       };
       const drawFrustum = (view) => {
+        frustumOf = view ?? null;
         if (!view) { frustum.visible = false; return; }
         const eye = place(view.eye);
         const forward = place(view.target).sub(eye).normalize();
@@ -292,7 +369,11 @@
           lines.push(eye, far[k], far[k], far[(k + 1) % 4], near[k], near[(k + 1) % 4]);
         }
         frustum.geometry.setFromPoints(lines);
-        frustum.visible = true;
+      };
+      // What of the page's own lines is drawn: the options', and never the frustum while it is ridden.
+      const showLines = () => {
+        frustum.visible = settings.frustum && frustumOf !== null && !follow.checked;
+        path.visible = settings.path;
       };
 
       const aim = (view) => {
@@ -307,20 +388,23 @@
         shown = Math.max(0, Math.min(count, meshes.length));
         let gaussians = 0;
         meshes.forEach((mesh, k) => {
-          mesh.visible = k < shown;
-          if (lenses[k]) lenses[k].visible = k < shown;
-          if (k < shown) gaussians += parts[k].gaussians + (parts[k].glass?.gaussians ?? 0);
+          if (mesh) mesh.visible = k < shown;
+          for (const s of shaded[k]) s.mesh.visible = k < shown;
+          if (k < shown) gaussians += countOf(parts[k]);
         });
-        glassStale = true;
+        shadeStale = true;
         slider.max = String(Math.max(parts.length, 1));
         slider.value = String(shown);
+        slider.disabled = !timed();
+        playButton.disabled = !timed();
         const part = shown > 0 ? parts[shown - 1] : null;
-        const of = `${shown} of ${parts.length}${index.growing ? "+" : ""}`;
-        where.innerHTML = (index.growing ? '<span class="live">● rendering</span> · ' : "") +
-          (part && part.frame ? `frame ${of} · ${(gaussians / 1e6).toFixed(2)} M gaussians` : `part ${of}`);
-        drawFrustum(part && cameras.has(part.camera) ? cameras.get(part.camera) : null);
-        // Riding the camera, the frustum is the screen's own edge and is not drawn.
-        frustum.visible = frustum.visible && !follow.checked;
+        const of = `${shown} of ${parts.length}${index.growing && detail === 0 ? "+" : ""}`;
+        const million = `${(gaussians / 1e6).toFixed(2)} M gaussians`;
+        where.innerHTML = (index.growing && detail === 0 ? '<span class="live">● rendering</span> · ' : "") +
+          (detail > 0 ? `level ${detail} of ${levels.length} · ${million}`
+                      : part && part.frame ? `frame ${of} · ${million}` : `part ${of} · ${million}`);
+        drawFrustum(timed() && part && cameras.has(part.camera) ? cameras.get(part.camera) : null);
+        showLines();
         if (moveCamera && follow.checked && part && cameras.has(part.camera)) aim(cameras.get(part.camera));
       };
       // From outside and above, the whole of what the frames reached in view: where the frustum is seen at work.
@@ -330,85 +414,228 @@
         const far = across * unit;
         camera.position.copy(middle).add(new THREE.Vector3(-0.8 * far, 0.95 * far, 0.8 * far));
         camera.lookAt(middle.clone().add(new THREE.Vector3(0, -0.18 * far, 0)));
-        camera.fov = 40;
+        camera.fov = settings.fov;
         camera.updateProjectionMatrix();
       };
 
+      const summary = () => {
+        const total = totalOf(parts);
+        const seconds = index.parts.map(partOf).reduce((sum, p) => sum + (p.seconds ?? 0), 0);
+        const frames = index.parts.map(partOf).filter((p) => p.frame).length;
+        return `${(total / 1e6).toFixed(2)} M gaussians` +
+               (detail > 0 ? ` of ${(fullCount / 1e6).toFixed(2)} M (level ${detail})` : "") +
+               (frames > 0 ? ` · ${frames} rendered frames` : "") + (seconds > 0 ? ` · ${Math.round(seconds)} s of rendering` : "");
+      };
+      let fpsText = "";
+      const say = (text) => { status.textContent = text + (settings.fps && fpsText ? ` · ${fpsText}` : ""); };
+      let said = "loading…";
+      const report = (text) => { said = text; say(text); };
+
       // Parts are read in order, so the scene is seen growing while it loads too.
-      let loading = false;
       const loadMore = async () => {
         if (loading) return;
         loading = true;
-        while (meshes.length < parts.length) {
+        const mine = generation;
+        while (meshes.length < parts.length && mine === generation) {
           const part = parts[meshes.length];
           const mesh = new SplatMesh({ url: `./scenes/${part.file}` });
           await mesh.initialized;
+          const beside = [];
+          for (const [which, made] of [["glass", part.glass], ["mirror", part.mirror]]) {
+            if (!made) continue;
+            const other = new SplatMesh({ url: `./scenes/${made.file}` });
+            await other.initialized;
+            beside.push({ mesh: other, kind: which,
+                          shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1])) });
+          }
+          if (mine !== generation) { mesh.dispose?.(); for (const s of beside) s.mesh.dispose?.(); break; }
           mesh.visible = false;
           root.add(mesh);
-          let lens = null;
-          if (part.glass && params.get("glass") !== "0") {
-            lens = new SplatMesh({ url: `./scenes/${part.glass.file}` });
-            await lens.initialized;
-            lens.visible = false;
-            lens.userData.shading = lensShading(part.glass.ior ?? 1.5, part.glass.tint ?? [1, 1, 1]);
-            if (glassReady) { lens.worldModifier = lens.userData.shading; lens.updateGenerator(); }
-            root.add(lens);
-          }
-          lenses.push(lens);
+          for (const s of beside) { s.mesh.visible = false; root.add(s.mesh); }
           meshes.push(mesh);
+          shaded.push(beside);
+          applyShading();
           window.__scene.parts = meshes.length;
-          status.textContent = meshes.length < parts.length ? `loading… ${meshes.length} of ${parts.length} parts` : summary();
+          report(meshes.length < parts.length ? `loading… ${meshes.length} of ${parts.length} parts` : summary());
           if (atEnd && !playing) show(meshes.length, true);
           else show(shown, false);
         }
+        if (mine === generation) {
+          loading = false;
+          window.__scene.loaded = true;
+          // Spark's ray through the gaussians starts itself on the first one asked and answers from the
+          // second: one is asked here, so that the first finger laid on the scene finds what is under it.
+          if (meshes.length > 0) new THREE.Raycaster(camera.position, new THREE.Vector3(0, 0, -1)).intersectObject(meshes[0], false);
+          slow.since = performance.now();
+          slow.frames = 0;
+        }
+      };
+
+      // THE DETAIL DRAWN. The scene as it grew, or one of its levels of detail: what was drawn is let go and
+      // the other read in its place. The timeline is the grown scene's; a level is the scene whole.
+      const setDetail = (wanted) => {
+        const next = Math.max(0, Math.min(wanted, levels.length));
+        generation += 1;
         loading = false;
-        window.__scene.loaded = true;
-        // Spark's ray through the gaussians starts itself on the first one asked and answers from the
-        // second: one is asked here, so that the first finger laid on the scene finds what is under it.
-        if (meshes.length > 0) new THREE.Raycaster(camera.position, new THREE.Vector3(0, 0, -1)).intersectObject(meshes[0], false);
-      };
-      const summary = () => {
-        const total = parts.reduce((sum, p) => sum + p.gaussians + (p.glass?.gaussians ?? 0), 0);
-        const seconds = parts.reduce((sum, p) => sum + (p.seconds ?? 0), 0);
-        return `${(total / 1e6).toFixed(2)} M gaussians · ${parts.length} rendered frames` +
-               (seconds > 0 ? ` · ${Math.round(seconds)} s of rendering` : "");
-      };
-
-      overview();
-      drawPath();
-      loadMore();
-      document.getElementById("overview").addEventListener("click", () => { follow.checked = false; overview(); show(shown, false); });
-      follow.addEventListener("change", () => show(shown, true));
-
-      // A SCENE STILL BEING RENDERED: its index is read again every two seconds for the parts that came.
-      const follower = setInterval(async () => {
-        if (!index.growing) { clearInterval(follower); return; }
-        try {
-          const next = await readIndex();
-          index = next;
-          parts = next.parts.map(partOf);
-          cameras = new Map((next.cameras ?? []).map((c) => [c.name, c]));
-          drawPath();
-          loadMore();
-          if (!next.growing) show(shown, false);
-        } catch (error) { /* the index is put in place whole; a failed read is tried again */ }
-      }, 2000);
-
-      slider.addEventListener("input", () => {
+        for (const mesh of meshes) { if (mesh) { root.remove(mesh); mesh.dispose?.(); } }
+        for (const list of shaded) for (const s of list) { root.remove(s.mesh); s.mesh.dispose?.(); }
+        meshes = [];
+        shaded = [];
+        shown = 0;
+        atEnd = true;
         playing = false;
         playButton.textContent = "Play";
-        show(Number(slider.value), true);
-        atEnd = shown >= meshes.length;
-      });
-      playButton.addEventListener("click", () => {
-        playing = !playing;
-        playButton.textContent = playing ? "Pause" : "Play";
-        if (playing && shown >= meshes.length) show(0, true);
-      });
+        detail = next;
+        parts = (detail === 0 ? index.parts : levels[detail - 1].parts).map(partOf);
+        window.__scene.loaded = false;
+        window.__scene.parts = 0;
+        window.__player.detail = detail;
+        $("optDetail").value = settings.detail === "auto" ? "auto" : String(detail);
+        show(0, false);
+        loadMore();
+      };
+      // WHAT THE DEVICE CAN HOLD: gaussians it is trusted to draw at a frame rate worth having. A phone a
+      // million, a tablet or a machine short of memory two, anything else the scene as it is. The finest
+      // level within that is the one drawn; with no levels in the index, the scene itself.
+      const budget = (() => {
+        const memory = navigator.deviceMemory ?? (phone ? 4 : 8);
+        if (phone) return 1.0e6;
+        if (touchScreen || memory <= 4) return 2.0e6;
+        return Infinity;
+      })();
+      const autoDetail = () => {
+        if (fullCount <= budget || levels.length === 0) return 0;
+        const within = levels.findIndex((level) => level.gaussians <= budget);
+        return within >= 0 ? within + 1 : levels.length;
+      };
+      window.__player = { detail: 0, fps: 0, settings, budget, lowered: 0 };
 
+      // TOO SLOW: a coarser level. Once the scene is in, the frames of a few seconds are counted; under
+      // fifteen a second with a coarser level to go to, that one is drawn instead, and it is said.
+      const slow = { since: 0, frames: 0 };
+      const judge = (now) => {
+        slow.frames += 1;
+        const span = now - slow.since;
+        if (span < 4000) return;
+        const fps = slow.frames * 1000 / span;
+        window.__player.fps = fps;
+        fpsText = `${fps.toFixed(0)} fps`;
+        say(said);
+        slow.since = now;
+        slow.frames = 0;
+        if (settings.detail === "auto" && !loading && !document.hidden && fps < 15 && detail < levels.length) {
+          window.__player.lowered += 1;
+          $("detailNote").textContent = `${fps.toFixed(0)} frames a second at ${detail === 0 ? "full detail" : "level " + detail}: a coarser level is drawn.`;
+          setDetail(detail + 1);
+        }
+      };
+
+      // THE OPTIONS' PANEL.
+      const panel = $("options");
+      const openPanel = (open) => {
+        panel.classList.toggle("open", open);
+        $("optionsButton").setAttribute("aria-expanded", String(open));
+      };
+      $("optionsButton").addEventListener("click", () => openPanel(!panel.classList.contains("open")));
+      $("optionsClose").addEventListener("click", () => openPanel(false));
+      const detailSelect = $("optDetail");
+      const million = (n) => `${(n / 1e6).toFixed(2)} M`;
+      detailSelect.append(new Option(`Auto (this device: ${budget === Infinity ? "everything" : million(budget)})`, "auto"),
+                          new Option(`Full · ${million(fullCount)}`, "0"));
+      levels.forEach((level, k) => detailSelect.append(new Option(`Level ${k + 1} · ${million(level.gaussians)}`, String(k + 1))));
+      if (levels.length === 0) $("detailNote").textContent = "This scene was exported with no levels of detail.";
+      detailSelect.addEventListener("change", () => {
+        settings.detail = detailSelect.value === "auto" ? "auto" : detailSelect.value === "0" ? "full" : detailSelect.value;
+        remember();
+        $("detailNote").textContent = "";
+        setDetail(settings.detail === "auto" ? autoDetail() : Number(detailSelect.value));
+      });
+      // The scenes there are to see, where the site lists them (scenes/scenes.json).
+      const sceneSelect = $("optScene");
+      sceneSelect.append(new Option(index.title ?? name, name));
+      fetch("./scenes/scenes.json", { cache: "no-store" }).then((r) => r.ok ? r.json() : []).then((list) => {
+        if (!Array.isArray(list) || list.length === 0) return;
+        sceneSelect.replaceChildren(...list.map((s) => new Option(s.title ?? s.name, s.name)));
+        if (!list.some((s) => s.name === name)) sceneSelect.append(new Option(name, name));
+        sceneSelect.value = name;
+      }).catch(() => {});
+      sceneSelect.addEventListener("change", () => {
+        const to = new URLSearchParams(location.search);
+        to.set("scene", sceneSelect.value);
+        to.delete("detail");
+        location.search = to.toString();
+      });
       const controls = new SparkControls({ canvas });
-      controls.fpsMovement.moveSpeed = 2.0;
+      const bindRange = (id, out, key, text, apply) => {
+        const input = $(id);
+        const set = () => { $(out).textContent = text(settings[key]); apply(settings[key]); };
+        input.value = String(settings[key]);
+        input.addEventListener("input", () => { settings[key] = Number(input.value); remember(); set(); });
+        set();
+        return () => { input.value = String(settings[key]); set(); };
+      };
+      const bindCheck = (id, key, apply) => {
+        const input = $(id);
+        input.checked = Boolean(settings[key]);
+        input.addEventListener("change", () => { settings[key] = input.checked; remember(); apply(settings[key]); });
+        apply(settings[key]);
+        return () => { input.checked = Boolean(settings[key]); apply(settings[key]); };
+      };
+      const refresh = [
+        bindRange("optPixels", "outPixels", "pixels", (v) => `${v.toFixed(2)}×`, (v) => { renderer.setPixelRatio(v); renderer.setSize(innerWidth, innerHeight); }),
+        bindRange("optFov", "outFov", "fov", (v) => `${v}°`, (v) => { camera.fov = v; camera.updateProjectionMatrix(); }),
+        bindRange("optSpeed", "outSpeed", "speed", (v) => `${v.toFixed(2)}`, (v) => { controls.fpsMovement.moveSpeed = v; }),
+        bindRange("optRate", "outRate", "rate", (v) => `${v}`, () => {}),
+        bindCheck("optGlass", "glass", () => { applyShading(); shadeStale = true; }),
+        bindCheck("optFrustum", "frustum", () => showLines()),
+        bindCheck("optPath", "path", () => showLines()),
+        bindCheck("optMarker", "marker", () => {}),
+        bindCheck("optLoop", "loop", () => {}),
+        bindCheck("optFps", "fps", () => say(said)),
+      ];
+      $("optCube").value = String(settings.cube);
+      $("optCube").addEventListener("change", () => { settings.cube = Number($("optCube").value); remember(); shadeStale = true; });
+      $("optReset").addEventListener("click", () => {
+        Object.assign(settings, defaults);
+        remember();
+        for (const again of refresh) again();
+        $("optCube").value = String(settings.cube);
+        detailSelect.value = "auto";
+        $("detailNote").textContent = "";
+        setDetail(autoDetail());
+      });
 
+      // The cubes, drawn again when what is shown changed: the room as it stands from the middle of each
+      // kind that is shown, without that kind or the lines this page draws over the scene.
+      const drawRooms = async () => {
+        if (shadeBusy || !settings.glass) { shadeStale = false; return; }
+        shadeBusy = true;
+        shadeStale = false;
+        try {
+          root.updateMatrixWorld(true);
+          for (const kind of Object.values(kinds)) {
+            const seen = shadedShown(kind.which);
+            if (seen.length === 0) continue;
+            const box = new THREE.Box3();
+            for (const s of seen) box.union(s.mesh.getBoundingBox(true).clone().applyMatrix4(s.mesh.matrixWorld));
+            const middle = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3()).length();
+            const hidden = [...shaded.flat().filter((s) => s.kind === kind.which).map((s) => s.mesh), frustum, path, marker];
+            // Spark keeps one cube, on its class, and would draw every kind into it: each kind's own is put
+            // there for its turn and taken back after.
+            SparkRenderer.cubeRender = kind.target ?? undefined;
+            const texture = await spark.renderCubeMap({ scene, worldCenter: middle, size: settings.cube, near: 0.02,
+                                                        far: Math.max(across * unit * 2, 10), hideObjects: hidden });
+            kind.target = SparkRenderer.cubeRender;
+            kind.room.value = texture;
+            kind.middle.value.copy(middle);
+            kind.reach.value = Math.max(size * 2.0, 0.5);
+            kind.ready = true;
+          }
+          applyShading();
+          shadeFresh = true;
+        } finally { shadeBusy = false; }
+      };
       // TURNING ABOUT A POINT, on a touch screen. A first finger laid down and kept still fixes a point --
       // the gaussian under it, or where the view is aimed if there is none -- and a second finger then
       // turns the camera about that point: sideways about the scene's up, up and down about the camera's
@@ -416,20 +643,13 @@
       // the ones there were (one finger looks, two move).
       const pivot = { finger: null, at: null, timer: 0, held: false, turner: null, point: new THREE.Vector3() };
       window.__pivot = pivot;
-      const marker = new THREE.Mesh(new THREE.RingGeometry(0.72, 1, 40),
-        new THREE.MeshBasicMaterial({ color: 0xffd166, depthTest: false, transparent: true, opacity: 0.95,
-                                      side: THREE.DoubleSide }));
-      marker.renderOrder = 11;
-      marker.visible = false;
-      marker.raycast = () => {};
-      scene.add(marker);
       const quiet = () => {
         // Spark's own gestures saw the same fingers: what it kept of them is dropped, so it does not jump.
         const own = controls.pointerControls;
         own.rotating = null;
         own.sliding = null;
         own.dualPress = false;
-        for (const name of ["moveVelocity", "rotateVelocity"]) own[name]?.set?.(0, 0, 0);
+        for (const key of ["moveVelocity", "rotateVelocity"]) own[key]?.set?.(0, 0, 0);
       };
       const fixPoint = () => {
         const box = canvas.getBoundingClientRect();
@@ -437,7 +657,8 @@
                                       -((pivot.at.y - box.top) / box.height) * 2 + 1);
         const ray = new THREE.Raycaster();
         ray.setFromCamera(ndc, camera);
-        const hits = ray.intersectObjects([...meshes, ...lenses.filter(Boolean)].filter((m) => m.visible), false);
+        const drawn = [...meshes, ...shaded.flat().map((s) => s.mesh)].filter((m) => m && m.visible);
+        const hits = ray.intersectObjects(drawn, false);
         if (hits.length > 0) pivot.point.copy(hits[0].point);
         else {
           // Nothing under the finger: as far along it as the middle of the scene is from the eye.
@@ -448,7 +669,7 @@
         pivot.held = true;
         controls.pointerControls.enable = false;
         quiet();
-        marker.visible = true;
+        marker.visible = settings.marker;
       };
       const release = () => {
         clearTimeout(pivot.timer);
@@ -498,17 +719,69 @@
       };
       addEventListener("pointerup", lifted, true);
       addEventListener("pointercancel", lifted, true);
+
+      // THE GRAPHICS CONTEXT LOST: the browser took it back, which on a phone is memory. The page is read
+      // again a level coarser where there is one; where there is none it says so.
+      canvas.addEventListener("webglcontextlost", (event) => {
+        event.preventDefault();
+        if (detail < levels.length) {
+          const to = new URLSearchParams(location.search);
+          to.set("detail", String(detail + 1));
+          report("the browser took its graphics back: reading the scene again, coarser…");
+          setTimeout(() => { location.search = to.toString(); }, 800);
+        } else {
+          report("the browser took its graphics back, and this scene has no coarser level to draw");
+        }
+      });
+
+      overview();
+      drawPath();
+      setDetail(settings.detail === "auto" ? autoDetail()
+                : settings.detail === "full" ? 0 : Number(settings.detail) || 0);
+      $("overview").addEventListener("click", () => { follow.checked = false; overview(); show(shown, false); });
+      follow.addEventListener("change", () => show(shown, true));
+
+      // A SCENE STILL BEING RENDERED: its index is read again every two seconds for the parts that came.
+      const follower = setInterval(async () => {
+        if (!index.growing) { clearInterval(follower); return; }
+        try {
+          const next = await readIndex();
+          index = next;
+          cameras = new Map((next.cameras ?? []).map((c) => [c.name, c]));
+          drawPath();
+          if (detail === 0) {
+            parts = next.parts.map(partOf);
+            loadMore();
+            if (!next.growing) show(shown, false);
+          }
+        } catch (error) { /* the index is put in place whole; a failed read is tried again */ }
+      }, 2000);
+
+      slider.addEventListener("input", () => {
+        playing = false;
+        playButton.textContent = "Play";
+        show(Number(slider.value), true);
+        atEnd = shown >= meshes.length;
+      });
+      playButton.addEventListener("click", () => {
+        playing = !playing;
+        playButton.textContent = playing ? "Pause" : "Play";
+        if (playing && shown >= meshes.length) show(0, true);
+      });
+
       let last = performance.now();
       let since = 0;
+      const lastEye = new THREE.Vector3(Infinity, 0, 0);
       renderer.setAnimationLoop((now) => {
         const dt = Math.min((now - last) / 1000, 0.1);
         last = now;
         if (playing) {
-          // Ten frames a second: the scene as it grew.
+          // The scene as it grew, at the options' rate.
           since += dt;
-          if (since >= 0.1) {
+          if (since >= 1 / settings.rate) {
             since = 0;
             if (shown < meshes.length) show(shown + 1, true);
+            else if (settings.loop && !index.growing) show(0, true);
             else if (!index.growing) { playing = false; playButton.textContent = "Play"; }
             atEnd = shown >= meshes.length;
           }
@@ -519,15 +792,17 @@
           marker.quaternion.copy(camera.quaternion);
           marker.scale.setScalar(camera.position.distanceTo(pivot.point) * 0.018);
         }
-        // The eye moved, or the cube is new: the glass is shaded again. A gaussian's colour is made when
-        // its mesh says it changed, and a value handed to the shader does not say so by itself.
-        if (glassReady && (!glassEye.value.equals(camera.position) || glassFresh)) {
-            glassEye.value.copy(camera.position);
-            glassFresh = false;
-            for (let k = 0; k < shown; ++k) if (lenses[k]) lenses[k].updateVersion();
+        // The eye moved, or a cube is new: glass and chrome are shaded again. A gaussian's colour is made
+        // when its mesh says it changed, and a value handed to the shader does not say so by itself.
+        if (settings.glass && (!lastEye.equals(camera.position) || shadeFresh)) {
+          lastEye.copy(camera.position);
+          shadeFresh = false;
+          for (const kind of Object.values(kinds)) kind.eye.value.copy(camera.position);
+          for (let k = 0; k < shown; ++k) for (const s of shaded[k]) if (s.mesh.worldModifier) s.mesh.updateVersion();
         }
-        if (glassStale && !loading) drawRoom();
+        if (shadeStale && !loading) drawRooms();
         renderer.render(scene, camera);
+        if (!loading && window.__scene.loaded) judge(now);
       });
     } catch (error) {
       window.__scene.error = String(error);

@@ -22447,3 +22447,59 @@ What ixwin taught:
 - The Vulkan shoot against the Metal one, gaussian for gaussian or frame for frame.
 - Why `stage` on Vulkan takes what it takes a pass.
 - Nine million gaussians on a phone: the page reads every part; a scene this size wants the cut on the web.
+
+## Levels of detail for a viewer, mirrors apart, and a player with its options (14 Nov)
+
+The user: not a crowned knight but one of chrome all over; the preview must fit the device, or show a level of
+detail where it cannot (a conversion after the render); every option in the player; and QA on ixwin, on Linux
+and on Windows.
+
+- **Levels, after the render** (`neural-scene export --levels N,N,...`). The scene's own structure is the
+  tree: a look's gaussians keep the width of what they were laid over, and the coarse ones a finer look
+  refined are still on disk. `Discovery::cut`'s rule asked with widths in the scene's units in place of
+  pixels (`Discovery::worldWidths`: a depth of one, a focal length of one) is a level whatever the eye; the
+  width for a budget is read off the same histogram of spans the budget of a view uses. No merge is made and
+  nothing is fitted: a level is gaussians a look left.
+- **Chosen on the device.** Which records a level draws and which are lenses, mirrors or the rest is a kernel
+  (`scene_level.slang`, `Discovery::recordsOf`); the export that picked lenses by reading fields on the CPU
+  is gone. What comes back is laid end to end for a part's file.
+- **Mirrors apart**, as glass was: polished metal (metallic from 0.5, roughness to 0.12) in
+  `<stem>_NNN_mirror.spz`, named `mirror` in the index. The page shades it as a mirror from a cube.
+- **The page.** It draws the level the device is trusted with -- a phone a million gaussians, a touch screen
+  or a machine of 4 GB two, anything else the scene as it grew -- and where four seconds of frames come under
+  fifteen a second it goes a level coarser and says so; a graphics context the browser takes back reads the
+  page again a level coarser. Glass and chrome each have their own cube, drawn with the other in it, so the
+  chrome shows the glass. The options are a panel: scene (`scenes/scenes.json`), detail, resolution, field of
+  view, shading by the eye, the cube's size, move speed, the frustum, the path, the pivot's marker, the rate
+  of playback and its loop, the frame rate read out, and a reset; kept between visits.
+
+Measured on the eight frames at 1080 the Windows shoot left (2 187 142 gaussians standing):
+
+| budget | width, scene units (cm) | gaussians | parts |
+|---|---|---|---|
+| the scene | -- | 2 187 142 | 8, by frame |
+| 2 000 000 | 0.788 | 1 693 122 | 2 |
+| 1 000 000 | 1.576 | 843 810 | 1 |
+| 500 000 | 2.229 | 429 515 | 1 |
+| 250 000 | 4.269 | 214 270 | 1 |
+
+37 MB with the levels against 20 for the scene alone. CUDA under Linux and Vulkan under Windows write the
+same counts at every level. The page in Chrome on that machine (RTX 3070): the scene at 56 frames a second;
+as a phone (390 px, touch) it reads level 2 by itself, 0.84 million, at 60; `?detail=4` reads the fourth and
+the panel changes it. On the Mac, under a shoot that held the GPU, the page drew two frames a second, went a
+level coarser by itself, and then lost its context: which is how the two fallbacks were first seen to work.
+
+QA, `[scene]` (nine cases, 218 assertions): passed on CUDA under WSL and on Vulkan under Windows. Metal not
+run: the Mac was rendering.
+
+### Not done
+
+- **A level is not a merge.** Where only one look ever saw a surface there is nothing coarser to draw: the
+  level keeps the fine gaussians and goes over its budget there. `LodBuilder`'s merge would fill that in.
+- **The device is guessed** from the pointer, the screen and `deviceMemory`, which Safari does not give; the
+  frame rate is what corrects the guess, after the scene is in.
+- **A level has no timeline**: the scene whole, no frames.
+- **`shoot --grow`** still sets lenses apart on the CPU and no mirrors.
+- **The chrome in the engine**: `render --glass` shades lenses and nothing else; a mirror is a picture there.
+- **One cube a kind**, from the middle of all of that kind: two glass things far apart share it.
+- A real phone. Chrome's emulation is what was driven.

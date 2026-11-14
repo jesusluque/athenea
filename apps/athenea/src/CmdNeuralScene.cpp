@@ -108,6 +108,7 @@ struct SceneOptions {
     uint64_t                 budget = 0;
     unsigned                 part = 1200000;
     bool                     byFrame = false;
+    std::vector<uint64_t>    levels;
     std::string              grow;
     float                    growExposure = 0.0F;
     float                    morph = 0.0F;
@@ -1345,6 +1346,10 @@ struct ExportedPart {
     uint32_t             glassGaussians = 0;
     float                glassIor = 1.0F;
     std::array<float, 3> glassTint{1.0F, 1.0F, 1.0F};
+    /// And where it holds polished metal, those in a file of their own too: a mirror shows what stands
+    /// before it, which is the eye's to work out as a lens's is.
+    std::string          mirrorFile;
+    uint32_t             mirrorGaussians = 0;
     uint32_t    frame = 0;
     double      time = 0.0;
     std::string camera;
@@ -1353,22 +1358,30 @@ struct ExportedPart {
 
 /// THE INDEX A VIEWER READS, written whole beside its parts and put in place by a rename: a file that is
 /// read while it grows is never read half written. `growing` says more parts may come.
+/// A level of detail of a scene handed on: the budget it was asked for, the width (in the scene's units) a
+/// gaussian is drawn up to in place of the finer ones laid over it, and its parts.
+struct ExportedLevel {
+    uint64_t                  budget = 0;
+    float                     width = 0.0F;
+    std::vector<ExportedPart> parts;
+};
+
 Result<void> writeExportIndex(const std::filesystem::path& stem, const io::NeuralScene& scene,
                               const std::vector<ExportedPart>& parts, const std::array<float, 3>& low,
-                              const std::array<float, 3>& high, bool growing) {
+                              const std::array<float, 3>& high, bool growing,
+                              const std::vector<ExportedLevel>* levels = nullptr) {
     return platform::writeAtomically(stem.string() + ".json", [&](const std::filesystem::path& partial) -> Result<void> {
         std::ofstream index(partial);
         uint64_t total = 0;
         for (const ExportedPart& part : parts) {
-            total += part.gaussians + part.glassGaussians;
+            total += part.gaussians + part.glassGaussians + part.mirrorGaussians;
         }
         index << "{\n  \"name\": \"" << scene.name << "\",\n  \"upAxis\": \"" << scene.upAxis
               << "\",\n  \"metersPerUnit\": " << scene.metersPerUnit << ",\n  \"growing\": " << (growing ? "true" : "false")
               << ",\n  \"gaussians\": " << total << ",\n  \"min\": [" << low[0] << ", " << low[1] << ", " << low[2]
               << "],\n  \"max\": [" << high[0] << ", " << high[1] << ", " << high[2] << "],\n  \"parts\": [";
-        for (size_t k = 0; k < parts.size(); ++k) {
-            const ExportedPart& part = parts[k];
-            index << (k != 0 ? ",\n    " : "\n    ") << "{\"file\": \"" << part.file << "\", \"gaussians\": " << part.gaussians;
+        const auto writePart = [&](const ExportedPart& part, bool first, const char* indent) {
+            index << (first ? "\n" : ",\n") << indent << "{\"file\": \"" << part.file << "\", \"gaussians\": " << part.gaussians;
             if (part.frame != 0) {
                 index << ", \"frame\": " << part.frame << ", \"time\": " << part.time << ", \"camera\": \"" << part.camera
                       << "\", \"seconds\": " << part.seconds;
@@ -1378,9 +1391,35 @@ Result<void> writeExportIndex(const std::filesystem::path& stem, const io::Neura
                       << ", \"ior\": " << part.glassIor << ", \"tint\": [" << part.glassTint[0] << ", "
                       << part.glassTint[1] << ", " << part.glassTint[2] << "]}";
             }
+            if (!part.mirrorFile.empty()) {
+                index << ", \"mirror\": {\"file\": \"" << part.mirrorFile << "\", \"gaussians\": " << part.mirrorGaussians << "}";
+            }
             index << "}";
+        };
+        for (size_t k = 0; k < parts.size(); ++k) {
+            writePart(parts[k], k == 0, "    ");
         }
-        index << "\n  ],\n  \"cameras\": [";
+        index << "\n  ],";
+        if (levels != nullptr && !levels->empty()) {
+            // THE LEVELS OF DETAIL, coarser one after another: the scene whole at each, for a device that
+            // cannot draw the finest. `width` is the level's threshold in the scene's units.
+            index << "\n  \"levels\": [";
+            for (size_t l = 0; l < levels->size(); ++l) {
+                const ExportedLevel& level = (*levels)[l];
+                uint64_t count = 0;
+                for (const ExportedPart& part : level.parts) {
+                    count += part.gaussians + part.glassGaussians + part.mirrorGaussians;
+                }
+                index << (l != 0 ? ",\n    " : "\n    ") << "{\"budget\": " << level.budget << ", \"width\": " << level.width
+                      << ", \"gaussians\": " << count << ", \"parts\": [";
+                for (size_t k = 0; k < level.parts.size(); ++k) {
+                    writePart(level.parts[k], k == 0, "      ");
+                }
+                index << "\n    ]}";
+            }
+            index << "\n  ],";
+        }
+        index << "\n  \"cameras\": [";
         for (size_t k = 0; k < scene.cameras.size(); ++k) {
             const io::NeuralSceneCamera& c = scene.cameras[k];
             index << (k != 0 ? ",\n    " : "\n    ") << "{\"name\": \"" << c.name << "\", \"eye\": [" << c.eye[0] << ", "
@@ -2481,39 +2520,126 @@ int runExport(const SceneOptions& o) {
     const std::filesystem::path given = o.output;
     std::error_code made;
     std::filesystem::create_directories(given.parent_path(), made);
+    auto loader = scene::CloudLoader::create(library);
+    if (!loader) return report(loader.error());
+    // WHAT A PIECE HANDS ON AT A LEVEL, BY KIND. The piece's records go to the device once; the cut -- asked
+    // in the scene's own units, `width` of them (0: the finest there is) -- says which are drawn, and the
+    // device sets those apart as lenses, mirrors and the rest (Discovery::recordsOf). What comes back is
+    // laid end to end with the other pieces' for a part's file: copied, not computed.
     std::vector<float> records;
     LensRecords lenses;
+    LensRecords mirrors;
     uint32_t held = 0;
     uint32_t floats = 0;
     uint64_t bytes = 0;
-    std::vector<ExportedPart> parts;
+    const render::Projection units = render::Discovery::worldWidths();
+    const auto takePiece = [&](const io::NeuralScenePiece& piece, float width) -> Result<uint32_t> {
+        if (std::filesystem::path(piece.cloud).extension() != ".athg") {
+            return Error::make(ErrorCode::Unsupported, "piece {} is not a render's (.athg)", piece.id);
+        }
+        auto forCut = loadForCut(library, *loader, *discovery, directory, piece);
+        if (!forCut) return std::move(forCut).error();
+        auto read = io::readGaussians(directory / piece.cloud);
+        if (!read) return std::move(read).error();
+        if (!renderRecordOf(read->floats) || (floats != 0 && read->floats != floats)) {
+            return Error::make(ErrorCode::Unsupported, "piece {}: records of {} floats among records of {}", piece.id,
+                               read->floats, floats);
+        }
+        floats = read->floats;
+        auto plan = discovery->planCut(forCut->cloud, forCut->gone.valid() ? &forCut->gone : nullptr,
+                                       forCut->refined.valid() ? &forCut->refined : nullptr,
+                                       forCut->parent.valid() ? &forCut->parent : nullptr, units, width, asOf);
+        if (!plan) return std::move(plan).error();
+        if (plan->drawn == 0) {
+            return uint32_t{0};
+        }
+        auto onDevice = gpu::Buffer::fromSpan<float>(**device, std::span<const float>(read->records), "export.piece");
+        if (!onDevice) return std::move(onDevice).error();
+        uint32_t matter = 0;
+        const std::pair<render::Discovery::RecordKind, std::vector<float>*> kinds[3] = {
+            {render::Discovery::RecordKind::Matter, &records},
+            {render::Discovery::RecordKind::Lens, &lenses.records},
+            {render::Discovery::RecordKind::Mirror, &mirrors.records}};
+        for (const auto& [kind, into] : kinds) {
+            auto set = discovery->recordsOf(*onDevice, read->count, floats, plan->flags, kind);
+            if (!set) return std::move(set).error();
+            if (set->count == 0) {
+                continue;
+            }
+            auto back = set->records.readAll<float>(**device);
+            if (!back) return std::move(back).error();
+            back->resize(size_t{set->count} * floats);
+            if (kind == render::Discovery::RecordKind::Lens) {
+                if (lenses.count == 0 && floats >= render::kRenderRecordTint + 3) {
+                    lenses.ior = (*back)[render::kRenderRecordIndex];
+                    lenses.tint = {(*back)[render::kRenderRecordTint], (*back)[render::kRenderRecordTint + 1],
+                                   (*back)[render::kRenderRecordTint + 2]};
+                }
+                lenses.count += set->count;
+            } else if (kind == render::Discovery::RecordKind::Mirror) {
+                mirrors.count += set->count;
+            } else {
+                matter = set->count;
+            }
+            into->insert(into->end(), back->begin(), back->end());
+        }
+        return matter;
+    };
     std::array<float, 3> low{1.0e30F, 1.0e30F, 1.0e30F};
     std::array<float, 3> high{-1.0e30F, -1.0e30F, -1.0e30F};
     const float gain = std::exp2(o.exposure);
-    const auto flush = [&](const io::NeuralSceneFrame* frame, uint32_t frameNumber) -> Result<void> {
-        if (held == 0) {
+    // What is held, written as a part of `into` under `prefix`: its file, and beside it its glass and its
+    // mirrors where it has any.
+    const auto flush = [&](std::vector<ExportedPart>& into, const std::string& prefix, const io::NeuralSceneFrame* frame,
+                           uint32_t frameNumber) -> Result<void> {
+        if (held + lenses.count + mirrors.count == 0) {
             return ok();
         }
-        char name[32];
-        std::snprintf(name, sizeof(name), "_%03zu.spz", parts.size());
-        const std::filesystem::path path = given.string() + name;
-        auto size = writeSpzPart(**device, *discovery, *pack, std::span<const float>(records), held, floats, gain, path, low, high);
-        if (!size) return std::move(size).error();
+        char number[16];
+        std::snprintf(number, sizeof(number), "_%03zu", into.size());
         ExportedPart part;
-        part.file = path.filename().string();
-        part.gaussians = held;
+        const auto write = [&](const std::vector<float>& of, uint32_t count, const char* suffix) -> Result<std::string> {
+            const std::filesystem::path path = prefix + number + suffix + ".spz";
+            auto size = writeSpzPart(**device, *discovery, *pack, std::span<const float>(of), count, floats, gain, path,
+                                     low, high);
+            if (!size) return std::move(size).error();
+            bytes += *size;
+            return path.filename().string();
+        };
+        if (held != 0) {
+            auto file = write(records, held, "");
+            if (!file) return std::move(file).error();
+            part.file = *file;
+            part.gaussians = held;
+        }
         if (lenses.count != 0) {
-            std::snprintf(name, sizeof(name), "_%03zu_glass.spz", parts.size());
-            const std::filesystem::path glassPath = given.string() + name;
-            auto glassSize = writeSpzPart(**device, *discovery, *pack, std::span<const float>(lenses.records),
-                                          lenses.count, floats, gain, glassPath, low, high);
-            if (!glassSize) return std::move(glassSize).error();
-            bytes += *glassSize;
-            part.glassFile = glassPath.filename().string();
+            auto file = write(lenses.records, lenses.count, "_glass");
+            if (!file) return std::move(file).error();
+            part.glassFile = *file;
             part.glassGaussians = lenses.count;
             part.glassIor = lenses.ior;
             part.glassTint = lenses.tint;
-            lenses = LensRecords{};
+        }
+        if (mirrors.count != 0) {
+            auto file = write(mirrors.records, mirrors.count, "_mirror");
+            if (!file) return std::move(file).error();
+            part.mirrorFile = *file;
+            part.mirrorGaussians = mirrors.count;
+        }
+        if (part.file.empty()) {
+            // A part of glass or mirror alone still names a file a viewer reads first: its glass's, or its
+            // mirror's, as the part itself.
+            if (!part.glassFile.empty()) {
+                part.file = part.glassFile;
+                part.gaussians = part.glassGaussians;
+                part.glassFile.clear();
+                part.glassGaussians = 0;
+            } else {
+                part.file = part.mirrorFile;
+                part.gaussians = part.mirrorGaussians;
+                part.mirrorFile.clear();
+                part.mirrorGaussians = 0;
+            }
         }
         if (frame != nullptr) {
             part.frame = frameNumber;
@@ -2521,16 +2647,24 @@ int runExport(const SceneOptions& o) {
             part.camera = frame->camera;
             part.seconds = frame->seconds;
         }
-        parts.push_back(part);
-        bytes += *size;
+        into.push_back(part);
         held = 0;
         records.clear();
+        lenses = LensRecords{};
+        mirrors = LensRecords{};
         return ok();
     };
-    const auto wanted = [&](const io::NeuralScenePiece& piece) {
-        return !((asOf != 0 && piece.foundIn > asOf) ||
-                 (asOf == 0 && piece.gaussians != 0 && piece.removed + piece.refinedCount >= piece.gaussians));
+    const auto wanted = [&](const io::NeuralScenePiece& piece, bool finest) {
+        if (asOf != 0 && piece.foundIn > asOf) {
+            return false;
+        }
+        if (piece.gaussians == 0) {
+            return true;
+        }
+        // The finest level draws nothing of a piece finer looks were laid all over; a coarser one may.
+        return (finest ? piece.removed + piece.refinedCount : piece.removed) < piece.gaussians;
     };
+    std::vector<ExportedPart> parts;
     if (o.byFrame) {
         if (scene->frames.empty()) {
             err("--by-frame wants a scene with stored frames (neural-scene shoot)\n");
@@ -2539,47 +2673,106 @@ int runExport(const SceneOptions& o) {
         for (size_t f = 0; f < scene->frames.size(); ++f) {
             const io::NeuralSceneFrame& frame = scene->frames[f];
             for (const io::NeuralScenePiece& piece : scene->pieces) {
-                if (!wanted(piece) || piece.foundIn < frame.firstSnapshot || piece.foundIn > frame.lastSnapshot) {
+                if (!wanted(piece, true) || piece.foundIn < frame.firstSnapshot || piece.foundIn > frame.lastSnapshot) {
                     continue;
                 }
-                auto kept = standingRecords(directory, piece, asOf, floats, records, &lenses);
+                auto kept = takePiece(piece, 0.0F);
                 if (!kept) return report(kept.error());
                 held += *kept;
             }
-            if (auto done = flush(&frame, static_cast<uint32_t>(f) + 1); !done) return report(done.error());
+            if (auto done = flush(parts, given.string(), &frame, static_cast<uint32_t>(f) + 1); !done) {
+                return report(done.error());
+            }
         }
     } else {
         for (const io::NeuralScenePiece& piece : scene->pieces) {
-            if (!wanted(piece)) {
+            if (!wanted(piece, true)) {
                 continue;
             }
-            std::vector<float> of;
-            auto kept = standingRecords(directory, piece, asOf, floats, of, &lenses);
+            auto kept = takePiece(piece, 0.0F);
             if (!kept) return report(kept.error());
-            for (uint32_t g = 0; g < *kept; ++g) {
-                const auto first = of.begin() + static_cast<std::ptrdiff_t>(size_t{g} * floats);
-                records.insert(records.end(), first, first + floats);
-                if (++held >= o.part) {
-                    if (auto done = flush(nullptr, 0); !done) return report(done.error());
-                }
+            held += *kept;
+            if (held + lenses.count + mirrors.count >= o.part) {
+                if (auto done = flush(parts, given.string(), nullptr, 0); !done) return report(done.error());
             }
         }
-        if (auto done = flush(nullptr, 0); !done) return report(done.error());
+        if (auto done = flush(parts, given.string(), nullptr, 0); !done) return report(done.error());
     }
     if (parts.empty()) {
         err("nothing stands in the scene at that snapshot\n");
         return kExitFailure;
     }
-    if (auto written = writeExportIndex(given, *scene, parts, low, high, false); !written) return report(written.error());
     uint64_t total = 0;
     uint64_t largest = 0;
     for (const ExportedPart& part : parts) {
-        total += part.gaussians;
+        total += part.gaussians + part.glassGaussians + part.mirrorGaussians;
         largest = std::max<uint64_t>(largest, part.gaussians);
     }
-    out("%s: %llu gaussians in %zu parts (the largest %llu), %.1f MB; wrote %s.json\n", scene->name.c_str(),
-        static_cast<unsigned long long>(total), parts.size(), static_cast<unsigned long long>(largest),
-        static_cast<double>(bytes) / 1048576.0, given.string().c_str());
+    // THE LEVELS OF DETAIL (--levels): the scene whole at each budget, coarser one after another, for a
+    // device that cannot draw the finest. A level is the cut at a width in the scene's own units -- a
+    // gaussian up to that wide drawn in place of the finer ones laid over it -- and the width is the
+    // finest that draws no more than the budget, read off the histogram every piece adds its spans to.
+    std::vector<ExportedLevel> levels;
+    for (size_t l = 0; l < o.levels.size(); ++l) {
+        const uint64_t budget = o.levels[l];
+        if (budget >= total) {
+            out("a level of %llu gaussians is the scene itself (%llu): not written\n",
+                static_cast<unsigned long long>(budget), static_cast<unsigned long long>(total));
+            continue;
+        }
+        auto histogram = discovery->cutHistogram();
+        if (!histogram) return report(histogram.error());
+        for (const io::NeuralScenePiece& piece : scene->pieces) {
+            if (!wanted(piece, false)) {
+                continue;
+            }
+            auto forCut = loadForCut(library, *loader, *discovery, directory, piece);
+            if (!forCut) return report(forCut.error());
+            if (auto added = discovery->spans(forCut->cloud, forCut->gone.valid() ? &forCut->gone : nullptr,
+                                              forCut->refined.valid() ? &forCut->refined : nullptr,
+                                              forCut->parent.valid() ? &forCut->parent : nullptr, units, asOf,
+                                              *histogram);
+                !added) {
+                return report(added.error());
+            }
+        }
+        uint64_t said = 0;
+        auto width = discovery->thresholdFor(*histogram, budget, &said);
+        if (!width) return report(width.error());
+        ExportedLevel level;
+        level.budget = budget;
+        level.width = *width;
+        char name[32];
+        std::snprintf(name, sizeof(name), "_lod%zu", levels.size() + 1);
+        const std::string prefix = given.string() + name;
+        for (const io::NeuralScenePiece& piece : scene->pieces) {
+            if (!wanted(piece, false)) {
+                continue;
+            }
+            auto kept = takePiece(piece, *width);
+            if (!kept) return report(kept.error());
+            held += *kept;
+            if (held + lenses.count + mirrors.count >= o.part) {
+                if (auto done = flush(level.parts, prefix, nullptr, 0); !done) return report(done.error());
+            }
+        }
+        if (auto done = flush(level.parts, prefix, nullptr, 0); !done) return report(done.error());
+        uint64_t drawn = 0;
+        for (const ExportedPart& part : level.parts) {
+            drawn += part.gaussians + part.glassGaussians + part.mirrorGaussians;
+        }
+        out("level %zu: a budget of %llu, a width of %.3f units: %llu gaussians in %zu parts\n", levels.size() + 1,
+            static_cast<unsigned long long>(budget), static_cast<double>(*width), static_cast<unsigned long long>(drawn),
+            level.parts.size());
+        levels.push_back(std::move(level));
+    }
+    if (auto written = writeExportIndex(given, *scene, parts, low, high, false, &levels); !written) {
+        return report(written.error());
+    }
+    out("%s: %llu gaussians in %zu parts (the largest %llu), %zu levels of detail, %.1f MB in all; wrote %s.json\n",
+        scene->name.c_str(), static_cast<unsigned long long>(total), parts.size(),
+        static_cast<unsigned long long>(largest), levels.size(), static_cast<double>(bytes) / 1048576.0,
+        given.string().c_str());
     return 0;
 }
 
@@ -3072,6 +3265,7 @@ void addNeuralScene(CLI::App& app) {
     exported->add_option("--at", o.at, "the scene as it stood at this time (default: as it stands)");
     exported->add_option("--snapshot", o.snapshot, "the same by a snapshot of the manifest's, counted from one");
     exported->add_option("--part", o.part, "the most gaussians a file holds");
+    exported->add_option("--levels", o.levels, "levels of detail beside the scene: a budget of gaussians each, the scene whole within it, written as <stem>_lodK_NNN.spz and named in the index")->delimiter(',');
     exported->add_flag("--by-frame", o.byFrame, "a part a rendered frame, holding what that frame found: the scene in the order it grew");
     exported->add_option("--exposure", o.exposure, "stops on the scene's light before it is encoded");
     exported->add_option("-o,--output", o.output, "a path with no extension: <stem>_NNN.spz and <stem>.json")->required();
