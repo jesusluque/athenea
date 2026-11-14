@@ -22500,7 +22500,7 @@ run: the Mac was rendering.
   frame rate is what corrects the guess, after the scene is in.
 - **A level has no timeline**: the scene whole, no frames.
 - **`shoot --grow`** still sets lenses apart on the CPU and no mirrors.
-- **The chrome in the engine**: `render --glass` shades lenses and nothing else; a mirror is a picture there.
+- **The chrome in the engine**: done since (below); a mirror ray reads one gaussian, so a mirror in a mirror is the other's picture.
 - **One cube a kind**, from the middle of all of that kind: two glass things far apart share it.
 - A real phone. Chrome's emulation is what was driven.
 
@@ -22673,3 +22673,28 @@ bounces (105 s a frame for 22): 23.83, 22.30, 23.58 and 21.96 dB at the four hel
 bounces read 24.32, 22.46, 23.96 and 22.27; every ball's light within a hundredth or two of what it was. And a
 frame drawn again through its own camera reads 24.25 on the stage that moves. What is left is what a gaussian
 a pixel makes of a chequer of two greys seen along the floor, and the highlights kept as pictures.
+
+**The chrome in the engine (14 Nov).** `render --glass` shades a polished metal as it shades a lens: metallic
+from a half and roughness to 0.12 (the bound of an export's mirrors), one ray along the mirror direction to
+the first gaussian that is not glass, guarded by height over the gaussian's own plane as a lens's mirror ray
+is, times the metal's base colour head on and white at grazing (Schlick). The base colour is kept by `shoot`
+in the record's tint, which a metal left black; a scene shot before has none and its metal is a white mirror.
+A test lays a plate that reflects (0.9, 0.9, 0.25) before a wall red on one side and blue on the other: from
+the right the plate reads (0.72, 0.04, 0.01), from the left (0.04, 0.04, 0.20), nothing of its green picture;
+`[scene]` is 238 assertions in 10 cases, where it was 218 in 9.
+
+Measured on the chrome knight's scene (9.72 M gaussians, 1.34 M of polished metal, 565 k of glass), two views
+the walk did not take, 960x540, against the stage path traced at 128 paths and 8 bounces (229 s a view),
+where the scene holds something: 27.67 and 28.02 dB with `--glass`, 27.53 and 27.90 without; SSIM 0.812 and
+0.801 against 0.813 and 0.802; relMSE 0.0044 and 0.0060 against 0.0061 and 0.0074. A tie on the frame, as the
+glass knight's was: the knights are a small share of it. The rays take 0.36 to 0.65 s a view and the tree
+2.2 to 2.7 s, which is paid a view.
+
+Not done, and seen here:
+- **The scene is darker than the reference**: its mean light is 0.65 and 0.78 of the reference's in these two
+  views (0.00163 against 0.00249, 0.00181 against 0.00232). The scene was shot at 3 bounces and the reference
+  has 8, in a courtyard lit mostly by what bounces; not taken apart.
+- **The glass knight looks noisier with `--glass`** than its stored picture from these views, though the
+  figures do not say so; no measure over the knight alone was taken.
+- **The tree is built again each view** though the scene does not change between views of a walk.
+- **A rough metal** (roughness over 0.12) stays the picture the look left.

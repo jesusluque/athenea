@@ -48,7 +48,7 @@ StructuredBuffer<float4>   frames;
 StructuredBuffer<float4>   bvhBoxes;
 StructuredBuffer<uint>     bvhChildren;
 StructuredBuffer<uint>     bvhLeaves;
-RWStructuredBuffer<uint>   counters;     // glass gaussians, rays behind that met the room, rays mirrored that did
+RWStructuredBuffer<uint>   counters;     // glass gaussians, rays behind that met the room, rays mirrored that did, mirrors
 // glassGather
 StructuredBuffer<uint>     flags;
 StructuredBuffer<uint>     places;
@@ -94,11 +94,24 @@ void glassSeen(uint3 tid: SV_DispatchThreadID) {
     }
     const float4 made = matter[i];
     const float index = made.w;
-    // A sheet bends nothing and is blended as it was made; what is not glass is not asked.
-    if (pbrTransmission(pbr[i]) < 0.5 || index <= 1.0 || positions[i].w <= 0.0) {
+    if (positions[i].w <= 0.0) {
         return;
     }
-    InterlockedAdd(counters[0], 1u);
+    // A POLISHED METAL is a mirror and nothing else: what it shows is what stands along the mirror direction,
+    // times what the metal reflects (its base colour head on, white at grazing). The same bound as an
+    // export's mirrors (scene_level.slang): metallic from a half, roughness to 0.12.
+    const bool lens = pbrTransmission(pbr[i]) >= 0.5 && index > 1.0;
+    const bool mirror = !lens && pbrTransmission(pbr[i]) < 0.5 && pbrMetallic(pbr[i]) >= 0.5 &&
+                        pbrRoughness(pbr[i]) <= 0.12;
+    // A sheet bends nothing and is blended as it was made; what is neither glass nor mirror is not asked.
+    if (!lens && !mirror) {
+        return;
+    }
+    if (mirror) {
+        InterlockedAdd(counters[3], 1u);
+    } else {
+        InterlockedAdd(counters[0], 1u);
+    }
     const uint row = i * 4u;
     const float3 p = positions[i].xyz;
     const float3 eye = float3(params.eyeX, params.eyeY, params.eyeZ);
@@ -123,6 +136,27 @@ void glassSeen(uint3 tid: SV_DispatchThreadID) {
         n = disc;   // a relief that faces away from the eye bends nothing sensibly: the disc's own
     }
     const float cosine = saturate(dot(n, wo));
+    if (mirror) {
+        // A scene found before a metal kept its colour has none (black): a white mirror then.
+        const float3 head = dot(made.rgb, float3(1.0)) > 0.0 ? made.rgb : float3(1.0);
+        const float3 share = head + (1.0 - head) * pow(1.0 - cosine, 5.0);
+        const float3 along = reflect(-wo, n);
+        const float widestOf = max(scale.x, max(scale.y, scale.z));
+        uint hit = 0u;
+        const GlassExit met = glassNearest(frames, bvhBoxes, bvhChildren, bvhLeaves, params.nodeBase, params.leafBase,
+                                           params.count, params.leafBase,
+                                           p + along * max(length(p - eye), 1.0) * 1.0e-4, along, 0.0, 3.0e38, 0.5, p,
+                                           disc, 4.0 * widestOf, hit);
+        if (!met.found) {
+            return;   // nothing found that way: the picture the look left
+        }
+        InterlockedAdd(counters[2], 1u);
+        const float3 shown = share * lightOf(hit);
+        const float3 put = params.linearCloud != 0u ? shown : linearToSrgb(shown);
+        shape[row + 2u] = packHalves(lowHalf(shape[row + 2u]), put.r);
+        shape[row + 3u] = packHalves(put.g, put.b);
+        return;
+    }
     const float mirrored = fresnelDielectric(cosine, index);
     const float3 own = lightOf(i);
     const float widest = max(scale.x, max(scale.y, scale.z));

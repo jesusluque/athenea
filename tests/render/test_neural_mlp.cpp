@@ -1476,6 +1476,124 @@ TEST_CASE("a found scene's glass shows what stands behind it from where the eye 
     CHECK(left[1] < 0.15);
 }
 
+TEST_CASE("a found scene's polished metal mirrors what the eye's side holds, and something else from elsewhere",
+          "[render][gpu][neural][scene][glass]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto discovery = render::Discovery::create(*gpu->library);
+    auto glass = render::SceneGlass::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!discovery) FAIL(discovery.error().toString());
+    if (!glass) FAIL(glass.error().toString());
+    // A PLATE OF POLISHED METAL facing the eye's side, whose stored picture is green, and behind the eye a
+    // wall that is red on one side and blue on the other. The metal reflects nine tenths of red and green
+    // and a quarter of blue head on: a mirror that is yellow.
+    const uint32_t stride = render::kRenderRecord;
+    std::vector<float> records;
+    std::vector<std::array<float, 4>> made;
+    const auto shown = [](float light) {
+        const float encoded = light <= 0.0031308F ? 12.92F * light : 1.055F * std::pow(light, 1.0F / 2.4F) - 0.055F;
+        return (encoded - 0.5F) / 0.28209479F;
+    };
+    const auto disc = [&](float x, float y, float z, float size, std::array<float, 3> light, float facing, bool metal) {
+        const size_t at = records.size();
+        records.resize(at + stride, 0.0F);
+        float* r = &records[at];
+        r[0] = x; r[1] = y; r[2] = z;
+        r[3] = 4.0F;
+        r[4] = std::log(size); r[5] = std::log(size); r[6] = std::log(size * 0.05F);
+        r[7] = 1.0F;
+        for (int c = 0; c < 3; ++c) r[11 + c] = shown(light[c]);
+        r[16] = facing;
+        r[17] = metal ? 1.0F : 0.0F;
+        r[18] = metal ? 0.03F : 1.0F;
+        r[render::kRenderRecordIndex] = 1.0F;
+        r[render::kRenderRecordSheet] = 1.0F;
+        made.push_back(metal ? std::array<float, 4>{0.9F, 0.9F, 0.25F, 0.0F} : std::array<float, 4>{0.0F, 0.0F, 0.0F, 0.0F});
+    };
+    const std::array<float, 3> red{0.8F, 0.05F, 0.05F};
+    const std::array<float, 3> blue{0.05F, 0.05F, 0.8F};
+    const std::array<float, 3> green{0.05F, 0.8F, 0.05F};
+    for (int j = -40; j <= 40; ++j) {
+        for (int i = -60; i <= 60; ++i) {
+            const float x = static_cast<float>(i) * 0.15F;
+            disc(x, static_cast<float>(j) * 0.15F, 9.0F, 0.1F, x < 0.0F ? red : blue, -1.0F, false);
+        }
+    }
+    uint32_t plates = 0;
+    for (int j = -20; j <= 20; ++j) {
+        for (int i = -20; i <= 20; ++i) {
+            disc(static_cast<float>(i) * 0.05F, static_cast<float>(j) * 0.05F, 0.0F, 0.035F, green, 1.0F, true);
+            plates += 1;
+        }
+    }
+    const uint32_t count = static_cast<uint32_t>(records.size() / stride);
+    io::RawSplats raw;
+    raw.source = "test";
+    raw.count = count;
+    raw.encoding = render::Discovery::renderEncoding();
+    raw.records = std::move(records);
+    loader->keepFaint(true);
+    auto piece = loader->upload(raw, 0);
+    loader->keepFaint(false);
+    if (!piece) FAIL(piece.error().toString());
+    REQUIRE(piece->count == count);
+    auto matter = gpu::Buffer::fromSpan<std::array<float, 4>>(
+        *gpu->device, std::span<const std::array<float, 4>>(made), "test.matter");
+    REQUIRE(matter);
+    render::RenderSettings settings;
+    settings.width = 320;
+    settings.height = 240;
+    const auto middle = [&](const render::RenderTargets& frame) {
+        auto stats = render::imageStats(*gpu->library, frame.colour, settings.width, settings.height, 150, 110, 170, 130);
+        REQUIRE(stats);
+        const double cover = std::max(stats->mean[3], 1.0e-6);
+        return std::array<double, 3>{stats->mean[0] / cover, stats->mean[1] / cover, stats->mean[2] / cover};
+    };
+    const auto seenFrom = [&](double x, render::GlassSeen& said) {
+        const render::Camera camera = render::Camera::lookingAt({x, 0.0, 5.0}, {0.0, 0.0, 0.0});
+        const render::Projection projection = render::projectionFor(camera, settings.width, settings.height);
+        auto plan = discovery->planCut(*piece, nullptr, nullptr, nullptr, projection, 0.0F);
+        if (!plan) FAIL(plan.error().toString());
+        auto cut = discovery->cutCloud(*piece, plan->drawn);
+        if (!cut) FAIL(cut.error().toString());
+        auto room = glass->room(*cut);
+        if (!room) FAIL(room.error().toString());
+        REQUIRE(discovery->gatherCut(*piece, nullptr, *plan, projection, 0.0F, 0.0F, *cut, 0));
+        REQUIRE(glass->gather(*piece, *matter, *plan, *cut, *room, 0));
+        auto seen = glass->see(projection, *cut, *room);
+        if (!seen) FAIL(seen.error().toString());
+        said = *seen;
+        const render::SplatInstance instance{&*cut, render::Mat4::identity()};
+        render::RenderTargets frame;
+        REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&instance, 1), settings, frame));
+        return middle(frame);
+    };
+    render::GlassSeen fromRight;
+    render::GlassSeen fromLeft;
+    const std::array<double, 3> right = seenFrom(2.5, fromRight);
+    const std::array<double, 3> left = seenFrom(-2.5, fromLeft);
+    std::printf("  a plate of %u polished metal gaussians before a wall of %u: seen from the right (%.2f %.2f %.2f), "
+                "%u mirrors of which %u met the wall; from the left (%.2f %.2f %.2f)\n",
+                plates, count - plates, right[0], right[1], right[2], fromRight.mirrors, fromRight.mirrored, left[0],
+                left[1], left[2]);
+    CHECK(fromRight.glass == 0);
+    CHECK(fromRight.mirrors == plates);
+    CHECK(fromRight.mirrored > plates * 9 / 10);
+    // From the right the mirror direction lands on the wall's left, which is red and which the metal
+    // reflects nearly whole; from the left on its right, which is blue, of which the metal keeps a quarter
+    // and a little more. The green picture is in neither.
+    CHECK(right[0] > 0.55);
+    CHECK(right[1] < 0.15);
+    CHECK(right[2] < 0.1);
+    CHECK(left[2] > 0.12);
+    CHECK(left[2] < 0.4);
+    CHECK(left[0] < 0.15);
+    CHECK(left[1] < 0.15);
+}
+
 TEST_CASE("a piece's records are handed on by kind: its lenses, its mirrors and the rest, where the cut draws them",
           "[render][gpu][neural][scene][level]") {
     ATHENEA_REQUIRE_GPU(gpu);

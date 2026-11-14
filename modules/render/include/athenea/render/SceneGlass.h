@@ -29,6 +29,7 @@ struct GlassSeen {
     uint32_t glass = 0;       ///< gaussians of solid glass in the cloud
     uint32_t behind = 0;      ///< whose ray through the glass met a gaussian of the scene
     uint32_t mirrored = 0;    ///< whose mirror ray did
+    uint32_t mirrors = 0;     ///< gaussians of polished metal, shown as mirrors
     double   treeMs = 0.0;    ///< the tree over the cloud
     double   seenMs = 0.0;    ///< the rays
 };

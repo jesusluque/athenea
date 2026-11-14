@@ -145,6 +145,7 @@ Result<GlassSeen> SceneGlass::see(const Projection& projection, scene::GpuSplats
     result.glass = read[0];
     result.behind = read[1];
     result.mirrored = read[2];
+    result.mirrors = read[3];
     result.seenMs = msSince(traced);
     // The colours changed where the buffers did not: whoever keeps something made of them makes it again.
     ++cloud.revision;

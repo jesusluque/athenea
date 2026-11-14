@@ -3037,8 +3037,9 @@ int runRender(const SceneOptions& given) {
         glass.emplace(std::move(*made));
     }
     const auto saidOfGlass = [&](const render::GlassSeen& seen) {
-        out("glass: %u gaussians; through it %u met the scene, mirrored %u did; the tree %.1f ms, the rays %.1f ms\n",
-            seen.glass, seen.behind, seen.mirrored, seen.treeMs, seen.seenMs);
+        out("glass: %u gaussians and %u of polished metal; through it %u met the scene, mirrored %u did; the tree "
+            "%.1f ms, the rays %.1f ms\n",
+            seen.glass, seen.mirrors, seen.behind, seen.mirrored, seen.treeMs, seen.seenMs);
     };
     std::unique_ptr<scene::GpuSplats> wholeCut;
     if (cutting && o.views.empty()) {
