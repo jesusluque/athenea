@@ -22750,7 +22750,9 @@ taken views path traced again with the margin (128 paths, 8 bounces):
 What `--glass` gives is the same against either: a quarter of a dB on the chrome knight, one on the glass
 one, and SSIM a little down. The scene's mean light is 0.87 of this reference's in k10 and 1.34 in k45; the
 second is not explained (what margin the scene's own shoot traced with was not kept beside it). The two views
-not taken (27.5 to 28.0 dB above) were not measured again.
+not taken, measured again the same way: 29.12 and 29.15 dB as found (SSIM 0.860 and 0.834) and 29.33 and
+29.34 with `--glass`, where the references with the lines read 27.53 and 27.90, 27.67 and 28.02; the scene's
+mean light 0.83 and 0.96 of the reference's, holding 0.93 and 0.98 of the frame.
 
 Not done: the materials stage and the stage that moves are metres across and were not looked at for the same
 lines; `qa.py` passes `--ray-margin` only when asked.
