@@ -22865,3 +22865,19 @@ across the board. It is no shadow -- the stage path traced from the walk's own f
 stored frame there agree, and the board is too dark to show the sun's -- but the board behind each piece,
 which no look of the walk saw and the scene does not hold: what a later look fills. The figure counts it only
 where a disc's edge reaches over it.
+
+**The running Fox** (the glTF sample model, CC0 / CC BY 4.0, as Blender wrote it to USD: a skinned mesh, 28
+frames) **is not shot on Metal: the path tracer's kernel does not build.** `neural-scene shoot` and `stage
+--technique rt` both end with `rhi: Internal compiler error` and `cannot make a pipeline for
+athenea_materials_…_path_traced:tracePaths`; `--technique raster` draws it. It is the material and not the
+skinning: the Fox's material alone on a quad fails the same way, and with its texture taken off the diffuse
+colour it builds; taking off any one of `specular` (which UsdPreviewSurface has not, and Blender writes),
+the clearcoat, the index, the opacity, the roughness, the wraps or the source colour space changes nothing.
+Other stages with a `UsdUVTexture` build (the working group's TextureCoordinateTest). The kernel dumped and
+compiled alone (`slangc -target metal`, then `xcrun metal -c`) builds, so it is the pipeline's build in the
+process that fails. On Vulkan under Windows the same stage builds and draws (without its texture: the `.usdc`
+carries the Mac's absolute path to it). It is not the branch's metal tint: the same with that line taken
+back. Not solved (NEU22); the time QA over a skinned mesh waits for it, or for a stage that skins without
+that material.
+
+The engine's own refit test that fails on Metal (NEU18) is skipped on CUDA: nothing to compare there.
