@@ -1865,17 +1865,10 @@ int runShoot(const SceneOptions& all) {
                     for (uint32_t reason = 1; reason <= 2; ++reason) {
                         uint32_t flagged = 0;
                         uint32_t flaggedAgain = 0;
-                        // WHAT COUNTS TOWARDS REFINED IS EVERYTHING THE FRAME SAYS OF A GAUSSIAN: where finer ones
-                        // are laid over it, and where the frame sees past it. A coarse disc at the edge of a
-                        // column has one half on the column, under finer gaussians, and one half past the edge,
-                        // over the wall behind: by the finer pixels alone it was never nine tenths covered, so
-                        // it stood, and the wall behind its overhang was made again every frame -- six thousand
-                        // gaussians a frame of a view that had not moved. Its middle is still asked for a
-                        // surface of the frame's where it is, so a thing that left is gone and not refined.
                         auto only = discovery->seenThrough(frameColour, frameDepth, width, height, alone.colour,
                                                            alone.depth, all.tolerance, flagged, all.repaint,
                                                            &flaggedAgain, &aloneSize.colour, all.refine, &projection,
-                                                           disc, reason == 2 ? 0u : reason);
+                                                           disc, reason);
                         if (!only) return report(only.error());
                         if (flagged + flaggedAgain == 0) {
                             continue;
