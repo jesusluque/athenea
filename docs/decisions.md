@@ -22592,3 +22592,14 @@ history, 10.4 MB. At 0.15 the cube is cleaner and 115 thousand are made and take
 - **`export --levels` on a scene of one walk at one distance** has one coarser width to offer: the looks a
   frame takes while it gathers. Budgets between two widths are the same level, now written once.
 - The usd-wg assets, the texture tests, PLY and GLB read back, and the page on the history: not run.
+
+**Formats and the history, read back (same day, CUDA under Linux and Chrome under Windows).** The materials
+scene handed on as SPZ, PLY and GLB: 3.9, 107.5 and 102.3 MB for 454 326 gaussians, glass and mirrors apart in
+each. Read back by `athenea render --splats` and drawn from a held view against the scene drawn itself: the PLY
+is the same frame, pixel for pixel; the SPZ is 50.51 dB and SSIM 0.9996 once turned half a turn about x
+(`--rotate-x 180`: the engine's reader takes an SPZ as it takes a capture, and the export writes the scene's
+own axes, which is what Spark wants), its light clipped at 2.3 where the lamp reaches 4.9. The GLB is glTF 2
+with one primitive under `KHR_gaussian_splatting`; the engine has no reader for it. The animated scene with
+its history in the page: 509 files, and the timeline at frames 1, 12 and 24 shows the ball at the left, the
+middle and the right, with the chrome ball mirroring it -- and black where the mirror looks at the sky, which
+the scene does not hold.
