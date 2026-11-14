@@ -22762,3 +22762,26 @@ chequered floor 23.55 (0.808). The wall is held; the frame's figure is the balls
 plastics have lost the highlight that moves with the eye, and the chrome is a grain -- and the chequer along
 the floor. (The first view's bands are not given: a quarter of its wall band is sky the scene does not hold,
 and a cut cannot be masked.)
+
+**The floor is the discs' stretch.** A disc is stretched along the way its surface falls from the eye that
+made it, by one over its facing and no more than one over `--turned` (0.5: twice). Seen from another side
+that stretch lies across the chequer. The materials stage shot at three bounds, the four held views (dB and
+SSIM where the scene holds something, and how much of the frame it holds):
+
+| view | `--turned 0.5` (the default) | `0.75` | `1` (no stretch) |
+|---|---|---|---|
+| h0 | 24.35, 0.873, holds 0.900 | 26.06, 0.907, 0.895 | 26.70, 0.919, 0.885 |
+| h1 | 22.53, 0.816, 0.996 | 24.15, 0.862, 0.984 | 24.77, 0.877, 0.965 |
+| h2 | 23.98, 0.854, 0.996 | 24.87, 0.874, 0.990 | 25.18, 0.877, 0.977 |
+| h3 | 22.32, 0.803, 0.947 | 23.08, 0.828, 0.933 | 23.22, 0.830, 0.911 |
+| h2, the floor alone | 23.55 | 25.48 | 26.21 |
+| h2, the balls alone | 21.97 | 22.35 | 22.46 |
+
+One to two and a half dB for the frame and 2.7 for the floor, against 1.5 to 3.6 hundredths of the frame no
+longer held: the stretch is what closes a surface seen along itself, and without it the views from higher up
+see between the discs. The default is left at 0.5: a hole is seen and a soft chequer is not, and the figure
+does not count the holes. Levels of detail do not give the floor back (`--lod` 0.5 to 1.5 read as the finest,
+2 loses up to 1.9 dB).
+
+Not done: a disc stretched by what the views that have seen it since need, not by its first eye's alone; the
+same three bounds on Sponza; the balls' band, which the stretch hardly moves (the highlights and the grain).
