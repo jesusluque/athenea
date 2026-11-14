@@ -22731,3 +22731,26 @@ by this.
 **The workflows after it.** `qa_flows.py` over the build with the mirrors: 26 of 26 on Metal, 26 of 26 on
 Vulkan under Windows (the `.spz` handed on is not read back there: that build has no zstd) and 24 of 24 on
 CUDA under Linux (no `shoot` there), as before the change.
+
+**The white lines are the path tracer's ray margin, and the references above had them.** View k10 path traced
+with no denoiser draws the same lines (mean light 0.00313 against 0.00317 denoised), and with `--ray-margin
+2e-5` they are gone but for the door's own lit frame (0.00262): at the default margin, on this stage, light
+leaks where meshes meet. Every Sponza reference of this section was drawn at the default. Against the two
+taken views path traced again with the margin (128 paths, 8 bounces):
+
+| | reference with the lines | reference with the margin |
+|---|---|---|
+| k10, the frame as found | 28.56 dB, SSIM 0.820 | 30.12 dB, SSIM 0.865 |
+| k10, with `--glass` | -- | 30.09 dB, SSIM 0.861 |
+| k45, the frame as found | 28.03 dB, SSIM 0.775 | 28.93 dB, SSIM 0.797 |
+| k45, with `--glass` | 28.29 dB, SSIM 0.772 | 29.25 dB, SSIM 0.792 |
+| k45, the chrome knight as found / `--glass` | 24.99 / 25.25 dB | 25.54 / 25.82 dB, SSIM 0.740 / 0.734 |
+| k45, the glass knight as found / `--glass` | 29.81 / 30.77 dB | 30.02 / 31.11 dB, relMSE 0.0064 / 0.0015 |
+
+What `--glass` gives is the same against either: a quarter of a dB on the chrome knight, one on the glass
+one, and SSIM a little down. The scene's mean light is 0.87 of this reference's in k10 and 1.34 in k45; the
+second is not explained (what margin the scene's own shoot traced with was not kept beside it). The two views
+not taken (27.5 to 28.0 dB above) were not measured again.
+
+Not done: the materials stage and the stage that moves are metres across and were not looked at for the same
+lines; `qa.py` passes `--ray-margin` only when asked.
