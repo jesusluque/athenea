@@ -22410,3 +22410,40 @@ touches in Chrome: the point lands on the knight under the finger (2.67 m), and 
 (8.8 1.1 -1.2 to 9.83 0.62 -2.39) at the same 2.669 m with the point at the same place on the screen. Spark's
 ray starts itself on the first one asked and answers from the second: the page asks one when the scene is in.
 Not tried on a phone.
+
+## Two knights at 1080, and the same shoot on Windows through Vulkan (14 Nov)
+
+The user: a crowned knight beside the first, rendered again at 1080; then, with the Mac held by its thermal
+guard, use ixwin, not through CUDA, through Vulkan.
+
+A second glass knight stands 115 cm from the first under a crown of gold made in the layer (a band whose edge
+rises to eight points, a ball on each: 688 points). The walk of 60 frames at 1920 x 1080, 32 paths at 8 a
+pass, 3 bounces, denoised:
+
+| | Metal (M5 Pro) | Vulkan, native Windows (RTX 3070 Laptop, 8 GB) |
+|---|---|---|
+| a frame | 2.2 min with the guard's pauses (8 080 s the sixty; 28 s at 960 x 540 with one knight) | 5.5 min (327 to 339 s, frames 4 to 6) |
+| the scene | 15.2 million gaussians on disk in 363 pieces, 1.8 GB; 8.9 million standing, 1.45 million of them glass | still rendering when this was written |
+
+Exported by frame: 60 parts and 60 of glass, 84 MB, the largest 8.8 MB. The page draws it (Chrome, headless).
+
+What ixwin taught:
+
+- **CUDA under WSL cannot make this render.** No OptiX there, so no ray queries: the frame came with no
+  shadows and the knights black. Known since the first CUDA run; seen again.
+- **Vulkan under WSL is llvmpipe.** No NVIDIA ICD in the distribution: the only GPU route in WSL is CUDA.
+- **Native Windows builds and runs.** `windows-x64-release` with MSVC, the branch as it is, no change:
+  `ATHENEA_BACKEND=vulkan` gives ray queries and the frame is the Mac's to the eye (two glass knights, the
+  crown). The 27 colour maps of 4096 were made 2048 for the 8 GB card (6.7 GB held before, 4.8 after).
+- **A stage frame on Vulkan read as 80 s a pass of 8 paths at 960 x 540** (99 s for 8 paths, 257 s for 24),
+  which a shoot at four times the pixels does not bear out (84 s a pass). Not understood: the shader cache
+  is there between runs and the memory fits. PowerShell's handling of a native program's stderr -- MaterialX
+  prints a line a node -- was suspected and a run with both streams sent to files took as long.
+- **D3D12 ran out of memory** on the same stage; not looked into.
+
+### Not done
+
+- The crown is a size too large for the head and was not fitted again.
+- The Vulkan shoot against the Metal one, gaussian for gaussian or frame for frame.
+- Why `stage` on Vulkan takes what it takes a pass.
+- Nine million gaussians on a phone: the page reads every part; a scene this size wants the cut on the web.
