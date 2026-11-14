@@ -22853,3 +22853,15 @@ polished metal), framed by the engine and traced with `--ray-margin 2e-5`: the r
 Found there: **a scene shot from a stage in centimetres said one metre a unit.** `shoot` took the stage's up
 axis and not its unit; it takes both now (`StageRenderer::metersPerUnit`), and `--meters-per-unit` still
 overrides. Nothing reads the unit but `info` and the manifest.
+
+**The Open Chess Set** (the Academy Software Foundation's, CC BY 4.0; a wrapper stage adds a dome and a sun,
+the asset having no light): the reference's three views in 158 s, the walk of twelve in 84 s (7.0 s a frame),
+106 237 gaussians of which 2 253 are lenses (the pieces' glass tops). Where the scene holds something (0.17 to
+0.21 of the frame) 22.16, 21.48 and 21.11 dB, SSIM 0.681, 0.594 and 0.610; with `--glass` 22.13, 21.38, 21.13.
+One level handed on (16 390), 1.3 MB.
+
+Seen side by side: from the held views, which stand higher than the walk, each piece trails a dark streak
+across the board. It is no shadow -- the stage path traced from the walk's own first view and the scene's
+stored frame there agree, and the board is too dark to show the sun's -- but the board behind each piece,
+which no look of the walk saw and the scene does not hold: what a later look fills. The figure counts it only
+where a disc's edge reaches over it.
