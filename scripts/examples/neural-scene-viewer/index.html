@@ -26,7 +26,8 @@
       border-radius: 6px; padding: 3px 10px; font: inherit; cursor: pointer; min-width: 64px; }
     .timeline label { color: var(--dim); white-space: nowrap; }
     .timeline .where { font-family: ui-monospace, Menlo, monospace; white-space: nowrap; min-width: 250px; text-align: right; }
-    .timeline input:disabled { opacity: 0.35; }
+    .timeline input:disabled, .timeline button:disabled { opacity: 0.35; }
+    .timeline button.playing { background: var(--accent); color: #0b0d12; border-color: var(--accent); font-weight: 600; }
     .live { color: #ff6b6b; font-weight: 600; }
     .touch { display: none; }
     .short { display: none; }
@@ -185,7 +186,7 @@
       pixels: Math.min(devicePixelRatio || 1, phone ? 1.5 : 2),
       sky: "#000000",                                  // what is behind the scene: it holds no sky of its own
       fov: 40, glass: true, cube: phone ? 256 : 512, speed: 2, frustum: true, path: true, marker: true,
-      rate: 10, loop: false, fps: false,
+      rate: 6, loop: false, fps: false,
     };
     const stored = (() => { try { return JSON.parse(localStorage.getItem("neural-player") ?? "{}"); } catch { return {}; } })();
     const settings = { ...defaults, ...stored };
@@ -244,6 +245,13 @@
       let atEnd = true;         // the timeline is at its end: new parts are shown as they arrive
       let playing = false;
       let loading = false;
+      // Playing is said by the button itself: its word and its colour.
+      const setPlaying = (on) => {
+        playing = on;
+        playButton.textContent = on ? "Pause" : "Play";
+        playButton.classList.toggle("playing", on);
+        playButton.setAttribute("aria-pressed", String(on));
+      };
       const timed = () => detail === 0 && parts.some((p) => p.frame);
       const totalOf = (list) => list.reduce((sum, p) => sum + countOf(partOf(p)), 0);
       const fullCount = index.gaussians || totalOf(index.parts);
@@ -389,8 +397,16 @@
         camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(wide / 2) / camera.aspect));
         camera.updateProjectionMatrix();
       };
+      // THE TIMELINE. Of the scene as it grew it is the frames: so many of its parts are drawn. Of a level of
+      // detail -- the scene whole, with no frames of its own -- it is the walk the scene was rendered along:
+      // every part is drawn and the timeline is at one of the frames' cameras, which Play rides. Either way
+      // there is something to play.
+      const walk = () => index.parts.map(partOf).filter((p) => cameras.has(p.camera));
+      const steps = () => detail === 0 ? meshes.length : walk().length;
+      let cursor = 0;           // where the timeline is: parts drawn (the grown scene), or a camera of the walk
       const show = (count, moveCamera) => {
-        shown = Math.max(0, Math.min(count, meshes.length));
+        cursor = Math.max(0, Math.min(count, steps()));
+        shown = detail === 0 ? cursor : meshes.length;
         let gaussians = 0;
         // THE SCENE AS IT STOOD at the frame the timeline is at: a part is drawn from its frame on, and what
         // of it a later frame took out or refined (its history) only until that frame.
@@ -407,17 +423,19 @@
           }
         });
         shadeStale = true;
-        slider.max = String(Math.max(parts.length, 1));
-        slider.value = String(shown);
-        slider.disabled = !timed();
-        playButton.disabled = !timed();
-        const part = shown > 0 ? parts[shown - 1] : null;
-        const of = `${shown} of ${parts.length}${index.growing && detail === 0 ? "+" : ""}`;
+        const count_ = detail === 0 ? parts.length : walk().length;
+        slider.max = String(Math.max(count_, 1));
+        slider.value = String(cursor);
+        const playable = detail === 0 ? timed() : count_ > 1;
+        slider.disabled = !playable;
+        playButton.disabled = !playable;
+        const part = cursor > 0 ? (detail === 0 ? parts[cursor - 1] : walk()[cursor - 1]) : null;
+        const of = `${cursor} of ${count_}${index.growing && detail === 0 ? "+" : ""}`;
         const million = `${(gaussians / 1e6).toFixed(2)} M gaussians`;
         where.innerHTML = (index.growing && detail === 0 ? '<span class="live">● rendering</span> · ' : "") +
-          (detail > 0 ? `level ${detail} of ${levels.length} · ${million}`
+          (detail > 0 ? `level ${detail} of ${levels.length} · ${million}${count_ > 1 ? ` · camera ${of}` : ""}`
                       : part && part.frame ? `frame ${of} · ${million}` : `part ${of} · ${million}`);
-        drawFrustum(timed() && part && cameras.has(part.camera) ? cameras.get(part.camera) : null);
+        drawFrustum(part && cameras.has(part.camera) ? cameras.get(part.camera) : null);
         showLines();
         if (moveCamera && follow.checked && part && cameras.has(part.camera)) aim(cameras.get(part.camera));
       };
@@ -478,8 +496,8 @@
           applyShading();
           window.__scene.parts = meshes.length;
           report(meshes.length < parts.length ? `loading… ${meshes.length} of ${parts.length} parts` : summary());
-          if (atEnd && !playing) show(meshes.length, true);
-          else show(shown, false);
+          if (detail === 0 && atEnd && !playing) show(meshes.length, true);
+          else show(cursor, false);
         }
         if (mine === generation) {
           loading = false;
@@ -503,9 +521,9 @@
         meshes = [];
         shaded = [];
         shown = 0;
+        cursor = 0;
         atEnd = true;
-        playing = false;
-        playButton.textContent = "Play";
+        setPlaying(false);
         detail = next;
         parts = (detail === 0 ? index.parts : levels[detail - 1].parts).map(partOf);
         window.__scene.loaded = false;
@@ -546,7 +564,7 @@
         say(said);
         slow.since = now;
         slow.frames = 0;
-        if (settings.detail === "auto" && !loading && !document.hidden && fps < 15 && detail < levels.length) {
+        if (settings.detail === "auto" && !loading && !playing && !document.hidden && fps < 15 && detail < levels.length) {
           window.__player.lowered += 1;
           $("detailNote").textContent = `${fps.toFixed(0)} frames a second at ${detail === 0 ? "full detail" : "level " + detail}: a coarser level is drawn.`;
           setDetail(detail + 1);
@@ -775,8 +793,8 @@
       drawPath();
       setDetail(settings.detail === "auto" ? autoDetail()
                 : settings.detail === "full" ? 0 : Number(settings.detail) || 0);
-      $("overview").addEventListener("click", () => { follow.checked = false; overview(); show(shown, false); });
-      follow.addEventListener("change", () => show(shown, true));
+      $("overview").addEventListener("click", () => { follow.checked = false; overview(); show(cursor, false); });
+      follow.addEventListener("change", () => show(cursor, true));
 
       // A SCENE STILL BEING RENDERED: its index is read again every two seconds for the parts that came.
       const follower = setInterval(async () => {
@@ -789,21 +807,23 @@
           if (detail === 0) {
             parts = next.parts.map(partOf);
             loadMore();
-            if (!next.growing) show(shown, false);
+            if (!next.growing) show(cursor, false);
           }
         } catch (error) { /* the index is put in place whole; a failed read is tried again */ }
       }, 2000);
 
       slider.addEventListener("input", () => {
-        playing = false;
-        playButton.textContent = "Play";
+        setPlaying(false);
         show(Number(slider.value), true);
-        atEnd = shown >= meshes.length;
+        atEnd = cursor >= steps();
       });
       playButton.addEventListener("click", () => {
-        playing = !playing;
-        playButton.textContent = playing ? "Pause" : "Play";
-        if (playing && shown >= meshes.length) show(0, true);
+        setPlaying(!playing);
+        if (!playing) return;
+        // A level of detail is the scene whole: what plays is the walk, and it is ridden to be seen.
+        if (detail > 0 && !follow.checked) follow.checked = true;
+        if (cursor >= steps()) show(0, true);
+        else show(cursor, true);
       });
 
       let last = performance.now();
@@ -817,10 +837,10 @@
           since += dt;
           if (since >= 1 / settings.rate) {
             since = 0;
-            if (shown < meshes.length) show(shown + 1, true);
+            if (cursor < steps()) show(cursor + 1, true);
             else if (settings.loop && !index.growing) show(0, true);
-            else if (!index.growing) { playing = false; playButton.textContent = "Play"; }
-            atEnd = shown >= meshes.length;
+            else if (!index.growing || detail > 0) setPlaying(false);
+            atEnd = cursor >= steps();
           }
         }
         if (!(playing && follow.checked)) controls.update(camera);
