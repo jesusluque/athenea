@@ -22787,3 +22787,27 @@ does not count the holes. Levels of detail do not give the floor back (`--lod` 0
 
 Not done: a disc stretched by what the views that have seen it since need, not by its first eye's alone; the
 same three bounds on Sponza; the balls' band, which the stretch hardly moves (the highlights and the grain).
+
+**A frame through its own camera reads 24 dB because its discs are wide, and a narrow disc is sharp and
+thin.** The stage that moves, shot again after the mirrors, reads what it read (24.25, 24.33, 24.23, 24.24
+and 24.30 dB at frames 1, 6, 12, 18 and 24; 237 s). Its first frame alone, shot at five widths and drawn
+through the camera that took it, against the path tracer there:
+
+| shot with | PSNR dB, SSIM as drawn | alpha, mean | PSNR dB, SSIM with the colour over its alpha |
+|---|---|---|---|
+| the defaults (`--spread 1`, `--turned 0.5`) | 24.25, 0.883 | 0.996 | 24.24, 0.883 |
+| `--turned 1` | 28.15, 0.946 | 0.962 | 28.66, 0.949 |
+| `--spread 0.7` | 28.13, 0.948 | 0.948 | 28.86, 0.952 |
+| `--spread 0.7 --turned 1` | 24.72, 0.954 | 0.842 | 32.08, 0.973 |
+| `--spread 0.5 --turned 1` | 21.53, 0.954 | 0.643 | 35.91, 0.984 |
+
+(518 400 gaussians each: one a pixel. The colour over its alpha is `oiiotool --unpremult` on the file, no
+kernel's.) So the 24 dB of every frame of this section is not the paths, the bounces or the levels: a disc a
+cell wide, stretched twice along a floor, overlaps its neighbours and the frame is the scene low-passed, 12 dB
+under what the same gaussians hold when half as wide. Half as wide they no longer close the surface -- the
+frame's alpha falls to 0.64 and it is drawn dim -- and that is what the width was paying for.
+
+Not done, and the next thing to do here: discs narrow and the surface closed some other way -- the blend
+normalised by its alpha where a surface is held, or opacity raised as the width falls, or the narrow discs of
+a look laid over the wide ones of the look before (which the levels already keep) -- measured from the views
+not taken as well, where the holes between narrow discs open first.
