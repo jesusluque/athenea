@@ -1696,14 +1696,20 @@ int runShoot(const SceneOptions& all) {
         // Where the scene begins: a pane's own depth, which the depth above goes past.
         render::RenderSettings beginning = settings;
         beginning.depthThreshold = 0.4F * all.glassOpacity;   // under the least a pane covers
+        // And where it is opaque past any fringe: what stands behind a disc that overhangs an edge.
+        render::RenderSettings ending = settings;
+        ending.depthThreshold = 0.9F;
         render::RenderTargets known;
         render::RenderTargets knownFirst;
+        render::RenderTargets knownLast;
         render::RenderTargets knownSize;
         const auto drawKnown = [&]() -> Result<void> {
             auto drawn = raster->render(camera, instances, settings, known);
             if (!drawn) return std::move(drawn).error();
             auto first = raster->render(camera, instances, beginning, knownFirst);
             if (!first) return std::move(first).error();
+            auto last = raster->render(camera, instances, ending, knownLast);
+            if (!last) return std::move(last).error();
             std::vector<render::SplatInstance> bySize;
             for (size_t k = 0; k < clouds.size(); ++k) {
                 auto instance = bySizeOf(k);
@@ -1944,6 +1950,7 @@ int runShoot(const SceneOptions& all) {
             }
             known = {};
             knownFirst = {};
+            knownLast = {};
             knownSize = {};
             if (!instances.empty()) {
                 if (auto drawn = drawKnown(); !drawn) return report(drawn.error());
@@ -1954,6 +1961,7 @@ int runShoot(const SceneOptions& all) {
             held.colour = &known.colour;
             held.depth = &known.depth;
             held.first = &knownFirst.depth;
+            held.last = &knownLast.depth;
             held.size = &knownSize.colour;
         }
         // A frame's gathering looks are no parents: what a gaussian is laid over is what earlier frames

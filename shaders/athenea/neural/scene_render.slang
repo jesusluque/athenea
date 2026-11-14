@@ -79,6 +79,7 @@ struct RenderLookParams {
     float glassOpacity;              // the least a pane covers, however clear
     float turned;                    // the least a disc's facing is taken as: it is stretched by no more than 1 / this
     uint  hasFirst;                  // knownFirst is bound
+    uint  hasLast;                   // knownLast is bound
     /// PANES APART: 1, a surface that lets the eye through is made as a pane and what stands behind it.
     /// 0: it is made as anything else is, a disc carrying its pixel -- what a look at coarse cells does,
     /// since the finer look that follows takes a disc out by its depth and a pane has none the scene's
@@ -98,6 +99,7 @@ StructuredBuffer<float4>   aux;          // the path tracer's planes, each width
 StructuredBuffer<float4>   knownColour;  // the scene as it is known, from the same camera
 StructuredBuffer<float>    knownDepth;   // where it is all but opaque
 StructuredBuffer<float>    knownFirst;   // where it begins: a pane's own depth
+StructuredBuffer<float>    knownLast;    // where it is opaque past any fringe: the surface behind a disc that overhangs an edge
 StructuredBuffer<float4>   knownSize;    // the scene drawn with each gaussian's size as its colour
 StructuredBuffer<float4>   beforeSize;   // the same before this look took anything out: what a gaussian made now is laid over
 StructuredBuffer<float>    beforeDepth;
@@ -190,7 +192,19 @@ bool holds(uint at, float z, bool pane) {
     // is held where the scene begins.
     const float has = pane && params.hasFirst != 0 ? knownFirst[at] : knownDepth[at];
     const bool there = pane ? has > 0.0 : knownColour[at].a > 0.5;
-    return there && abs(has - z) <= params.tolerance * z;
+    if (there && abs(has - z) <= params.tolerance * z) {
+        return true;
+    }
+    // BEHIND A DISC THAT OVERHANGS AN EDGE. A gaussian at the edge of a column is drawn past the edge, and
+    // from the next view its overhang stands before the wall behind: the frame sees the wall there, the
+    // scene's depth is the column's, and the wall -- which the scene holds -- was made again, behind the
+    // overhang, every frame of a walk (a walk of a hundred frames held twice the gaussians it needed). The
+    // scene's depth where it is opaque past any fringe says what is behind.
+    if (!pane && params.hasLast != 0) {
+        const float behind = knownLast[at];
+        return behind > 0.0 && abs(behind - z) <= params.tolerance * z;
+    }
+    return false;
 }
 
 /// Which cells make gaussians, and how many.

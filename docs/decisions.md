@@ -22630,3 +22630,20 @@ chrome. The black holes on the pillar beside the knights are gone from the held 
 coarse level's glass knight is shaded as glass where it was a milky picture. Levels 1 and 3 at 60 frames a
 second in Chrome on the RTX 3070. `render --glass` on it: 565 thousand glass gaussians, the tree over 9.7
 million 2.7 s, the rays 0.23 s.
+
+**The other two scenes shot again, and a walk that holds twice what it did (same day).** The walk of a hundred
+frames: 750 s, 4.88 million gaussians standing where the shoot of 13 Nov left 2.58, and one level of detail
+(0.96 million) where there was none. Against the four references of that walk, its own views: 31.99, 39.54,
+32.41, 31.37 dB where the old scene reads 32.76, 38.74, 32.94, 31.85. The glass knight: 1 778 s, 2.44 million
+(2.13), three levels. Over time under Vulkan (640 x 360): 23.15 to 22.98 dB at every frame measured, 21.00
+against the first frame's time. Every workflow through Metal: 26 of 26.
+
+Why twice: not found. Forty frames of the walk under each rule for `refined` -- by the frame's depth at the
+gaussian's middle, and by weight alone as before -- stand at 1.81 and 1.76 million and read the same 31.8 dB:
+it is not that rule. A frame of the walk now flags 54 thousand pixels as wanting finer gaussians where the
+shoot of 13 Nov flagged 21 thousand, and makes 62 thousand gaussians where that made 29. A surface behind a
+disc that overhangs an edge was made again every frame, behind the overhang (`holds` asked the scene's depth
+alone): the scene's depth where it is opaque past any fringe (`KnownScene::last`, a third draw of the known
+scene) holds it, and that is 7% of the forty frames' gaussians, 1.68 million for 1.81. What is left is thought
+to be a parent a look covers part of: it stays, by the nine-tenths rule, the pixels it is under read coarse
+with the finer ones over them, and are made finer again the next frame. Not shown.

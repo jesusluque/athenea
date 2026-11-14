@@ -264,6 +264,7 @@ Result<void> Discovery::sparePanes(gpu::Buffer& mask, const gpu::Buffer& aux, ui
         cursor["knownColour"].setBinding(spareFloats_.rhi());
         cursor["knownDepth"].setBinding(spareFloats_.rhi());
         cursor["knownFirst"].setBinding(spareFloats_.rhi());
+        cursor["knownLast"].setBinding(spareFloats_.rhi());
         cursor["knownSize"].setBinding(spareFloats_.rhi());
         cursor["beforeSize"].setBinding(spareFloats_.rhi());
         cursor["beforeDepth"].setBinding(spareFloats_.rhi());
@@ -415,6 +416,7 @@ Result<RenderLook> Discovery::fromRender(const gpu::Buffer& colour, const gpu::B
         cursor["knownColour"].setBinding(hasKnown ? known.colour->rhi() : colour.rhi());
         cursor["knownDepth"].setBinding(hasKnown ? known.depth->rhi() : depth.rhi());
         cursor["knownFirst"].setBinding(hasKnown && known.first != nullptr ? known.first->rhi() : depth.rhi());
+        cursor["knownLast"].setBinding(hasKnown && known.last != nullptr ? known.last->rhi() : depth.rhi());
         cursor["knownSize"].setBinding(hasKnown && known.size != nullptr ? known.size->rhi() : colour.rhi());
         const bool hasBefore = known.beforeSize != nullptr && known.beforeDepth != nullptr;
         cursor["beforeSize"].setBinding(hasBefore ? known.beforeSize->rhi() : colour.rhi());
@@ -456,6 +458,7 @@ Result<RenderLook> Discovery::fromRender(const gpu::Buffer& colour, const gpu::B
         p["panes"].setData(uint32_t{settings.panes ? 1u : 0u});
         p["pyramid"].setData(uint32_t{settings.pyramid ? 1u : 0u});
         p["hasFirst"].setData(uint32_t{hasKnown && known.first != nullptr ? 1u : 0u});
+        p["hasLast"].setData(uint32_t{hasKnown && known.last != nullptr ? 1u : 0u});
     };
     {
         gpu::CommandBatch batch(device);

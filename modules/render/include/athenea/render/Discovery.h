@@ -66,6 +66,11 @@ struct KnownScene {
     const gpu::Buffer* colour = nullptr;   ///< float4 a pixel
     const gpu::Buffer* depth = nullptr;    ///< view z where the scene is all but opaque
     const gpu::Buffer* first = nullptr;    ///< view z where it begins (a pane's own depth); null: `depth`
+    /// View z where it is opaque past any fringe (drawn with a depth
+    /// threshold near one): the surface behind a disc that overhangs an edge,
+    /// which the scene holds though its depth there is the disc's. Null: a
+    /// surface is held by `depth` alone.
+    const gpu::Buffer* last = nullptr;
     const gpu::Buffer* size = nullptr;     ///< the scene drawn by `Discovery::sizes`; null: nothing is refined
     /// The scene's sizes and depth before the look took anything out: what the
     /// gaussians it makes are laid over, and so their parents. Null: none.
