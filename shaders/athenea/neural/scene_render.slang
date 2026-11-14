@@ -191,7 +191,10 @@ bool holds(uint at, float z, bool pane) {
     // A pane is thin of opacity: the scene's depth goes past it to what is all but opaque, and the pane
     // is held where the scene begins.
     const float has = pane && params.hasFirst != 0 ? knownFirst[at] : knownDepth[at];
-    const bool there = pane ? has > 0.0 : knownColour[at].a > 0.5;
+    // Held where the scene covers the pixel, not where a fringe half covers it: a line a pixel wide left
+    // between what moved away and the ground beside it is under the fringes of both, half covered, and at a
+    // half it was held and never filled -- a dark outline of every place a head had been.
+    const bool there = pane ? has > 0.0 : knownColour[at].a > 0.8;
     if (there && abs(has - z) <= params.tolerance * z) {
         return true;
     }

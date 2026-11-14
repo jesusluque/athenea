@@ -22881,3 +22881,36 @@ back. Not solved (NEU22); the time QA over a skinned mesh waits for it, or for a
 that material.
 
 The engine's own refit test that fails on Metal (NEU18) is skipped on CUDA: nothing to compare there.
+
+**A skinned mesh over time: the Fox with a plain material** (`fox_plain.usda`: the lit Fox, a ground, its
+mesh bound to a UsdPreviewSurface of one colour), the first skeleton through `shoot`: 24 frames in 207 s
+(8.6 s a frame), a still camera. The scene as it stood, through that camera, read 36.32 dB at frame 1 and
+33.94 at frame 24 (35.86, 34.85, 34.30 between), each frame making some 3 900 gaussians and ending 680: the
+head that turns left a dark dotted outline over the ground of every place it had been, and layers of itself.
+Two things were wrong, and both are changed:
+
+- **A gaussian on the rim of what moved was never ended.** Judged at its middle (the frame sees past it
+  there and two pixels each way), it was still asked for most of its weight to lie on flagged pixels, and a
+  rim gaussian has half of it on the ground beside, which nothing flags. An eighth of its weight is enough
+  when it is judged at its middle (`discoverGone`).
+- **A line half covered was held.** Between what moved away and the ground beside it a line a pixel wide is
+  left under the fringes of both, covered by a half or so; a pixel counted as held from a half, and the line
+  was never filled. Held is from 0.8 of cover now (`holds()` in `scene_render.slang`).
+
+| | before | the rim alone | both |
+|---|---|---|---|
+| the Fox, frame 6 | 35.86 dB | 36.10 | 36.06 |
+| the Fox, frame 12 | 34.85 | 35.09 | 35.07 |
+| the Fox, frame 24 | 33.94, SSIM 0.965 | 34.10, 0.960 | 34.29, 0.966 |
+| balls and a cube, frames 6 to 24 | 24.23 to 24.33 | 24.57 to 24.74 | 24.54 to 24.72 |
+| balls and a cube, standing at the end | 585 546 | 505 085 | 514 370 |
+| the materials walk, four held views | 24.35, 22.53, 23.98, 22.32 | -- | 24.29, 22.52, 24.11, 22.30 |
+| the materials walk, gaussians; held of the frame | 1 003 600; 0.900, 0.996, 0.996, 0.947 | -- | 1 033 606; 0.901, 0.997, 0.998, 0.950 |
+
+`[scene]` passes as it did (238 assertions). Tried first and taken back, for nothing: a rim tap that counts
+only a surface at the gaussian's own depth and not one well in front of it (33.95 dB, 689 ended for 681).
+
+Not done: the outline is fainter, not gone; and **the head keeps layers of where it was** -- a mesh of one
+colour that turns within the depth tolerance leaves gaussians the frame's depth takes for the surface and
+whose colour is the surface's, so neither rule ends them. A textured mesh would be repainted; this one waits
+for a rule that knows a gaussian's surface moved (what the engine knows: the mesh was skinned this frame).

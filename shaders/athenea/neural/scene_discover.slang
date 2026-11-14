@@ -177,7 +177,12 @@ void discoverGone(uint3 tid: SV_DispatchThreadID) {
         const float z = dot(params.viewZ.xyz, positions[i].xyz) + params.viewZ.w;
         wide = z > 0.0 && size > params.coarse * z;
     }
+    // Judged at its middle (`centred` of one), the frame has already been asked about the gaussian itself,
+    // there and two pixels each way: a gaussian on the rim of what moved has half its weight on pixels of
+    // the ground beside it, which nothing flags, and by the share alone it stood for ever -- the outline
+    // of a head that turned, left as dots over the floor. Some of its weight flagged is enough then.
     const bool mostly = params.most > 0.0 ? float(through) >= params.most * float(whole)
+                                          : params.centred == 1u ? through * 8u > whole
                                           : (wide ? through * 5u > whole : through * 2u > whole);
     if (whole >= params.threshold && mostly) {
         seen[i] = params.stamp;
