@@ -22616,3 +22616,9 @@ on black. The standard shader ball frames black; not looked into.
 grows a file: 26 of 26 through Vulkan under Windows (reading an SPZ is not in that build, made without zstd),
 24 of 24 through CUDA under Linux (no shoot there). A look taken while a frame gathers is not a time the scene
 stood at: `--snapshot` of one draws and hands on nothing, by design, and the script asks for a frame's last.
+
+**A sky, in the page's options.** A found scene holds no sky and a mirror that looked past the scene showed
+black. The page has a colour for what is behind the scene (black as it was, kept between visits); the cubes
+glass and chrome read are drawn over it, so a mirror shows it. It is also what shows through where no camera
+has seen -- which reads as sky where it is floor nobody looked at. The scene's own sky is not kept by `shoot`
+(the manifest's `lights` is empty), so the colour is the viewer's to choose.
