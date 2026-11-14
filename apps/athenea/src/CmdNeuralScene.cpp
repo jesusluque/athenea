@@ -109,6 +109,8 @@ struct SceneOptions {
     unsigned                 part = 1200000;
     bool                     byFrame = false;
     std::vector<uint64_t>    levels;
+    std::string              format = "spz";
+    bool                     history = false;
     std::string              grow;
     float                    growExposure = 0.0F;
     float                    morph = 0.0F;
@@ -1307,6 +1309,35 @@ Result<uint64_t> writeSpzPart(gpu::Device& device, render::Discovery& discovery,
     const std::vector<render::FlatCloud> clouds{cloud};
     auto stats = pack.stats(clouds, -30.0F);
     if (!stats) return std::move(stats).error();
+    // THE FORMAT IS THE FILE'S NAME: .ply (INRIA's 3DGS layout) and .glb (glTF with KHR_gaussian_splatting)
+    // are the same gaussians as the .spz, for a program that reads those. Whole floats: several times the size.
+    const std::string extension = path.extension().string();
+    if (extension == ".ply" || extension == ".glb") {
+        for (size_t axis = 0; axis < 3; ++axis) {
+            low[axis] = std::min(low[axis], stats->min[axis]);
+            high[axis] = std::max(high[axis], stats->max[axis]);
+        }
+        if (extension == ".ply") {
+            auto packed = pack.ply(cloud, -30.0F);
+            if (!packed) return std::move(packed).error();
+            const std::vector<std::vector<float>> chunks{std::move(*packed)};
+            const std::vector<std::string> comments{"athenea neural-scene export: a scene found by rendering"};
+            ATHENEA_TRY(io::writePly3dgs(path, chunks, comments));
+        } else {
+            auto packed = pack.glb(cloud, -30.0F);
+            if (!packed) return std::move(packed).error();
+            io::GlbGaussians glb;
+            glb.counts = {count};
+            glb.chunks.push_back(std::move(*packed));
+            glb.min = stats->min;
+            glb.max = stats->max;
+            glb.degree = 3;
+            glb.generator = "athenea neural-scene export";
+            ATHENEA_TRY(io::writeGlbGaussians(path, glb));
+        }
+        std::error_code unread;
+        return static_cast<uint64_t>(std::filesystem::file_size(path, unread));
+    }
     auto streams = pack.spz(clouds, stats->fractionalBits, 8, 8);
     if (!streams) return std::move(streams).error();
     io::SpzHeader header;
@@ -1350,6 +1381,10 @@ struct ExportedPart {
     /// before it, which is the eye's to work out as a lens's is.
     std::string          mirrorFile;
     uint32_t             mirrorGaussians = 0;
+    /// THE SCENE AS IT STOOD (export --history): what the part's frame found that a later frame took out or
+    /// laid finer gaussians over, in files of their own, each with the frame from which it no longer stands.
+    uint32_t                  untilFrame = 0;
+    std::vector<ExportedPart> history;
     uint32_t    frame = 0;
     double      time = 0.0;
     std::string camera;
@@ -1375,12 +1410,15 @@ Result<void> writeExportIndex(const std::filesystem::path& stem, const io::Neura
         uint64_t total = 0;
         for (const ExportedPart& part : parts) {
             total += part.gaussians + part.glassGaussians + part.mirrorGaussians;
+            for (const ExportedPart& earlier : part.history) {
+                total += earlier.gaussians + earlier.glassGaussians + earlier.mirrorGaussians;
+            }
         }
         index << "{\n  \"name\": \"" << scene.name << "\",\n  \"upAxis\": \"" << scene.upAxis
               << "\",\n  \"metersPerUnit\": " << scene.metersPerUnit << ",\n  \"growing\": " << (growing ? "true" : "false")
               << ",\n  \"gaussians\": " << total << ",\n  \"min\": [" << low[0] << ", " << low[1] << ", " << low[2]
               << "],\n  \"max\": [" << high[0] << ", " << high[1] << ", " << high[2] << "],\n  \"parts\": [";
-        const auto writePart = [&](const ExportedPart& part, bool first, const char* indent) {
+        const auto writeOne = [&](const ExportedPart& part, bool first, const char* indent) {
             index << (first ? "\n" : ",\n") << indent << "{\"file\": \"" << part.file << "\", \"gaussians\": " << part.gaussians;
             if (part.frame != 0) {
                 index << ", \"frame\": " << part.frame << ", \"time\": " << part.time << ", \"camera\": \"" << part.camera
@@ -1393,6 +1431,17 @@ Result<void> writeExportIndex(const std::filesystem::path& stem, const io::Neura
             }
             if (!part.mirrorFile.empty()) {
                 index << ", \"mirror\": {\"file\": \"" << part.mirrorFile << "\", \"gaussians\": " << part.mirrorGaussians << "}";
+            }
+        };
+        const auto writePart = [&](const ExportedPart& part, bool first, const char* indent) {
+            writeOne(part, first, indent);
+            if (!part.history.empty()) {
+                index << ", \"history\": [";
+                for (size_t h = 0; h < part.history.size(); ++h) {
+                    writeOne(part.history[h], h == 0, "      ");
+                    index << ", \"until\": " << part.history[h].untilFrame << "}";
+                }
+                index << "\n    ]";
             }
             index << "}";
         };
@@ -2533,35 +2582,14 @@ int runExport(const SceneOptions& o) {
     uint32_t floats = 0;
     uint64_t bytes = 0;
     const render::Projection units = render::Discovery::worldWidths();
-    const auto takePiece = [&](const io::NeuralScenePiece& piece, float width) -> Result<uint32_t> {
-        if (std::filesystem::path(piece.cloud).extension() != ".athg") {
-            return Error::make(ErrorCode::Unsupported, "piece {} is not a render's (.athg)", piece.id);
-        }
-        auto forCut = loadForCut(library, *loader, *discovery, directory, piece);
-        if (!forCut) return std::move(forCut).error();
-        auto read = io::readGaussians(directory / piece.cloud);
-        if (!read) return std::move(read).error();
-        if (!renderRecordOf(read->floats) || (floats != 0 && read->floats != floats)) {
-            return Error::make(ErrorCode::Unsupported, "piece {}: records of {} floats among records of {}", piece.id,
-                               read->floats, floats);
-        }
-        floats = read->floats;
-        auto plan = discovery->planCut(forCut->cloud, forCut->gone.valid() ? &forCut->gone : nullptr,
-                                       forCut->refined.valid() ? &forCut->refined : nullptr,
-                                       forCut->parent.valid() ? &forCut->parent : nullptr, units, width, asOf);
-        if (!plan) return std::move(plan).error();
-        if (plan->drawn == 0) {
-            return uint32_t{0};
-        }
-        auto onDevice = gpu::Buffer::fromSpan<float>(**device, std::span<const float>(read->records), "export.piece");
-        if (!onDevice) return std::move(onDevice).error();
+    const auto gatherKinds = [&](const gpu::Buffer& onDevice, uint32_t count, const gpu::Buffer& flags) -> Result<uint32_t> {
         uint32_t matter = 0;
         const std::pair<render::Discovery::RecordKind, std::vector<float>*> kinds[3] = {
             {render::Discovery::RecordKind::Matter, &records},
             {render::Discovery::RecordKind::Lens, &lenses.records},
             {render::Discovery::RecordKind::Mirror, &mirrors.records}};
         for (const auto& [kind, into] : kinds) {
-            auto set = discovery->recordsOf(*onDevice, read->count, floats, plan->flags, kind);
+            auto set = discovery->recordsOf(onDevice, count, floats, flags, kind);
             if (!set) return std::move(set).error();
             if (set->count == 0) {
                 continue;
@@ -2585,6 +2613,73 @@ int runExport(const SceneOptions& o) {
         }
         return matter;
     };
+    const auto takePiece = [&](const io::NeuralScenePiece& piece, float width) -> Result<uint32_t> {
+        if (std::filesystem::path(piece.cloud).extension() != ".athg") {
+            return Error::make(ErrorCode::Unsupported, "piece {} is not a render's (.athg)", piece.id);
+        }
+        auto forCut = loadForCut(library, *loader, *discovery, directory, piece);
+        if (!forCut) return std::move(forCut).error();
+        auto read = io::readGaussians(directory / piece.cloud);
+        if (!read) return std::move(read).error();
+        if (!renderRecordOf(read->floats) || (floats != 0 && read->floats != floats)) {
+            return Error::make(ErrorCode::Unsupported, "piece {}: records of {} floats among records of {}", piece.id,
+                               read->floats, floats);
+        }
+        floats = read->floats;
+        auto plan = discovery->planCut(forCut->cloud, forCut->gone.valid() ? &forCut->gone : nullptr,
+                                       forCut->refined.valid() ? &forCut->refined : nullptr,
+                                       forCut->parent.valid() ? &forCut->parent : nullptr, units, width, asOf);
+        if (!plan) return std::move(plan).error();
+        if (plan->drawn == 0) {
+            return uint32_t{0};
+        }
+        auto onDevice = gpu::Buffer::fromSpan<float>(**device, std::span<const float>(read->records), "export.piece");
+        if (!onDevice) return std::move(onDevice).error();
+        return gatherKinds(*onDevice, read->count, plan->flags);
+    };
+    // A piece's gaussians by the frame from which each no longer stands (0: it stands to the end): read off
+    // its two records of stamps, which are looks, and the frames' own first and last looks. Bookkeeping: no
+    // gaussian is read, only when each went.
+    const auto frameOfLook = [&](uint32_t look) {
+        for (size_t f = 0; f < scene->frames.size(); ++f) {
+            if (look <= scene->frames[f].lastSnapshot) {
+                return static_cast<uint32_t>(f) + 1;
+            }
+        }
+        return static_cast<uint32_t>(scene->frames.size());
+    };
+    const auto untilOf = [&](const io::NeuralScenePiece& piece, uint32_t count) -> Result<std::vector<uint32_t>> {
+        std::vector<uint32_t> until(count, 0u);
+        for (const std::string* file : {&piece.gone, &piece.refined}) {
+            if (file->empty()) {
+                continue;
+            }
+            auto stamps = io::readSeen(directory / *file, count);
+            if (!stamps) return std::move(stamps).error();
+            for (uint32_t g = 0; g < count; ++g) {
+                if ((*stamps)[g] != 0) {
+                    const uint32_t frame = frameOfLook((*stamps)[g]);
+                    until[g] = until[g] == 0 ? frame : std::min(until[g], frame);
+                }
+            }
+        }
+        return until;
+    };
+    // The records of a piece that a list of flags keeps, by kind, into what is held.
+    const auto takeFlagged = [&](const io::NeuralScenePiece& piece, const std::vector<uint32_t>& flags) -> Result<uint32_t> {
+        auto read = io::readGaussians(directory / piece.cloud);
+        if (!read) return std::move(read).error();
+        if (!renderRecordOf(read->floats) || (floats != 0 && read->floats != floats)) {
+            return Error::make(ErrorCode::Unsupported, "piece {}: records of {} floats among records of {}", piece.id,
+                               read->floats, floats);
+        }
+        floats = read->floats;
+        auto onDevice = gpu::Buffer::fromSpan<float>(**device, std::span<const float>(read->records), "export.piece");
+        if (!onDevice) return std::move(onDevice).error();
+        auto drawn = gpu::Buffer::fromSpan<uint32_t>(**device, std::span<const uint32_t>(flags), "export.flags");
+        if (!drawn) return std::move(drawn).error();
+        return gatherKinds(*onDevice, read->count, *drawn);
+    };
     std::array<float, 3> low{1.0e30F, 1.0e30F, 1.0e30F};
     std::array<float, 3> high{-1.0e30F, -1.0e30F, -1.0e30F};
     const float gain = std::exp2(o.exposure);
@@ -2599,7 +2694,7 @@ int runExport(const SceneOptions& o) {
         std::snprintf(number, sizeof(number), "_%03zu", into.size());
         ExportedPart part;
         const auto write = [&](const std::vector<float>& of, uint32_t count, const char* suffix) -> Result<std::string> {
-            const std::filesystem::path path = prefix + number + suffix + ".spz";
+            const std::filesystem::path path = prefix + number + suffix + "." + o.format;
             auto size = writeSpzPart(**device, *discovery, *pack, std::span<const float>(of), count, floats, gain, path,
                                      low, high);
             if (!size) return std::move(size).error();
@@ -2672,16 +2767,84 @@ int runExport(const SceneOptions& o) {
         }
         for (size_t f = 0; f < scene->frames.size(); ++f) {
             const io::NeuralSceneFrame& frame = scene->frames[f];
+            const uint32_t number = static_cast<uint32_t>(f) + 1;
+            if (!o.history) {
+                for (const io::NeuralScenePiece& piece : scene->pieces) {
+                    if (!wanted(piece, true) || piece.foundIn < frame.firstSnapshot || piece.foundIn > frame.lastSnapshot) {
+                        continue;
+                    }
+                    auto kept = takePiece(piece, 0.0F);
+                    if (!kept) return report(kept.error());
+                    held += *kept;
+                }
+                if (auto done = flush(parts, given.string(), &frame, number); !done) return report(done.error());
+                continue;
+            }
+            // THE SCENE AS IT STOOD (--history). What this frame found is set apart by the frame from which
+            // it no longer stands: what stands to the end is the part, as without the option; what a later
+            // frame took out -- the thing moved, the light changed -- or laid finer gaussians over goes in
+            // files of its own that say until when. What went within its own frame (the coarse looks a
+            // frame takes while it gathers) never stood at a frame's end and is not written.
+            std::vector<std::pair<const io::NeuralScenePiece*, std::vector<uint32_t>>> found;
+            std::vector<uint32_t> ends;
             for (const io::NeuralScenePiece& piece : scene->pieces) {
-                if (!wanted(piece, true) || piece.foundIn < frame.firstSnapshot || piece.foundIn > frame.lastSnapshot) {
+                if (piece.foundIn < frame.firstSnapshot || piece.foundIn > frame.lastSnapshot || piece.gaussians == 0 ||
+                    std::filesystem::path(piece.cloud).extension() != ".athg") {
                     continue;
                 }
-                auto kept = takePiece(piece, 0.0F);
-                if (!kept) return report(kept.error());
-                held += *kept;
+                auto until = untilOf(piece, piece.gaussians);
+                if (!until) return report(until.error());
+                for (const uint32_t end : *until) {
+                    if (end > number && std::find(ends.begin(), ends.end(), end) == ends.end()) {
+                        ends.push_back(end);
+                    }
+                }
+                found.emplace_back(&piece, std::move(*until));
             }
-            if (auto done = flush(parts, given.string(), &frame, static_cast<uint32_t>(f) + 1); !done) {
-                return report(done.error());
+            std::sort(ends.begin(), ends.end());
+            const auto takeUntil = [&](uint32_t end) -> Result<void> {
+                for (const auto& [piece, until] : found) {
+                    std::vector<uint32_t> flags(until.size());
+                    bool any = false;
+                    for (size_t g = 0; g < until.size(); ++g) {
+                        flags[g] = until[g] == end ? 1u : 0u;
+                        any = any || flags[g] != 0;
+                    }
+                    if (!any) {
+                        continue;
+                    }
+                    auto kept = takeFlagged(*piece, flags);
+                    if (!kept) return std::move(kept).error();
+                    held += *kept;
+                }
+                return ok();
+            };
+            if (auto taken = takeUntil(0); !taken) return report(taken.error());
+            const size_t before = parts.size();
+            if (auto done = flush(parts, given.string(), &frame, number); !done) return report(done.error());
+            if (parts.size() == before && !ends.empty()) {
+                // Nothing of this frame's stands to the end, and something of it stood for a while: the
+                // part is there to carry that.
+                ExportedPart empty;
+                empty.frame = number;
+                empty.time = frame.time;
+                empty.camera = frame.camera;
+                empty.seconds = frame.seconds;
+                parts.push_back(empty);
+            }
+            char label[32];
+            std::snprintf(label, sizeof(label), "_%03zu_until", parts.empty() ? size_t{0} : parts.size() - 1);
+            for (const uint32_t end : ends) {
+                if (auto taken = takeUntil(end); !taken) return report(taken.error());
+                std::vector<ExportedPart> one;
+                char to[16];
+                std::snprintf(to, sizeof(to), "%03u", end);
+                // flush numbers a file by how many its list holds: the frame it stands until is in the name.
+                if (auto done = flush(one, given.string() + label + to, nullptr, 0); !done) return report(done.error());
+                if (!one.empty()) {
+                    one.back().untilFrame = end;
+                    parts.back().history.push_back(one.back());
+                }
             }
         }
     } else {
@@ -3273,6 +3436,8 @@ void addNeuralScene(CLI::App& app) {
     exported->add_option("--snapshot", o.snapshot, "the same by a snapshot of the manifest's, counted from one");
     exported->add_option("--part", o.part, "the most gaussians a file holds");
     exported->add_option("--levels", o.levels, "levels of detail beside the scene: a budget of gaussians each, the scene whole within it, written as <stem>_lodK_NNN.spz and named in the index")->delimiter(',');
+    exported->add_option("--format", o.format, "the parts' format: spz (what a viewer on the web reads), ply (INRIA's 3DGS layout) or glb (glTF with KHR_gaussian_splatting)")->check(CLI::IsMember({"spz", "ply", "glb"}));
+    exported->add_flag("--history", o.history, "--by-frame: also what each frame found that a later frame took out or refined, in files that say until which frame they stand: the scene as it stood at every frame, for a stage that moves");
     exported->add_flag("--by-frame", o.byFrame, "a part a rendered frame, holding what that frame found: the scene in the order it grew");
     exported->add_option("--exposure", o.exposure, "stops on the scene's light before it is encoded");
     exported->add_option("-o,--output", o.output, "a path with no extension: <stem>_NNN.spz and <stem>.json")->required();

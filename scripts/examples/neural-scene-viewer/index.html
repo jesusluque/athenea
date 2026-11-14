@@ -228,11 +228,14 @@
       // its glass and of its mirrors where it has them.
       const partOf = (p) => typeof p === "string" ? { file: p, gaussians: 0 } : p;
       const countOf = (p) => p.gaussians + (p.glass?.gaussians ?? 0) + (p.mirror?.gaussians ?? 0);
+      // The frame a part is of: what its history is counted against (a part with none is as its place says).
+      const frameOf = (k) => parts[k]?.frame ?? k + 1;
       const levels = index.levels ?? [];
       let detail = 0;           // 0: the scene as it grew; k: the k-th level of detail
       let parts = [];
-      let meshes = [];          // a part's mesh, once it is in
-      let shaded = [];          // and its glass and mirrors: [{ mesh, kind }]
+      let meshes = [];          // a part's meshes, once they are in: [{ mesh, until }] -- the part's own, which
+                                // stands to the end (until 0), and its history's, each until a frame
+      let shaded = [];          // and their glass and mirrors: [{ mesh, kind, shading, until }]
       let generation = 0;       // what is being loaded: a change of detail leaves the older load behind
       let cameras = new Map((index.cameras ?? []).map((c) => [c.name, c]));
       let shown = 0;            // parts drawn: the scene as it stood after that many
@@ -312,7 +315,7 @@
           return { gsplat: shade.outputs.gsplat };
         });
       };
-      const shadedShown = (which) => shaded.flatMap((list, k) => k < shown ? list.filter((s) => s.kind === which) : []);
+      const shadedShown = (which) => shaded.flat().filter((s) => s.kind === which && s.mesh.visible);
       // By the eye, or as the picture each was found with: the option's.
       const applyShading = () => {
         for (const list of shaded) for (const s of list) {
@@ -386,10 +389,19 @@
       const show = (count, moveCamera) => {
         shown = Math.max(0, Math.min(count, meshes.length));
         let gaussians = 0;
-        meshes.forEach((mesh, k) => {
-          if (mesh) mesh.visible = k < shown;
-          for (const s of shaded[k]) s.mesh.visible = k < shown;
-          if (k < shown) gaussians += countOf(parts[k]);
+        // THE SCENE AS IT STOOD at the frame the timeline is at: a part is drawn from its frame on, and what
+        // of it a later frame took out or refined (its history) only until that frame.
+        const at = shown > 0 ? frameOf(shown - 1) : 0;
+        const stands = (k, until) => k < shown && (until === 0 || at < until);
+        meshes.forEach((list, k) => {
+          for (const m of list) {
+            m.mesh.visible = stands(k, m.until);
+            if (m.mesh.visible) gaussians += m.gaussians;
+          }
+          for (const s of shaded[k]) {
+            s.mesh.visible = stands(k, s.until);
+            if (s.mesh.visible) gaussians += s.gaussians;
+          }
         });
         shadeStale = true;
         slider.max = String(Math.max(parts.length, 1));
@@ -437,21 +449,28 @@
         const mine = generation;
         while (meshes.length < parts.length && mine === generation) {
           const part = parts[meshes.length];
-          const mesh = new SplatMesh({ url: `./scenes/${part.file}` });
-          await mesh.initialized;
+          const own = [];
           const beside = [];
-          for (const [which, made] of [["glass", part.glass], ["mirror", part.mirror]]) {
-            if (!made) continue;
-            const other = new SplatMesh({ url: `./scenes/${made.file}` });
-            await other.initialized;
-            beside.push({ mesh: other, kind: which,
-                          shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1])) });
+          // The part itself and, where the scene was handed on with its history, what the part's frame found
+          // that stood only for a while: each a file, with its glass and its mirrors beside it.
+          for (const span of [part, ...(part.history ?? [])]) {
+            const until = span === part ? 0 : span.until ?? 0;
+            if (span.file) {
+              const mesh = new SplatMesh({ url: `./scenes/${span.file}` });
+              await mesh.initialized;
+              own.push({ mesh, until, gaussians: span.gaussians ?? 0 });
+            }
+            for (const [which, made] of [["glass", span.glass], ["mirror", span.mirror]]) {
+              if (!made) continue;
+              const other = new SplatMesh({ url: `./scenes/${made.file}` });
+              await other.initialized;
+              beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0,
+                            shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1])) });
+            }
           }
-          if (mine !== generation) { mesh.dispose?.(); for (const s of beside) s.mesh.dispose?.(); break; }
-          mesh.visible = false;
-          root.add(mesh);
-          for (const s of beside) { s.mesh.visible = false; root.add(s.mesh); }
-          meshes.push(mesh);
+          if (mine !== generation) { for (const m of [...own, ...beside]) m.mesh.dispose?.(); break; }
+          for (const m of [...own, ...beside]) { m.mesh.visible = false; root.add(m.mesh); }
+          meshes.push(own);
           shaded.push(beside);
           applyShading();
           window.__scene.parts = meshes.length;
@@ -464,7 +483,8 @@
           window.__scene.loaded = true;
           // Spark's ray through the gaussians starts itself on the first one asked and answers from the
           // second: one is asked here, so that the first finger laid on the scene finds what is under it.
-          if (meshes.length > 0) new THREE.Raycaster(camera.position, new THREE.Vector3(0, 0, -1)).intersectObject(meshes[0], false);
+          const first = meshes.flat()[0];
+          if (first) new THREE.Raycaster(camera.position, new THREE.Vector3(0, 0, -1)).intersectObject(first.mesh, false);
           slow.since = performance.now();
           slow.frames = 0;
         }
@@ -476,8 +496,7 @@
         const next = Math.max(0, Math.min(wanted, levels.length));
         generation += 1;
         loading = false;
-        for (const mesh of meshes) { if (mesh) { root.remove(mesh); mesh.dispose?.(); } }
-        for (const list of shaded) for (const s of list) { root.remove(s.mesh); s.mesh.dispose?.(); }
+        for (const list of [...meshes, ...shaded]) for (const m of list) { root.remove(m.mesh); m.mesh.dispose?.(); }
         meshes = [];
         shaded = [];
         shown = 0;
@@ -656,7 +675,7 @@
                                       -((pivot.at.y - box.top) / box.height) * 2 + 1);
         const ray = new THREE.Raycaster();
         ray.setFromCamera(ndc, camera);
-        const drawn = [...meshes, ...shaded.flat().map((s) => s.mesh)].filter((m) => m && m.visible);
+        const drawn = [...meshes.flat(), ...shaded.flat()].map((m) => m.mesh).filter((m) => m.visible);
         const hits = ray.intersectObjects(drawn, false);
         if (hits.length > 0) pivot.point.copy(hits[0].point);
         else {
@@ -797,7 +816,7 @@
           lastEye.copy(camera.position);
           shadeFresh = false;
           for (const kind of Object.values(kinds)) kind.eye.value.copy(camera.position);
-          for (let k = 0; k < shown; ++k) for (const s of shaded[k]) if (s.mesh.worldModifier) s.mesh.updateVersion();
+          for (const s of shaded.flat()) if (s.mesh.visible && s.mesh.worldModifier) s.mesh.updateVersion();
         }
         if (shadeStale && !loading) drawRooms();
         renderer.render(scene, camera);
