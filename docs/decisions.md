@@ -22817,3 +22817,10 @@ default one with `oiiotool --over`): `--spread 0.7 --turned 1` over the default 
 with the frame's alpha at 0.998, and `--spread 0.5 --turned 1` over it 28.22 and 0.944 -- five dB over the
 default's 24.25 with the surface closed, where the blend normalised reads 32 to 36. The narrower is the worse
 of the two laid over: more of the wide frame shows between its discs.
+
+**Narrower discs from the views not taken.** The materials stage shot with `--spread 0.7` (the stretch left
+at its default), the four held views: 26.56, 24.67, 25.18 and 23.31 dB (SSIM 0.918, 0.876, 0.881, 0.839),
+holding 0.878, 0.956, 0.968 and 0.903 of the frame; the floor alone 26.01 and the balls 22.53. As `--turned 1`
+within a tenth or two (26.70, 24.77, 25.18, 23.22) and a hundredth less of the frame held: either way of
+narrowing a disc buys the same two dB from the same closure, and the defaults stay as they are until the
+surface is closed some other way (NEU21).
