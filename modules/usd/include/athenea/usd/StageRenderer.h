@@ -311,6 +311,8 @@ public:
 
     /// 'Y' or 'Z'.
     [[nodiscard]] char upAxis() const;
+    /// The stage's metersPerUnit, USD's fallback (0.01) included.
+    [[nodiscard]] double metersPerUnit() const;
     [[nodiscard]] double endTimeCode() const;
 
     /// How renders find what meshes a pixel sees: "automatic" (the default:

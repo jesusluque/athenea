@@ -1525,7 +1525,8 @@ int runShoot(const SceneOptions& all) {
     if (scene.name.empty()) scene.name = directory.stem().string();
     if (!all.name.empty()) scene.name = all.name;
     scene.upAxis = !all.upAxis.empty() ? all.upAxis : std::string(1, stage.upAxis());
-    if (all.metersPerUnit > 0.0) scene.metersPerUnit = all.metersPerUnit;
+    // The stage's own unit, as its up axis: a stage in centimetres left a scene that said metres.
+    scene.metersPerUnit = all.metersPerUnit > 0.0 ? all.metersPerUnit : stage.metersPerUnit();
     if (scene.source.empty()) scene.source = all.source.empty() ? all.stage : all.source;
     if (!all.licence.empty()) scene.licence = all.licence;
 
@@ -3438,7 +3439,7 @@ void addNeuralScene(CLI::App& app) {
     shoot->add_option("--glass-opacity", o.glassOpacity, "the least a pane covers of what is behind it, however clear");
     shoot->add_option("--name", o.name, "the scene's name");
     shoot->add_option("--up-axis", o.upAxis, "Y or Z (default: the stage's)");
-    shoot->add_option("--meters-per-unit", o.metersPerUnit, "the scene's unit, in metres");
+    shoot->add_option("--meters-per-unit", o.metersPerUnit, "the scene's unit, in metres (default: the stage's)");
     shoot->add_option("--source", o.source, "what the stage is");
     shoot->add_option("--licence", o.licence, "what the source asks of whoever uses it");
     run(shoot, options, runShoot);

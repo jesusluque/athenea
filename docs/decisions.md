@@ -22841,3 +22841,15 @@ surface is closed some other way (NEU21).
 1.4 to 3.1 dB over the default, not the 12 a frame's own camera shows: from elsewhere a disc a pixel wide at
 its own distance is not a pixel wide, and what is left is the balls' band. Laid over the wide frame they keep
 the surface closed and lose two to six tenths to the normalised blend: that is the one to build (NEU21).
+
+## More stages through the same QA (14 to 15 Nov)
+
+**The Kitchen Set** (Pixar's, with the lights of `Kitchen_set_lit.usda`; centimetres, Z up, no glass and no
+polished metal), framed by the engine and traced with `--ray-margin 2e-5`: the reference's three views in
+55 s, the walk of twelve in 44 s (3.6 s a frame), 170 164 gaussians. The frame where the scene holds something
+(0.30 of it: the engine frames the whole set from far) reads 23.86, 23.99 and 23.50 dB, SSIM 0.737, 0.721 and
+0.705; handed on in two levels (67 929 and 48 793), 3.3 MB, and baked into an `.athc` of 7 levels.
+
+Found there: **a scene shot from a stage in centimetres said one metre a unit.** `shoot` took the stage's up
+axis and not its unit; it takes both now (`StageRenderer::metersPerUnit`), and `--meters-per-unit` still
+overrides. Nothing reads the unit but `info` and the manifest.

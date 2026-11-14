@@ -2638,6 +2638,10 @@ char StageRenderer::upAxis() const {
     return UsdGeomGetStageUpAxis(impl_->stage) == UsdGeomTokens->z ? 'Z' : 'Y';
 }
 
+double StageRenderer::metersPerUnit() const {
+    return UsdGeomGetStageMetersPerUnit(impl_->stage);
+}
+
 double StageRenderer::endTimeCode() const {
     return impl_->stage->GetEndTimeCode();
 }
