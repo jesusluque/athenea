@@ -22722,3 +22722,7 @@ and 22.19 dB, relMSE 0.0764, 0.1241, 0.0946 and 0.1162, where the mirrors left a
 drawn as found reads 24.35, 22.53, 23.98 and 22.32, so `--glass` still costs the frame a fifth to a half of a
 dB here: the tinted and the frosted glass it darkens (0.85 and 0.88 of the reference's light) are untouched
 by this.
+
+**The workflows after it.** `qa_flows.py` over the build with the mirrors: 26 of 26 on Metal, 26 of 26 on
+Vulkan under Windows (the `.spz` handed on is not read back there: that build has no zstd) and 24 of 24 on
+CUDA under Linux (no `shoot` there), as before the change.
