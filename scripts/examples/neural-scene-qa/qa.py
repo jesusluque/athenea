@@ -42,6 +42,11 @@ parser.add_argument("--skip-shoot", action="store_true")
 # machine that renders through one of those the measures are taken through this one.
 parser.add_argument("--compare-backend", default="")
 parser.add_argument("--skip-reference", action="store_true")
+# A stage that comes with no looks of its own (a downloaded asset): the engine frames it (`stage --frame-all`
+# says where from) and the looks are an arc about its middle at that distance, the held views between them.
+parser.add_argument("--frame", action="store_true")
+parser.add_argument("--arc", type=float, default=70.0)
+parser.add_argument("--looks", type=int, default=12)
 args = parser.parse_args()
 
 stage_dir = os.path.dirname(os.path.abspath(args.stage))
@@ -128,6 +133,41 @@ def compare(image, reference, window=None, covered=False):
 
 
 report = ["# %s" % stage_name, ""]
+
+
+def turned(v, axis, degrees):
+    """`v` turned about `axis` (a unit vector): Rodrigues."""
+    a = math.radians(degrees)
+    c, s_ = math.cos(a), math.sin(a)
+    cross = [axis[1] * v[2] - axis[2] * v[1], axis[2] * v[0] - axis[0] * v[2], axis[0] * v[1] - axis[1] * v[0]]
+    dot = sum(x * y for x, y in zip(axis, v))
+    return [v[k] * c + cross[k] * s_ + axis[k] * dot * (1.0 - c) for k in range(3)]
+
+
+if args.frame:
+    rc, lines, _ = run(["stage", stage_name, "--frame-all", "--focal", str(args.focal), "--size", "64x36",
+                        "--technique", "raster", "-o", os.path.join(out, "framed.exr")])
+    framed = [line for line in lines if line.startswith("framed:")]
+    if not framed:
+        print("the stage could not be framed (rc %d): %s" % (rc, lines[-1] if lines else ""))
+        sys.exit(1)
+    numbers = [float(w) for w in framed[0].split() if re.match(r"^-?[0-9.]+(e[+-]?[0-9]+)?$", w)]
+    eye, target, up = numbers[0:3], numbers[3:6], numbers[6:9]
+    length = math.sqrt(sum(c * c for c in up))
+    up = [c / length for c in up]
+    arm = [e - t for e, t in zip(eye, target)]
+    def view(name, degrees, lift):
+        to = turned(arm, up, degrees)
+        place = [t + a * (1.0 + 0.0 * lift) + u * lift * math.sqrt(sum(c * c for c in arm)) for t, a, u in zip(target, to, up)]
+        return "%s %g %g %g %g %g %g %g %g %g" % (name, *place, *target, *up)
+    walk_path, held_path = os.path.join(out, "walk.txt"), os.path.join(out, "held.txt")
+    open(walk_path, "w").write("\n".join(view("w%02d" % k, -args.arc / 2 + args.arc * k / max(args.looks - 1, 1), 0.0)
+                                         for k in range(args.looks)) + "\n")
+    open(held_path, "w").write("\n".join(view("h%d" % k, d * args.arc / 2, lift)
+                                         for k, (d, lift) in enumerate([(-0.55, 0.10), (0.13, -0.06), (0.71, 0.12)])) + "\n")
+    args.walk, args.held = walk_path, held_path
+    report.append("- framed by the engine: eye %s, the middle %s; %d looks over %g degrees and 3 held views" %
+                  (" ".join("%g" % c for c in eye), " ".join("%g" % c for c in target), args.looks, args.arc))
 held = views_of(os.path.join(stage_dir, args.held))
 margin = ["--ray-margin", args.ray_margin] if args.ray_margin else []
 scene = os.path.join(out, "scene.aths")

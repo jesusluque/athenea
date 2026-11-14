@@ -430,6 +430,15 @@ void addStage(CLI::App& app) {
                 cli::fail(framed.error());
             }
             own = *framed;
+            // Said, for whoever wants to look at the stage from somewhere near: where the framing camera
+            // stands, and the middle of what the stage draws.
+            if (auto box = (*renderer)->bounds(); box && box->has_value()) {
+                const auto& b = **box;
+                const auto& m = framed->cameraToWorld;
+                std::printf("framed: eye %g %g %g target %g %g %g up %g %g %g\n", m.at(0, 3), m.at(1, 3), m.at(2, 3),
+                            0.5 * (static_cast<double>(b.min[0]) + b.max[0]), 0.5 * (static_cast<double>(b.min[1]) + b.max[1]),
+                            0.5 * (static_cast<double>(b.min[2]) + b.max[2]), m.at(0, 1), m.at(1, 1), m.at(2, 1));
+            }
         }
         if (!o->splatOverrides.empty()) {
             // The manifest is the cloud's, known once the stage has been
