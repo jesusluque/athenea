@@ -22824,3 +22824,20 @@ holding 0.878, 0.956, 0.968 and 0.903 of the frame; the floor alone 26.01 and th
 within a tenth or two (26.70, 24.77, 25.18, 23.22) and a hundredth less of the frame held: either way of
 narrowing a disc buys the same two dB from the same closure, and the defaults stay as they are until the
 surface is closed some other way (NEU21).
+
+**Narrow discs from the views not taken, three ways.** The materials stage shot with `--spread 0.7 --turned
+1`, the four held views, against the default's 24.35, 22.53, 23.98 and 22.32 dB (holding 0.900, 0.996, 0.996,
+0.947):
+
+| view | as drawn | holds | the colour over its alpha | laid over the default's frame |
+|---|---|---|---|---|
+| h0 | 25.18, SSIM 0.917 | 0.807 | 27.54, 0.928 | 27.01, 0.919 |
+| h1 | 23.75, 0.874 | 0.859 | 25.82, 0.901 | 25.21, 0.888 |
+| h2 | 23.93, 0.840 | 0.893 | 25.57, 0.887 | 25.45, 0.884 |
+| h3 | 22.03, 0.807 | 0.809 | 23.92, 0.858 | 23.71, 0.852 |
+
+(The default's own colour over its alpha reads as it is drawn, 24.41, 22.52, 23.98, 22.34. Both are
+`oiiotool`'s, on the files.) From a view that is not the gaussian's own, narrow discs closed either way give
+1.4 to 3.1 dB over the default, not the 12 a frame's own camera shows: from elsewhere a disc a pixel wide at
+its own distance is not a pixel wide, and what is left is the balls' band. Laid over the wide frame they keep
+the surface closed and lose two to six tenths to the normalised blend: that is the one to build (NEU21).
