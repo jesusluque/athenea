@@ -2739,6 +2739,13 @@ int runExport(const SceneOptions& o) {
         uint64_t said = 0;
         auto width = discovery->thresholdFor(*histogram, budget, &said);
         if (!width) return report(width.error());
+        if (said > budget + budget / 4) {
+            // Nothing coarser to draw: no look left wider gaussians under these (a scene shot before a
+            // gaussian kept what it was laid over, or one every surface of which was seen once).
+            out("a level of %llu gaussians cannot be met: the coarsest the scene holds draws %llu; not written\n",
+                static_cast<unsigned long long>(budget), static_cast<unsigned long long>(said));
+            continue;
+        }
         ExportedLevel level;
         level.budget = budget;
         level.width = *width;
