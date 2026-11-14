@@ -22701,7 +22701,11 @@ Not done, and seen here:
   and the scene keeps little of them (its brightest is 0.2 to 0.9). Whether those lines are the stage's (sun
   through a seam) or the path tracer's is not found (NEU19); a frame measured against them loses what they
   weigh, in dB too.
-- **The glass knight looks noisier with `--glass`** than its stored picture from these views, though the
-  figures do not say so; no measure over the knight alone was taken.
+- **Over each knight alone** (view k45, which the walk took; the frame cut to the knight with `oiiotool
+  --cut` and the cuts compared, since `compare --window` bounds only the means): the chrome knight 25.25 dB,
+  SSIM 0.702 with `--glass` against 24.99 and 0.695 as the picture kept; the glass knight 30.77 dB and relMSE
+  0.0017 against 29.81 and 0.0066, SSIM 0.748 against 0.774. A quarter of a dB and one dB: what a mirror ray
+  reads is one gaussian's colour, a grain a gaussian, where the path traced chrome is smooth; the grain is
+  what SSIM takes back on the glass. A ray that read a footprint's worth of gaussians is not written.
 - **The tree is built again each view** though the scene does not change between views of a walk.
 - **A rough metal** (roughness over 0.12) stays the picture the look left.
