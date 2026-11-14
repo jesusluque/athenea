@@ -22667,3 +22667,9 @@ the count grew by. Finer-wanting pixels are a few hundred: it is not refinement 
 overhang towards `refined` changed nothing (6 244) and was taken back. What those pixels are was not looked
 at; fine things -- leaves cut by an alpha, a grille -- whose pixels are surface in one frame and hole in the
 next, and whose gaussians the five taps keep, are what it is thought to be.
+
+**The 24 dB is not the shoot's paths.** The materials stage shot at the reference's own 128 paths and 8
+bounces (105 s a frame for 22): 23.83, 22.30, 23.58 and 21.96 dB at the four held views, where 32 paths and 3
+bounces read 24.32, 22.46, 23.96 and 22.27; every ball's light within a hundredth or two of what it was. And a
+frame drawn again through its own camera reads 24.25 on the stage that moves. What is left is what a gaussian
+a pixel makes of a chequer of two greys seen along the floor, and the highlights kept as pictures.
