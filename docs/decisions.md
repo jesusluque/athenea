@@ -22706,7 +22706,12 @@ Not done, and seen here:
   SSIM 0.702 with `--glass` against 24.99 and 0.695 as the picture kept; the glass knight 30.77 dB and relMSE
   0.0017 against 29.81 and 0.0066, SSIM 0.748 against 0.774. A quarter of a dB and one dB: what a mirror ray
   reads is one gaussian's colour, a grain a gaussian, where the path traced chrome is smooth; the grain is
-  what SSIM takes back on the glass. A ray that read a footprint's worth of gaussians is not written.
+  what SSIM takes back on the glass.
+- **Four rays a gaussian, tried and taken back**: the rays sent from four points of the disc, six tenths of
+  its width out, and averaged. The chrome knight 25.25 dB and SSIM 0.703 where one ray reads 25.25 and 0.702;
+  the glass knight 30.84 and 0.754 against 30.77 and 0.748; the rays 2.09 s a view against 0.54. The grain is
+  not where on the gaussian the ray leaves from: neighbouring gaussians send their rays apart, which is their
+  normals', and those are not looked at.
 - **The tree is built again each view** though the scene does not change between views of a walk.
 - **A rough metal** (roughness over 0.12) stays the picture the look left.
 
