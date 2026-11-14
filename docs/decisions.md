@@ -22610,7 +22610,7 @@ roughness. `stage --frame-all` now says where its camera stands (`framed: eye ..
 `qa.py --frame` makes an arc of looks and three held views about a stage that brings none: five of them shot
 and measured, 12 frames in 11 to 15 s each, the found scene the reference's to the eye -- texture, text and the
 textured brass teapot -- and 12 to 20 dB where it holds something, at 640 x 360, small things with fine print
-on black. The standard shader ball frames black; not looked into.
+on black. The standard shader ball framed black because `--frame-all` stands outside the box it is lit in: through its own camera it is drawn as it should be (64 paths, 6 bounces), and it is not shot, since the QA's looks are made about a framing camera.
 
 `qa_flows.py` takes a found scene through every subcommand and option that reads it and a short shoot that
 grows a file: 26 of 26 through Vulkan under Windows (reading an SPZ is not in that build, made without zstd),
