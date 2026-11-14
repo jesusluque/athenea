@@ -213,11 +213,22 @@ public:
     /// With `most` over nothing, only where that share of its weight fell on
     /// the mask, whatever its width: the rule for `gone` being a record of
     /// what a finer look refined, where a parent part covered is left.
+    /// With `mask` and `frameDepth` (the mask itself and the frame's depth,
+    /// `maskWidth` x `maskHeight`, with `cloud` and `projection`), only a
+    /// gaussian whose own middle falls on a set pixel is stamped, and only
+    /// where the frame speaks of it: gone, where the frame sees past where
+    /// the gaussian is (by `nearness` of its depth); `refining`, where the
+    /// frame's surface is where the gaussian is. Its fringe over a
+    /// silhouette is not the frame seeing through it, and a gaussian behind
+    /// what the frame shows is not what the frame refined.
     [[nodiscard]] Result<uint32_t> markGone(const gpu::Buffer& lifted, uint32_t base, gpu::Buffer& gone,
                                             uint32_t count, uint32_t stamp, float threshold = 0.05F,
                                             const scene::GpuSplats* cloud = nullptr,
                                             const Projection* projection = nullptr, float coarse = 0.0F,
-                                            float most = 0.0F);
+                                            float most = 0.0F, const gpu::Buffer* mask = nullptr,
+                                            uint32_t maskWidth = 0, uint32_t maskHeight = 0,
+                                            const gpu::Buffer* frameDepth = nullptr, float nearness = 0.02F,
+                                            bool refining = false);
 
     /// THE PIECE CUT FOR A VIEW (scene_discover.slang's discoverCut): the same
     /// cloud with no opacity on the gaussians that are not the ones to draw --

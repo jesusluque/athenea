@@ -29,6 +29,9 @@ parser.add_argument("--check", default="1,6,12,18,24")
 parser.add_argument("--samples", type=int, default=32)
 parser.add_argument("--bounces", type=int, default=3)
 parser.add_argument("--skip-shoot", action="store_true")
+# `athenea compare` runs its kernels through gpe, which has Metal and CUDA and neither Vulkan nor D3D12: on a
+# machine that renders through one of those the measures are taken through this one.
+parser.add_argument("--compare-backend", default="")
 args = parser.parse_args()
 
 stage_dir = os.path.dirname(os.path.abspath(args.stage))
@@ -40,8 +43,11 @@ log = open(os.path.join(out, "qa.log"), "a")
 
 def run(arguments):
     began = time.time()
+    environment = dict(os.environ)
+    if arguments[0] == "compare" and args.compare_backend:
+        environment["ATHENEA_BACKEND"] = args.compare_backend
     done = subprocess.run([args.athenea] + arguments, cwd=stage_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          text=True, errors="replace")
+                          text=True, errors="replace", env=environment)
     kept = [line for line in done.stdout.splitlines() if "Node interface" not in line and line.strip()]
     log.write("$ athenea %s\n%s\n(rc %d, %.1f s)\n\n" % (" ".join(arguments), "\n".join(kept), done.returncode,
                                                          time.time() - began))
@@ -50,7 +56,8 @@ def run(arguments):
 
 
 def compare(image, reference):
-    _, lines, _ = run(["compare", image, reference])
+    # Only where the scene holds something: a found scene has no sky.
+    _, lines, _ = run(["compare", image, reference, "--mask", image, "--mask-mode", "alpha", "--min-alpha", "0.5"])
     found = {}
     for line in lines:
         m = re.search(r"PSNR ([0-9.]+|inf) dB\s+SSIM ([0-9.]+)", line)

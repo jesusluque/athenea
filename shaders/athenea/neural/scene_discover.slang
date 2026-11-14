@@ -36,6 +36,12 @@ struct DiscoverParams {
     // discoverGather: over how much of the threshold's band a gaussian is moved towards what it was laid
     // over before that is drawn in its place (0: not moved; 1: from twice the threshold on).
     float morph; uint pad4;
+    // discoverGone, `centred`: a gaussian goes only where the mask is set at the pixel its own middle falls
+    // on -- the rows that take a point to the view (x, y; `viewZ` is the third), the lens and the mask's size.
+    float4 viewX;
+    float4 viewY;
+    float lensX; float lensY; float middleX; float middleY;
+    uint maskWidth; uint maskHeight; uint centred; float nearness;   // centred 1: gone; 2: refined. nearness: the share of its depth a surface may be off by
 };
 
 StructuredBuffer<uint>     contribution;   // a uint a slot, as the blend summed it
@@ -50,6 +56,8 @@ RWStructuredBuffer<float4> positionsOut;
 RWStructuredBuffer<uint>   cleared;
 StructuredBuffer<uint>     refinedRead;    // discoverCut: the look that laid finer gaussians over each, 0 while it is the finest
 StructuredBuffer<float4>   parentRead;     // discoverCut: what each was laid over: its colour (as a base colour is kept) and its width, 0 where over nothing
+StructuredBuffer<float>    maskRead;       // discoverGone, `centred`: the mask a pixel, as it was carried to the gaussians
+StructuredBuffer<float>    depthRead;      // and the frame's own depth a pixel (0: nothing there)
 StructuredBuffer<uint>     harmonics;      // discoverGather: a cloud's, `stamp` words a gaussian
 RWStructuredBuffer<uint>   shapeOut;
 RWStructuredBuffer<uint>   harmonicsOut;
@@ -103,6 +111,48 @@ void discoverGone(uint3 tid: SV_DispatchThreadID) {
     }
     const uint through = lifted[(params.base + i) * 2];
     const uint whole = lifted[(params.base + i) * 2 + 1];
+    // SEEN THROUGH AT ITS OWN MIDDLE, not at its fringe. A gaussian is drawn a couple of pixels past where
+    // its surface ends, and at a silhouette that fringe lies over pixels where the frame sees what is behind:
+    // a gaussian just round the far side of a ball, hidden but for that fringe, had all the weight it showed
+    // on such pixels and was taken out -- and with every frame of a walk another strip of the side the eye
+    // was leaving, until half the ball was gone to any eye that came back. The frame sees through a gaussian
+    // where it sees past the place the gaussian is at.
+    if (params.centred != 0u) {
+        const float3 p = positions[i].xyz;
+        const float z = dot(params.viewZ.xyz, p) + params.viewZ.w;
+        if (!(z > 0.0)) {
+            return;
+        }
+        const float x = params.middleX + params.lensX * (dot(params.viewX.xyz, p) + params.viewX.w) / z;
+        const float y = params.middleY + params.lensY * (dot(params.viewY.xyz, p) + params.viewY.w) / z;
+        if (x < 0.0 || y < 0.0 || x >= float(params.maskWidth) || y >= float(params.maskHeight)) {
+            return;
+        }
+        const uint at = uint(y) * params.maskWidth + uint(x);
+        if (maskRead[at] < 0.5) {
+            return;
+        }
+        // And it is this gaussian the mask speaks of, not one in front of it: where the frame's surface is
+        // nearer than the gaussian, the gaussian is behind something and the frame says nothing of it. Gone
+        // is the frame seeing past where it is; refined is the frame's surface being where it is.
+        const float seenAt = depthRead[at];
+        const bool nothing = !(seenAt > 0.0);
+        if (params.centred == 1u) {
+            // All round its middle, two pixels each way: a gaussian on the very rim of what the frame shows
+            // has its middle on a pixel that is already the background's, and is still the surface's.
+            const int2 taps[5] = {int2(0, 0), int2(2, 0), int2(-2, 0), int2(0, 2), int2(0, -2)};
+            for (uint k = 0; k < 5; ++k) {
+                const int tx = clamp(int(x) + taps[k].x, 0, int(params.maskWidth) - 1);
+                const int ty = clamp(int(y) + taps[k].y, 0, int(params.maskHeight) - 1);
+                const float there = depthRead[uint(ty) * params.maskWidth + uint(tx)];
+                if (there > 0.0 && there <= z * (1.0 + params.nearness)) {
+                    return;
+                }
+            }
+        } else if (nothing || abs(seenAt - z) > params.nearness * z) {
+            return;
+        }
+    }
     // A coarse gaussian lies under many of the look's pixels, some flagged and some not, and what is
     // laid over it is finer: it need not be mostly flagged to be in the way.
     bool wide = false;

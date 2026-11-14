@@ -517,7 +517,10 @@ void renderPack(uint3 tid: SV_DispatchThreadID) {
         records[row + kAtTint + 2] = tint.b;
         records[row + kAtMetallic] = madeHere.x;
         records[row + kAtRoughness] = madeHere.y;
-        records[row + kAtTransmission] = through;
+        // What the surface transmits is the material's, whatever this look makes of glass: a coarse look
+        // that makes no panes still leaves gaussians of glass, and a level of detail drawn from them is
+        // glass to whoever shades it (it was written 0 there, and a lens two levels up was a matt picture).
+        records[row + kAtTransmission] = madeHere.z > 0.02 ? madeHere.z : 0.0;
         records[row + kAtRow] = rowHere.x;
         records[row + kAtIndex] = rowHere.z;
         records[row + kAtSheet] = rowHere.y;

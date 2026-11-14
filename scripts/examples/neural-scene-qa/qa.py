@@ -38,6 +38,9 @@ parser.add_argument("--ray-margin", default="")
 parser.add_argument("--time-step", default="")
 parser.add_argument("--levels", default="200000,100000,50000")
 parser.add_argument("--skip-shoot", action="store_true")
+# `athenea compare` runs its kernels through gpe, which has Metal and CUDA and neither Vulkan nor D3D12: on a
+# machine that renders through one of those the measures are taken through this one.
+parser.add_argument("--compare-backend", default="")
 parser.add_argument("--skip-reference", action="store_true")
 args = parser.parse_args()
 
@@ -51,8 +54,11 @@ log = open(os.path.join(out, "qa.log"), "a")
 
 def run(arguments, cwd=None):
     began = time.time()
+    environment = dict(os.environ)
+    if arguments[0] == "compare" and args.compare_backend:
+        environment["ATHENEA_BACKEND"] = args.compare_backend
     done = subprocess.run([args.athenea] + arguments, cwd=cwd or stage_dir, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, text=True, errors="replace")
+                          stderr=subprocess.STDOUT, text=True, errors="replace", env=environment)
     kept = [line for line in done.stdout.splitlines() if "Node interface" not in line and line.strip()]
     log.write("$ athenea %s\n%s\n(rc %d, %.1f s)\n\n" % (" ".join(arguments), "\n".join(kept), done.returncode,
                                                          time.time() - began))
@@ -96,10 +102,14 @@ def window_of(view, centre, radius):
     return (x0, y0, x1, y1) if x1 - x0 >= 8 and y1 - y0 >= 8 else None
 
 
-def compare(image, reference, window=None):
+def compare(image, reference, window=None, covered=False):
     arguments = ["compare", image, reference]
     if window:
         arguments += ["--window"] + [str(v) for v in window]
+    if covered:
+        # Only where the scene holds something: a found scene has no sky, and a frame measured over the sky
+        # it does not hold says how much sky the view has. How much it holds is the mean of its alpha.
+        arguments += ["--mask", image, "--mask-mode", "alpha", "--min-alpha", "0.5"]
     _, lines, _ = run(arguments)
     found = {}
     for line in lines:
@@ -110,6 +120,10 @@ def compare(image, reference, window=None):
         m = re.search(r"relMSE ([0-9.e+-]+)", line)
         if m:
             found["relmse"] = float(m.group(1))
+        # The means are what a window bounds (compare's distributions are the whole frame's).
+        m = re.match(r"(image|reference)\s+mean ([0-9.e+-]+) ([0-9.e+-]+) ([0-9.e+-]+) ([0-9.e+-]+)", line)
+        if m:
+            found[m.group(1)] = [float(m.group(k)) for k in (2, 3, 4, 5)]
     return found
 
 
@@ -162,8 +176,9 @@ for label, extra in (("found", []), ("glass", ["--glass"])):
     drawn[label] = {name: "%s_%s.exr" % (prefix, name) for name, *_ in held}
 
 # 4. THE MEASURES: the whole frame a view.
-report += ["", "## The frame, against the path tracer", "",
-           "| view | found: PSNR dB | SSIM | relMSE | with --glass: PSNR dB | SSIM | relMSE |", "|---|---|---|---|---|---|---|"]
+report += ["", "## The frame, against the path tracer, where the scene holds something", "",
+           "| view | held | found: PSNR dB | SSIM | relMSE | with --glass: PSNR dB | SSIM | relMSE |",
+           "|---|---|---|---|---|---|---|---|"]
 results = {"views": {}, "balls": {}}
 for name, *_ in held:
     if name not in reference:
@@ -171,48 +186,60 @@ for name, *_ in held:
     row = {}
     for label in ("found", "glass"):
         if os.path.exists(drawn[label][name]):
-            row[label] = compare(drawn[label][name], reference[name])
+            row[label] = compare(drawn[label][name], reference[name], covered=True)
+            row[label]["cover"] = compare(drawn[label][name], reference[name]).get("image", [0, 0, 0, 0])[3]
     results["views"][name] = row
     cells = []
     for label in ("found", "glass"):
         m = row.get(label, {})
         cells += ["%.2f" % m["psnr"] if "psnr" in m else "--", "%.3f" % m["ssim"] if "ssim" in m else "--",
                   "%.4f" % m["relmse"] if "relmse" in m else "--"]
-    report.append("| %s | %s |" % (name, " | ".join(cells)))
+    report.append("| %s | %.3f | %s |" % (name, row.get("found", {}).get("cover", 0.0), " | ".join(cells)))
 
-# 5. THING BY THING, where the stage says where its things are: the mean over the views that see each.
+# 5. THING BY THING, where the stage says where its things are. `compare --window` bounds the means and
+# nothing else, so what is said of a thing is its mean light in the window it takes -- the drawn scene's over
+# the reference's, channel by channel, the worst channel -- and how much of the window the scene covers. The
+# mean over the views that see it. 1.00 is the reference's light; cover under 1 is a hole.
 balls_path = os.path.join(stage_dir, args.balls)
 if os.path.exists(balls_path):
-    report += ["", "## Material by material (the window each ball takes, the mean over the held views)", "",
-               "| material | found: PSNR dB | relMSE | with --glass: PSNR dB | relMSE | views |", "|---|---|---|---|---|---|"]
+    report += ["", "## Material by material (each ball's window: mean light over the reference's, and cover)", "",
+               "| material | found: light | worst channel | cover | with --glass: light | worst channel | cover | views |",
+               "|---|---|---|---|---|---|---|---|"]
     for line in open(balls_path):
         words = line.split(None, 5)
         if len(words) < 5:
             continue
         ball, centre, radius = words[0], [float(w) for w in words[1:4]], float(words[4])
         said = words[5].strip() if len(words) > 5 else ball
-        sums = {"found": [0.0, 0.0, 0], "glass": [0.0, 0.0, 0]}
+        sums = {"found": [0.0, 0.0, 0.0, 0], "glass": [0.0, 0.0, 0.0, 0]}
         for view in held:
             if view[0] not in reference:
                 continue
-            window = window_of(view, centre, radius)
+            window = window_of(view, centre, radius * 0.7)   # well inside the ball: its own surface, no rim
             if window is None:
                 continue
             for label in ("found", "glass"):
                 if not os.path.exists(drawn[label][view[0]]):
                     continue
                 m = compare(drawn[label][view[0]], reference[view[0]], window)
-                if "psnr" in m and "relmse" in m:
-                    sums[label][0] += m["psnr"]
-                    sums[label][1] += m["relmse"]
-                    sums[label][2] += 1
+                if "image" in m and "reference" in m:
+                    ours, theirs = m["image"], m["reference"]
+                    ratios = [o / t if t > 1.0e-6 else 1.0 for o, t in zip(ours[:3], theirs[:3])]
+                    light = sum(ours[:3]) / max(sum(theirs[:3]), 1.0e-6)
+                    worst = max(ratios, key=lambda r: abs(r - 1.0))
+                    sums[label][0] += light
+                    sums[label][1] += worst
+                    sums[label][2] += ours[3] / max(theirs[3], 1.0e-6)
+                    sums[label][3] += 1
         cells = []
         for label in ("found", "glass"):
-            total, rel, n = sums[label]
-            cells += ["%.2f" % (total / n) if n else "--", "%.4f" % (rel / n) if n else "--"]
-        results["balls"][ball] = {label: {"psnr": sums[label][0] / sums[label][2], "relmse": sums[label][1] / sums[label][2]}
-                                  for label in sums if sums[label][2]}
-        report.append("| %s (%s) | %s | %d |" % (ball, said, " | ".join(cells), sums["found"][2]))
+            light, worst, cover, n = sums[label]
+            cells += ["%.2f" % (light / n) if n else "--", "%.2f" % (worst / n) if n else "--",
+                      "%.2f" % (cover / n) if n else "--"]
+        results["balls"][ball] = {label: {"light": sums[label][0] / sums[label][3], "worst": sums[label][1] / sums[label][3],
+                                          "cover": sums[label][2] / sums[label][3]}
+                                  for label in sums if sums[label][3]}
+        report.append("| %s (%s) | %s | %d |" % (ball, said, " | ".join(cells), sums["found"][3]))
 
 # 6. HANDED ON: every format, the kinds apart, and the levels of detail.
 report += ["", "## Handed on", ""]

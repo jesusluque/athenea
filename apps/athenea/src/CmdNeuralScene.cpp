@@ -1810,8 +1810,12 @@ int runShoot(const SceneOptions& all) {
                         const io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
                         const uint32_t count = clouds[k]->count;
                         ATHENEA_TRY(recordOf(records, k, refining ? piece.refined : piece.gone));
+                        // What is gone is what the frame sees through at the gaussian's own middle; what is
+                        // refined stays judged by its weight, which is how much of it finer ones cover.
                         auto marked = discovery->markGone(lift->sums, base, records[k], count, stamp, 0.05F,
-                                                          clouds[k].get(), &projection, all.refine * disc, most);
+                                                          clouds[k].get(), &projection, all.refine * disc, most,
+                                                          &carried, width, height, &frameDepth, all.tolerance,
+                                                          refining);
                         if (!marked) return std::move(marked).error();
                         if (*marked > 0) {
                             auto kept = discovery->without(*clouds[k], records[k]);

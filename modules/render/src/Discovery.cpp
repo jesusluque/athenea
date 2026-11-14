@@ -101,6 +101,8 @@ void Discovery::bind(rhi::ShaderCursor cursor) const {
     cursor["refinedRead"].setBinding(spareWords_.rhi());
     cursor["parentRead"].setBinding(spareFloats_.rhi());
     cursor["harmonics"].setBinding(spareWords_.rhi());
+    cursor["maskRead"].setBinding(spareFloats_.rhi());
+    cursor["depthRead"].setBinding(spareFloats_.rhi());
     cursor["shapeOut"].setBinding(spareWords_.rhi());
     cursor["harmonicsOut"].setBinding(spareWords_.rhi());
 }
@@ -555,7 +557,9 @@ Result<gpu::Buffer> Discovery::seenThrough(const gpu::Buffer& colour, const gpu:
 
 Result<uint32_t> Discovery::markGone(const gpu::Buffer& lifted, uint32_t base, gpu::Buffer& gone, uint32_t count,
                                      uint32_t stamp, float threshold, const scene::GpuSplats* cloud,
-                                     const Projection* projection, float coarse, float most) {
+                                     const Projection* projection, float coarse, float most, const gpu::Buffer* mask,
+                                     uint32_t maskWidth, uint32_t maskHeight, const gpu::Buffer* frameDepth,
+                                     float nearness, bool refining) {
     gpu::Device& device = library_->device();
     gpu::CommandBatch batch(device);
     clear_.dispatch(batch, {4, 1, 1}, [&](rhi::ShaderCursor cursor) {
@@ -581,6 +585,30 @@ Result<uint32_t> Discovery::markGone(const gpu::Buffer& lifted, uint32_t base, g
                                              static_cast<float>(projection->worldToView.at(2, 3))};
             cursor["params"]["viewZ"].setData(viewZ);
             cursor["params"]["coarse"].setData(coarse / static_cast<float>(projection->focalX));
+        }
+        if (cloud != nullptr && projection != nullptr && mask != nullptr && frameDepth != nullptr && maskWidth != 0 &&
+            maskHeight != 0) {
+            // Where each gaussian's middle falls in the mask: the view's three rows and its lens.
+            cursor["positions"].setBinding(cloud->positions.rhi());
+            cursor["maskRead"].setBinding(mask->rhi());
+            cursor["depthRead"].setBinding(frameDepth->rhi());
+            cursor["params"]["nearness"].setData(nearness);
+            const auto rowOf = [&](int r) {
+                return std::array<float, 4>{static_cast<float>(projection->worldToView.at(r, 0)),
+                                            static_cast<float>(projection->worldToView.at(r, 1)),
+                                            static_cast<float>(projection->worldToView.at(r, 2)),
+                                            static_cast<float>(projection->worldToView.at(r, 3))};
+            };
+            cursor["params"]["viewX"].setData(rowOf(0));
+            cursor["params"]["viewY"].setData(rowOf(1));
+            cursor["params"]["viewZ"].setData(rowOf(2));
+            cursor["params"]["lensX"].setData(static_cast<float>(projection->focalX));
+            cursor["params"]["lensY"].setData(static_cast<float>(projection->focalY));
+            cursor["params"]["middleX"].setData(static_cast<float>(projection->centreX));
+            cursor["params"]["middleY"].setData(static_cast<float>(projection->centreY));
+            cursor["params"]["maskWidth"].setData(maskWidth);
+            cursor["params"]["maskHeight"].setData(maskHeight);
+            cursor["params"]["centred"].setData(uint32_t{refining ? 2u : 1u});
         }
         // The lift's sums are in 1/1024 of a pixel.
         cursor["params"]["threshold"].setData(static_cast<uint32_t>(std::max(threshold, 0.0F) * 1024.0F + 0.5F));
