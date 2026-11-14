@@ -22811,3 +22811,9 @@ Not done, and the next thing to do here: discs narrow and the surface closed som
 normalised by its alpha where a surface is held, or opacity raised as the width falls, or the narrow discs of
 a look laid over the wide ones of the look before (which the levels already keep) -- measured from the views
 not taken as well, where the holes between narrow discs open first.
+
+What the third would give, estimated on the frames and not in the engine (the narrow frame laid over the
+default one with `oiiotool --over`): `--spread 0.7 --turned 1` over the default reads 29.62 dB and SSIM 0.957
+with the frame's alpha at 0.998, and `--spread 0.5 --turned 1` over it 28.22 and 0.944 -- five dB over the
+default's 24.25 with the surface closed, where the blend normalised reads 32 to 36. The narrower is the worse
+of the two laid over: more of the wide frame shows between its discs.
