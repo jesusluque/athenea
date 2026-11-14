@@ -22647,3 +22647,8 @@ alone): the scene's depth where it is opaque past any fringe (`KnownScene::last`
 scene) holds it, and that is 7% of the forty frames' gaussians, 1.68 million for 1.81. What is left is thought
 to be a parent a look covers part of: it stays, by the nine-tenths rule, the pixels it is under read coarse
 with the finer ones over them, and are made finer again the next frame. Not shown.
+
+**The last pass of the day, with the code as it stands** (after `KnownScene::last`). `[scene]`: Metal, Vulkan
+under Windows and CUDA under Linux, nine cases and 218 assertions each. The materials stage through Vulkan at
+640 x 360: 24 frames in 73 s, 444 thousand gaussians, 22.98, 21.90, 23.07 and 21.82 dB at the four held views.
+Every workflow: 26 of 26 through Metal and through Vulkan, 24 of 24 through CUDA.
