@@ -22754,3 +22754,11 @@ not taken (27.5 to 28.0 dB above) were not measured again.
 
 Not done: the materials stage and the stage that moves are metres across and were not looked at for the same
 lines; `qa.py` passes `--ray-margin` only when asked.
+
+**Where the materials stage's 24 dB go.** Its references carry no such lines (a stage of metres; looked at
+side by side). The held view the scene covers whole (h2, 0.997; 23.98 dB) cut in three bands with `oiiotool
+--cut`, each compared alone: the wall behind 34.58 dB (SSIM 0.986), the band of the balls 21.97 (0.799), the
+chequered floor 23.55 (0.808). The wall is held; the frame's figure is the balls -- side by side, the glossy
+plastics have lost the highlight that moves with the eye, and the chrome is a grain -- and the chequer along
+the floor. (The first view's bands are not given: a quarter of its wall band is sky the scene does not hold,
+and a cut cannot be masked.)
