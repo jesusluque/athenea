@@ -22652,3 +22652,18 @@ with the finer ones over them, and are made finer again the next frame. Not show
 under Windows and CUDA under Linux, nine cases and 218 assertions each. The materials stage through Vulkan at
 640 x 360: 24 frames in 73 s, 444 thousand gaussians, 22.98, 21.90, 23.07 and 21.82 dB at the four held views.
 Every workflow: 26 of 26 through Metal and through Vulkan, 24 of 24 through CUDA.
+
+**Play (same day).** The user: the Play button does not work. On a phone the page draws a level of detail,
+which has no frames, and Play was disabled; on a desktop the page went a level coarser by itself in the middle
+of a playback and stopped it. At a level the timeline is now the walk the scene was rendered along -- every
+part drawn, the timeline at one of the frames' cameras -- and Play rides it; the button says Pause and takes
+the accent's colour while it plays; six a second by default; and the frame rate does not change the level
+while something plays. Driven in Chrome as a phone: camera 14 of 60 after 2.5 s, 52 after 5, then Play again.
+
+**A view shot again makes six thousand gaussians every time.** One view of Sponza, a nearer one, and that one
+three more times: 98.8% held, 6 428, 6 589 and 6 127 gaussians made, at 8 700 pixels where the frame sees
+past the scene, and under ten taken out. Over a walk of a hundred frames that is the half million and more
+the count grew by. Finer-wanting pixels are a few hundred: it is not refinement again. Counting a disc's
+overhang towards `refined` changed nothing (6 244) and was taken back. What those pixels are was not looked
+at; fine things -- leaves cut by an alpha, a grille -- whose pixels are surface in one frame and hole in the
+next, and whose gaussians the five taps keep, are what it is thought to be.
