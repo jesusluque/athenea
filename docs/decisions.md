@@ -22603,3 +22603,16 @@ with one primitive under `KHR_gaussian_splatting`; the engine has no reader for 
 its history in the page: 509 files, and the timeline at frames 1, 12 and 24 shows the ball at the left, the
 middle and the right, with the chrome ball mirroring it -- and black where the mirror looks at the sky, which
 the scene does not hold.
+
+**Textures and every workflow (same day, ixwin).** The usd-wg test stages path traced through Vulkan: texture
+coordinates the right way round, JPEG (RGB, grey, CMYK) and PNG (8, 16 and 32 bit) all read, normal maps,
+roughness. `stage --frame-all` now says where its camera stands (`framed: eye ... target ... up ...`) and
+`qa.py --frame` makes an arc of looks and three held views about a stage that brings none: five of them shot
+and measured, 12 frames in 11 to 15 s each, the found scene the reference's to the eye -- texture, text and the
+textured brass teapot -- and 12 to 20 dB where it holds something, at 640 x 360, small things with fine print
+on black. The standard shader ball frames black; not looked into.
+
+`qa_flows.py` takes a found scene through every subcommand and option that reads it and a short shoot that
+grows a file: 26 of 26 through Vulkan under Windows (reading an SPZ is not in that build, made without zstd),
+24 of 24 through CUDA under Linux (no shoot there). A look taken while a frame gathers is not a time the scene
+stood at: `--snapshot` of one draws and hands on nothing, by design, and the script asks for a frame's last.
