@@ -248,6 +248,12 @@ each measured):
   kind -- lens, mirror, the rest -- where a cut draws them, and
   `Discovery::worldWidths` is the projection under which that cut is a level
   of detail in the scene's own units, whatever the eye.
+  A change to how a look makes or takes out gaussians is qualified with
+  `scripts/examples/neural-scene-qa`: `make_materials_stage.py` (fourteen
+  balls of one material each) with `qa.py`, and `make_animated_stage.py` (a
+  stage that moves) with `qa_time.py`. They run the engine and lay what it
+  prints in a table; both the holes of 14 Nov and the path tracer that did not
+  restart were found by looking at the pictures they leave, not by a figure.
 
 A kernel that adds to `shaders/athenea/neural/neural_appearance.slang` adds to
 both passes: the forward one and, by hand, the backward one beside it, and

@@ -41,6 +41,7 @@ struct DiscoverParams {
     float4 viewX;
     float4 viewY;
     float lensX; float lensY; float middleX; float middleY;
+    float repaintShare; uint linearCloud; uint pad6; uint pad7;   // centred 1: a colour off the frame's by this share is not the frame's (0: not asked)
     uint maskWidth; uint maskHeight; uint centred; float nearness;   // centred 1: gone; 2: refined. nearness: the share of its depth a surface may be off by
 };
 
@@ -138,15 +139,29 @@ void discoverGone(uint3 tid: SV_DispatchThreadID) {
         const float seenAt = depthRead[at];
         const bool nothing = !(seenAt > 0.0);
         if (params.centred == 1u) {
-            // All round its middle, two pixels each way: a gaussian on the very rim of what the frame shows
-            // has its middle on a pixel that is already the background's, and is still the surface's.
-            const int2 taps[5] = {int2(0, 0), int2(2, 0), int2(-2, 0), int2(0, 2), int2(0, -2)};
-            for (uint k = 0; k < 5; ++k) {
-                const int tx = clamp(int(x) + taps[k].x, 0, int(params.maskWidth) - 1);
-                const int ty = clamp(int(y) + taps[k].y, 0, int(params.maskHeight) - 1);
-                const float there = depthRead[uint(ty) * params.maskWidth + uint(tx)];
-                if (there > 0.0 && there <= z * (1.0 + params.nearness)) {
+            // THE FRAME DOES NOT SHOW IT WHERE IT IS. Either the frame sees past that place, all round the
+            // gaussian's middle, two pixels each way -- all five, since a gaussian on the very rim of what
+            // the frame shows has its middle on a pixel that is already the background's and is still the
+            // surface's. Or, where a changed colour is asked about (`repaintShare`), the frame's surface is
+            // where the gaussian is and the mask is set there: the scene's colour is no longer the frame's
+            // at that place, and this gaussian is what the scene shows. That is what takes out the foot of
+            // a ball that rolled on -- the floor it stood on is no farther than the tolerance behind it --
+            // and whatever is made over a flagged pixel is made in place of it, not on top.
+            if (!nothing && seenAt <= z * (1.0 + params.nearness)) {
+                if (params.repaintShare > 0.0 && seenAt >= z * (1.0 - params.nearness)) {
+                    // falls through: stamped below
+                } else {
                     return;
+                }
+            } else {
+                const int2 taps[4] = {int2(2, 0), int2(-2, 0), int2(0, 2), int2(0, -2)};
+                for (uint k = 0; k < 4; ++k) {
+                    const int tx = clamp(int(x) + taps[k].x, 0, int(params.maskWidth) - 1);
+                    const int ty = clamp(int(y) + taps[k].y, 0, int(params.maskHeight) - 1);
+                    const float there = depthRead[uint(ty) * params.maskWidth + uint(tx)];
+                    if (there > 0.0 && there <= z * (1.0 + params.nearness)) {
+                        return;
+                    }
                 }
             }
         } else if (nothing || abs(seenAt - z) > params.nearness * z) {

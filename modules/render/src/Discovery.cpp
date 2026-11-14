@@ -559,7 +559,7 @@ Result<uint32_t> Discovery::markGone(const gpu::Buffer& lifted, uint32_t base, g
                                      uint32_t stamp, float threshold, const scene::GpuSplats* cloud,
                                      const Projection* projection, float coarse, float most, const gpu::Buffer* mask,
                                      uint32_t maskWidth, uint32_t maskHeight, const gpu::Buffer* frameDepth,
-                                     float nearness, bool refining) {
+                                     float nearness, bool refining, const gpu::Buffer* frameColour, float repaint) {
     gpu::Device& device = library_->device();
     gpu::CommandBatch batch(device);
     clear_.dispatch(batch, {4, 1, 1}, [&](rhi::ShaderCursor cursor) {
@@ -592,6 +592,10 @@ Result<uint32_t> Discovery::markGone(const gpu::Buffer& lifted, uint32_t base, g
             cursor["positions"].setBinding(cloud->positions.rhi());
             cursor["maskRead"].setBinding(mask->rhi());
             cursor["depthRead"].setBinding(frameDepth->rhi());
+            (void)frameColour;
+            if (repaint > 0.0F && !refining) {
+                cursor["params"]["repaintShare"].setData(repaint);
+            }
             cursor["params"]["nearness"].setData(nearness);
             const auto rowOf = [&](int r) {
                 return std::array<float, 4>{static_cast<float>(projection->worldToView.at(r, 0)),

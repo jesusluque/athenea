@@ -22503,3 +22503,92 @@ run: the Mac was rendering.
 - **The chrome in the engine**: `render --glass` shades lenses and nothing else; a mirror is a picture there.
 - **One cube a kind**, from the middle of all of that kind: two glass things far apart share it.
 - A real phone. Chrome's emulation is what was driven.
+
+## QA of materials and of time: what a found scene made of each, and four defects (14 Nov)
+
+The user: twelve hours of QA and QC of materials and workflows; animations, textures and formats too; fetch
+the scenes that are needed; ixwin as the machine to test on, Linux and Windows.
+
+Two stages were made to qualify on, with nothing but text (`scripts/examples/neural-scene-qa`): fourteen balls
+of one material each -- matt, two plastics, rough gold, satin copper, chrome, clear, tinted and frosted glass,
+water, a lamp, a coat, a texture, a normal map -- on a chequered floor before a wall of stripes; and a stage
+that moves: a ball that crosses, a cube that turns, a chrome ball that stays. `qa.py` path traces views no
+look takes, shoots the walk, draws the scene from those views as found and with `--glass`, measures the frame
+where the scene holds something and each ball's window, and hands the scene on; `qa_time.py` shoots a frame a
+time code and measures the scene as it stood at a frame against the stage at that time. The usd-wg assets
+(the shader ball, the texture and roughness tests) were fetched and are not run yet.
+
+### What it found
+
+1. **A ball half eaten from any view the walk had left.** A gaussian is drawn a couple of pixels past where
+   its surface ends. At a silhouette that fringe lies on pixels where the frame sees what is behind, and a
+   gaussian just round the far side of a ball -- hidden but for its fringe -- had all the weight it showed on
+   such pixels: taken out as seen through. Every frame of a walk took another strip of the side the eye was
+   leaving. The same judged `refined`. Now a gaussian is stamped only where the frame speaks of it, at its
+   own middle, by the frame's own depth there: gone, where the frame sees past its place at the middle and
+   two pixels each way; refined, where the frame's surface is where it is (`discoverGone`, `centred`). On the
+   materials stage a frame took out 3 800 to 6 900 gaussians of a scene that had not moved; now none after
+   the first. The black holes on a pillar of Sponza were this; not shot again to see.
+2. **The path tracer did not start again when a mesh moved under a camera that stood still** -- the engine's,
+   not the shoot's: `Engine::setMesh` did not touch the revision the path state is compared by, and only new
+   points did, when committed. A ball that crossed the floor was the mean of everywhere it had been, and a
+   frame took 3.1 s because it was "whole" at once. `setMesh`, `setInstancer`, `removeInstancer` and `remove`
+   bump it. 9.6 s a frame, and the ball where it is. Backlog NEU15, for main.
+3. **A coarse look left glass with no transmission.** The looks a frame takes while it gathers make no panes,
+   and wrote 0: a level of detail drawn from them was a matt picture of the glass. The material's is written
+   whatever the look. Scenes shot before keep it until shot again.
+4. **The page read back a modifier Spark only takes** and never shaded glass or chrome again after the first
+   time; it keeps what it set.
+
+And three that stand: a shoot through Vulkan at 960 x 540 and 32 paths that slows from 27 s a frame to 450 and
+dies at the twenty-first with no word, where 640 x 360 and 16 paths run 24 frames in 80 s (NEU16); `athenea
+compare` with no backend under Vulkan (NEU17: the scripts take `--compare-backend`); and `compare --window`
+bounding the means and nothing else, so a ball is said by its mean light.
+
+### A stage that moves, and colour
+
+Depth alone does not say the foot of a ball left the floor it rolled over: the floor is within the tolerance
+behind it. `--repaint` now reaches `shoot`'s taking out as well as its making: where the frame's surface is
+where a gaussian is and the mask is set at its middle, the gaussian goes, so what is made over a flagged
+pixel is made in its place. The first try compared a pixel of the scene with a pixel of the frame and flagged
+a tenth of a still view at every edge of the chequer; made over and not taken out, the scene went from 0.52 to
+2.59 million in 24 frames. Both `repainted` now compare means over five pixels by five.
+
+### Measured, Metal, 960 x 540 (and Vulkan under Windows at 640 x 360)
+
+| | Metal | Vulkan |
+|---|---|---|
+| `[scene]`, nine cases, 218 assertions | pass | pass (CUDA under Linux: pass, before the last two changes) |
+| materials, a frame of `shoot` | 22.2 s | 3.3 s |
+| the frame where the scene holds something, four views no look took: PSNR | 24.32, 22.46, 23.96, 22.27 dB | 22.93, 21.80, 23.01, 21.75 dB |
+| the same with `--glass` | 23.95, 22.17, 23.53, 21.99 dB | 22.69, 21.61, 22.70, 21.58 dB |
+| before the first fix (whole frame, sky and all) | 10.99, 20.50, 22.54, 13.80 dB | -- |
+
+A ball's mean light over the reference's, Metal: matt 0.95, rough plastic 1.08, glossy plastic 1.02 (its worst
+channel 2.04), rough gold 0.96, satin copper 0.96, chrome 0.93, clear glass 1.06, tinted 1.02, frosted 1.04,
+lamp 0.97, coated 1.20 (1.67), water 1.08, textured 1.04, normal-mapped 1.02. With `--glass`: clear 1.16,
+tinted 0.85, frosted 0.88, water 0.99, the rest as they were. 55 321 gaussians of the million are lenses and
+some 23 thousand mirrors.
+
+Over time (24 frames, one camera, `--repaint 0.3`): 9.6 s a frame; the scene as it stood against the stage at
+that time 24.25, 24.33, 24.23, 24.24, 24.30 dB at frames 1, 6, 12, 18, 24, and frame 24 against the stage at
+frame 1's time 21.55; 518 to 588 thousand gaussians standing, some 45 thousand made and 43 thousand taken out
+a frame. With its history: 24 parts, 588 thousand standing and 992 thousand that stood a while, 276 files of
+history, 10.4 MB. At 0.15 the cube is cleaner and 115 thousand are made and taken out a frame.
+
+### Not done
+
+- **24 dB is the scene against a reference of 128 paths and 8 bounces** from a shoot of 32 and 3, on a chequer
+  of two greys: how much is the bounces, how much the floor's pattern and how much the scene is not taken
+  apart. Sponza's held views read 32 to 33 dB.
+- **Highlights are a picture.** The glossy and the coated balls are off in one channel by half to double:
+  what a look saw of a light is kept at the gaussian and seen from everywhere.
+- **`--glass` darkens tinted and frosted glass** (0.85, 0.88 of the reference where the picture reads 1.02,
+  1.04) and is a few tenths of a dB under the picture on every view: one ray, no roughness, and the tint
+  taken twice where the path tracer's ball takes more ways through.
+- **A thin trail where a ball met the floor** and a turning cube that is not clean: what is narrower than the
+  five pixels the colours are averaged over does not flag.
+- **No sky.** A found scene holds none; the measures leave it out and say how much of the frame is held.
+- **`export --levels` on a scene of one walk at one distance** has one coarser width to offer: the looks a
+  frame takes while it gathers. Budgets between two widths are the same level, now written once.
+- The usd-wg assets, the texture tests, PLY and GLB read back, and the page on the history: not run.

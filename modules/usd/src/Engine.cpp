@@ -445,6 +445,12 @@ void Engine::setMesh(const pxr::SdfPath& id, int32_t primId, const pxr::TfToken&
     if (look.has_value()) {
         entry.look = *look;
     }
+    // A MESH THAT MOVED IS A SCENE THAT CHANGED. Its points arriving bump the revision when they are
+    // committed; its transform, its visibility, its look and what instances it do not pass through there,
+    // and a path traced frame under a camera that stood still went on adding to the mean of the frames
+    // before: a ball that crossed the floor was a smear of everywhere it had been (found by the QA of a
+    // stage that moves, 14 Nov). Whatever a Sync hands on restarts the mean.
+    revision_.fetch_add(1);
 }
 
 void Engine::setInstancer(const pxr::SdfPath& id, const pxr::SdfPath& parent, InstancerArrays arrays) {
@@ -453,11 +459,13 @@ void Engine::setInstancer(const pxr::SdfPath& id, const pxr::SdfPath& parent, In
     entry.arrays = std::move(arrays);
     entry.parent = parent;
     entry.version = ++instancerVersion_;
+    revision_.fetch_add(1);   // instances that moved: a scene that changed
 }
 
 void Engine::removeInstancer(const pxr::SdfPath& id) {
     const std::lock_guard<std::mutex> held(guard_);
     instancers_.erase(id);
+    revision_.fetch_add(1);
 }
 
 void Engine::setMaterial(const pxr::SdfPath& id, std::shared_ptr<void> mtlxDocument) {
@@ -924,6 +932,7 @@ void Engine::remove(const pxr::SdfPath& id) {
     splats_.erase(id);
     points_.erase(id);
     meshes_.erase(id);
+    revision_.fetch_add(1);   // a prim that left: a scene that changed
 }
 
 /// WHICH LEVEL OF EACH CLOUD THIS VIEW DRAWS. A cloud converted at several

@@ -76,9 +76,30 @@ bool repainted(uint at) {
     if (!(params.repaint > 0.0)) {
         return false;
     }
-    const float4 held = knownColour[at];
-    const float3 was = held.rgb / max(held.a, 1.0e-3);   // the scene's colour where it covers
-    const float3 now = colour[at].rgb;
+    // Over a neighbourhood, not a pixel: the scene is gaussians a pixel wide and the frame is paths, and
+    // at the edge of every square of a chequered floor one pixel of the two differed by more than any
+    // share worth asking -- a tenth of a still frame was made again every frame, over what was there.
+    // Five by five pixels of each, their means: a thing that moved is wider than that, and noise is not.
+    float3 was = float3(0.0);
+    float3 now = float3(0.0);
+    float cover = 0.0;
+    float taken = 0.0;
+    const int x0 = int(at % params.width);
+    const int y0 = int(at / params.width);
+    for (int dy = -2; dy <= 2; ++dy) {
+        for (int dx = -2; dx <= 2; ++dx) {
+            const int x = clamp(x0 + dx, 0, int(params.width) - 1);
+            const int y = clamp(y0 + dy, 0, int(params.height) - 1);
+            const uint p = uint(y) * params.width + uint(x);
+            const float4 held = knownColour[p];
+            was += held.rgb;
+            cover += held.a;
+            now += colour[p].rgb;
+            taken += 1.0;
+        }
+    }
+    was /= max(cover, 1.0e-3);   // the scene's colour where it covers
+    now /= taken;
     const float3 off = abs(now - was) / (max(now, was) + 0.02);
     return max(off.x, max(off.y, off.z)) > params.repaint;
 }

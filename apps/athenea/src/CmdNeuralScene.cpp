@@ -1815,7 +1815,7 @@ int runShoot(const SceneOptions& all) {
                         auto marked = discovery->markGone(lift->sums, base, records[k], count, stamp, 0.05F,
                                                           clouds[k].get(), &projection, all.refine * disc, most,
                                                           &carried, width, height, &frameDepth, all.tolerance,
-                                                          refining);
+                                                          refining, &frameColour, all.repaint);
                         if (!marked) return std::move(marked).error();
                         if (*marked > 0) {
                             auto kept = discovery->without(*clouds[k], records[k]);
@@ -2911,6 +2911,13 @@ int runExport(const SceneOptions& o) {
             // gaussian kept what it was laid over, or one every surface of which was seen once).
             out("a level of %llu gaussians cannot be met: the coarsest the scene holds draws %llu; not written\n",
                 static_cast<unsigned long long>(budget), static_cast<unsigned long long>(said));
+            continue;
+        }
+        if (!levels.empty() && levels.back().width == *width) {
+            // The scene's levels are a few widths, an octave apart: two budgets between the same two of
+            // them ask for the same cut.
+            out("a level of %llu gaussians is the level before it (a width of %.3f units draws %llu); not written again\n",
+                static_cast<unsigned long long>(budget), static_cast<double>(*width), static_cast<unsigned long long>(said));
             continue;
         }
         ExportedLevel level;

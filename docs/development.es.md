@@ -255,6 +255,12 @@ cada una):
   por clase -- lente, espejo, el resto -- donde un corte los dibuja, y
   `Discovery::worldWidths` es la proyección bajo la cual ese corte es un level
   of detail en las unidades de la escena, sea cual sea el ojo.
+  Un cambio en cómo una mirada crea o retira gaussianas se califica con
+  `scripts/examples/neural-scene-qa`: `make_materials_stage.py` (catorce
+  bolas de un material cada una) con `qa.py`, y `make_animated_stage.py` (un
+  stage que se mueve) con `qa_time.py`. Ejecutan el motor y ponen en una tabla
+  lo que imprime; tanto los huecos del 14 nov como el path tracer que no se
+  reiniciaba se encontraron mirando las imágenes que dejan, no por una cifra.
 
 Un kernel que añade algo a `shaders/athenea/neural/neural_appearance.slang` lo añade a
 las dos pasadas: la forward y, a mano, la backward junto a ella, y las diferencias

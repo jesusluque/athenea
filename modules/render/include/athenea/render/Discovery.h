@@ -218,7 +218,9 @@ public:
     /// gaussian whose own middle falls on a set pixel is stamped, and only
     /// where the frame speaks of it: gone, where the frame sees past where
     /// the gaussian is (by `nearness` of its depth); `refining`, where the
-    /// frame's surface is where the gaussian is. Its fringe over a
+    /// frame's surface is where the gaussian is; and with `frameColour` and
+    /// a `repaint` share, gone too where the frame shows, where the
+    /// gaussian is, a surface of another colour. Its fringe over a
     /// silhouette is not the frame seeing through it, and a gaussian behind
     /// what the frame shows is not what the frame refined.
     [[nodiscard]] Result<uint32_t> markGone(const gpu::Buffer& lifted, uint32_t base, gpu::Buffer& gone,
@@ -228,7 +230,8 @@ public:
                                             float most = 0.0F, const gpu::Buffer* mask = nullptr,
                                             uint32_t maskWidth = 0, uint32_t maskHeight = 0,
                                             const gpu::Buffer* frameDepth = nullptr, float nearness = 0.02F,
-                                            bool refining = false);
+                                            bool refining = false, const gpu::Buffer* frameColour = nullptr,
+                                            float repaint = 0.0F);
 
     /// THE PIECE CUT FOR A VIEW (scene_discover.slang's discoverCut): the same
     /// cloud with no opacity on the gaussians that are not the ones to draw --

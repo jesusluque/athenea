@@ -319,8 +319,9 @@
       // By the eye, or as the picture each was found with: the option's.
       const applyShading = () => {
         for (const list of shaded) for (const s of list) {
+          // What is set is kept here: Spark's mesh takes a modifier and does not hand it back.
           const wanted = settings.glass && kinds[s.kind].ready ? s.shading : undefined;
-          if (s.mesh.worldModifier !== wanted) { s.mesh.worldModifier = wanted; s.mesh.updateGenerator(); }
+          if (s.applied !== wanted) { s.mesh.worldModifier = wanted; s.mesh.updateGenerator(); s.applied = wanted; }
         }
       };
 
@@ -527,6 +528,8 @@
         return within >= 0 ? within + 1 : levels.length;
       };
       window.__player = { detail: 0, fps: 0, settings, budget, lowered: 0 };
+      window.__player.shading = () => ({ stale: shadeStale, busy: shadeBusy, loading, step: window.__player.step, glass: kinds.glass.ready, mirror: kinds.mirror.ready,
+        meshes: shaded.flat().map((s) => ({ kind: s.kind, shaded: Boolean(s.applied), shown: s.mesh.visible, n: s.gaussians })) });
 
       // TOO SLOW: a coarser level. Once the scene is in, the frames of a few seconds are counted; under
       // fifteen a second with a coarser level to go to, that one is drawn instead, and it is said.
@@ -633,6 +636,7 @@
           root.updateMatrixWorld(true);
           for (const kind of Object.values(kinds)) {
             const seen = shadedShown(kind.which);
+            window.__player.step = `${kind.which}: ${seen.length} seen`;
             if (seen.length === 0) continue;
             const box = new THREE.Box3();
             for (const s of seen) box.union(s.mesh.getBoundingBox(true).clone().applyMatrix4(s.mesh.matrixWorld));
@@ -644,6 +648,7 @@
             SparkRenderer.cubeRender = kind.target ?? undefined;
             const texture = await spark.renderCubeMap({ scene, worldCenter: middle, size: settings.cube, near: 0.02,
                                                         far: Math.max(across * unit * 2, 10), hideObjects: hidden });
+            window.__player.step = `${kind.which}: cube drawn`;
             kind.target = SparkRenderer.cubeRender;
             kind.room.value = texture;
             kind.middle.value.copy(middle);
@@ -652,6 +657,10 @@
           }
           applyShading();
           shadeFresh = true;
+        } catch (error) {
+          // Said, and the gaussians stay as they were found: a page that cannot shade still shows the scene.
+          window.__player.shadeError = String(error?.stack ?? error);
+          console.error("glass and chrome could not be shaded", error);
         } finally { shadeBusy = false; }
       };
       // TURNING ABOUT A POINT, on a touch screen. A first finger laid down and kept still fixes a point --
@@ -816,7 +825,7 @@
           lastEye.copy(camera.position);
           shadeFresh = false;
           for (const kind of Object.values(kinds)) kind.eye.value.copy(camera.position);
-          for (const s of shaded.flat()) if (s.mesh.visible && s.mesh.worldModifier) s.mesh.updateVersion();
+          for (const s of shaded.flat()) if (s.mesh.visible && s.applied) s.mesh.updateVersion();
         }
         if (shadeStale && !loading) drawRooms();
         renderer.render(scene, camera);
