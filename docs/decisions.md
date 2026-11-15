@@ -23456,3 +23456,26 @@ the section before were a scene found under the eye's light, with the two groups
 lit by a sky, a sun and the lamps -- three different lights off the lamps, which the lamps drown;
 `--relight`'s layers still keep the last view's word (there a later frame is a later time); a group shot
 before this change has no distance in its file and is read as before.
+
+**Sponza's groups, measured clean** (15 Nov). One stage with a sky, a sun and the two lamps authored; the
+scene shot with the lamps off by path (`--lights-off /QaLights/Warm,/QaLights/Lamp2`), each lamp a group
+(`--light-group warm --lights-on /QaLights/Warm`), the nearest view's word kept; against the same stage
+path traced in two states:
+
+| view | groups off, against both on | both at 1 | the lamp at a half and the spot red, by levels, against that state |
+|---|---|---|---|
+| k10: dB, SSIM | 16.62, 0.293 | 27.94, 0.875 | 28.78, 0.888 |
+| k45 | 15.39, 0.261 | 22.76, 0.765 | 24.00, 0.786 |
+| a (not taken) | 15.91, 0.274 | 25.81, 0.844 | 26.77, 0.864 |
+| b (not taken) | 15.55, 0.277 | 24.24, 0.814 | 25.42, 0.831 |
+
+A tenth of a dB to half over the first measure (27.80, 22.31, 25.51, 24.00 and 28.75, 23.56, 26.61, 25.26),
+whose scene was found under another light than its reference's. 2 112 486 gaussians; the scene and its two
+layers are 496 MB.
+
+Not settled: which light Sponza's first scenes were found under. The stage's files author no UsdLux light
+that a search of them finds, and the path tracer lights such a stage from the eye; but `shoot` counts six
+lights on this stage where four are authored over it (`lights: 4 of the stage's on, 2 off` with two
+switched off), so two prims of Sponza's own carry the light API. Whether those light anything, and so
+whether the eye's light was ever on for it, is not looked into; the scenes of this section do not depend
+on it.
