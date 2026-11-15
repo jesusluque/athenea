@@ -1835,37 +1835,77 @@ int runShoot(const SceneOptions& all) {
             // they are, what they are made of -- and a look that asks about colour (--repaint) then finds the
             // scene's light the frame's, and takes out only what is of another surface.
             uint32_t relit = 0;
-            for (size_t k = 0; k < clouds.size(); ++k) {
-                io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
-                if (piece.foundIn >= frameFirst || piece.cloud.size() < 5 ||
-                    piece.cloud.compare(piece.cloud.size() - 5, 5, ".athg") != 0) {
-                    continue;   // this frame's own, which is this light already; or not a render's piece
-                }
+            // One piece's light taken again and kept: `cloud` on the device, `record` what of it is gone.
+            const auto takeAgain = [&](io::NeuralScenePiece& piece, scene::GpuSplats& cloud, const gpu::Buffer* record) -> Result<void> {
                 uint32_t took = 0;
-                auto layer = discovery->relight(*clouds[k], frameColour, frameDepth, width, height, projection,
-                                                all.tolerance, took);
-                if (!layer) return report(layer.error());
+                auto layer = discovery->relight(cloud, frameColour, frameDepth, width, height, projection,
+                                                all.tolerance, took, record);
+                if (!layer) return std::move(layer).error();
                 if (took == 0) {
-                    continue;
+                    return ok();
                 }
                 auto floats = layer->readAll<float>(device);
-                if (!floats) return report(floats.error());
+                if (!floats) return std::move(floats).error();
                 // Kept as the gaussians the frame spoke of and no more: which one, and its colour (a piece
                 // holds under 2^24 gaussians, which a float counts exactly).
                 std::vector<float> said;
                 said.reserve(size_t{took} * 4);
-                for (uint32_t g = 0; g < clouds[k]->count; ++g) {
+                for (uint32_t g = 0; g < cloud.count; ++g) {
                     const float* one = &(*floats)[size_t{g} * 4];
                     if (one[3] > 0.5F) {
                         said.insert(said.end(), {static_cast<float>(g), one[0], one[1], one[2]});
                     }
                 }
                 const std::filesystem::path file = directory / (piece.cloud + ".l" + std::to_string(stamp));
-                if (auto written = io::writeGaussians(file, static_cast<uint32_t>(said.size() / 4), 4, said); !written) {
-                    return report(written.error());
-                }
+                ATHENEA_TRY(io::writeGaussians(file, static_cast<uint32_t>(said.size() / 4), 4, said));
                 piece.lights.push_back(stamp);
                 relit += took;
+                return ok();
+            };
+            const auto asked = [&](const io::NeuralScenePiece& piece) {
+                // Not this frame's own, which is this light already; and a render's piece.
+                return piece.foundIn < frameFirst && piece.cloud.size() >= 5 &&
+                       piece.cloud.compare(piece.cloud.size() - 5, 5, ".athg") == 0;
+            };
+            const auto goneOf = [&](const io::NeuralScenePiece& piece, uint32_t count) -> Result<gpu::Buffer> {
+                std::vector<uint32_t> words;
+                if (!piece.gone.empty()) {
+                    auto read = io::readSeen(directory / piece.gone, count);
+                    if (!read) return std::move(read).error();
+                    words = std::move(*read);
+                }
+                return discovery->record(count, words);
+            };
+            for (size_t k = 0; k < clouds.size(); ++k) {
+                io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
+                if (!asked(piece)) {
+                    continue;
+                }
+                // What it holds that finer looks were laid over is asked too: by the piece's record of what
+                // is gone, not by what the cloud draws.
+                gpu::Buffer record = gone[k];
+                if (!record.valid()) {
+                    auto read = goneOf(piece, clouds[k]->count);
+                    if (!read) return report(read.error());
+                    record = *read;
+                }
+                if (auto done = takeAgain(piece, *clouds[k], &record); !done) return report(done.error());
+            }
+            // AND THE PIECES NOTHING OF WHICH IS THE FINEST: the coarse looks of earlier frames, which are not
+            // here to be drawn but are what the scene is drawn with from far (`render --lod`, a level of an
+            // export). Read for this, asked, and let go.
+            for (size_t k = 0; k < scene.pieces.size(); ++k) {
+                io::NeuralScenePiece& piece = scene.pieces[k];
+                if (!asked(piece) || std::find(pieceOf.begin(), pieceOf.end(), k) != pieceOf.end() ||
+                    (piece.gaussians != 0 && piece.removed >= piece.gaussians) ||
+                    !boxInView(piece.boundsMin, piece.boundsMax, projection, width, height)) {
+                    continue;
+                }
+                auto cloud = load(library, *loader, directory / piece.cloud);
+                if (!cloud) return report(cloud.error());
+                auto record = goneOf(piece, cloud->count);
+                if (!record) return report(record.error());
+                if (auto done = takeAgain(piece, *cloud, &*record); !done) return report(done.error());
             }
             out("%s at %g: %u gaussians the scene held took the frame's light again\n", name.c_str(), time, relit);
         }

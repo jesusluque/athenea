@@ -23316,3 +23316,14 @@ the same with `--lamps-only` and one ray, `shoot --relight` over a scene just sh
 after, and a snapshot before -- and ends well 31 of 31 on Metal. The 119 000 gaussians more that stood
 after Sponza's relit pass are, most likely, the lamps themselves, which the path tracer draws as lit balls
 (k45 looks at one): not checked.
+
+**The coarser gaussians take the light again too** (15 Nov). `sceneRelight` asked the gaussians a piece's
+cloud draws, and in a shoot those are the finest: what a finer look was laid over -- what `render --lod` and
+a level of an export draw from far -- kept the light it was found with. The kernel now takes the piece's
+record of what is gone and asks every gaussian still there, and the relit pass also reads, asks and lets go
+the pieces nothing of which is the finest (the coarse looks of earlier frames). On the stage whose sun
+moves, 19 of 20 pieces have layers; the last frame reads 28.38 dB as before at the finest, and at
+`--lod 3` and `--lod 8` 20.30 and 17.35 dB, where the *first* frame, whose light nothing changed, reads
+18.06 and 15.42 at those levels (the levels of this stage are poor by themselves: a chequered floor). The
+scene is 360 MB. Not measured: the same levels before the change (the scene of that run was written with
+the layers a float4 a gaussian, which the reader no longer takes).

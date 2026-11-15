@@ -233,10 +233,14 @@ public:
     /// depth within `nearness` of it, takes the frame's colour there -- in
     /// the cloud, and in the layer handed back (a float4 a gaussian: the
     /// colour as a record keeps one, and 1 where the frame said it). `taken`
-    /// is how many did. Nothing is made and nothing is taken out.
+    /// is how many did. Nothing is made and nothing is taken out. With
+    /// `gone` (the piece's record of what is gone) every gaussian still there
+    /// is asked, those finer looks were laid over too; without it, those the
+    /// cloud draws.
     [[nodiscard]] Result<gpu::Buffer> relight(scene::GpuSplats& cloud, const gpu::Buffer& frameColour,
                                               const gpu::Buffer& frameDepth, uint32_t width, uint32_t height,
-                                              const Projection& projection, float nearness, uint32_t& taken);
+                                              const Projection& projection, float nearness, uint32_t& taken,
+                                              const gpu::Buffer* gone = nullptr);
 
     [[nodiscard]] Result<uint32_t> markGone(const gpu::Buffer& lifted, uint32_t base, gpu::Buffer& gone,
                                             uint32_t count, uint32_t stamp, float threshold = 0.05F,

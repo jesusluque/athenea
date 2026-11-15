@@ -563,7 +563,8 @@ Result<gpu::Buffer> Discovery::seenThrough(const gpu::Buffer& colour, const gpu:
 
 Result<gpu::Buffer> Discovery::relight(scene::GpuSplats& cloud, const gpu::Buffer& frameColour,
                                        const gpu::Buffer& frameDepth, uint32_t width, uint32_t height,
-                                       const Projection& projection, float nearness, uint32_t& taken) {
+                                       const Projection& projection, float nearness, uint32_t& taken,
+                                       const gpu::Buffer* gone) {
     gpu::Device& device = library_->device();
     taken = 0;
     gpu::BufferDesc desc;
@@ -582,6 +583,8 @@ Result<gpu::Buffer> Discovery::relight(scene::GpuSplats& cloud, const gpu::Buffe
         cursor["positions"].setBinding(cloud.positions.rhi());
         cursor["shape"].setBinding(cloud.shape.rhi());
         cursor["pbr"].setBinding(cloud.hasPbr() ? cloud.pbr.rhi() : cloud.shape.rhi());
+        cursor["gone"].setBinding(gone != nullptr && gone->valid() ? gone->rhi() : cloud.shape.rhi());
+        cursor["params"]["hasGone"].setData(uint32_t{gone != nullptr && gone->valid() ? 1u : 0u});
         cursor["frameColour"].setBinding(frameColour.rhi());
         cursor["frameDepth"].setBinding(frameDepth.rhi());
         cursor["layer"].setBinding(layer->rhi());

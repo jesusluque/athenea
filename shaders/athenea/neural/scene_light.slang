@@ -13,7 +13,9 @@
 // again, beside the piece, and whoever draws the scene at a time lays over each piece the layers up to it.
 //
 // Not asked: a gaussian that lets light through (its picture is made of what is behind it, not read off
-// the frame), one the frame does not show (behind something, out of the frame), one that is gone.
+// the frame), one the frame does not show (behind something, out of the frame), one that is gone. One a
+// finer look was laid over is asked where the piece's record of what is gone is handed (`gone`): it is
+// there still, and is what a level of detail draws.
 module scene_light;
 import athenea.common.packing;
 import athenea.common.color;
@@ -30,12 +32,14 @@ struct RelightParams {
     float lensX; float lensY; float middleX; float middleY;
     float nearness;     // the share of its depth a surface may stand off the gaussian and be the gaussian's
     uint  hasPbr;
-    uint  pad0; uint pad1;
+    uint  hasGone;      // `gone` says what stands; without it, a gaussian's opacity does
+    uint  pad1;
 };
 
 StructuredBuffer<float4>   positions;    // xyz, opacity (0 and under: not standing)
 RWStructuredBuffer<uint>   shape;        // four words a gaussian; the colour is written
 StructuredBuffer<uint>     pbr;          // metallic, roughness, transmission
+StructuredBuffer<uint>     gone;         // the look a gaussian went at (0: it is there, standing or laid over)
 StructuredBuffer<float4>   frameColour;  // the frame's light a pixel
 StructuredBuffer<float>    frameDepth;   // and its depth along the view (0: nothing)
 RWStructuredBuffer<float4> layer;        // the colour as a record keeps it, and whether it was said
@@ -55,7 +59,9 @@ void sceneRelight(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     layer[i] = float4(0.0);
-    if (positions[i].w <= 0.0) {
+    // With the record of what is gone, every gaussian that is still there is asked: the finest, and the
+    // coarser ones finer looks were laid over, which are what the scene is drawn with from far.
+    if (params.hasGone != 0u ? gone[i] != 0u : positions[i].w <= 0.0) {
         return;
     }
     if (params.hasPbr != 0u && pbrTransmission(pbr[i]) > 0.02) {
