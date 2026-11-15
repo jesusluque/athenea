@@ -57,6 +57,8 @@
 #include <pxr/usd/usdSkel/utils.h>
 #include <pxr/usd/usdLux/domeLight.h>
 #include <pxr/usd/usdLux/lightAPI.h>
+#include <pxr/usd/usdLux/shapingAPI.h>
+#include <pxr/usd/usdLux/sphereLight.h>
 #include <pxr/usd/usdRender/pass.h>
 #include <pxr/usd/usdRender/settings.h>
 #include <pxr/usd/usdVol/particleField3DGaussianSplat.h>
@@ -2644,6 +2646,65 @@ double StageRenderer::metersPerUnit() const {
 
 double StageRenderer::endTimeCode() const {
     return impl_->stage->GetEndTimeCode();
+}
+
+Result<std::vector<StageLamp>> readStageLamps(const std::filesystem::path& file, double time, uint32_t& skipped) {
+    PXR_NAMESPACE_USING_DIRECTIVE
+    skipped = 0;
+    const UsdStageRefPtr stage = UsdStage::Open(file.string());
+    if (!stage) {
+        return Error(ErrorCode::NotFound, "cannot open " + file.string());
+    }
+    const UsdTimeCode at(time);
+    std::vector<StageLamp> out;
+    for (const UsdPrim& prim : stage->Traverse()) {
+        if (!prim.HasAPI<UsdLuxLightAPI>()) {
+            continue;
+        }
+        const UsdLuxLightAPI light(prim);
+        const bool sphere = prim.IsA<UsdLuxSphereLight>();
+        const bool distant = prim.IsA<UsdLuxDistantLight>();
+        bool normalised = false;
+        light.GetNormalizeAttr().Get(&normalised, at);
+        if ((!sphere && !distant) || normalised) {
+            ++skipped;
+            continue;
+        }
+        StageLamp lamp;
+        lamp.prim = prim.GetPath().GetString();
+        lamp.distant = distant;
+        float intensity = 1.0F;
+        float exposure = 0.0F;
+        GfVec3f colour(1.0F);
+        light.GetIntensityAttr().Get(&intensity, at);
+        light.GetExposureAttr().Get(&exposure, at);
+        light.GetColorAttr().Get(&colour, at);
+        const float sent = intensity * std::pow(2.0F, exposure);
+        lamp.radiance = {sent * colour[0], sent * colour[1], sent * colour[2]};
+        const GfMatrix4d toWorld = UsdGeomXformable(prim).ComputeLocalToWorldTransform(at);
+        const GfVec3d where = toWorld.ExtractTranslation();
+        const GfVec3d sends = toWorld.TransformDir(GfVec3d(0.0, 0.0, -1.0)).GetNormalized();
+        lamp.position = {where[0], where[1], where[2]};
+        lamp.sends = {sends[0], sends[1], sends[2]};
+        if (sphere) {
+            float radius = 0.5F;
+            UsdLuxSphereLight(prim).GetRadiusAttr().Get(&radius, at);
+            // The radius is the prim's own: in the world it is as large as the prim's transform makes it.
+            lamp.radius = radius * static_cast<float>(toWorld.TransformDir(GfVec3d(1.0, 0.0, 0.0)).GetLength());
+            if (prim.HasAPI<UsdLuxShapingAPI>()) {
+                float cone = 90.0F;
+                if (UsdLuxShapingAPI(prim).GetShapingConeAngleAttr().Get(&cone, at) && cone < 90.0F) {
+                    lamp.cone = cone;
+                }
+            }
+        } else {
+            float angle = 0.53F;
+            UsdLuxDistantLight(prim).GetAngleAttr().Get(&angle, at);
+            lamp.angle = angle;
+        }
+        out.push_back(std::move(lamp));
+    }
+    return out;
 }
 
 }   // namespace athenea::usd

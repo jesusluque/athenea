@@ -3239,13 +3239,51 @@ int runRender(const SceneOptions& given) {
                 "to light; shoot it again\n", directory.string().c_str());
             return kExitFailure;
         }
-        std::ifstream file(o.lamps);
-        if (!file) {
+        const std::string kindOf = std::filesystem::path(o.lamps).extension().string();
+        const bool authored = kindOf == ".usd" || kindOf == ".usda" || kindOf == ".usdc" || kindOf == ".usdz";
+        if (authored) {
+            // A USD FILE OF LIGHTS: its sphere lights (with their cones) and its distant ones, as authored.
+            uint32_t skipped = 0;
+            auto read = usd::readStageLamps(o.lamps, o.at >= 0.0 ? o.at : 0.0, skipped);
+            if (!read) return report(read.error());
+            for (const usd::StageLamp& from : *read) {
+                render::SceneLamp lamp;
+                lamp.radiance = from.radiance;
+                if (from.distant) {
+                    // Towards it, and what it lays on a surface facing it over pi: its radiance over the
+                    // disc it shows, whose half angle is half the light's.
+                    const float half = 0.5F * from.angle * 3.14159265F / 180.0F;
+                    if (!(half > 0.0F)) {
+                        ++skipped;
+                        continue;
+                    }
+                    lamp.distant = true;
+                    lamp.position = {static_cast<float>(-from.sends[0]), static_cast<float>(-from.sends[1]),
+                                     static_cast<float>(-from.sends[2])};
+                    const float share = std::sin(half) * std::sin(half);
+                    lamp.radiance = {from.radiance[0] * share, from.radiance[1] * share, from.radiance[2] * share};
+                } else {
+                    lamp.position = {static_cast<float>(from.position[0]), static_cast<float>(from.position[1]),
+                                     static_cast<float>(from.position[2])};
+                    lamp.radius = from.radius;
+                    if (from.cone >= 0.0F) {
+                        lamp.axis = {static_cast<float>(from.sends[0]), static_cast<float>(from.sends[1]),
+                                     static_cast<float>(from.sends[2])};
+                        lamp.cone = std::cos(from.cone * 3.14159265F / 180.0F);
+                    }
+                }
+                lamps.push_back(lamp);
+            }
+            out("lamps: %zu read from %s%s\n", lamps.size(), o.lamps.c_str(),
+                skipped != 0 ? (", " + std::to_string(skipped) + " lights left out (neither sphere nor distant, or normalised)").c_str() : "");
+        }
+        std::ifstream file(authored ? std::string{} : o.lamps);
+        if (!authored && !file) {
             err("cannot read %s\n", o.lamps.c_str());
             return kExitFailure;
         }
         std::string line;
-        while (std::getline(file, line)) {
+        while (!authored && std::getline(file, line)) {
             std::istringstream words(line);
             std::string kind;
             if (!(words >> kind) || kind[0] == '#') continue;

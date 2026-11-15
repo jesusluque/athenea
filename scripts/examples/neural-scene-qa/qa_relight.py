@@ -104,6 +104,8 @@ for k, line in enumerate(open(args.lamps)):
         matrix4d xformOp:transform = %s
         uniform token[] xformOpOrder = ["xformOp:transform"]
     }''' % (k, n[7], n[8], n[9], n[10], n[11], n[6], facing(n[0:3], n[3:6])))
+# The lamps alone, as a file `render --lamps` reads as well as the text one.
+open(os.path.join(out, "lamps.usda"), "w").write('#usda 1.0\n\ndef Xform "AddedLamps"\n{\n%s\n}\n' % "\n".join(lights))
 layer = os.path.join(out, "with_lamps.usda")
 open(layer, "w").write('#usda 1.0\n(\n    subLayers = [\n        @%s@\n    ]\n)\n\ndef Xform "AddedLamps"\n{\n%s\n}\n'
                        % (stage, "\n".join(lights)))

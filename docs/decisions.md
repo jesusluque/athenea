@@ -23327,3 +23327,11 @@ moves, 19 of 20 pieces have layers; the last frame reads 28.38 dB as before at t
 18.06 and 15.42 at those levels (the levels of this stage are poor by themselves: a chequered floor). The
 scene is 360 MB. Not measured: the same levels before the change (the scene of that run was written with
 the layers a float4 a gaussian, which the reader no longer takes).
+
+**Lamps from a USD file** (15 Nov). `render --lamps` takes a `.usd*` as well as the text file:
+`usd::readStageLamps` hands the file's sphere lights (radius by the prim's scale, the cone of a ShapingAPI,
+the way the prim's -z points) and distant lights, and the command makes lamps of them. Sponza's two lamps
+written as a USD layer and as text draw the same picture (57.3 dB one against the other: the spot's axis
+goes through a matrix printed to six digits). Not done: rect, disk, cylinder and dome lights, and a
+normalised light (left out, counted in the printed line); a light's colour temperature; lights that move
+(read at `--at`, or at 0).

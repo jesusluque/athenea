@@ -775,4 +775,26 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+/// A LAMP AS A FILE AUTHORS IT, for whoever lights something other than a
+/// stage with it (`neural-scene render --lamps`): where it stands in the
+/// world, the way it sends (UsdLux's -z), and its radiance -- intensity
+/// times two to the exposure times colour, which is what a light that is not
+/// normalised sends.
+struct StageLamp {
+    std::string           prim;
+    bool                  distant = false;      ///< a DistantLight; otherwise a SphereLight
+    std::array<double, 3> position{};
+    std::array<double, 3> sends{0.0, 0.0, -1.0};
+    float                 radius = 0.0F;        ///< a sphere's, in the world's units
+    float                 cone = -1.0F;         ///< shaping:cone:angle, degrees; under 0: none
+    float                 angle = 0.0F;         ///< a distant light's, degrees across
+    std::array<float, 3>  radiance{};
+};
+
+/// The sphere and distant lights of the USD file at `file`, at `time`, in
+/// prim order. `skipped` counts the lights that are neither, or that are
+/// normalised, or switched off: nothing is made of those.
+[[nodiscard]] Result<std::vector<StageLamp>> readStageLamps(const std::filesystem::path& file, double time,
+                                                            uint32_t& skipped);
+
 }   // namespace athenea::usd
