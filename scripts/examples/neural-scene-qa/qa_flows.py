@@ -131,6 +131,29 @@ if args.stage and args.walk:
     run("shoot --grow", ["neural-scene", "shoot", os.path.basename(args.stage), os.path.join(out, "shot.aths"), "--views", short,
                         "--samples", "8", "--pass-samples", "8", "--bounces", "2", "--grow", grown] + common,
         [grown + "_*.spz", grown + ".json"], cwd=stage_dir)
+    # What a scene shot now can be lit with after: lamps added with no path traced, and its light taken
+    # again by a second pass over the same views (a layer of light a frame, beside the pieces).
+    shot = os.path.join(out, "shot.aths")
+    if cameras and os.path.exists(os.path.join(shot, "scene.json")):
+        eye = cameras[0]["eye"]
+        target = cameras[0]["target"]
+        reach = sum((e - t) ** 2 for e, t in zip(eye, target)) ** 0.5
+        lamps = os.path.join(out, "lamps.txt")
+        open(lamps, "w").write("sphere %g %g %g %g 40 1 0.8 0.6\nspot %g %g %g %g %g %g 30 %g 80 0.6 0.8 1\n" %
+                               (eye[0], eye[1], eye[2], 0.03 * reach, eye[0], eye[1], eye[2], target[0], target[1],
+                                target[2], 0.02 * reach))
+        run("render --lamps", ["neural-scene", "render", shot, "--views", views, "--lamps", lamps] + common +
+            ["-o", os.path.join(out, "lamps")], [os.path.join(out, "lamps_*.exr")])
+        run("render --lamps --lamps-only, one ray, no bounce",
+            ["neural-scene", "render", shot, "--views", views, "--lamps", lamps, "--lamps-only", "--lamp-shadow-rays", "1",
+             "--lamp-bounce", "0"] + common + ["-o", os.path.join(out, "lampsonly")], [os.path.join(out, "lampsonly_*.exr")])
+        run("shoot --relight, over the scene shot", ["neural-scene", "shoot", os.path.basename(args.stage), shot, "--views",
+            short, "--samples", "8", "--pass-samples", "8", "--bounces", "2", "--relight"] + common,
+            [os.path.join(shot, "pieces", "*.athg.l*")], cwd=stage_dir)
+        run("render --frames, after its light was taken again", ["neural-scene", "render", shot, "--frames", "1", "6", "-o",
+            os.path.join(out, "relit.png")], [os.path.join(out, "relit_*.png")])
+        run("render --snapshot 1, before it was", ["neural-scene", "render", shot, "--snapshot", "1"] + view + common +
+            ["-o", os.path.join(out, "before.exr")], [os.path.join(out, "before.exr")])
     run("shoot --time-step --repaint --free-each-frame", ["neural-scene", "shoot", os.path.basename(args.stage),
         os.path.join(out, "timed.aths"), "--views", short, "--time", "0", "--time-step", "1", "--repaint", "0.3",
         "--free-each-frame", "--samples", "8", "--pass-samples", "8", "--bounces", "2"] + common,

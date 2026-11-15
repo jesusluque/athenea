@@ -23301,3 +23301,18 @@ gathers.
 
 Sponza's mean light with the lamps goes from 0.0195 to 0.0219 at k10, of the stage's 0.0283. 147 ms for the
 lamps where it was 129.
+
+**Tried and taken back** (15 Nov): a base colour and a normal for what a look finds *through* glass (two
+more planes of the path tracer, written into the record of the gaussian made behind a pane). The relit
+figures of materials and Sponza did not move in any digit: a scene holds a few hundred such gaussians (705
+of 1.1 M, 416 of 2.5 M), and none of them took a base colour. The dark pool under the glass knight is not
+those: it is the solid glass itself, which keeps the picture it was found with and shows the room only
+where its bent ray meets a gaussian -- and no camera of the walk saw the floor behind it.
+
+**The three backends, and the workflows.** With the lamps, the layers of light and their two cases,
+`[scene]` passes on Metal, on CUDA (WSL) and on Vulkan (Windows): 285 assertions in 12 cases each (before
+the highlight, which is run on Metal alone so far). `qa_flows.py` has five ways more -- `render --lamps`,
+the same with `--lamps-only` and one ray, `shoot --relight` over a scene just shot, its stored frames
+after, and a snapshot before -- and ends well 31 of 31 on Metal. The 119 000 gaussians more that stood
+after Sponza's relit pass are, most likely, the lamps themselves, which the path tracer draws as lit balls
+(k45 looks at one): not checked.
