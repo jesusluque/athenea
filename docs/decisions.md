@@ -23536,3 +23536,12 @@ applied with its history"): https://neural.lucab.co.uk/ is now the index (`appli
 and its data are in `scripts/examples/neural-scene-viewer` (`applied.html`, `history.json`); sysop
 assembles the site from `build/web` (`player.html`, `applied.html`, `history.json`, `scenes/` with
 `scenes.json`). Not tried on a phone.
+
+**A group's walk at 1080, and a stall that was not one** (15 Nov). Sponza at 1920x1080 (8 366 012
+gaussians, 123 pieces, 2339 s for the scene): the first group's pass said nothing for 37 minutes and was
+stopped twice as hung -- its process waiting on a Metal command buffer whenever it was sampled. It was not
+hung. The line a view prints went to a buffered stdout, and each view took 4.6 minutes where a frame of
+the scene took 117 s: every view read off the disk, again, the two hundred pieces nothing of which is the
+finest. Those pieces and every piece's record of what is gone are now read once a run and kept, and each
+view's line is flushed: 97 to 125 s a view. An hour and a half of the queue went on the wrong reading of
+it.

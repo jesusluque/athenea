@@ -2399,6 +2399,8 @@ int runShoot(const SceneOptions& all) {
 
     uint32_t groupFrame = 0;   // --light-group: the frames of this run, counted from one
     std::map<std::string, std::vector<float>> groupLayers;   // and what they said, a piece: four floats a gaussian
+    std::map<std::string, gpu::Buffer> groupGone;            // a piece's record of what is gone, read once
+    std::map<size_t, std::unique_ptr<scene::GpuSplats>> groupCoarse;   // the pieces read for a group alone, kept
     // ONE VIEW AT ONE TIME: drawn a pass at a time, and looked at as it gathers.
     const auto shootView = [&](const render::Camera& camera, const std::string& name, double time) -> int {
         const auto began = std::chrono::steady_clock::now();
@@ -2429,17 +2431,22 @@ int runShoot(const SceneOptions& all) {
                     (piece.gaussians != 0 && piece.removed >= piece.gaussians)) {
                     return ok();
                 }
-                std::vector<uint32_t> words;
-                if (!piece.gone.empty()) {
-                    auto read = io::readSeen(directory / piece.gone, cloud.count);
-                    if (!read) return std::move(read).error();
-                    words = std::move(*read);
+                // Its record of what is gone, read once a run: nothing of the scene changes under a group.
+                auto found = groupGone.find(piece.cloud);
+                if (found == groupGone.end()) {
+                    std::vector<uint32_t> words;
+                    if (!piece.gone.empty()) {
+                        auto read = io::readSeen(directory / piece.gone, cloud.count);
+                        if (!read) return std::move(read).error();
+                        words = std::move(*read);
+                    }
+                    auto made = discovery->record(cloud.count, words);
+                    if (!made) return std::move(made).error();
+                    found = groupGone.emplace(piece.cloud, *made).first;
                 }
-                auto record = discovery->record(cloud.count, words);
-                if (!record) return std::move(record).error();
                 uint32_t took = 0;
                 auto layer = discovery->relight(cloud, *colourOf->buffer, *depthOf->buffer, width, height, projection,
-                                                all.tolerance, took, &*record, true);
+                                                all.tolerance, took, &found->second, true);
                 if (!layer) return std::move(layer).error();
                 if (took == 0) {
                     return ok();
@@ -2472,12 +2479,19 @@ int runShoot(const SceneOptions& all) {
                     piece.cloud.compare(piece.cloud.size() - 5, 5, ".athg") != 0) {
                     continue;
                 }
-                auto cloud = load(library, *loader, directory / piece.cloud);
-                if (!cloud) return report(cloud.error());
-                if (auto done = keepOf(piece, *cloud); !done) return report(done.error());
+                // The pieces nothing of which is the finest are read once a run and kept: every view of a walk
+                // asks most of them again, and reading them off the disk was most of a frame's time.
+                auto held = groupCoarse.find(k);
+                if (held == groupCoarse.end()) {
+                    auto cloud = load(library, *loader, directory / piece.cloud);
+                    if (!cloud) return report(cloud.error());
+                    held = groupCoarse.emplace(k, std::make_unique<scene::GpuSplats>(std::move(*cloud))).first;
+                }
+                if (auto done = keepOf(piece, *held->second); !done) return report(done.error());
             }
             out("%s at %g: the light of group %s kept for %u gaussians, in %.1f s\n", name.c_str(), time,
                 all.lightGroup.c_str(), kept, std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count());
+            std::fflush(stdout);   // a walk of groups is long: each view is said when it is done
             return 0;
         }
         const uint32_t read = piecesRead;
