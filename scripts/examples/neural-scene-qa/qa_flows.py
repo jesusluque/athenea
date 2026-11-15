@@ -170,6 +170,10 @@ if args.stage and args.walk:
             ["-o", os.path.join(out, "group")], [os.path.join(out, "group_*.exr")])
         run("render --group lamp=1,0.2,0.2 --frames", ["neural-scene", "render", based, "--frames", "1", "3", "--group",
             "lamp=1,0.2,0.2", "-o", os.path.join(out, "grouped.png")], [os.path.join(out, "grouped_*.png")])
+        run("export --group lamp=0.5", ["neural-scene", "export", based, "--group", "lamp=0.5", "-o",
+            os.path.join(out, "xgroup")], [os.path.join(out, "xgroup_*.spz"), os.path.join(out, "xgroup.json")])
+        run("export --own-light 0, the group alone", ["neural-scene", "export", based, "--own-light", "0", "--group",
+            "lamp=1", "-o", os.path.join(out, "xalone")], [os.path.join(out, "xalone_*.spz")])
     run("shoot --time-step --repaint --free-each-frame", ["neural-scene", "shoot", os.path.basename(args.stage),
         os.path.join(out, "timed.aths"), "--views", short, "--time", "0", "--time-step", "1", "--repaint", "0.3",
         "--free-each-frame", "--samples", "8", "--pass-samples", "8", "--bounces", "2"] + common,
