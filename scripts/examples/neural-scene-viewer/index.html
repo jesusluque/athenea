@@ -221,7 +221,13 @@
       catch { return "./scenes/"; }
     })();
     const urlOf = (file) => window.__sceneFiles?.get(file) ?? `${base}${file}`;
-    const splatOf = (file, more = {}) => new SplatMesh({ url: urlOf(file), fileName: file, ...more });
+    // A folder's file is handed to Spark as its bytes: Spark reads a part in a worker, and a worker cannot
+    // reach the object URL of a file the page was handed when the page itself was read from a disk.
+    const splatOf = async (file, more = {}) => {
+      const local = window.__sceneBlobs?.get(file);
+      return local ? new SplatMesh({ fileBytes: new Uint8Array(await local.arrayBuffer()), fileName: file, ...more })
+                   : new SplatMesh({ url: urlOf(file), fileName: file, ...more });
+    };
     const began = performance.now();
     const readIndex = async () => (await fetch(urlOf(`${name}.json`), { cache: "no-store" })).json();
 
@@ -319,7 +325,7 @@
       const groupTexture = async (file) => {
         // The group's part, read for its colours alone and let go: Spark's packed splat keeps a colour in
         // the first word of four, a byte a channel.
-        const read = splatOf(file);
+        const read = await splatOf(file);
         await read.initialized;
         const packed = read.packedSplats?.packedArray;
         const count = read.packedSplats?.numSplats ?? 0;
@@ -663,7 +669,7 @@
               // extSplats: Spark's packed splat keeps a centre in three half floats, a part in 2048 of its
               // distance from the origin -- a centimetre in a stage of centimetres twenty metres across -- and
               // gaussians a millimetre wide fell into rows with gaps between them, seen from near.
-              const mesh = splatOf(span.file, { extSplats: true });
+              const mesh = await splatOf(span.file, { extSplats: true });
               await mesh.initialized;
               // A GROUP'S LIGHT AT A LEVEL OF DETAIL: where each group was handed on with the same levels as
               // the scene (the same gaussians in the same order, a level), the level takes its groups' light
@@ -684,7 +690,7 @@
             }
             for (const [which, made] of [["glass", span.glass], ["mirror", span.mirror]]) {
               if (!made) continue;
-              const other = splatOf(made.file, { extSplats: true });
+              const other = await splatOf(made.file, { extSplats: true });
               await other.initialized;
               beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0,
                             shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1])) });

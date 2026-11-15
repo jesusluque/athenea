@@ -154,6 +154,7 @@ loader = r"""
     });
     const map = new Map(files.map((file) => [file.name, URL.createObjectURL(file)]));
     globalThis.__sceneFiles = map;
+    globalThis.__sceneBlobs = new Map(files.map((file) => [file.name, file]));
     if (!params.get("scene")) {
       // The scene's own index holds parts and names no other index as its whole: a group's, a base colour's
       // and scenes.json are told apart by what the others say of them.

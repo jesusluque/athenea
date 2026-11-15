@@ -23713,3 +23713,16 @@ three runs one after another, so the later ones may have found the site's cache 
 
 **Not done.** Glass and mirrors at a level still take no group's light. A level's parts for every group add 64 MB
 to the 270 MB of this scene. Not opened on a phone.
+
+## The one file read from a disk: a folder's parts go to Spark as bytes (16 Nov)
+
+The one-file player opened from `file:` and handed a scene's folder found the scene and read its index, and then
+Spark failed to fetch each part: it reads a part in a worker, and a worker cannot reach the object URL of a file
+handed to a page that was itself read from a disk. A folder's part is now read by the page and handed to Spark as
+its bytes (`fileBytes`). Exercised in headless Chrome: the page from `file:`, the 274 files of the 1080p Sponza
+scene handed to its picker, the scene whole after 13.6 s with no error (coarse after 0.8 s) -- as it reads from a
+server. The automation hands the files to the input as files, not as a directory: the browser's own folder dialog
+and a folder dropped on the page were not exercised.
+
+**The night's commits on the other two backends** (ixwin, RTX 3070, at ba2cc3f1): the scene tests pass on CUDA
+under WSL and on Vulkan on Windows (295 assertions in 12 cases each), and the QA flows on Vulkan, 40 of 40.
