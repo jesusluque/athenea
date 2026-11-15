@@ -9,8 +9,9 @@
 #
 #   export_groups.py --athenea <binary> --scene <scene.aths> --out <dir>/<name> [--exposure S] [-- more export options]
 #
-# Writes <name>.json and its parts (the scene, groups off), <name>_g_<group>.json and its parts a group, and
-# "groups" in <name>.json. Nothing here computes on the data: it runs the engine and edits an index.
+# Writes <name>.json and its parts (the scene, groups off), <name>_g_<group>.json and its parts a group,
+# <name>_base.json and its parts (each gaussian's base colour, for the player's own lamp), and "groups" and
+# "base" in <name>.json. Nothing here computes on the data: it runs the engine and edits an index.
 import argparse
 import json
 import os
@@ -27,13 +28,13 @@ args = parser.parse_args()
 
 manifest = json.load(open(os.path.join(args.scene, "scene.json")))
 groups = [g for g in manifest.get("lightGroups", []) if g != "dark"]
-if not groups:
-    sys.exit("%s keeps no group of lights (neural-scene shoot --light-group)" % args.scene)
-common = ["--by-frame"] + (["--exposure", args.exposure] if args.exposure else []) + args.more
+plain = ["--by-frame"] + args.more
+common = plain + (["--exposure", args.exposure] if args.exposure else [])
 
 
-def export(stem, levels):
-    done = subprocess.run([args.athenea, "neural-scene", "export", args.scene] + common + levels + ["-o", stem],
+def export(stem, levels, options=None):
+    done = subprocess.run([args.athenea, "neural-scene", "export", args.scene] + (common if options is None else options) +
+                          levels + ["-o", stem],
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
     said = [line for line in done.stdout.splitlines() if line.strip() and "info]" not in line]
     print(said[-1][:160] if said else "(rc %d)" % done.returncode)
@@ -53,5 +54,11 @@ for group in groups:
 index_path = args.out + ".json"
 index = json.load(open(index_path))
 index["groups"] = named
+# And, where the scene keeps them, its base colours: what the player's own lamp is multiplied by. No exposure:
+# a base colour is a share, not a light.
+if manifest.get("baseColour"):
+    export(args.out + "_base", ["--base-colour"], plain)
+    index["base"] = os.path.basename(args.out) + "_base"
+    index["exposure"] = float(args.exposure) if args.exposure else 0.0
 json.dump(index, open(index_path, "w"), indent=1)
-print("groups: %s" % ", ".join(g["name"] for g in named))
+print("groups: %s%s" % (", ".join(g["name"] for g in named) or "none", "; base colours" if index.get("base") else ""))

@@ -253,6 +253,9 @@ public:
     /// and the layer's times `gain`. For whoever hands the scene on.
     [[nodiscard]] Result<void> addLightToRecords(gpu::Buffer& records, uint32_t count, uint32_t floats,
                                                  const gpu::Buffer& layer, const std::array<float, 3>& gain, float own);
+    /// Each record's base colour written as its colour (what is opaque; glass
+    /// black): the scene handed on for a viewer that lights it itself.
+    [[nodiscard]] Result<void> baseColourOfRecords(gpu::Buffer& records, uint32_t count, uint32_t floats);
 
     [[nodiscard]] Result<uint32_t> markGone(const gpu::Buffer& lifted, uint32_t base, gpu::Buffer& gone,
                                             uint32_t count, uint32_t stamp, float threshold = 0.05F,
@@ -337,7 +340,7 @@ private:
     void bind(rhi::ShaderCursor cursor) const;
 
     gpu::ShaderLibrary* library_ = nullptr;
-    gpu::ComputeKernel  relight_, addLight_, recordsLight_;
+    gpu::ComputeKernel  relight_, addLight_, recordsLight_, recordsBase_;
     gpu::ComputeKernel  clear_, mark_, count_, mask_, gone_, sizes_, frameValid_, framePack_, frameThrough_;
     gpu::ComputeKernel  renderValid_, renderPack_, renderSpare_, cut_, cutFlags_, gather_, cutSpans_, exportFlat_, levelFlags_, levelGather_;
     std::optional<gpu::PrefixSum> prefix_;

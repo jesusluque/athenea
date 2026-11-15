@@ -70,6 +70,9 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
         auto recordsLight = gpu::ComputeKernel::create(library, "athenea/neural/scene_light", "recordsAddLight");
         if (!recordsLight) return std::move(recordsLight).error();
         d.recordsLight_ = std::move(*recordsLight);
+        auto recordsBase = gpu::ComputeKernel::create(library, "athenea/neural/scene_light", "recordsBaseColour");
+        if (!recordsBase) return std::move(recordsBase).error();
+        d.recordsBase_ = std::move(*recordsBase);
         auto exportFlat = gpu::ComputeKernel::create(library, "athenea/neural/scene_export", "exportFlat");
         if (!exportFlat) return std::move(exportFlat).error();
         d.exportFlat_ = std::move(*exportFlat);
@@ -680,6 +683,29 @@ Result<void> Discovery::addLightToRecords(gpu::Buffer& records, uint32_t count, 
         cursor["params"]["gainR"].setData(gain[0]);
         cursor["params"]["gainG"].setData(gain[1]);
         cursor["params"]["gainB"].setData(gain[2]);
+    });
+    return batch.submit(true);
+}
+
+Result<void> Discovery::baseColourOfRecords(gpu::Buffer& records, uint32_t count, uint32_t floats) {
+    if (count == 0) {
+        return ok();
+    }
+    gpu::Device& device = library_->device();
+    gpu::CommandBatch batch(device);
+    recordsBase_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["positions"].setBinding(counters_.rhi());
+        cursor["shape"].setBinding(counters_.rhi());
+        cursor["pbr"].setBinding(counters_.rhi());
+        cursor["gone"].setBinding(counters_.rhi());
+        cursor["frameColour"].setBinding(counters_.rhi());
+        cursor["frameDepth"].setBinding(spareFloats_.rhi());
+        cursor["layer"].setBinding(spareFloats_.rhi());
+        cursor["added"].setBinding(counters_.rhi());
+        cursor["records"].setBinding(records.rhi());
+        cursor["counters"].setBinding(counters_.rhi());
+        cursor["params"]["count"].setData(count);
+        cursor["params"]["floats"].setData(floats);
     });
     return batch.submit(true);
 }

@@ -23509,3 +23509,15 @@ room -- they follow the room's light when the cube is drawn again, and a group's
 read; a level of detail (`--levels`) has no group textures and is drawn with the groups off; a group's
 light is a byte a channel after the export's exposure, so a lamp cannot be raised far past what was shot;
 a phone; the published page, which is the user's to ask of sysop.
+
+**And a lamp of the player's own** (15 Nov). `export --base-colour` hands on each gaussian's base colour as
+its colour (`recordsBaseColour`; glass black), the same parts as the scene's. The player reads it a part
+into a texture as it reads a group, and its modifier adds a lamp: the base colour times what the lamp
+sends, over the square of how far it is, by how the gaussian's disc faces it. The lamp rides with the eye
+or is left where the eye was; a level and a colour in the panel, scaled by the stops the scene was handed
+on with. Sponza with its groups off and the lamp at the eye, in Chrome headless: the room lit from where
+one stands. **No shadow**: the lamp lights through walls (the disc's two sides alike); the engine's
+`render --lamps` is the one that asks the scene what stands in the way.
+
+Not done: a shadow in the player (a cube of depths from the lamp); the lamp's highlight; more than one
+lamp; glass and chrome under it, which follow the cube of the room when it is drawn again.

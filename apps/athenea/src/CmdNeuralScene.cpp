@@ -125,6 +125,7 @@ struct SceneOptions {
     std::string              lightGroup;              // shoot: the frames are a group of lights' own, kept as its layer
     std::vector<std::string> groups;                  // render, export: NAME=LEVEL or NAME=R,G,B, a group of lights' level
     float                    ownLight = 1.0F;         // export: what the scene's own light is multiplied by
+    bool                     baseColour = false;      // export: each gaussian's base colour as its colour
     bool                     noHeadlight = false;     // shoot: a stage with no light is not lit from the eye
     std::vector<std::string> lightsOn;                // shoot: the stage's lights left on (the rest switched off)
     std::vector<std::string> lightsOff;               // shoot: the stage's lights switched off
@@ -3147,6 +3148,12 @@ int runExport(const SceneOptions& o) {
             ATHENEA_TRY(discovery->addLightToRecords(*onDevice, read->count, read->floats, *layer, gain, own));
             own = 1.0F;
         }
+        if (o.baseColour) {
+            // THE BASE COLOUR IN PLACE OF THE LIGHT (--base-colour): what a viewer with a lamp of its own
+            // multiplies that lamp's light by, the same gaussians in the same order as the scene's.
+            ATHENEA_TRY(discovery->baseColourOfRecords(*onDevice, read->count, read->floats));
+            own = 1.0F;
+        }
         if (own != 1.0F) {
             // No group drawn and the scene's own light scaled: the same kernel with nothing added.
             const std::vector<std::array<float, 4>> none(read->count, std::array<float, 4>{0.0F, 0.0F, 0.0F, 0.0F});
@@ -4081,6 +4088,7 @@ void addNeuralScene(CLI::App& app) {
     exported->add_flag("--by-frame", o.byFrame, "a part a rendered frame, holding what that frame found: the scene in the order it grew");
     exported->add_option("--exposure", o.exposure, "stops on the scene's light before it is encoded");
     exported->add_option("--group", o.groups, "a group of lights' level in what is handed on (shoot --light-group): NAME=LEVEL or NAME=R,G,B; * names every group not named. A group not named is at 1");
+    exported->add_flag("--base-colour", o.baseColour, "each gaussian is handed on with its surface's base colour as its colour, in place of its light (glass black): for a viewer that lights the scene with a lamp of its own. The same parts as the scene's own export; --exposure would scale it, and is left out");
     exported->add_option("--own-light", o.ownLight, "what the scene's own light is multiplied by: 0 hands on the groups' light alone (a group by itself, with --group)");
     exported->add_option("-o,--output", o.output, "a path with no extension: <stem>_NNN.spz and <stem>.json")->required();
     run(exported, options, runExport);

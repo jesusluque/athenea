@@ -313,21 +313,54 @@
         texture.needsUpdate = true;
         return texture;
       };
-      const groupLight = (textures) => dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
+      // A LAMP OF THE PLAYER'S OWN. Where the scene was handed on with its base colours (index.base: the same
+      // gaussians with each one's base colour as its colour), a lamp is added a gaussian: the base colour
+      // times what the lamp sends there, by the way the gaussian's disc faces it. It rides with the eye or is
+      // left where the eye was. No shadow: the lamp lights through walls; the engine's `render --lamps`
+      // is the one that asks the scene what stands in the way.
+      const lamp = {
+        on: false, held: false, level: 15, tint: [1, 0.85, 0.65], parts: null,
+        place: dyno.dynoVec3(new THREE.Vector3()), sends: dyno.dynoVec3(new THREE.Vector3()),
+      };
+      window.__lamp = lamp;
+      // What it sends is in the scene's light: the stops the scene was handed on with are the lamp's too.
+      const lampGain = Math.pow(2, Number(index.exposure) || 0);
+      const setLamp = () => lamp.sends.value.set(...lamp.tint.map((c) => (lamp.on ? lamp.level * lampGain * c : 0)));
+      if (index.base) {
+        try { lamp.parts = (await (await fetch(`./scenes/${index.base}.json`, { cache: "no-store" })).json()).parts; }
+        catch (error) { lamp.parts = null; }
+      }
+      const groupLight = (textures, base) => dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
         const inTypes = { gsplat: dyno.Gsplat };
         const inputs = { gsplat };
+        if (base) {
+          inTypes.base = "sampler2D"; inputs.base = dyno.dynoSampler2D(base);
+          inTypes.place = "vec3"; inputs.place = lamp.place;
+          inTypes.sends = "vec3"; inputs.sends = lamp.sends;
+        }
         textures.forEach((texture, k) => {
           inTypes[`light${k}`] = "sampler2D"; inputs[`light${k}`] = dyno.dynoSampler2D(texture);
           inTypes[`gain${k}`] = "vec3"; inputs[`gain${k}`] = groups[k].gain;
         });
         const add = new dyno.Dyno({
           inTypes, outTypes: { gsplat: dyno.Gsplat }, inputs,
-          globals: () => [dyno.defineGsplat],
+          globals: () => [dyno.defineGsplat, dyno.unindent(`
+            vec3 discAxis(vec4 q, vec3 scales) {
+              vec3 axis = scales.x <= scales.y ? (scales.x <= scales.z ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0))
+                                               : (scales.y <= scales.z ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0));
+              return normalize(axis + 2.0 * cross(q.xyz, cross(q.xyz, axis) + q.w * axis));
+            }
+          `)],
           statements: ({ inputs, outputs }) => dyno.unindentLines(`
             ${outputs.gsplat} = ${inputs.gsplat};
             if (isGsplatActive(${outputs.gsplat}.flags)) {
               ivec2 at = ivec2(${inputs.gsplat}.index % ${groupWide}, ${inputs.gsplat}.index / ${groupWide});
               vec3 light = pow(max(${inputs.gsplat}.rgba.rgb, vec3(0.0)), vec3(2.2));
+              ${base ? `
+              vec3 toLamp = ${inputs.place} - ${inputs.gsplat}.center;
+              float far2 = max(dot(toLamp, toLamp), 0.01);
+              float faces = abs(dot(discAxis(${inputs.gsplat}.quaternion, ${inputs.gsplat}.scales), toLamp * inversesqrt(far2)));
+              light += pow(texelFetch(${inputs.base}, at, 0).rgb, vec3(2.2)) * ${inputs.sends} * (faces / far2);` : ""}
               ${textures.map((_, k) => `light += ${inputs[`gain${k}`]} * pow(texelFetch(${inputs[`light${k}`]}, at, 0).rgb, vec3(2.2));`).join("\n              ")}
               ${outputs.gsplat}.rgba.rgb = pow(max(light, vec3(0.0)), vec3(1.0 / 2.2));
             }
@@ -364,6 +397,36 @@
         tint.addEventListener("input", changed);
         row.append(label, level, tint, said);
         document.getElementById("optGroups").append(row);
+      }
+      if (lamp.parts) {
+        // The player's own lamp: on, how much, its colour, and whether it stays where it is.
+        const row = document.createElement("div");
+        row.className = "row";
+        const label = document.createElement("span");
+        label.textContent = "Lamp";
+        const on = document.createElement("input");
+        on.type = "checkbox";
+        const level = document.createElement("input");
+        level.type = "range"; level.min = "0"; level.max = "100"; level.step = "1"; level.value = String(lamp.level);
+        const tint = document.createElement("input");
+        tint.type = "color"; tint.value = "#ffd9a6";
+        const hold = document.createElement("button");
+        hold.textContent = "Leave it here";
+        const changed = () => {
+          lamp.on = on.checked;
+          lamp.level = Number(level.value);
+          lamp.tint = [1, 3, 5].map((at) => parseInt(tint.value.slice(at, at + 2), 16) / 255);
+          setLamp();
+          shadeStale = true;
+        };
+        on.addEventListener("change", changed);
+        level.addEventListener("input", changed);
+        tint.addEventListener("input", changed);
+        hold.addEventListener("click", () => { lamp.held = !lamp.held; hold.textContent = lamp.held ? "Take it up" : "Leave it here"; });
+        row.append(label, on, level, tint, hold);
+        document.getElementById("optGroups").append(row);
+        // With the eye until it is left somewhere.
+        setInterval(() => { if (lamp.on && !lamp.held) lamp.place.value.copy(camera.position); }, 33);
       }
       let shadeStale = false;   // what is shown changed: the cubes are drawn again
       let shadeBusy = false;
@@ -577,10 +640,13 @@
               // gaussians a millimetre wide fell into rows with gaps between them, seen from near.
               const mesh = new SplatMesh({ url: `./scenes/${span.file}`, extSplats: true });
               await mesh.initialized;
-              if (span === part && detail === 0 && groups.length > 0 && groups.every((g) => g.parts?.[meshes.length]?.file)) {
+              const grouped = groups.length > 0 && groups.every((g) => g.parts?.[meshes.length]?.file);
+              const based = lamp.parts?.[meshes.length]?.file;
+              if (span === part && detail === 0 && (grouped || based)) {
                 const textures = [];
-                for (const g of groups) textures.push(await groupTexture(`./scenes/${g.parts[meshes.length].file}`));
-                mesh.worldModifier = groupLight(textures);
+                if (grouped) for (const g of groups) textures.push(await groupTexture(`./scenes/${g.parts[meshes.length].file}`));
+                const base = based ? await groupTexture(`./scenes/${based}`) : null;
+                mesh.worldModifier = groupLight(textures, base);
                 mesh.updateGenerator();
               }
               own.push({ mesh, until, gaussians: span.gaussians ?? 0 });

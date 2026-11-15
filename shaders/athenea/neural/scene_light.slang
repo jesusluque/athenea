@@ -161,3 +161,21 @@ void recordsAddLight(uint3 tid: SV_DispatchThreadID) {
     records[at + 1u] = (encodedLight(lit.g) - 0.5) / 0.28209479;
     records[at + 2u] = (encodedLight(lit.b) - 0.5) / 0.28209479;
 }
+
+// A RECORD'S BASE COLOUR AS ITS COLOUR: for whoever is handed the scene to light it itself (a viewer with a
+// lamp of its own). What is opaque keeps its surface's base colour in its tint (scene_render.slang's 23);
+// glass keeps there what a crossing lets through, which is no base colour, and is handed on black.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void recordsBaseColour(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    const uint row = i * params.floats;
+    const bool through = records[row + 19u] >= 0.5;
+    const float3 base = through ? float3(0.0) : saturate(float3(records[row + 23u], records[row + 24u], records[row + 25u]));
+    records[row + 11u] = (encodedLight(base.r) - 0.5) / 0.28209479;
+    records[row + 12u] = (encodedLight(base.g) - 0.5) / 0.28209479;
+    records[row + 13u] = (encodedLight(base.b) - 0.5) / 0.28209479;
+}
