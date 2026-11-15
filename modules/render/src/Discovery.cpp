@@ -76,6 +76,12 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
         auto frameLess = gpu::ComputeKernel::create(library, "athenea/neural/scene_light", "framePlane");
         if (!frameLess) return std::move(frameLess).error();
         d.framePlane_ = std::move(*frameLess);
+        for (const auto& [kernel, entry] : {std::pair{&d.cacheAdd_, "cacheAdd"}, std::pair{&d.cacheClear_, "cacheClear"},
+                                            std::pair{&d.cacheResolve_, "cacheResolve"}}) {
+            auto made = gpu::ComputeKernel::create(library, "athenea/neural/scene_cache", entry);
+            if (!made) return std::move(made).error();
+            *kernel = std::move(*made);
+        }
         auto exportFlat = gpu::ComputeKernel::create(library, "athenea/neural/scene_export", "exportFlat");
         if (!exportFlat) return std::move(exportFlat).error();
         d.exportFlat_ = std::move(*exportFlat);
@@ -692,6 +698,91 @@ Result<void> Discovery::addLightToRecords(gpu::Buffer& records, uint32_t count, 
         cursor["params"]["gainB"].setData(gain[2]);
     });
     return batch.submit(true);
+}
+
+Result<void> Discovery::cacheBegin(const std::array<float, 3>& min, float cell, uint32_t side, uint32_t planes) {
+    gpu::Device& device = library_->device();
+    const uint64_t cellsIn = uint64_t{side} * side * side * planes;
+    if (side == 0 || planes == 0 || !(cell > 0.0F) || cellsIn * 4 > 0xFFFFFFFFull) {
+        return Error(ErrorCode::InvalidArgument, "a cache of the scene's light wants cells, and no more than a word counts");
+    }
+    gpu::BufferDesc words;
+    words.bytes = cellsIn * 16;
+    words.elementBytes = 4;
+    words.label = "scene.cache.grid";
+    auto grid = gpu::Buffer::create(device, words);
+    if (!grid) return std::move(grid).error();
+    gpu::BufferDesc means;
+    means.bytes = cellsIn * 16;
+    means.elementBytes = 16;
+    means.label = "scene.cache.cells";
+    auto cells = gpu::Buffer::create(device, means);
+    if (!cells) return std::move(cells).error();
+    cacheGrid_ = *grid;
+    cacheCells_ = *cells;
+    cacheMin_ = min;
+    cacheCell_ = cell;
+    cacheSide_ = side;
+    cachePlanes_ = planes;
+    gpu::CommandBatch batch(device);
+    cacheClear_.dispatch(batch, {static_cast<uint32_t>(cellsIn * 4), 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["positions"].setBinding(counters_.rhi());
+        cursor["shape"].setBinding(counters_.rhi());
+        cursor["pbr"].setBinding(counters_.rhi());
+        cursor["layer"].setBinding(counters_.rhi());
+        cursor["grid"].setBinding(cacheGrid_.rhi());
+        cursor["cells"].setBinding(cacheCells_.rhi());
+        cursor["params"]["count"].setData(static_cast<uint32_t>(cellsIn * 4));
+    });
+    return batch.submit(true);
+}
+
+Result<void> Discovery::cacheAdd(const scene::GpuSplats& cloud, const gpu::Buffer* layer, uint32_t plane) {
+    if (cloud.count == 0 || cacheSide_ == 0 || plane >= cachePlanes_) {
+        return ok();
+    }
+    gpu::Device& device = library_->device();
+    gpu::CommandBatch batch(device);
+    cacheAdd_.dispatch(batch, {cloud.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["positions"].setBinding(cloud.positions.rhi());
+        cursor["shape"].setBinding(cloud.shape.rhi());
+        cursor["pbr"].setBinding(cloud.hasPbr() ? cloud.pbr.rhi() : cloud.shape.rhi());
+        cursor["layer"].setBinding(layer != nullptr && layer->valid() ? layer->rhi() : cloud.positions.rhi());
+        cursor["grid"].setBinding(cacheGrid_.rhi());
+        cursor["cells"].setBinding(cacheCells_.rhi());
+        cursor["params"]["count"].setData(cloud.count);
+        cursor["params"]["side"].setData(cacheSide_);
+        cursor["params"]["plane"].setData(plane);
+        cursor["params"]["linearCloud"].setData(uint32_t{cloud.linear ? 1u : 0u});
+        cursor["params"]["minX"].setData(cacheMin_[0]);
+        cursor["params"]["minY"].setData(cacheMin_[1]);
+        cursor["params"]["minZ"].setData(cacheMin_[2]);
+        cursor["params"]["cell"].setData(cacheCell_);
+        cursor["params"]["hasPbr"].setData(uint32_t{cloud.hasPbr() ? 1u : 0u});
+        cursor["params"]["hasLayer"].setData(uint32_t{layer != nullptr && layer->valid() ? 1u : 0u});
+    });
+    return batch.submit(true);
+}
+
+Result<gpu::Buffer> Discovery::cacheResolved() {
+    if (cacheSide_ == 0) {
+        return Error(ErrorCode::InvalidArgument, "no cache of the scene's light was begun");
+    }
+    gpu::Device& device = library_->device();
+    const uint32_t cellsIn = cacheSide_ * cacheSide_ * cacheSide_;
+    gpu::CommandBatch batch(device);
+    cacheResolve_.dispatch(batch, {cellsIn, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["positions"].setBinding(counters_.rhi());
+        cursor["shape"].setBinding(counters_.rhi());
+        cursor["pbr"].setBinding(counters_.rhi());
+        cursor["layer"].setBinding(counters_.rhi());
+        cursor["grid"].setBinding(cacheGrid_.rhi());
+        cursor["cells"].setBinding(cacheCells_.rhi());
+        cursor["params"]["count"].setData(cellsIn);
+        cursor["params"]["planes"].setData(cachePlanes_);
+    });
+    ATHENEA_TRY(batch.submit(true));
+    return cacheCells_;
 }
 
 Result<gpu::Buffer> Discovery::framePlane(const gpu::Buffer& planes, uint32_t base, uint32_t pixels) {

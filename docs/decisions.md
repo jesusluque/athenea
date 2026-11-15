@@ -23614,3 +23614,43 @@ where a pass of its own has them all, which is the likely part, and it was not m
 explained: a shadow ray always walks nearest-first where glass may let it through (`glassShadows` is on by
 default), but it reads a material's row there and evaluates nothing, so what it costs is not known until it is
 measured. Next: the found scene as the path tracer's cache of what a bounce meets. `bake` still ignores groups.
+
+## The found scene as what a path's bounce meets (`shoot --scene-cache`, 15 Nov)
+
+**The idea** (the user's: the scene itself is the cache a path tracer's report asked for). A found gaussian holds
+the light leaving a surface. A path that bounces off a surface and lands where the scene already holds one can take
+that light and end, with no material evaluated, no light sampled and no further bounce.
+
+**What was built.** The light of the gaussians found so far is kept as a mean a cell of a cube over the stage's
+bounds (`scene_cache.slang`: `cacheAdd` sums each standing gaussian's light into its cell in 1/256ths with a
+stochastic rounding, `cacheResolve` divides by the cell's count; glass and mirrors are left out, their colour being
+what stands behind them or what an eye saw in them), with a plane more a light group, read from the groups' layers.
+The path tracer reads it where a bounce lands (`PathSettings::sceneCache`), only for a direction drawn from a
+broad lobe (not a delta, a density under 1), and adds the groups' planes to the groups' outputs. The cells ride
+after the planes of the tracer's `sum` buffer: its kernel is at the 31 buffers a Metal kernel binds. A piece is
+added once, when the view that found it is done, so a view reads what the views before it found.
+
+**Measured.** Sponza with two lamps as groups, 960x540, 20 views, 32 paths, denoised; four views not taken against
+the stage path traced with 128 paths and 8 bounces; the mean is the red of the four pictures' light, k10 first:
+
+| | seconds in the views | k10, k45, a, b (dB) | mean light, k10 |
+|---|---|---|---|
+| 3 bounces | 547 | 27.44, 22.86, 25.59, 23.99 | not taken |
+| 3 bounces, 160 cells an axis | 568 | 27.48, 22.88, 25.62, 24.00 | 0.0356 |
+| 1 bounce | 283 | 27.19, 22.55, 25.26, 23.55 | 0.0337 |
+| 1 bounce, 160 cells an axis | 280 | 27.28, 22.62, 25.34, 23.61 | 0.0342 |
+
+- *With three bounces it changes neither the time nor, past 0.04 dB, the picture.* The paths do read it: with the light a hit
+  takes tinted magenta, a frame is magenta all over. But a view takes the same 23--28 s. The likely reason, not
+  confirmed by a capture: the tracer is one kernel that loops over its samples and bounces, and on a GPU a path that
+  ends early waits for the others of its group; while some of them miss the cache, the group runs its bounces.
+- *With one bounce it gives back a little over a quarter of the light the bounces not taken would have brought*
+  (0.0337 to 0.0342 of the 0.0356 three bounces with the cache read), and 0.06 to 0.09 dB. The halved time is the one bounce's, not the cache's.
+- In this stage the second and third bounces are 5% of the light: there is not much for a cache to give back.
+
+**Not done.** A capture of the kernel on Metal, which would say whether the waiting is what holds the time. The
+paths one a thread, dispatched a bounce with the live ones compacted (what Unreal's path tracer does, by
+athenea-research's proposal 117), which is what would let a path that ends early cost less; it is a rewrite of the
+kernel's loop. The cells hold only what a camera has seen: a bounce that lands behind the walk finds nothing, and
+nothing fills the cells from the paths themselves. A cell is 23 cm in Sponza and holds one mean for both sides of
+anything thinner. Off by default.

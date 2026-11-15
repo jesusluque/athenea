@@ -256,6 +256,24 @@ public:
     /// The same over a render's records on the device (`count` of `floats`
     /// floats, as a file keeps them): each record's own light times `own`,
     /// and the layer's times `gain`. For whoever hands the scene on.
+    /// THE SCENE'S LIGHT IN CELLS OF THE WORLD (shaders/athenea/neural/scene_cache):
+    /// a cube of `side` cells an axis from `min`, each `cell` across, `planes`
+    /// planes of them -- the scene's own light, then a plane a group of
+    /// lights. Empty until a cloud is added.
+    [[nodiscard]] Result<void> cacheBegin(const std::array<float, 3>& min, float cell, uint32_t side, uint32_t planes);
+    /// A cloud's standing gaussians added to plane `plane`: their own light,
+    /// or with `layer` (a float4 a gaussian, a group's light) that light.
+    /// Plane 0 counts the gaussians a cell holds.
+    [[nodiscard]] Result<void> cacheAdd(const scene::GpuSplats& cloud, const gpu::Buffer* layer, uint32_t plane);
+    /// The cells' means as a path tracer reads them: a float4 a cell a plane
+    /// (rgb the mean light, a how many gaussians the cell holds), a plane
+    /// after another. This object's buffer, written again by the next call.
+    [[nodiscard]] Result<gpu::Buffer> cacheResolved();
+    [[nodiscard]] uint32_t cacheSide() const noexcept { return cacheSide_; }
+    [[nodiscard]] uint32_t cachePlanes() const noexcept { return cachePlanes_; }
+    [[nodiscard]] float cacheCell() const noexcept { return cacheCell_; }
+    [[nodiscard]] const std::array<float, 3>& cacheMin() const noexcept { return cacheMin_; }
+
     /// One plane of a buffer of several (`pixels` float4 from `base`), copied
     /// out. The buffer is this object's, written again by the next call.
     [[nodiscard]] Result<gpu::Buffer> framePlane(const gpu::Buffer& planes, uint32_t base, uint32_t pixels);
@@ -350,6 +368,12 @@ private:
 
     gpu::ShaderLibrary* library_ = nullptr;
     gpu::ComputeKernel  relight_, addLight_, recordsLight_, recordsBase_, framePlane_;
+    gpu::ComputeKernel  cacheAdd_, cacheClear_, cacheResolve_;
+    gpu::Buffer         cacheGrid_, cacheCells_;
+    std::array<float, 3> cacheMin_{0.0F, 0.0F, 0.0F};
+    float               cacheCell_ = 0.0F;
+    uint32_t            cacheSide_ = 0;
+    uint32_t            cachePlanes_ = 0;
     gpu::Buffer         ownFrame_;   ///< framePlane's result, kept between calls
     gpu::ComputeKernel  clear_, mark_, count_, mask_, gone_, sizes_, frameValid_, framePack_, frameThrough_;
     gpu::ComputeKernel  renderValid_, renderPack_, renderSpare_, cut_, cutFlags_, gather_, cutSpans_, exportFlat_, levelFlags_, levelGather_;

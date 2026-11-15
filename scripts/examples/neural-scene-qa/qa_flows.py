@@ -181,6 +181,10 @@ if args.stage and args.walk:
             [os.path.join(once, "scene.json"), os.path.join(once, "pieces", "*.g.lamp.1")], cwd=stage_dir)
         run("render --group lamp=0, a scene shot with its groups", ["neural-scene", "render", once, "--views", views,
             "--group", "lamp=0"] + common + ["-o", os.path.join(out, "once")], [os.path.join(out, "once_*.exr")])
+    # THE FOUND SCENE AS WHAT A PATH'S BOUNCE MEETS: a shoot of one bounce that reads the scene's own light.
+    run("shoot --scene-cache --bounces 1", ["neural-scene", "shoot", os.path.basename(args.stage),
+        os.path.join(out, "cached.aths"), "--views", short, "--samples", "8", "--pass-samples", "8", "--bounces", "1",
+        "--scene-cache", "64"] + common, [os.path.join(out, "cached.aths", "scene.json")], cwd=stage_dir)
     run("shoot --time-step --repaint --free-each-frame", ["neural-scene", "shoot", os.path.basename(args.stage),
         os.path.join(out, "timed.aths"), "--views", short, "--time", "0", "--time-step", "1", "--repaint", "0.3",
         "--free-each-frame", "--samples", "8", "--pass-samples", "8", "--bounces", "2"] + common,

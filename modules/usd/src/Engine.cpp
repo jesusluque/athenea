@@ -3864,6 +3864,12 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             paths.mis = pathMis_.load();
             paths.glassShadows = glassShadows_.load();
             paths.rayMargin = rayMargin_.load();
+            paths.sceneCache = sceneCache_.valid() ? &sceneCache_ : nullptr;
+            paths.cacheSide = sceneCacheSide_;
+            paths.cachePlanes = sceneCachePlanes_;
+            paths.cacheMin = sceneCacheMin_;
+            paths.cacheCell = sceneCacheCell_;
+            paths.cacheRevision = sceneCacheRevision_;
             paths.errorTarget = pathError_.load();
             paths.headlight = headlight_.load() && (frame.lights == nullptr || frame.lights->count() == 0);
             PathState now;

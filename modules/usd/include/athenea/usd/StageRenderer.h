@@ -697,6 +697,16 @@ public:
     /// it, background included.
     [[nodiscard]] Result<void> setLightOn(const std::string& prim, bool on);
 
+    /// WHAT A PATH'S BOUNCE MEETS, WHERE IT IS KNOWN ALREADY (technique::
+    /// PathSettings::sceneCache): `cells` holds, a cell of a cube of `side`
+    /// an axis from `min` and `cell` across, the light leaving the surfaces
+    /// there (float4; a over 0 where it holds any), then `planes - 1` planes
+    /// more for the light groups asked for, in their order. A path traced
+    /// frame's bounce that lands in a cell holding light takes it and ends.
+    /// An invalid buffer: none. Set between frames; each call is read anew.
+    void setSceneCache(const gpu::Buffer& cells, uint32_t side, uint32_t planes, const std::array<float, 3>& min,
+                       float cell);
+
     /// The light at `prim` put in the light group `group` (`athenea:lightGroup`),
     /// as a session opinion: what it lights is gathered in the output
     /// `lightGroup:<group>` of a frame that asks for it (requestOutputs), and

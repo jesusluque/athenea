@@ -119,6 +119,16 @@ struct PathParams {
     // 1: the groups gather the emission groups' indirect light only
     // (PathSettings::groupsIndirect).
     uint  groupsIndirect;
+    // WHAT A BOUNCE MEETS, KNOWN ALREADY (PathSettings::sceneCache): cells of
+    // the world after the planes of `sum`, from `cacheBase`, `cacheSide` an
+    // axis and `cachePlanes` planes of them. 0 planes: none.
+    uint  cachePlanes;
+    uint  cacheBase;
+    uint  cacheSide;
+    float cacheMinX;
+    float cacheMinY;
+    float cacheMinZ;
+    float cacheCell;
 };
 
 Texture2D<uint4>               visibility;   // (instance + 1, triangle); row 0 on top
@@ -2227,6 +2237,7 @@ R"(
         bool   mediumResume = false;   // the light point was a medium collision's, and the path goes on from it
         bool   mediumEnds = false;     // or ends there
         float  previousPdf = 0.0;     // the material's density for the direction that reached `found`
+        bool   previousBroad = false;  // and whether it was drawn from a broad lobe: what it meets may be read from the cache
         bool   previousWeighs = false;   // and whether emission met there is weighed against it
         // Where that direction was drawn: the last vertex that sampled its
         // material with a density, and its normal. A path that has gone on
@@ -2382,6 +2393,30 @@ R"(
                         closedCoefficients[c] += firstMeasure * shBasisValue(c, firstDirection);
 )"
 R"(                    }
+                }
+            }
+            // WHAT THE BOUNCE MET IS KNOWN ALREADY (path.cachePlanes): the light
+            // leaving the surfaces of the cell it landed in, kept from what
+            // earlier frames found. The path takes it and ends -- no material,
+            // no light, no further bounce. Only for a direction drawn from a
+            // broad lobe, which gathers over a hemisphere and does not see a
+            // cell's edge; a mirror's ray is shaded as ever.
+            if (path.cachePlanes != 0u && !lightStep && bounce >= 1u && previousBroad && found.valid && !kBake) {
+                const float3 at = (found.positionWorld - float3(path.cacheMinX, path.cacheMinY, path.cacheMinZ)) / path.cacheCell;
+                if (all(at >= float3(0.0)) && all(at < float3(float(path.cacheSide)))) {
+                    const uint3 c = uint3(at);
+                    const uint cellsIn = path.cacheSide * path.cacheSide * path.cacheSide;
+                    const uint slot = path.cacheBase + (c.z * path.cacheSide + c.y) * path.cacheSide + c.x;
+                    const float4 known = sum[slot];
+                    if (known.a > 0.0) {
+                        carried += throughput * known.rgb;
+                        for (uint g = 1u; kLightGroups && g < path.cachePlanes; ++g) {
+                            const float3 of = sum[slot + g * cellsIn].rgb;
+                            carried += throughput * of;
+                            addGroup(groups, g, throughput * of * opacity);
+                        }
+                        break;
+                    }
                 }
             }
             // The one place materials are evaluated; the camera's hit once a pixel.
@@ -2870,6 +2905,7 @@ const char* kBodyRest = R"(                const float3 np = cur.inputs.normalWo
                 ++glassLayers;   // the draw, its density and where it was made stand
             } else {
                 previousPdf = ms.pdf;
+                previousBroad = !ms.delta && ms.pdf < 1.0;
                 previousWeighs = path.mis != 0 && !ms.delta;
                 previousFrom = p;
                 previousNormal = n;
@@ -3461,9 +3497,18 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
     // The sum holds the colour's plane and, with light groups, their sums
     // and their means after it.
     const uint32_t planes = 1 + 2 * groupCount;
-    if (resized || width_ != width || height_ != height || !sum_.valid() || planes != sumPlanes_) {
+    // And, after them, the cells of what a bounce meets (PathSettings::sceneCache): this kernel is at the
+    // number of buffers a Metal kernel binds, so they ride in this one.
+    const bool cached = settings.sceneCache != nullptr && settings.sceneCache->valid() && settings.cacheSide > 0 &&
+                        settings.cachePlanes > 0 && settings.cacheCell > 0.0F && bake == nullptr;
+    const uint64_t cacheEntries =
+        cached ? uint64_t{settings.cacheSide} * settings.cacheSide * settings.cacheSide * settings.cachePlanes : 0;
+    if (resized || width_ != width || height_ != height || !sum_.valid() || planes != sumPlanes_ ||
+        cacheEntries != cacheEntries_) {
+        cacheEntries_ = cacheEntries;
+        cacheRevision_ = 0;
         gpu::BufferDesc sum;
-                sum.bytes = pixels * 16 * planes;
+                sum.bytes = pixels * 16 * planes + cacheEntries * 16;
         sum.elementBytes = 16;
         sum.label = "path.sum";
         auto made = gpu::Buffer::create(*device_, sum);
@@ -3492,6 +3537,23 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
     }
     if (!settings.accumulate) {
         accumulated_ = 0;
+    }
+    if (cached && settings.cacheRevision != cacheRevision_) {
+        // The cells copied in after the planes, by a kernel, in the frame's batch before the paths read them.
+        if (!cacheCopy_.has_value()) {
+            auto made = gpu::ComputeKernel::create(*library_, "athenea/technique/exposure", "copyScaled");
+            if (!made) return std::move(made).error();
+            cacheCopy_.emplace(std::move(*made));
+        }
+        cacheCopy_->dispatch(batch, {static_cast<uint32_t>(cacheEntries), 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["source"].setBinding(settings.sceneCache->rhi());
+            cursor["sourceBase"].setData(uint32_t{0});
+            cursor["colourBase"].setData(static_cast<uint32_t>(pixels * planes));
+            cursor["colour"].setBinding(sum_.rhi());
+            cursor["params"]["scale"].setData(1.0F);
+            cursor["params"]["pixels"].setData(static_cast<uint32_t>(cacheEntries));
+        });
+        cacheRevision_ = settings.cacheRevision;
     }
     if (aux != nullptr && (aux->width != width || aux->height != height || !aux->valid())) {
         gpu::BufferDesc desc;
@@ -3553,6 +3615,13 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
             bake == nullptr || !bake->transfer ? 0u : bake->cellSide >= 32 ? 3u : bake->cellSide >= 16 ? 2u : 1u});
         cursor["path"]["headlight"].setData(uint32_t{settings.headlight ? 1u : 0u});
         cursor["path"]["groupsIndirect"].setData(uint32_t{settings.groupsIndirect ? 1u : 0u});
+        cursor["path"]["cachePlanes"].setData(cached ? settings.cachePlanes : 0u);
+        cursor["path"]["cacheBase"].setData(static_cast<uint32_t>(pixels * planes));
+        cursor["path"]["cacheSide"].setData(settings.cacheSide);
+        cursor["path"]["cacheMinX"].setData(settings.cacheMin[0]);
+        cursor["path"]["cacheMinY"].setData(settings.cacheMin[1]);
+        cursor["path"]["cacheMinZ"].setData(settings.cacheMin[2]);
+        cursor["path"]["cacheCell"].setData(cached ? settings.cacheCell : 1.0F);
         cursor["path"]["mis"].setData(uint32_t{settings.mis ? 1u : 0u});
         cursor["path"]["shadowCutouts"].setData(uint32_t{frame.cutouts ? 1u : 0u});
         cursor["path"]["glassShadows"].setData(uint32_t{settings.glassShadows && frame.glass ? 1u : 0u});

@@ -571,6 +571,18 @@ public:
     /// Let the path tracer's shadow rays through glass whose transmission
     /// is a delta, tinted (technique::PathSettings::glassShadows). On by default.
     void setGlassShadows(bool glass);
+    /// The light a path's bounce takes where it lands, in cells of the world
+    /// (technique::PathSettings::sceneCache); an invalid buffer for none. Set
+    /// between frames, by the thread that draws. Each call is a new revision.
+    void setSceneCache(const gpu::Buffer& cells, uint32_t side, uint32_t planes, const std::array<float, 3>& min,
+                       float cell) {
+        sceneCache_ = cells;
+        sceneCacheSide_ = side;
+        sceneCachePlanes_ = planes;
+        sceneCacheMin_ = min;
+        sceneCacheCell_ = cell;
+        ++sceneCacheRevision_;
+    }
     /// Whether a stage with no light is lit from the eye by the path tracer
     /// (technique::PathSettings::headlight). On by default; off, such a stage
     /// is dark but for what glows.
@@ -857,6 +869,13 @@ private:
     /// a pixel each, the means in `colour` and the path tracer's sums in
     /// `sum`; sized for `lightGroupPixels_`.
     gpu::Buffer                               lightGroupColour_;
+    // What a bounce meets, known already (technique::PathSettings::sceneCache): set by whoever keeps it.
+    gpu::Buffer                               sceneCache_;
+    uint32_t                                  sceneCacheSide_ = 0;
+    uint32_t                                  sceneCachePlanes_ = 0;
+    std::array<float, 3>                      sceneCacheMin_{0.0F, 0.0F, 0.0F};
+    float                                     sceneCacheCell_ = 0.0F;
+    uint64_t                                  sceneCacheRevision_ = 0;
     gpu::Buffer                               groupPlane_;   ///< one group's plane, while it is denoised
     bool                                      groupRestValid_ = false;   ///< the plane after the groups' holds this frame's rest
     std::optional<gpu::ComputeKernel>         groupsWhole_;  ///< a denoised frame's groups made to add up to it

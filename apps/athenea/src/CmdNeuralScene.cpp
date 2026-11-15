@@ -25,6 +25,7 @@
 #include <sstream>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -123,6 +124,7 @@ struct SceneOptions {
     float                    madeSpread = -1.0F;      // render: the width, in pixels, the scene's discs were made at
     bool                     relight = false;         // shoot: a frame takes the light of what the scene holds again
     std::string              lightGroup;              // shoot: the frames are a group of lights' own, kept as its layer
+    uint32_t                 sceneCache = 0;          // shoot: cells an axis of the scene's light kept for the paths' bounces (0: none)
     std::vector<std::string> lightGroups;             // shoot: NAME=PATH, lights whose share of each frame is kept as a group's layer
     std::vector<std::string> groups;                  // render, export: NAME=LEVEL or NAME=R,G,B, a group of lights' level
     float                    ownLight = 1.0F;         // export: what the scene's own light is multiplied by
@@ -2449,6 +2451,8 @@ int runShoot(const SceneOptions& all) {
         return 0;
     };
 
+    std::set<std::string> cachedPieces;   // --scene-cache: the pieces whose light is in the cells
+    uint32_t cacheHolds = 0;              // and how many they are
     uint32_t groupFrame = 0;   // --light-group: the frames of this run, counted from one
     std::map<std::string, gpu::Buffer> groupLayers;         // and what they said, a piece: on the device, four floats a gaussian
     std::map<std::string, uint32_t> groupCounts;            // and how many gaussians each is of
@@ -2583,6 +2587,13 @@ int runShoot(const SceneOptions& all) {
         if (covered >= all.coveredEnough && levels.size() > 1) {
             levels.erase(levels.begin(), levels.end() - 1);
         }
+        // WHAT THE SCENE HOLDS SO FAR IS WHAT THIS VIEW'S BOUNCES MEET (--scene-cache).
+        if (all.sceneCache > 0 && cacheHolds > 0) {
+            auto cells = discovery->cacheResolved();
+            if (!cells) return report(cells.error());
+            stage.setSceneCache(*cells, discovery->cacheSide(), discovery->cachePlanes(), discovery->cacheMin(),
+                                discovery->cacheCell());
+        }
         size_t next = 0;
         double firstAt = 0.0;
         const uint32_t firstSnapshot = static_cast<uint32_t>(scene.snapshots.size()) + 1;
@@ -2644,6 +2655,46 @@ int runShoot(const SceneOptions& all) {
                         groupCounts[key] = clouds[k]->count;
                     }
                 }
+            }
+        }
+        // AND WHAT THIS VIEW FOUND JOINS IT: each piece on the device not yet in the cells, its own light and
+        // its groups' layers. A piece is added once, as it stands then.
+        if (all.sceneCache > 0) {
+            if (discovery->cacheSide() == 0) {
+                auto box = stage.bounds();
+                if (!box) return report(box.error());
+                if (box->has_value()) {
+                    const auto& b = **box;
+                    const float across = std::max({static_cast<float>(b.max[0] - b.min[0]), static_cast<float>(b.max[1] - b.min[1]),
+                                                   static_cast<float>(b.max[2] - b.min[2]), 1.0e-6F});
+                    const float cell = across * 1.02F / static_cast<float>(all.sceneCache);
+                    const std::array<float, 3> low{static_cast<float>(b.min[0]) - across * 0.01F,
+                                                   static_cast<float>(b.min[1]) - across * 0.01F,
+                                                   static_cast<float>(b.min[2]) - across * 0.01F};
+                    if (auto begun = discovery->cacheBegin(low, cell, all.sceneCache,
+                                                           1 + static_cast<uint32_t>(withinNames.size()));
+                        !begun) {
+                        return report(begun.error());
+                    }
+                    out("scene cache: %u cells an axis of %g, from (%g, %g, %g)\n", all.sceneCache, static_cast<double>(cell),
+                        static_cast<double>(low[0]), static_cast<double>(low[1]), static_cast<double>(low[2]));
+                }
+            }
+            for (size_t k = 0; k < clouds.size() && discovery->cacheSide() != 0; ++k) {
+                const io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
+                if (!cachedPieces.insert(piece.cloud).second) {
+                    continue;
+                }
+                if (auto added = discovery->cacheAdd(*clouds[k], nullptr, 0); !added) return report(added.error());
+                for (size_t g = 0; g < withinNames.size(); ++g) {
+                    const auto layer = groupLayers.find(withinNames[g] + "\t" + piece.cloud);
+                    if (layer != groupLayers.end()) {
+                        if (auto added = discovery->cacheAdd(*clouds[k], &layer->second, static_cast<uint32_t>(g) + 1); !added) {
+                            return report(added.error());
+                        }
+                    }
+                }
+                ++cacheHolds;
             }
         }
         uint32_t standing = 0;
@@ -4170,6 +4221,7 @@ void addNeuralScene(CLI::App& app) {
     shoot->add_flag("--no-headlight", o.noHeadlight, "a stage that authors no light is left dark but for what glows, where the path tracer lights it from the eye (and so differently for each camera)");
     shoot->add_option("--lights-on", o.lightsOn, "only these lights of the stage light it (prim paths, comma separated or repeated): every other light the stage authors is switched off -- a group's lamps for --light-group")->delimiter(',');
     shoot->add_option("--lights-off", o.lightsOff, "these lights of the stage are switched off (prim paths): the scene shot without the lamps that are groups")->delimiter(',');
+    shoot->add_option("--scene-cache", o.sceneCache, "the found scene is what a path's bounce meets: the light of the gaussians found so far is kept in a cube of this many cells an axis over the stage's bounds, and a path that bounces off a surface by a broad lobe and lands in a cell that holds light takes it and ends there, unshaded. 0: every path goes its bounces")->check(CLI::Range(0, 512));
     shoot->add_option("--light-groups", o.lightGroups, "NAME=PATH (repeatable): the stage's lights at or under PATH are the group NAME, and what they put in each frame is kept as that group's layer of light, from the same paths that find the scene -- no pass of its own. The scene's own light is the frame less its groups, as a scene shot with --lights-off and a --light-group pass a group");
     shoot->add_option("--light-group", o.lightGroup, "the stage handed is lit by one group of lights alone: each frame is path traced and what every gaussian of the scene sends in it is kept as that group's layer of light, by this name; the scene itself is not touched (render --group sets the group's level)");
     shoot->add_flag("--relight", o.relight, "each frame first takes again the light of what the scene holds and the frame shows: those gaussians keep their place and what they are made of, and a layer of light is kept for the time (a stage whose light changes)");

@@ -686,6 +686,14 @@ Result<void> StageRenderer::setLightOn(const std::string& prim, bool on) {
     return ok();
 }
 
+void StageRenderer::setSceneCache(const gpu::Buffer& cells, uint32_t side, uint32_t planes,
+                                  const std::array<float, 3>& min, float cell) {
+    auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
+    if (Engine* engine = param != nullptr ? param->GetEngine() : nullptr; engine != nullptr) {
+        engine->setSceneCache(cells, side, planes, min, cell);
+    }
+}
+
 Result<void> StageRenderer::setLightGroup(const std::string& prim, const std::string& group) {
     Impl& impl = *impl_;
     const UsdPrim carrier = impl.stage->GetPrimAtPath(SdfPath(prim));

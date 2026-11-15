@@ -14,6 +14,7 @@
 // has taken.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -71,6 +72,21 @@ struct PathSettings {
     /// through the concave joins of a scene twenty metres across in
     /// centimetres (Sponza: bright lines where a wall meets its floor).
     float    rayMargin = 1.0e-3F;
+    /// WHAT A BOUNCE MEETS, WHERE IT IS KNOWN ALREADY. A cube of `cacheSide`
+    /// cells an axis from `cacheMin`, each `cacheCell` across: `sceneCache`
+    /// holds a float4 a cell -- the light leaving the surfaces in it, and (a)
+    /// over 0 where it holds any -- then `cachePlanes - 1` more planes of the
+    /// same cells, the light of light groups 1.. alone. A path that reaches a
+    /// surface in a cell that holds light, by a direction drawn from a broad
+    /// lobe, takes that light and ends: the surface is not shaded, lit nor
+    /// bounced off again. Null: every path goes its bounces. The buffer is
+    /// copied into the tracer's own when `cacheRevision` changes.
+    const gpu::Buffer*   sceneCache = nullptr;
+    uint32_t             cacheSide = 0;
+    uint32_t             cachePlanes = 0;
+    std::array<float, 3> cacheMin{0.0F, 0.0F, 0.0F};
+    float                cacheCell = 0.0F;
+    uint64_t             cacheRevision = 0;
 };
 
 /// How much of a frame has converged, for the adaptive gate: pixels the
@@ -279,6 +295,9 @@ private:
     std::optional<gpu::ComputeKernel> guidesKernel_;
     std::string                       guidesModule_;   ///< the materials it was built for
     uint32_t                          sumPlanes_ = 1;   ///< 1 + 2 * light groups
+    uint64_t                          cacheEntries_ = 0;    ///< float4 after the planes: PathSettings::sceneCache, copied
+    uint64_t                          cacheRevision_ = 0;   ///< which copy that is
+    std::optional<gpu::ComputeKernel> cacheCopy_;
     gpu::Buffer                       sum_;           ///< float4 a pixel: the paths added so far
     gpu::Buffer                       moments_;       ///< words: the second moment's float bits a pixel, then the done flags a pixel
     gpu::Buffer                       progress_;      ///< [covered, converged]
