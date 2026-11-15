@@ -23079,8 +23079,11 @@ scene holds something rewards a thin scene, which is why the width is the one th
 the one that reads best. `[neural]` 4207 assertions in 18 cases pass on Metal, and the new case
 "a cloud drawn without the filter's payment pays it only under the width it was made at".
 
-Not done: **the Fox falls a dB** (frame 1, its own camera) and it is not explained -- a disc seen by the eye
-that made it should pay nothing; the web player does not do this (Spark has the two extremes, `blurAmount`
+Not done: **the Fox falls a dB** (frame 1, its own camera), and all of it is at its rim: where the scene's
+alpha is 0.95 or more the two read alike (44.58 dB then, 44.53 now, SSIM 0.982 and 0.991), and the dB is lost
+in the pixels between 0.5 and 0.95, which a figure standing against nothing has all around it. It comes from
+the shoot and not from the drawing (the scene shot before, drawn with `--made-spread 0.5`, reads as it did);
+which look leaves the rim thinner is not found. The web player does not do this (Spark has the two extremes, `blurAmount`
 and `preBlurAmount`, and the player keeps the second for such a scene), so a scene seen from far in a
 browser is still the nearest disc a pixel; a cloud does not carry the width (`GpuSplats`), the frame does,
 so two scenes made at different widths in one frame share one; CUDA and Vulkan are not run yet. Seen while
