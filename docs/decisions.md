@@ -23133,3 +23133,24 @@ well 26 of 26 on Vulkan. `[render]~[neural]` on CUDA fails at the same two place
 
 Not done: the two cars framed by a camera of their own; the Datsun's panes looked into; the options pass run
 again with the made width.
+
+## The web player keeps a centre whole: Spark's extended splats (15 Nov)
+
+The chrome-knight Sponza shot at 1920x1080 (11 795 537 gaussians, the made width in its manifest), exported
+by frame with a level of 3 M and `--exposure 3`, and looked at in the player (Chrome headless on the Mac,
+1280x720, riding the camera of the last frame, 30 cm from a knight): **the knights were rows of gaussians
+with gaps between them**, where the engine draws the same view closed (`render`, with and without
+`--glass`). Not the shading (the same with `?glass=0`) and not gaussians missing (the index sums to the
+scene: 9 314 549 and 789 741 of glass and 1 691 247 mirrors).
+
+Spark's packed splat keeps a centre in three half floats: a part in 2048 of its distance from the origin.
+The stage is in centimetres and twenty metres across, so past 1024 units a centre falls on a grid of a
+centimetre, and the gaussians a near camera found are a third of a millimetre wide. The player now makes
+each mesh with `extSplats: true` (Spark's two-texture encoding): the same view closed, and the same rate
+(37.3 frames a second for 38.6 with the whole 11.8 M, headless).
+
+Not done: the published page does not have this -- its scenes were shot from further and at 960x540 and
+show it less, and it is published again only through sysop with the user's word; on a phone the extended
+splats take twice the texture memory and it is not tried there; the chrome's mirror shading in the player
+is in facets from that near, where the engine's `--glass` is smooth (not looked into); a level of 800 000
+gaussians could not be written for this scene (the coarsest it holds draws 1 067 431).

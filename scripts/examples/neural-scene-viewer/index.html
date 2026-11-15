@@ -484,13 +484,16 @@
           for (const span of [part, ...(part.history ?? [])]) {
             const until = span === part ? 0 : span.until ?? 0;
             if (span.file) {
-              const mesh = new SplatMesh({ url: `./scenes/${span.file}` });
+              // extSplats: Spark's packed splat keeps a centre in three half floats, a part in 2048 of its
+              // distance from the origin -- a centimetre in a stage of centimetres twenty metres across -- and
+              // gaussians a millimetre wide fell into rows with gaps between them, seen from near.
+              const mesh = new SplatMesh({ url: `./scenes/${span.file}`, extSplats: true });
               await mesh.initialized;
               own.push({ mesh, until, gaussians: span.gaussians ?? 0 });
             }
             for (const [which, made] of [["glass", span.glass], ["mirror", span.mirror]]) {
               if (!made) continue;
-              const other = new SplatMesh({ url: `./scenes/${made.file}` });
+              const other = new SplatMesh({ url: `./scenes/${made.file}`, extSplats: true });
               await other.initialized;
               beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0,
                             shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1])) });
