@@ -117,6 +117,8 @@ struct SceneOptions {
     bool                     glass = false;
     std::string              lamps;                   // render: a file of lamps added to the scene (--lamps)
     bool                     lampsOnly = false;       // render: and the light it was found under left out
+    uint32_t                 lampShadowRays = 8;      // render: rays to each lamp, over its disc
+    uint32_t                 lampBounceRays = 16;     // render: rays that gather what the lamps' light bounces on to
     bool                     noAntialias = false;
     float                    madeSpread = -1.0F;      // render: the width, in pixels, the scene's discs were made at
     bool                     antialias = false;       // shoot: a new scene drawn with the 2D filter's compensation
@@ -3136,14 +3138,15 @@ int runRender(const SceneOptions& given) {
         auto made = render::SceneGlass::create(library);
         if (!made) return report(made.error());
         glass.emplace(std::move(*made));
-        if (auto set = glass->setLamps(lamps, o.lampsOnly); !set) return report(set.error());
+        if (auto set = glass->setLamps(lamps, o.lampsOnly, o.lampShadowRays, o.lampBounceRays); !set) return report(set.error());
     }
     const auto saidOfGlass = [&](const render::GlassSeen& seen) {
         out("glass: %u gaussians and %u of polished metal; through it %u met the scene, mirrored %u did; the tree "
             "%.1f ms, the rays %.1f ms\n",
             seen.glass, seen.mirrors, seen.behind, seen.mirrored, seen.treeMs, seen.seenMs);
         if (!lamps.empty()) {
-            out("lamps: %zu, asked of %u gaussians in %.1f ms\n", lamps.size(), seen.lit, seen.litMs);
+            out("lamps: %zu, asked of %u gaussians in %.1f ms; their light off the scene, %u rays met it, in %.1f ms\n",
+                lamps.size(), seen.lit, seen.litMs, seen.bounced, seen.bouncedMs);
         }
     };
     std::unique_ptr<scene::GpuSplats> wholeCut;
@@ -3477,6 +3480,8 @@ void addNeuralScene(CLI::App& app) {
     render->add_option("--made-spread", o.madeSpread, "a scene drawn without the compensation pays it under this width: the sigma in pixels its discs were made at (shoot's --spread)");
     render->add_flag("--no-antialias", o.noAntialias, "no Mip-Splatting 2D filter compensation: a gaussian is spread a third of a pixel and keeps its opacity");
     render->add_option("--lamps", o.lamps, "a file of lamps added to the scene: each lights the gaussians it reaches by their surface's base colour, over the light the scene was found under (implies the cut --glass draws)");
+    render->add_option("--lamp-shadow-rays", o.lampShadowRays, "--lamps: rays from a gaussian to each lamp, over the disc it shows (1: to its middle, a hard shadow)");
+    render->add_option("--lamp-bounce", o.lampBounceRays, "--lamps: rays a gaussian gathers what the lamps' light bounces on to with, off the scene's own gaussians (0: the lamps' direct light alone)");
     render->add_flag("--lamps-only", o.lampsOnly, "--lamps: without the light the scene was found under");
     render->add_flag("--glass", o.glass, "solid glass shows what it bends and mirrors of the scene from each view, worked out from what the glass is made of, in place of the picture the look that found it saw");
     render->add_option("--morph", o.morph, "--lod, --budget: a gaussian is moved towards what it was laid over across this share of the threshold before that is drawn in its place (0: a step)");

@@ -40,6 +40,12 @@ Result<SceneGlass> SceneGlass::create(gpu::ShaderLibrary& library) {
     auto lit = gpu::ComputeKernel::create(library, "athenea/neural/scene_glass", "sceneLit");
     if (!lit) return std::move(lit).error();
     g.lit_ = std::move(*lit);
+    auto shown = gpu::ComputeKernel::create(library, "athenea/neural/scene_glass", "sceneShown");
+    if (!shown) return std::move(shown).error();
+    g.shown_ = std::move(*shown);
+    auto light = zeroed(library.device(), 1, 16, "glass.lampLight");
+    if (!light) return std::move(light).error();
+    g.lampLight_ = *light;
     auto lamps = zeroed(library.device(), 3, 16, "glass.lamps");
     if (!lamps) return std::move(lamps).error();
     g.lamps_ = *lamps;
@@ -89,6 +95,8 @@ Result<void> SceneGlass::gather(const scene::GpuSplats& piece, const gpu::Buffer
         cursor["bvhLeaves"].setBinding(plan.flags.rhi());
         cursor["counters"].setBinding(counters_.rhi());
         cursor["lamps"].setBinding(lamps_.rhi());
+        cursor["lampLight"].setBinding(counters_.rhi());
+        cursor["lampLit"].setBinding(lamps_.rhi());
         cursor["flags"].setBinding(plan.flags.rhi());
         cursor["places"].setBinding(plan.places.rhi());
         cursor["pbrOut"].setBinding(into.pbr.rhi());
@@ -100,9 +108,12 @@ Result<void> SceneGlass::gather(const scene::GpuSplats& piece, const gpu::Buffer
     return batch.submit(true);
 }
 
-Result<void> SceneGlass::setLamps(std::span<const SceneLamp> lamps, bool only) {
+Result<void> SceneGlass::setLamps(std::span<const SceneLamp> lamps, bool only, uint32_t shadowRays,
+                                  uint32_t bounceRays) {
     lampCount_ = static_cast<uint32_t>(lamps.size());
     lampsOnly_ = only;
+    shadowRays_ = std::clamp<uint32_t>(shadowRays, 1, 32);
+    bounceRays_ = std::min<uint32_t>(bounceRays, 1024);
     if (lamps.empty()) {
         return ok();
     }
@@ -167,16 +178,36 @@ Result<GlassSeen> SceneGlass::see(const Projection& projection, scene::GpuSplats
         cursor["params"]["linearCloud"].setData(uint32_t{cloud.linear ? 1u : 0u});
         cursor["params"]["lamps"].setData(lampCount_);
         cursor["params"]["lampsOnly"].setData(uint32_t{lampsOnly_ ? 1u : 0u});
+        cursor["params"]["shadowRays"].setData(shadowRays_);
+        cursor["params"]["bounceRays"].setData(bounceRays_);
     };
     if (lampCount_ > 0) {
-        // The lamps first: the glass and the mirrors are then shown the room as the lamps leave it.
+        // The lamps first: the glass and the mirrors are then shown the room as the lamps leave it. Their
+        // direct light a gaussian, then what that bounces on to and the colour it all makes.
+        auto light = zeroed(device, cloud.count, 16, "glass.lampLight");
+        if (!light) return std::move(light).error();
+        lampLight_ = *light;
         gpu::CommandBatch lighting(device);
-        lit_.dispatch(lighting, {cloud.count, 1, 1}, bindScene);
+        lit_.dispatch(lighting, {cloud.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            bindScene(cursor);
+            cursor["lampLight"].setBinding(lampLight_.rhi());
+            cursor["lampLit"].setBinding(lamps_.rhi());
+        });
         ATHENEA_TRY(lighting.submit(true));
+        result.litMs = msSince(traced);
+        const auto gathering = std::chrono::steady_clock::now();
+        gpu::CommandBatch showing(device);
+        shown_.dispatch(showing, {cloud.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+            bindScene(cursor);
+            cursor["lampLight"].setBinding(counters_.rhi());
+            cursor["lampLit"].setBinding(lampLight_.rhi());
+        });
+        ATHENEA_TRY(showing.submit(true));
         std::array<uint32_t, 4> counted{};
         ATHENEA_TRY(counters_.read(device, 0, sizeof(counted), counted.data()));
         result.lit = counted[0];
-        result.litMs = msSince(traced);
+        result.bounced = counted[1];
+        result.bouncedMs = msSince(gathering);
         ATHENEA_TRY(counters_.write(device, 0, sizeof(none), none.data()));
     }
     const auto seeing = std::chrono::steady_clock::now();
@@ -193,6 +224,8 @@ Result<GlassSeen> SceneGlass::see(const Projection& projection, scene::GpuSplats
         cursor["bvhLeaves"].setBinding(tree.leaves->rhi());
         cursor["counters"].setBinding(counters_.rhi());
         cursor["lamps"].setBinding(lamps_.rhi());
+        cursor["lampLight"].setBinding(counters_.rhi());
+        cursor["lampLit"].setBinding(lamps_.rhi());
         cursor["flags"].setBinding(cloud.pbr.rhi());
         cursor["places"].setBinding(cloud.pbr.rhi());
         cursor["pbrOut"].setBinding(counters_.rhi());

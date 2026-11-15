@@ -38,7 +38,9 @@ struct GlassParams {
     float eyeX; float eyeY; float eyeZ;
     uint  linearCloud;  // the cloud's colours are light already
     uint  lamps;        // sceneLit: how many lamps
-    uint  lampsOnly;    // sceneLit: 1 leaves the light the scene was found under out
+    uint  lampsOnly;    // sceneShown: 1 leaves the light the scene was found under out
+    uint  shadowRays;   // sceneLit: rays to each lamp, over its disc (1: to its middle)
+    uint  bounceRays;   // sceneShown: rays a gaussian gathers the lamps' light off the scene with (0: none)
 };
 
 StructuredBuffer<float4>   positions;
@@ -51,6 +53,8 @@ StructuredBuffer<float4>   bvhBoxes;
 StructuredBuffer<uint>     bvhChildren;
 StructuredBuffer<uint>     bvhLeaves;
 StructuredBuffer<float4>   lamps;        // sceneLit: three float4 a lamp (below)
+RWStructuredBuffer<float4> lampLight;    // sceneLit writes it: the lamps' light leaving each gaussian (rgb)
+StructuredBuffer<float4>   lampLit;      // sceneShown reads the same
 RWStructuredBuffer<uint>   counters;     // glass gaussians, rays behind that met the room, rays mirrored that did, mirrors
 // glassGather
 StructuredBuffer<uint>     flags;
@@ -229,84 +233,170 @@ void glassSeen(uint3 tid: SV_DispatchThreadID) {
 //
 // A found scene keeps, beside the light a look saw leave each gaussian, what the surface under it is: its
 // base colour (`matter.rgb` of what is opaque), the way it faces, how rough. A lamp nobody path traced is
-// then added a gaussian: the base colour times what the lamp sends there, where a ray from the gaussian to
-// the lamp meets nothing of the scene on the way.
+// then added a gaussian: the base colour times what the lamp sends there, where rays from the gaussian to
+// the lamp meet nothing of the scene on the way.
 //
-//   added = base colour x L (R / d)^2 cos      a sphere of radius R and radiance L at a distance d
+//   added = base colour x L (R / d)^2 cos x seen     a sphere of radius R and radiance L at a distance d
 //           (a matt surface sends on E / pi of an irradiance E = L pi R^2 cos / d^2)
 //
 // A lamp is three float4: (position | towards, radius), (axis, the cosine of its cone's half angle; -2: no
 // cone), (radiance, kind: 0 a sphere, 1 a distant light whose `radiance` is already E / pi head on).
-// One ray to the lamp's middle: a hard shadow. Matt only: a lamp leaves no highlight, and what a rough
-// metal shows of it is its base colour's share, as if matt. What bounces on from what the lamp lights is
-// not there either: this is the lamp's direct light over the light the scene was found under.
-// Glass and mirrors are left as they are: `glassSeen`, run after, shows them the room as it is now lit.
+// `seen` is the share of `shadowRays` rays, to points over the disc the lamp shows the gaussian, that meet
+// nothing: one ray is a hard shadow, several a penumbra as wide as the lamp makes it.
+//
+// TWO PASSES. `sceneLit` leaves the lamps' direct light a gaussian in `lampLight`. `sceneShown` then gathers
+// what that light bounces on to -- `bounceRays` rays over the hemisphere, by the cosine, each reading the
+// direct light of the first gaussian it meets: one bounce of the lamps' light, off the scene itself -- and
+// writes the gaussian's colour: the light it was found under, the lamps' and their bounce.
+//
+// Matt only: a lamp leaves no highlight, and what a rough metal shows of it is its base colour's share, as
+// if matt. Glass and mirrors are left as they are: `glassSeen`, run after, shows them the room as now lit.
+uint lampHash(uint x) {
+    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
+    return x;
+}
+float lampUnit(uint i, uint k) { return float(lampHash(i * 0x9e3779b9u + k * 0x85ebca6bu + 0x27d4eb2fu) >> 8) / 16777216.0; }
+
+/// Two unit vectors across `n`.
+void lampFrame(float3 n, out float3 t, out float3 b) {
+    const float3 aside = abs(n.z) < 0.9 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
+    t = normalize(cross(aside, n));
+    b = cross(n, t);
+}
+
+struct LitGaussian {
+    bool   matt;       // neither glass nor a mirror: what a lamp lights
+    float3 p;
+    float3 n;          // the shading normal
+    float3 disc;       // the disc's own axis
+    float  widest;
+};
+
+LitGaussian litGaussian(uint i) {
+    LitGaussian g;
+    g.matt = positions[i].w > 0.0 && pbrTransmission(pbr[i]) < 0.5 &&
+             !(pbrMetallic(pbr[i]) >= 0.5 && pbrRoughness(pbr[i]) <= 0.12);
+    const uint row = i * 4u;
+    g.p = positions[i].xyz;
+    const float3 scale = exp(float3(lowHalf(shape[row + 1u]), highHalf(shape[row + 1u]), lowHalf(shape[row + 2u])));
+    const float3x3 rotation = rotationOf(decodeQuaternion(shape[row]));
+    const uint shortest = scale.x <= scale.y ? (scale.x <= scale.z ? 0u : 2u) : (scale.y <= scale.z ? 1u : 2u);
+    g.disc = normalize(float3(rotation[0][shortest], rotation[1][shortest], rotation[2][shortest]));
+    float3 n = unpackNormal(normals[i]);
+    if (!(dot(n, n) > 0.25)) {
+        n = g.disc;
+    }
+    g.n = normalize(n);
+    g.widest = max(scale.x, max(scale.y, scale.z));
+    return g;
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void sceneLit(uint3 tid: SV_DispatchThreadID) {
     const uint i = tid.x;
-    if (i >= params.count || positions[i].w <= 0.0) {
+    if (i >= params.count) {
         return;
     }
-    if (pbrTransmission(pbr[i]) >= 0.5) {
-        return;
-    }
-    if (pbrMetallic(pbr[i]) >= 0.5 && pbrRoughness(pbr[i]) <= 0.12) {
+    lampLight[i] = float4(0.0);
+    const LitGaussian g = litGaussian(i);
+    if (!g.matt) {
         return;
     }
     const float3 base = matter[i].rgb;
-    const uint row = i * 4u;
-    const float3 p = positions[i].xyz;
-    const float3 scale = exp(float3(lowHalf(shape[row + 1u]), highHalf(shape[row + 1u]), lowHalf(shape[row + 2u])));
-    const float3x3 rotation = rotationOf(decodeQuaternion(shape[row]));
-    const uint shortest = scale.x <= scale.y ? (scale.x <= scale.z ? 0u : 2u) : (scale.y <= scale.z ? 1u : 2u);
-    const float3 disc = normalize(float3(rotation[0][shortest], rotation[1][shortest], rotation[2][shortest]));
-    float3 n = unpackNormal(normals[i]);
-    if (!(dot(n, n) > 0.25)) {
-        n = disc;
-    }
-    n = normalize(n);
-    const float widest = max(scale.x, max(scale.y, scale.z));
+    const float step = max(g.widest, 1.0e-5);
+    const uint rays = max(params.shadowRays, 1u);
     float3 added = float3(0.0);
     for (uint k = 0u; k < params.lamps; ++k) {
         const float4 where = lamps[k * 3u];
         const float4 axis = lamps[k * 3u + 1u];
         const float4 sends = lamps[k * 3u + 2u];
+        const bool distant = sends.w > 0.5;
         float3 towards;
-        float reach = 3.0e38;
+        float far = 3.0e38;
         float3 arrives = sends.rgb;
-        if (sends.w > 0.5) {
+        if (distant) {
             towards = normalize(where.xyz);
         } else {
-            const float3 v = where.xyz - p;
-            const float d = max(length(v), 1.0e-6);
-            towards = v / d;
-            reach = max(d - where.w, 0.0);
-            const float ratio = where.w / max(d, where.w);
+            const float3 v = where.xyz - g.p;
+            far = max(length(v), 1.0e-6);
+            towards = v / far;
+            const float ratio = where.w / max(far, where.w);
             arrives *= ratio * ratio;
             if (axis.w > -1.5 && dot(-towards, normalize(axis.xyz)) < axis.w) {
                 continue;
             }
         }
-        const float cosine = dot(n, towards);
+        const float cosine = dot(g.n, towards);
         if (!(cosine > 0.0)) {
             continue;
         }
         // The disc's own plane, on the lamp's side of it: what the ray leaves is not what shadows it.
-        const float3 facing = dot(disc, towards) < 0.0 ? -disc : disc;
-        uint hit = 0u;
-        const float step = max(widest, 1.0e-5);
-        const GlassExit met = glassNearest(frames, bvhBoxes, bvhChildren, bvhLeaves, params.nodeBase, params.leafBase,
-                                           params.count, params.leafBase, p + towards * step, towards, 0.0,
-                                           max(reach - step, 0.0), 0.5, p, facing, 4.0 * widest, hit);
-        if (met.found) {
-            continue;
+        const float3 facing = dot(g.disc, towards) < 0.0 ? -g.disc : g.disc;
+        float3 t, b;
+        lampFrame(towards, t, b);
+        float seen = 0.0;
+        for (uint r = 0u; r < rays; ++r) {
+            float3 to = towards;
+            float reach = distant ? 3.0e38 : max(far - where.w, 0.0);
+            if (rays > 1u && !distant) {
+                // A point over the disc the lamp shows: its radius by the root of one number, round by another.
+                const float radius = where.w * sqrt(lampUnit(i, k * 64u + r * 2u));
+                const float turn = 6.2831853 * lampUnit(i, k * 64u + r * 2u + 1u);
+                const float3 at = where.xyz + (t * cos(turn) + b * sin(turn)) * radius;
+                const float3 v = at - g.p;
+                reach = max(length(v), 1.0e-6);
+                to = v / reach;
+            }
+            uint hit = 0u;
+            const GlassExit met = glassNearest(frames, bvhBoxes, bvhChildren, bvhLeaves, params.nodeBase,
+                                               params.leafBase, params.count, params.leafBase, g.p + to * step, to, 0.0,
+                                               max(reach - step, 0.0), 0.5, g.p, facing, 4.0 * g.widest, hit);
+            seen += met.found ? 0.0 : 1.0;
         }
-        added += arrives * cosine;
+        added += arrives * cosine * (seen / float(rays));
     }
-    const float3 lit = (params.lampsOnly != 0u ? float3(0.0) : lightOf(i)) + base * added;
+    lampLight[i] = float4(base * added, 1.0);
+    InterlockedAdd(counters[0], 1u);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void sceneShown(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    const LitGaussian g = litGaussian(i);
+    if (!g.matt) {
+        return;
+    }
+    float3 gathered = float3(0.0);
+    if (params.bounceRays > 0u) {
+        // By the cosine about the normal: the mean of what the rays read is the light that arrives over pi.
+        float3 t, b;
+        lampFrame(g.n, t, b);
+        const float3 facing = dot(g.disc, g.n) < 0.0 ? -g.disc : g.disc;
+        const float step = max(g.widest, 1.0e-5);
+        for (uint r = 0u; r < params.bounceRays; ++r) {
+            const float u = lampUnit(i, 4096u + r * 2u);
+            const float turn = 6.2831853 * lampUnit(i, 4097u + r * 2u);
+            const float across = sqrt(u);
+            const float3 to = normalize((t * cos(turn) + b * sin(turn)) * across + g.n * sqrt(max(1.0 - u, 0.0)));
+            uint hit = 0u;
+            const GlassExit met = glassNearest(frames, bvhBoxes, bvhChildren, bvhLeaves, params.nodeBase,
+                                               params.leafBase, params.count, params.leafBase, g.p + to * step, to, 0.0,
+                                               3.0e38, 0.5, g.p, facing, 4.0 * g.widest, hit);
+            if (met.found) {
+                gathered += lampLit[hit].rgb;
+                InterlockedAdd(counters[1], 1u);
+            }
+        }
+        gathered *= matter[i].rgb / float(params.bounceRays);
+    }
+    const uint row = i * 4u;
+    const float3 lit = (params.lampsOnly != 0u ? float3(0.0) : lightOf(i)) + lampLit[i].rgb + gathered;
     const float3 put = params.linearCloud != 0u ? lit : linearToSrgb(lit);
     shape[row + 2u] = packHalves(lowHalf(shape[row + 2u]), put.r);
     shape[row + 3u] = packHalves(put.g, put.b);
-    InterlockedAdd(counters[0], 1u);
 }

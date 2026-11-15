@@ -31,7 +31,9 @@ namespace athenea::render {
 
 struct GlassSeen {
     uint32_t lit = 0;         ///< gaussians the lamps were asked about (SceneGlass::setLamps)
-    double   litMs = 0.0;
+    uint32_t bounced = 0;     ///< rays that gathered the lamps' light off the scene and met it
+    double   litMs = 0.0;     ///< the lamps' direct light
+    double   bouncedMs = 0.0; ///< and what it bounces on to
     uint32_t glass = 0;       ///< gaussians of solid glass in the cloud
     uint32_t behind = 0;      ///< whose ray through the glass met a gaussian of the scene
     uint32_t mirrored = 0;    ///< whose mirror ray did
@@ -77,13 +79,17 @@ public:
     /// The lamps `see` adds to what is neither glass nor a mirror before the
     /// glass is shown the room (so it shows the room lit); `only` leaves out
     /// the light the scene was found under. `matter` then holds an opaque
-    /// gaussian's base colour.
-    [[nodiscard]] Result<void> setLamps(std::span<const SceneLamp> lamps, bool only);
+    /// gaussian's base colour. `shadowRays` to each lamp, over the disc it
+    /// shows (1: to its middle, a hard shadow); `bounceRays` a gaussian to
+    /// gather what the lamps' light bounces on to, off the scene (0: none).
+    [[nodiscard]] Result<void> setLamps(std::span<const SceneLamp> lamps, bool only, uint32_t shadowRays = 8,
+                                        uint32_t bounceRays = 16);
 
 private:
     gpu::ShaderLibrary* library_ = nullptr;
-    gpu::ComputeKernel  gather_, seen_, lit_;
-    gpu::Buffer         counters_, lamps_;
+    gpu::ComputeKernel  gather_, seen_, lit_, shown_;
+    gpu::Buffer         counters_, lamps_, lampLight_;
+    uint32_t            shadowRays_ = 8, bounceRays_ = 16;
     uint32_t            lampCount_ = 0;
     bool                lampsOnly_ = false;
     std::optional<GaussianRayTracer> tracer_;

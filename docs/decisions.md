@@ -23208,3 +23208,28 @@ metal as anything but matt; the lamp itself is not drawn (k45 looks at one: 0.14
 the glass knight is darker than the stage's; **a change of the stage's own light over time is still a
 repaint** -- a layer of light a time over the same gaussians is the next step; the web player and `export`
 know nothing of lamps; CUDA and Vulkan are not run yet; `qa_relight.py` writes no distant light.
+
+**A penumbra and one bounce** (the same day). `sceneLit` now sends `--lamp-shadow-rays` rays (8) to points
+over the disc a lamp shows a gaussian and leaves the lamps' direct light a gaussian in a buffer; a second
+kernel, `sceneShown`, gathers `--lamp-bounce` rays (16) by the cosine about the normal, each reading that
+direct light on the first gaussian it meets, and writes the colour: found light, lamps, their bounce.
+
+| Sponza, view | one ray, no bounce: dB, SSIM | 8 rays and 16 gathered | mean light, of the stage's 0.0283 (k10) and 0.0379 (b) |
+|---|---|---|---|
+| k10 | 25.45, 0.772 | 25.79, 0.793 | 0.0188 to 0.0195 |
+| k45 | 20.87, 0.637 | 21.04, 0.655 | |
+| a | 23.68, 0.753 | 23.92, 0.768 | |
+| b | 22.23, 0.711 | 22.41, 0.734 | 0.0192 to 0.0199 |
+
+129 ms for the lamps and 255 ms for the bounce (1 777 799 gaussians; 12.6 M of 28.4 M rays met the scene --
+the atrium is open and the walk did not see all of it), where one ray took 14 to 17 ms. Materials: the same
+to 0.05 dB. **Against the lamps' direct light alone** (the stage path traced with no bounce), the scene's
+direct light reads 28.20 dB at k10 and 25.59 at b, and 0.0245 of mean for 0.0285: the radiometry holds, and
+what is missing of the stage is past it. The stage's first bounce adds 0.0064 of mean at k10 and the
+gathered one 0.0009: most of the stage's is not matt light off matt walls but what the polished floor and
+the knights show of the lit room, which a matt gather does not make.
+
+Not done, seen in the pictures: what a look found *through* glass (the floor under the glass knight) has no
+base colour -- the planes describe the glass, not what is behind it -- and stays as dark as it was found, a
+pool under the knight where the stage has the lamp's light through it; the shadows are black where the
+stage's are filled; the chrome knight shows the lit room only where its mirror ray meets a gaussian.
