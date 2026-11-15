@@ -123,7 +123,8 @@ struct SceneOptions {
     float                    madeSpread = -1.0F;      // render: the width, in pixels, the scene's discs were made at
     bool                     relight = false;         // shoot: a frame takes the light of what the scene holds again
     std::string              lightGroup;              // shoot: the frames are a group of lights' own, kept as its layer
-    std::vector<std::string> groups;                  // render: NAME=LEVEL or NAME=R,G,B, a group of lights' level
+    std::vector<std::string> groups;                  // render, export: NAME=LEVEL or NAME=R,G,B, a group of lights' level
+    float                    ownLight = 1.0F;         // export: what the scene's own light is multiplied by
     bool                     noHeadlight = false;     // shoot: a stage with no light is not lit from the eye
     std::vector<std::string> lightsOn;                // shoot: the stage's lights left on (the rest switched off)
     std::vector<std::string> lightsOff;               // shoot: the stage's lights switched off
@@ -184,6 +185,118 @@ void drawAs(const io::NeuralScene& scene) {
     madeAs = scene.spread;
 }
 
+/// THE LIGHT A PIECE'S GAUSSIANS TOOK AGAIN SINCE THEY WERE MADE, laid over its records: the layers beside
+/// the piece (`<piece>.l<snapshot>`), in order up to the time asked (`lightAsOf`), each where its frame said a
+/// gaussian's light anew. A copy of what a kernel left (render::Discovery::relight), field for field. The
+/// last layer laid (0: none).
+Result<uint32_t> layLightOver(const std::filesystem::path& path, std::vector<float>& records, uint32_t floats,
+                              uint32_t count) {
+    uint32_t last = 0;
+    std::vector<std::pair<uint32_t, std::filesystem::path>> layers;
+    const std::string stem = path.filename().string() + ".l";
+    std::error_code ignored;
+    for (const auto& entry : std::filesystem::directory_iterator(path.parent_path(), ignored)) {
+        const std::string name = entry.path().filename().string();
+        if (name.size() > stem.size() && name.compare(0, stem.size(), stem) == 0 &&
+            name.find_first_not_of("0123456789", stem.size()) == std::string::npos) {
+            const uint32_t at = static_cast<uint32_t>(std::stoul(name.substr(stem.size())));
+            if (lightAsOf == 0 || at <= lightAsOf) {
+                layers.emplace_back(at, entry.path());
+            }
+        }
+    }
+    std::sort(layers.begin(), layers.end());
+    for (const auto& [at, file] : layers) {
+        last = at;
+        auto light = io::readGaussians(file);
+        if (!light) return std::move(light).error();
+        if (light->floats != 4 || light->count > count) {
+            return Error::make(ErrorCode::Unsupported, "{}: a layer of light of {} gaussians of {} floats, over a piece of {}",
+                               file.string(), light->count, light->floats, count);
+        }
+        // Four floats a gaussian whose light was said: which one, and its colour.
+        for (uint32_t k = 0; k < light->count; ++k) {
+            const float* said = &light->records[size_t{k} * 4];
+            const uint32_t which = static_cast<uint32_t>(said[0]);
+            if (which < count) {
+                float* record = &records[size_t{which} * floats];
+                record[11] = said[1];
+                record[12] = said[2];
+                record[13] = said[3];
+            }
+        }
+    }
+    return last;
+}
+
+/// A PIECE'S GROUPS OF LIGHTS, each as a layer a gaussian (rgb, linear; a: 1 where the group lights it) and
+/// the level it is drawn at (`groupGain`, `groupDefault`): the files beside the piece
+/// (`<piece>.g.<group>.<n>`), a group's laid one over another in order.
+///
+/// WHAT GLOWS IS IN EVERY GROUP'S LAYER: a frame path traced under one group of lights holds the light of
+/// the stage's emissive surfaces as well, as the scene's own does. The group named `dark` is that light alone
+/// (shot with every light off), and it is taken out once for each group drawn, at that group's level -- so
+/// the scene and its groups hold what glows once. It comes last: a colour is kept at nothing or more at each
+/// step. Named on the command line, it is drawn at what is said (`--group dark=0` leaves it in).
+Result<std::vector<std::pair<std::vector<std::array<float, 4>>, std::array<float, 3>>>> groupLayersOf(
+    const std::filesystem::path& path, uint32_t count) {
+    std::vector<std::pair<std::vector<std::array<float, 4>>, std::array<float, 3>>> out;
+    std::map<std::string, std::vector<std::pair<uint32_t, std::filesystem::path>>> groups;
+    const std::string stem = path.filename().string() + ".g.";
+    std::error_code ignored;
+    for (const auto& entry : std::filesystem::directory_iterator(path.parent_path(), ignored)) {
+        const std::string name = entry.path().filename().string();
+        if (name.size() <= stem.size() || name.compare(0, stem.size(), stem) != 0) {
+            continue;
+        }
+        const size_t dot = name.rfind('.');
+        if (dot == std::string::npos || dot <= stem.size() ||
+            name.find_first_not_of("0123456789", dot + 1) != std::string::npos || dot + 1 == name.size()) {
+            continue;
+        }
+        groups[name.substr(stem.size(), dot - stem.size())].emplace_back(
+            static_cast<uint32_t>(std::stoul(name.substr(dot + 1))), entry.path());
+    }
+    std::array<float, 3> drawn{0.0F, 0.0F, 0.0F};
+    std::vector<std::string> order;
+    for (const auto& [group, files] : groups) {
+        if (group == "dark") continue;
+        const auto named = groupGain.find(group);
+        const std::array<float, 3> gain = named != groupGain.end() ? named->second : groupDefault;
+        for (int c = 0; c < 3; ++c) drawn[c] += gain[c];
+        order.push_back(group);
+    }
+    if (groups.count("dark") != 0) order.push_back("dark");
+    for (const std::string& group : order) {
+        auto& files = groups[group];
+        const auto named = groupGain.find(group);
+        const std::array<float, 3> gain = named != groupGain.end() ? named->second
+                                          : group == "dark" ? std::array<float, 3>{-drawn[0], -drawn[1], -drawn[2]}
+                                                            : groupDefault;
+        if (gain[0] == 0.0F && gain[1] == 0.0F && gain[2] == 0.0F) {
+            continue;
+        }
+        std::sort(files.begin(), files.end());
+        std::vector<std::array<float, 4>> dense(count, std::array<float, 4>{0.0F, 0.0F, 0.0F, 0.0F});
+        for (const auto& [frame, file] : files) {
+            auto light = io::readGaussians(file);
+            if (!light) return std::move(light).error();
+            if (light->floats != 4) {
+                return Error::make(ErrorCode::Unsupported, "{}: a group's layer is four floats a gaussian", file.string());
+            }
+            for (uint32_t k = 0; k < light->count; ++k) {
+                const float* said = &light->records[size_t{k} * 4];
+                const uint32_t which = static_cast<uint32_t>(said[0]);
+                if (which < count) {
+                    dense[which] = {said[1], said[2], said[3], 1.0F};
+                }
+            }
+        }
+        out.emplace_back(std::move(dense), gain);
+    }
+    return out;
+}
+
 /// With `parent`, a render's piece also gives the width of what each gaussian was laid over (left
 /// invalid where the file has none).
 Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& loader,
@@ -240,44 +353,10 @@ Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& l
             *matter = *laid;
         }
         uint32_t lightOf = 0;   // the last layer laid over the records
-        // THE LIGHT TAKEN AGAIN SINCE: the layers beside the piece (`<piece>.l<snapshot>`), in order up to
-        // the time asked, each laid over the records where its frame said a gaussian's light anew. A copy of
-        // what a kernel left (render::Discovery::relight), field for field.
-        {
-            std::vector<std::pair<uint32_t, std::filesystem::path>> layers;
-            const std::string stem = path.filename().string() + ".l";
-            std::error_code ignored;
-            for (const auto& entry : std::filesystem::directory_iterator(path.parent_path(), ignored)) {
-                const std::string name = entry.path().filename().string();
-                if (name.size() > stem.size() && name.compare(0, stem.size(), stem) == 0 &&
-                    name.find_first_not_of("0123456789", stem.size()) == std::string::npos) {
-                    const uint32_t at = static_cast<uint32_t>(std::stoul(name.substr(stem.size())));
-                    if (lightAsOf == 0 || at <= lightAsOf) {
-                        layers.emplace_back(at, entry.path());
-                    }
-                }
-            }
-            std::sort(layers.begin(), layers.end());
-            for (const auto& [at, file] : layers) {
-                lightOf = at;
-                auto light = io::readGaussians(file);
-                if (!light) return std::move(light).error();
-                if (light->floats != 4 || light->count > held->count) {
-                    return Error::make(ErrorCode::Unsupported, "{}: a layer of light of {} gaussians of {} floats, over a piece of {}",
-                                       file.string(), light->count, light->floats, held->count);
-                }
-                // Four floats a gaussian whose light was said: which one, and its colour.
-                for (uint32_t k = 0; k < light->count; ++k) {
-                    const float* said = &light->records[size_t{k} * 4];
-                    const uint32_t which = static_cast<uint32_t>(said[0]);
-                    if (which < held->count) {
-                        float* record = &held->records[size_t{which} * held->floats];
-                        record[11] = said[1];
-                        record[12] = said[2];
-                        record[13] = said[3];
-                    }
-                }
-            }
+        if (auto laid = layLightOver(path, held->records, held->floats, held->count); !laid) {
+            return std::move(laid).error();
+        } else {
+            lightOf = *laid;
         }
         io::RawSplats raw;
         // Under another light it is another cloud to whoever keeps clouds by where they came from.
@@ -296,68 +375,10 @@ Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& l
             cloud->revision += lightOf;
         }
         if (cloud && lightTool != nullptr) {
-            // ITS GROUPS OF LIGHTS: the layers beside the piece (`<piece>.g.<group>.<frame>`), a group's
-            // frames laid one over another in order (a later frame's word of a gaussian stands), and the
-            // group's light added to the piece's own, times its level, on the device.
-            std::map<std::string, std::vector<std::pair<uint32_t, std::filesystem::path>>> groups;
-            const std::string stem = path.filename().string() + ".g.";
-            std::error_code ignored;
-            for (const auto& entry : std::filesystem::directory_iterator(path.parent_path(), ignored)) {
-                const std::string name = entry.path().filename().string();
-                if (name.size() <= stem.size() || name.compare(0, stem.size(), stem) != 0) {
-                    continue;
-                }
-                const size_t dot = name.rfind('.');
-                if (dot == std::string::npos || dot <= stem.size() ||
-                    name.find_first_not_of("0123456789", dot + 1) != std::string::npos || dot + 1 == name.size()) {
-                    continue;
-                }
-                groups[name.substr(stem.size(), dot - stem.size())].emplace_back(
-                    static_cast<uint32_t>(std::stoul(name.substr(dot + 1))), entry.path());
-            }
-            // WHAT GLOWS IS IN EVERY GROUP'S LAYER: a frame path traced under one group of lights holds the
-            // light of the stage's emissive surfaces as well, as the scene's own does. The group named `dark`
-            // is that light alone (shot with every light off), and it is taken out once for each group drawn,
-            // at that group's level -- so the scene and its groups hold what glows once.
-            std::array<float, 3> drawn{0.0F, 0.0F, 0.0F};
-            for (const auto& [group, files] : groups) {
-                if (group == "dark") continue;
-                const auto named = groupGain.find(group);
-                const std::array<float, 3> gain = named != groupGain.end() ? named->second : groupDefault;
-                for (int c = 0; c < 3; ++c) drawn[c] += gain[c];
-            }
-            // The groups first and `dark` last: a colour is kept at nothing or more at each step.
-            std::vector<std::string> order;
-            for (const auto& [group, files] : groups) {
-                if (group != "dark") order.push_back(group);
-            }
-            if (groups.count("dark") != 0) order.push_back("dark");
-            for (const std::string& group : order) {
-                auto& files = groups[group];
-                const auto named = groupGain.find(group);
-                // (`dark` named on the command line is drawn at what is said: `--group dark=0` leaves it in.)
-                const std::array<float, 3> gain = named != groupGain.end() ? named->second
-                                                  : group == "dark" ? std::array<float, 3>{-drawn[0], -drawn[1], -drawn[2]}
-                                                                    : groupDefault;
-                if (gain[0] == 0.0F && gain[1] == 0.0F && gain[2] == 0.0F) {
-                    continue;
-                }
-                std::sort(files.begin(), files.end());
-                std::vector<std::array<float, 4>> dense(cloud->count, std::array<float, 4>{0.0F, 0.0F, 0.0F, 0.0F});
-                for (const auto& [frame, file] : files) {
-                    auto light = io::readGaussians(file);
-                    if (!light) return std::move(light).error();
-                    if (light->floats != 4) {
-                        return Error::make(ErrorCode::Unsupported, "{}: a group's layer is four floats a gaussian", file.string());
-                    }
-                    for (uint32_t k = 0; k < light->count; ++k) {
-                        const float* said = &light->records[size_t{k} * 4];
-                        const uint32_t which = static_cast<uint32_t>(said[0]);
-                        if (which < cloud->count) {
-                            dense[which] = {said[1], said[2], said[3], 1.0F};
-                        }
-                    }
-                }
+            // ITS GROUPS OF LIGHTS, added to the piece's own light on the device, each at its level.
+            auto groups = groupLayersOf(path, cloud->count);
+            if (!groups) return std::move(groups).error();
+            for (const auto& [dense, gain] : *groups) {
                 auto laid = gpu::Buffer::fromSpan<std::array<float, 4>>(
                     library.device(), std::span<const std::array<float, 4>>(dense), "piece.group");
                 if (!laid) return std::move(laid).error();
@@ -3037,6 +3058,9 @@ int runExport(const SceneOptions& o) {
     gpu::ShaderLibrary library(*device);
     auto discovery = render::Discovery::create(library);
     if (!discovery) return report(discovery.error());
+    // The groups' levels are laid over the records handed on (takePiece), not over the clouds the cut reads.
+    if (!setGroups(o, *discovery)) return kExitFailure;
+    lightTool = nullptr;
     auto pack = render::FlattenPack::create(library);
     if (!pack) return report(pack.error());
     const std::filesystem::path given = o.output;
@@ -3106,8 +3130,31 @@ int runExport(const SceneOptions& o) {
         if (plan->drawn == 0) {
             return uint32_t{0};
         }
+        // THE PIECE'S LIGHT AS IT IS HANDED ON: the layers of light it took again laid over its records, and
+        // its groups of lights added at their levels, on the device (`--group`, `--own-light`).
+        if (auto laid = layLightOver(directory / piece.cloud, read->records, read->floats, read->count); !laid) {
+            return std::move(laid).error();
+        }
         auto onDevice = gpu::Buffer::fromSpan<float>(**device, std::span<const float>(read->records), "export.piece");
         if (!onDevice) return std::move(onDevice).error();
+        auto groups = groupLayersOf(directory / piece.cloud, read->count);
+        if (!groups) return std::move(groups).error();
+        float own = o.ownLight;
+        for (const auto& [dense, gain] : *groups) {
+            auto layer = gpu::Buffer::fromSpan<std::array<float, 4>>(
+                **device, std::span<const std::array<float, 4>>(dense), "export.group");
+            if (!layer) return std::move(layer).error();
+            ATHENEA_TRY(discovery->addLightToRecords(*onDevice, read->count, read->floats, *layer, gain, own));
+            own = 1.0F;
+        }
+        if (own != 1.0F) {
+            // No group drawn and the scene's own light scaled: the same kernel with nothing added.
+            const std::vector<std::array<float, 4>> none(read->count, std::array<float, 4>{0.0F, 0.0F, 0.0F, 0.0F});
+            auto layer = gpu::Buffer::fromSpan<std::array<float, 4>>(
+                **device, std::span<const std::array<float, 4>>(none), "export.group");
+            if (!layer) return std::move(layer).error();
+            ATHENEA_TRY(discovery->addLightToRecords(*onDevice, read->count, read->floats, *layer, {0.0F, 0.0F, 0.0F}, own));
+        }
         return gatherKinds(*onDevice, read->count, plan->flags);
     };
     // A piece's gaussians by the frame from which each no longer stands (0: it stands to the end): read off
@@ -4033,6 +4080,8 @@ void addNeuralScene(CLI::App& app) {
     exported->add_flag("--history", o.history, "--by-frame: also what each frame found that a later frame took out or refined, in files that say until which frame they stand: the scene as it stood at every frame, for a stage that moves");
     exported->add_flag("--by-frame", o.byFrame, "a part a rendered frame, holding what that frame found: the scene in the order it grew");
     exported->add_option("--exposure", o.exposure, "stops on the scene's light before it is encoded");
+    exported->add_option("--group", o.groups, "a group of lights' level in what is handed on (shoot --light-group): NAME=LEVEL or NAME=R,G,B; * names every group not named. A group not named is at 1");
+    exported->add_option("--own-light", o.ownLight, "what the scene's own light is multiplied by: 0 hands on the groups' light alone (a group by itself, with --group)");
     exported->add_option("-o,--output", o.output, "a path with no extension: <stem>_NNN.spz and <stem>.json")->required();
     run(exported, options, runExport);
 

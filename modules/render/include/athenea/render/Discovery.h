@@ -248,6 +248,11 @@ public:
     /// a layer -- the cloud left as it is, the frame's light handed as it is.
     [[nodiscard]] Result<void> addLight(scene::GpuSplats& cloud, const gpu::Buffer& layer,
                                         const std::array<float, 3>& gain);
+    /// The same over a render's records on the device (`count` of `floats`
+    /// floats, as a file keeps them): each record's own light times `own`,
+    /// and the layer's times `gain`. For whoever hands the scene on.
+    [[nodiscard]] Result<void> addLightToRecords(gpu::Buffer& records, uint32_t count, uint32_t floats,
+                                                 const gpu::Buffer& layer, const std::array<float, 3>& gain, float own);
 
     [[nodiscard]] Result<uint32_t> markGone(const gpu::Buffer& lifted, uint32_t base, gpu::Buffer& gone,
                                             uint32_t count, uint32_t stamp, float threshold = 0.05F,
@@ -332,7 +337,7 @@ private:
     void bind(rhi::ShaderCursor cursor) const;
 
     gpu::ShaderLibrary* library_ = nullptr;
-    gpu::ComputeKernel  relight_, addLight_;
+    gpu::ComputeKernel  relight_, addLight_, recordsLight_;
     gpu::ComputeKernel  clear_, mark_, count_, mask_, gone_, sizes_, frameValid_, framePack_, frameThrough_;
     gpu::ComputeKernel  renderValid_, renderPack_, renderSpare_, cut_, cutFlags_, gather_, cutSpans_, exportFlat_, levelFlags_, levelGather_;
     std::optional<gpu::PrefixSum> prefix_;

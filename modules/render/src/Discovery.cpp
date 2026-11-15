@@ -67,6 +67,9 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
         auto addLight = gpu::ComputeKernel::create(library, "athenea/neural/scene_light", "sceneAddLight");
         if (!addLight) return std::move(addLight).error();
         d.addLight_ = std::move(*addLight);
+        auto recordsLight = gpu::ComputeKernel::create(library, "athenea/neural/scene_light", "recordsAddLight");
+        if (!recordsLight) return std::move(recordsLight).error();
+        d.recordsLight_ = std::move(*recordsLight);
         auto exportFlat = gpu::ComputeKernel::create(library, "athenea/neural/scene_export", "exportFlat");
         if (!exportFlat) return std::move(exportFlat).error();
         d.exportFlat_ = std::move(*exportFlat);
@@ -592,6 +595,7 @@ Result<gpu::Buffer> Discovery::relight(scene::GpuSplats& cloud, const gpu::Buffe
         cursor["frameDepth"].setBinding(frameDepth.rhi());
         cursor["layer"].setBinding(layer->rhi());
         cursor["added"].setBinding(frameColour.rhi());
+        cursor["records"].setBinding(spareFloats_.rhi());
         cursor["params"]["keep"].setData(uint32_t{keep ? 1u : 0u});
         cursor["counters"].setBinding(counters_.rhi());
         const auto rowOf = [&](int r) {
@@ -639,6 +643,7 @@ Result<void> Discovery::addLight(scene::GpuSplats& cloud, const gpu::Buffer& lay
         cursor["frameDepth"].setBinding(spareFloats_.rhi());
         cursor["layer"].setBinding(spareFloats_.rhi());
         cursor["added"].setBinding(layer.rhi());
+        cursor["records"].setBinding(spareFloats_.rhi());
         cursor["counters"].setBinding(counters_.rhi());
         cursor["params"]["count"].setData(cloud.count);
         cursor["params"]["linearCloud"].setData(uint32_t{cloud.linear ? 1u : 0u});
@@ -649,6 +654,34 @@ Result<void> Discovery::addLight(scene::GpuSplats& cloud, const gpu::Buffer& lay
     ATHENEA_TRY(batch.submit(true));
     ++cloud.revision;
     return ok();
+}
+
+Result<void> Discovery::addLightToRecords(gpu::Buffer& records, uint32_t count, uint32_t floats,
+                                          const gpu::Buffer& layer, const std::array<float, 3>& gain, float own) {
+    if (count == 0) {
+        return ok();
+    }
+    gpu::Device& device = library_->device();
+    gpu::CommandBatch batch(device);
+    recordsLight_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["positions"].setBinding(layer.rhi());
+        cursor["shape"].setBinding(counters_.rhi());
+        cursor["pbr"].setBinding(counters_.rhi());
+        cursor["gone"].setBinding(counters_.rhi());
+        cursor["frameColour"].setBinding(layer.rhi());
+        cursor["frameDepth"].setBinding(spareFloats_.rhi());
+        cursor["layer"].setBinding(spareFloats_.rhi());
+        cursor["added"].setBinding(layer.rhi());
+        cursor["records"].setBinding(records.rhi());
+        cursor["counters"].setBinding(counters_.rhi());
+        cursor["params"]["count"].setData(count);
+        cursor["params"]["floats"].setData(floats);
+        cursor["params"]["own"].setData(own);
+        cursor["params"]["gainR"].setData(gain[0]);
+        cursor["params"]["gainG"].setData(gain[1]);
+        cursor["params"]["gainB"].setData(gain[2]);
+    });
+    return batch.submit(true);
 }
 
 Result<uint32_t> Discovery::markGone(const gpu::Buffer& lifted, uint32_t base, gpu::Buffer& gone, uint32_t count,

@@ -35,6 +35,9 @@ struct RelightParams {
     uint  hasGone;      // `gone` says what stands; without it, a gaussian's opacity does
     uint  keep;         // sceneRelight: 1 leaves the cloud's colours as they are and hands the frame's light as it is (rgb, linear)
     float gainR; float gainG; float gainB; uint pad2;   // sceneAddLight: what the layer is multiplied by
+    uint  floats;       // recordsAddLight: floats a record
+    float own;          // recordsAddLight: what the record's own light is multiplied by
+    uint  pad3; uint pad4;
 };
 
 StructuredBuffer<float4>   positions;    // xyz, opacity (0 and under: not standing)
@@ -45,6 +48,7 @@ StructuredBuffer<float4>   frameColour;  // the frame's light a pixel
 StructuredBuffer<float>    frameDepth;   // and its depth along the view (0: nothing)
 RWStructuredBuffer<float4> layer;        // the colour as a record keeps it, and whether it was said
 StructuredBuffer<float4>   added;        // sceneAddLight: light a gaussian (rgb, linear) and whether there is any (a)
+RWStructuredBuffer<float>  records;      // recordsAddLight: a render's records, their colours written
 RWStructuredBuffer<uint>   counters;     // [0]: gaussians whose light was taken again
 ConstantBuffer<RelightParams> params;
 
@@ -128,4 +132,32 @@ void sceneAddLight(uint3 tid: SV_DispatchThreadID) {
     const float3 put = params.linearCloud != 0u ? lit : float3(encodedLight(lit.r), encodedLight(lit.g), encodedLight(lit.b));
     shape[row + 2u] = packHalves(lowHalf(shape[row + 2u]), put.r);
     shape[row + 3u] = packHalves(put.g, put.b);
+}
+
+float lightOfEncoded(float shown) {
+    const float v = max(shown, 0.0);
+    return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+}
+
+// THE SAME OVER A RENDER'S RECORDS, as a file keeps them (scene_render.slang: the colour at 11, the first
+// harmonic of the light as shown): for whoever hands the scene on with its groups at their levels. `own`
+// multiplies the light the record has -- 0 hands on a group's light alone.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void recordsAddLight(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    const uint at = i * params.floats + 11u;
+    const float3 shown = float3(records[at], records[at + 1u], records[at + 2u]) * 0.28209479 + 0.5;
+    float3 lit = params.own * float3(lightOfEncoded(shown.r), lightOfEncoded(shown.g), lightOfEncoded(shown.b));
+    const float4 more = added[i];
+    if (more.a > 0.0) {
+        lit += more.rgb * float3(params.gainR, params.gainG, params.gainB);
+    }
+    lit = max(lit, float3(0.0));
+    records[at] = (encodedLight(lit.r) - 0.5) / 0.28209479;
+    records[at + 1u] = (encodedLight(lit.g) - 0.5) / 0.28209479;
+    records[at + 2u] = (encodedLight(lit.b) - 0.5) / 0.28209479;
 }

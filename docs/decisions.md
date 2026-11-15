@@ -23479,3 +23479,17 @@ lights on this stage where four are authored over it (`lights: 4 of the stage's 
 switched off), so two prims of Sponza's own carry the light API. Whether those light anything, and so
 whether the eye's light was ever on for it, is not looked into; the scenes of this section do not depend
 on it.
+
+**The scene handed on with its light** (15 Nov). `export` read a piece's records off its file and knew
+nothing of the layers beside it. It now lays the light the scene took again over them (the copy a loaded
+piece gets: `layLightOver`) and, on the device, adds each group at its level (`--group`, as `render`'s) to
+the record's own light times `--own-light` (`Discovery::addLightToRecords`, scene_light.slang's
+`recordsAddLight`), before the cut sets the records apart by kind and they are packed. Sponza with its two
+groups, handed on by frame at three states -- both lamps on, both off, the lamp at a half and the spot red
+-- and looked at in the player (Chrome headless, the last frame's camera): three scenes lit as the engine
+draws those states. A file has one state: a viewer that changes a lamp's level reads no layer.
+
+Not done: the player given the layers themselves and a control a group; the levels of detail and the
+history of an export (`--levels`, `--history`) go through the same piece and are not looked at with
+groups; `bake` (`.athc`); a group's layer for the gaussians of glass and mirror a player shades by
+itself.
