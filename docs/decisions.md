@@ -23009,3 +23009,11 @@ Not done: Sponza and the other published scenes are not shot again, and **how a 
 without the payment is not looked at** (the SPZ's header says it; whether Spark follows it is not known) --
 nothing is published again before it is; the stage that moves falls 1.3 dB over its 24 frames now, where it
 did not fall before (more of what is left behind shows, sharper); `discover` keeps its own default of a pixel.
+
+**The web viewer follows it.** Spark spreads a splat 0.3 of a pixel and pays for it in opacity by default
+(`blurAmount`), as the engine's rasteriser did: a scene of half-cell discs drawn so is dark and seen through.
+`export` writes how the scene is drawn into its index (`antialiased`), and the player sets Spark's
+`preBlurAmount` to 0.3 and `blurAmount` to 0 for a scene that says `false`. Looked at in Chrome on Windows
+(headless, the materials scene exported once and its index copied with the flag turned): solid with the flag
+followed, thin and dark without. The published page and its scenes are not touched: they are scenes shot
+before, drawn as before, and the page that is live does not read the flag yet.

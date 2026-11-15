@@ -213,6 +213,13 @@
 
     try {
       let index = await readIndex();
+      // A scene drawn without the 2D filter's compensation (`antialiased: false` in its index): each gaussian
+      // is spread a third of a pixel and keeps its opacity, as the engine draws it. With the compensation,
+      // which is Spark's default, its discs of half a pixel are thin and the surfaces show through.
+      if (index.antialiased === false) {
+        spark.preBlurAmount = 0.3;
+        spark.blurAmount = 0.0;
+      }
       // The scene's own space into three's: metres, y up. A stage that is z up is turned a quarter about x.
       // An index that does not say its unit is taken as centimetres where its box is hundreds across.
       const across = Math.max(index.max[0] - index.min[0], index.max[1] - index.min[1], index.max[2] - index.min[2]);

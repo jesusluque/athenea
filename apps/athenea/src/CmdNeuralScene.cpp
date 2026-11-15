@@ -1433,7 +1433,8 @@ Result<void> writeExportIndex(const std::filesystem::path& stem, const io::Neura
             }
         }
         index << "{\n  \"name\": \"" << scene.name << "\",\n  \"upAxis\": \"" << scene.upAxis
-              << "\",\n  \"metersPerUnit\": " << scene.metersPerUnit << ",\n  \"growing\": " << (growing ? "true" : "false")
+              << "\",\n  \"metersPerUnit\": " << scene.metersPerUnit << ",\n  \"antialiased\": "
+              << (scene.antialiased ? "true" : "false") << ",\n  \"growing\": " << (growing ? "true" : "false")
               << ",\n  \"gaussians\": " << total << ",\n  \"min\": [" << low[0] << ", " << low[1] << ", " << low[2]
               << "],\n  \"max\": [" << high[0] << ", " << high[1] << ", " << high[2] << "],\n  \"parts\": [";
         const auto writeOne = [&](const ExportedPart& part, bool first, const char* indent) {
