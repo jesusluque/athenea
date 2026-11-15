@@ -660,7 +660,11 @@ void projectSplat<let kTransfer : int>(uint3 tid) {
     // filter there is still the shutter and the lens to pay for; a spread
     // splat that kept its peak would gain energy and the wings, or the bokeh,
     // would burn.
-    const float paid = params.antialias != 0 ? sqrt(max(detBefore, 0.0) / det) : spreadPaid;
+    // A cloud made of discs a known width and drawn without the filter's payment pays only what falls under
+    // that width's share: opaque where it is drawn as it was made, thinned where it is drawn smaller.
+    const float filtered = sqrt(max(detBefore, 0.0) / det);
+    const float paid = params.antialias != 0 ? filtered
+                       : params.paidAt > 0.0 ? min(filtered / params.paidAt, 1.0) : spreadPaid;
     // A SURFEL, where it can be drawn as one: the disc's own plane, from the
     // ray through each pixel, with no blur of the shutter or the lens -- those
     // two stay the gaussian's convolutions, and a surfel under them is drawn

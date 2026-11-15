@@ -234,6 +234,44 @@ TEST_CASE("antialiasing pays back the energy dilation adds to a sub-pixel splat"
     CHECK(with < 0.6 * without);
 }
 
+TEST_CASE("a cloud drawn without the filter's payment pays it only under the width it was made at", "[render][gpu]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto h = harness(gpu);
+    CloudBuilder b;
+    b.add(0.0F, 0.0F, -50.0F, 0.9F, 0.02F, 0.02F, 0.02F, {1, 0, 0, 0}, {1, 1, 1});
+    auto cloud = h->loader.upload(b.raw);
+    REQUIRE(cloud);
+    const std::vector<render::SplatInstance> instances{{&*cloud, render::Mat4::identity()}};
+    render::Camera camera;
+    render::RenderSettings settings;
+    settings.width = 64;
+    settings.height = 64;
+    const auto energy = [&](bool antialias, float made) {
+        settings.antialias = antialias;
+        settings.madeSpread = made;
+        render::RenderTargets targets;
+        REQUIRE(h->raster.render(camera, instances, settings, targets));
+        const auto p = readColour(*gpu, targets);
+        double sum = 0.0;
+        for (size_t i = 0; i < p.size() / 4; ++i) {
+            sum += static_cast<double>(p[i * 4 + 3]);
+        }
+        return sum;
+    };
+    const double paid = energy(true, 0.0F);
+    const double kept = energy(false, 0.0F);
+    // Made far narrower than it is drawn: it stands as it was made. Made far wider: it pays all the filter asks.
+    CHECK(energy(false, 1.0e-3F) == Catch::Approx(kept).epsilon(0.01));
+    CHECK(energy(false, 1.0e3F) == Catch::Approx(paid).epsilon(0.02));
+    // The width a frame was made at changes nothing of a cloud that pays the whole of it.
+    CHECK(energy(true, 0.5F) == Catch::Approx(paid).epsilon(1.0e-4));
+    // And between the two, the wider it was made the more it pays.
+    const double narrow = energy(false, 0.1F), wide = energy(false, 0.5F);
+    CHECK(wide <= narrow);
+    CHECK(wide < kept);
+    CHECK(wide > paid);
+}
+
 TEST_CASE("a SplatEdit renders as the GPU reference renders it", "[render][gpu][edit]") {
     ATHENEA_REQUIRE_GPU(gpu);
     auto h = harness(gpu);

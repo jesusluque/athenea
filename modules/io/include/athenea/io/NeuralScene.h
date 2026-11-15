@@ -177,6 +177,10 @@ struct NeuralScene {
     /// opacity), or without it (`false`: spread and as opaque as it was made,
     /// which is what closes a surface of discs narrower than a pixel).
     bool        antialiased = true;
+    /// The standard deviation its discs were made with, in pixels of the eye
+    /// that found each (`shoot --spread`); 0: not said. A scene drawn without
+    /// the compensation pays it only under this width (RenderSettings::madeSpread).
+    float       spread = 0.0f;
     std::string source;                   ///< the stage the pieces were converted from
     std::string licence;                  ///< what the source asks of whoever uses it
     std::vector<NeuralScenePiece>  pieces;

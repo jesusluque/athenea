@@ -61,6 +61,7 @@ public struct FrameParams {
     public float farZ;
     public uint  orthographic;
     public uint  antialias;
+    public float paidAt;         // no antialias: the filter's share a disc of the made size pays (0: none paid)
     // Object -> view, rows of a 3x4.
     public float m00; public float m01; public float m02; public float m03;
     public float m10; public float m11; public float m12; public float m13;

@@ -87,7 +87,10 @@ void referenceProject(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     // As the rasteriser pays for its filter (`paidOpacity`, splat/frame).
-    const float alpha = params.antialias != 0 ? paidOpacity(p.w, sqrt(max(before, 0.0) / det)) : p.w;
+    // A cloud made of discs a known width pays only under that width's share (`paidAt`), as there.
+    const float filtered = sqrt(max(before, 0.0) / det);
+    const float alpha = params.antialias != 0 ? paidOpacity(p.w, filtered)
+                        : params.paidAt > 0.0 ? paidOpacity(p.w, min(filtered / params.paidAt, 1.0)) : p.w;
     if (!(alpha >= 1.0 / 255.0)) {
         return;
     }

@@ -255,6 +255,12 @@ struct RenderSettings {
     /// Set: every cloud drawn with the compensation (true) or without
     /// (false), whatever its file says -- `athenea render --no-antialias`.
     std::optional<bool> antialiasOverride;
+    /// A CLOUD DRAWN WITHOUT THE COMPENSATION PAYS FROM THE SIZE IT WAS MADE AT. Its discs were made this
+    /// many pixels wide (sigma) for the eye that found them, to stand opaque there: one that projects that
+    /// wide or wider keeps its opacity, and one that projects narrower -- the same scene from further, or at
+    /// fewer pixels -- pays the filter's share over what a disc of the made size would pay. 0: such a cloud
+    /// pays nothing however small it is drawn.
+    float    madeSpread = 0.0f;
     /// SURFELS: a gaussian with a flat axis (a scale of exactly 0) drawn as
     /// the disc it is, by the ray through each pixel, with the 2DGS screen
     /// filter (docs/decisions.md, surfels). Off, it is the thin gaussian it

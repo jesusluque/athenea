@@ -23032,3 +23032,57 @@ took, against the references with the margin:
 560 s and 1 974 296 gaussians before, 552 s and 2 099 501 now. A third of a dB to one, for two to eight
 thousandths of the frame held: less than on the stages of a few metres, the same way. On Vulkan and CUDA
 `[scene]` (238 assertions) and the workflows (26 of 26 on Vulkan) pass with the defaults changed.
+
+## A disc pays the filter only under the width it was made at (15 Nov)
+
+**What was wrong.** The chrome-knight Sponza shot again at 1920x1080 with the defaults above (60 cameras,
+11 795 537 gaussians) and drawn at 960x540 read *worse* without the 2D filter's compensation than with it:
+
+| view (960x540, against the references with the margin) | no compensation (the default) | the whole compensation | paid under the made width (now) |
+|---|---|---|---|
+| k10: dB, SSIM, mean alpha | 29.73, 0.851, 1.000 | 33.06, 0.900, 0.833 | 31.85, 0.882, 0.975 |
+| k45 | 27.95, 0.771 | 29.00, 0.819 | 28.57, 0.800 |
+| a (not taken) | 29.02, 0.851, 0.940 | 31.12, 0.891, 0.810 | 30.32, 0.876, 0.920 |
+| b (not taken) | 28.86, 0.817, 0.982 | 29.83, 0.867, 0.867 | 29.37, 0.847, 0.966 |
+
+A scene drawn at fewer pixels than it was found at has several discs a pixel; each spread a third of a pixel
+and as opaque as it was made, the pixel is the nearest of them and not their average, and what is small and
+bright (the windows at the far end) is lost. The whole compensation averages them and thins the scene as
+before (a sixth of the frame seen through).
+
+**What is done.** `RenderSettings::madeSpread`: the standard deviation, in pixels, a cloud's discs were made
+at. A cloud drawn without the compensation pays `min(filtered / paidAt, 1)` with `filtered` the filter's own
+share (`sqrt(det before / det after)`) and `paidAt` that share for a round disc of the made width
+(`s^2 / (s^2 + 0.3)`): a disc that projects as wide as it was made or wider keeps its opacity, a narrower one
+pays in proportion. The rasteriser and the GPU reference do the same (`splat_project.slang`,
+`reference_project.slang`, `FrameParams::paidAt`). A scene keeps the width in its manifest (`spread`, what
+`shoot --spread` was when it was begun), every frame `neural-scene` draws of it takes it from there -- the
+looks of a shoot as well -- and `render --made-spread` says another. 0, and a scene that does not say, pay
+nothing: what was shot before is drawn as before.
+
+**Measured**, the same QA as the section above, the defaults then and now (dB by `athenea compare` where the
+scene holds something; held is the mean alpha):
+
+| stage | then | now |
+|---|---|---|
+| materials h0..h3 | 26.12, 24.62, 25.39, 23.33; held .894 .988 .987 .941 | 26.94, 25.26, 25.79, 23.78; held .890 .981 .982 .928 |
+| kitchen h0..h2 | 25.94, 25.75, 24.68 | 26.01, 26.14, 25.22 |
+| chess h0..h2 | 23.38, 22.12, 21.50 | 23.62, 22.55, 21.64 |
+| animated, frames 1, 12, 24 | 28.71, 27.69, 27.40 | 29.41, 28.30, 27.93 |
+| fox (skinned), frames 1, 12, 24 | 37.35, 35.57, 34.75 | 36.28, 35.01, 34.22 |
+| Sponza shot at 960x540, k10 k45 a b (render only) | 31.65, 29.77, 30.72, 30.09 | 32.64, 29.93, 31.01, 30.24 |
+
+Materials: 1 087 047 gaussians for 1 059 238 (the looks ask the same picture a render shows, and hold a little
+less). Without a mask, over black, Sponza reads the same way (k10 31.67 to 32.66). A wider made width reads
+higher still and holds less (Sponza k10 at 1.0: 33.39 dB, mean alpha 0.880 for 0.967): the figure where the
+scene holds something rewards a thin scene, which is why the width is the one the discs were made at and not
+the one that reads best. `[neural]` 4207 assertions in 18 cases pass on Metal, and the new case
+"a cloud drawn without the filter's payment pays it only under the width it was made at".
+
+Not done: **the Fox falls a dB** (frame 1, its own camera) and it is not explained -- a disc seen by the eye
+that made it should pay nothing; the web player does not do this (Spark has the two extremes, `blurAmount`
+and `preBlurAmount`, and the player keeps the second for such a scene), so a scene seen from far in a
+browser is still the nearest disc a pixel; a cloud does not carry the width (`GpuSplats`), the frame does,
+so two scenes made at different widths in one frame share one; CUDA and Vulkan are not run yet. Seen while
+running `[render]~[neural]` on Metal and not looked into (backlog NEU25): test_flatten.cpp:78 (roughness
+floor 1.0) and :185 (p99 5 for 4) fail, beside the refit case of NEU18; none of them sets a made width.

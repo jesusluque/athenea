@@ -116,6 +116,7 @@ struct SceneOptions {
     float                    morph = 0.0F;
     bool                     glass = false;
     bool                     noAntialias = false;
+    float                    madeSpread = -1.0F;      // render: the width, in pixels, the scene's discs were made at
     bool                     antialias = false;       // shoot: a new scene drawn with the 2D filter's compensation
     float                    shootSpread = 0.5F;      // shoot's own default: half a cell
     float                    exposure = 0.0F;
@@ -156,8 +157,12 @@ bool renderRecordOf(uint32_t floats) {
 /// makes of it: unset, as the rasteriser's settings say; `false`, without the 2D filter's compensation.
 /// Set once the manifest is read; a cloud carries it from there (scene::GpuSplats::antialiased).
 std::optional<bool> drawnAs;
+/// The width its discs were made at (io::NeuralScene::spread), for every frame this command draws of it:
+/// drawn without the compensation, a disc pays it only where it projects narrower than it was made.
+float madeAs = 0.0F;
 void drawAs(const io::NeuralScene& scene) {
     drawnAs = scene.antialiased ? std::optional<bool>{} : std::optional<bool>{false};
+    madeAs = scene.spread;
 }
 
 /// With `parent`, a render's piece also gives the width of what each gaussian was laid over (left
@@ -682,6 +687,7 @@ int runFit(const SceneOptions& o) {
     scene->bounds(low, high);
     const render::Vec3 up = upOf(*scene);
     render::RenderSettings settings;
+    settings.madeSpread = madeAs;
     settings.width = how.width;
     settings.height = how.height;
 
@@ -908,6 +914,7 @@ int runLook(const SceneOptions& o) {
     auto given = discovery->zeros(slots);
     if (!given) return report(given.error());
     render::RenderSettings settings;
+    settings.madeSpread = madeAs;
     settings.width = width;
     settings.height = height;
     settings.contribution = &*given;
@@ -1069,6 +1076,7 @@ int runDiscover(const SceneOptions& all) {
     if (!frameDepth) return report(frameDepth.error());
 
     render::RenderSettings settings;
+    settings.madeSpread = madeAs;
     settings.width = width;
     settings.height = height;
     // The scene's depth at a pixel is its first surface's -- where half the pixel is covered -- and not
@@ -1434,7 +1442,7 @@ Result<void> writeExportIndex(const std::filesystem::path& stem, const io::Neura
         }
         index << "{\n  \"name\": \"" << scene.name << "\",\n  \"upAxis\": \"" << scene.upAxis
               << "\",\n  \"metersPerUnit\": " << scene.metersPerUnit << ",\n  \"antialiased\": "
-              << (scene.antialiased ? "true" : "false") << ",\n  \"growing\": " << (growing ? "true" : "false")
+              << (scene.antialiased ? "true" : "false") << ",\n  \"spread\": " << scene.spread << ",\n  \"growing\": " << (growing ? "true" : "false")
               << ",\n  \"gaussians\": " << total << ",\n  \"min\": [" << low[0] << ", " << low[1] << ", " << low[2]
               << "],\n  \"max\": [" << high[0] << ", " << high[1] << ", " << high[2] << "],\n  \"parts\": [";
         const auto writeOne = [&](const ExportedPart& part, bool first, const char* indent) {
@@ -1523,6 +1531,7 @@ int runShoot(const SceneOptions& all) {
     // Spread and not thinned, half a cell wide closes the surface and keeps the frame (29 dB). A scene that
     // is there already is drawn as its manifest says.
     scene.antialiased = all.antialias;
+    scene.spread = all.shootSpread;
     if (std::filesystem::exists(directory / "scene.json")) {
         auto read = io::readNeuralScene(directory);
         if (!read) return report(read.error());
@@ -1721,6 +1730,7 @@ int runShoot(const SceneOptions& all) {
         const uint32_t stamp = static_cast<uint32_t>(scene.snapshots.size());
 
         render::RenderSettings settings;
+        settings.madeSpread = madeAs;
         settings.width = width;
         settings.height = height;
         settings.depth = render::RenderSettings::Depth::Threshold;
@@ -2155,6 +2165,7 @@ int runShoot(const SceneOptions& all) {
         double covered = 0.0;
         if (!instances.empty()) {
             render::RenderSettings plain;
+            plain.madeSpread = madeAs;
             plain.width = width;
             plain.height = height;
             render::RenderTargets seen;
@@ -2415,6 +2426,7 @@ int runRenderStored(const SceneOptions& o, const io::NeuralScene& scene) {
             instances.push_back(render::SplatInstance{&drawn.back(), render::Mat4::identity(), {}});
         }
         render::RenderSettings settings;
+        settings.madeSpread = madeAs;
         settings.width = frame.width;
         settings.height = frame.height;
         settings.timeStages = true;
@@ -3161,7 +3173,9 @@ int runRender(const SceneOptions& given) {
         byLatents.push_back(instance);
     }
     render::RenderSettings settings;
+    settings.madeSpread = madeAs;
     if (o.noAntialias) settings.antialiasOverride = false;   // dilated and not thinned: a disc narrower than a pixel stays opaque
+    if (o.madeSpread >= 0.0F) settings.madeSpread = o.madeSpread;
     settings.width = width;
     settings.height = height;
     render::RenderTargets plain;
@@ -3404,6 +3418,7 @@ void addNeuralScene(CLI::App& app) {
     render->add_option("--frame", o.storedFrame, "a frame the scene stored (neural-scene shoot), counted from one: its camera, its size, the scene as it stood then");
     render->add_option("--lod", o.lod, "levels of detail: a gaussian narrower than this many pixels on the screen is drawn in place of the finer ones laid over it (0: the finest everywhere)");
     render->add_option("--budget", o.budget, "levels of detail by a count: the finest threshold that draws no more than this many gaussians from the view, in place of --lod");
+    render->add_option("--made-spread", o.madeSpread, "a scene drawn without the compensation pays it under this width: the sigma in pixels its discs were made at (shoot's --spread)");
     render->add_flag("--no-antialias", o.noAntialias, "no Mip-Splatting 2D filter compensation: a gaussian is spread a third of a pixel and keeps its opacity");
     render->add_flag("--glass", o.glass, "solid glass shows what it bends and mirrors of the scene from each view, worked out from what the glass is made of, in place of the picture the look that found it saw");
     render->add_option("--morph", o.morph, "--lod, --budget: a gaussian is moved towards what it was laid over across this share of the threshold before that is drawn in its place (0: a step)");

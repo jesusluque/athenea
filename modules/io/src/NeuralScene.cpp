@@ -140,6 +140,7 @@ Result<NeuralScene> readNeuralScene(const std::filesystem::path& directory) {
     scene.upAxis = root.value("upAxis", std::string{"Y"});
     scene.metersPerUnit = root.value("metersPerUnit", 1.0);
     scene.antialiased = root.value("antialiased", true);
+    scene.spread = root.value("spread", 0.0f);
     if (const auto source = root.find("source"); source != root.end() && source->is_object()) {
         scene.source = source->value("stage", std::string{});
         scene.licence = source->value("licence", std::string{});
@@ -261,6 +262,7 @@ Result<void> writeNeuralScene(const std::filesystem::path& directory, const Neur
     root["upAxis"] = scene.upAxis;
     root["metersPerUnit"] = scene.metersPerUnit;
     if (!scene.antialiased) root["antialiased"] = false;
+    if (scene.spread > 0.0f) root["spread"] = scene.spread;
     root["source"] = {{"stage", scene.source}, {"licence", scene.licence}};
     std::array<float, 3> min{};
     std::array<float, 3> max{};
