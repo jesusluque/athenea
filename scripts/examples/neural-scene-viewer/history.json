@@ -36,7 +36,7 @@
    "scene": "sponza_lamps"
   },
   {"date": "2026-11-15",
-   "what": "The player draws a coarse level of the whole scene first and the full detail behind it: Sponza at 1080p (8.4 M gaussians) is drawn whole after 0.8 s where it took 14 s; and the player as one file to open from a disk.",
+   "what": "The player draws a coarse level of the whole scene first and the full detail behind it: Sponza at 1080p (8.4 M gaussians) is drawn whole after 0.8 s where it took 14 s, read from a server on the same machine; and the player as one file to open from a disk.",
    "scene": "sponza_lamps"
   }
  ]
