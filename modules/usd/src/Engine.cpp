@@ -806,6 +806,7 @@ void Engine::setMeshLights(bool on) {
     }
 }
 void Engine::setGlassShadows(bool glass) { glassShadows_.store(glass); }
+void Engine::setHeadlight(bool headlight) { headlight_.store(headlight); }
 void Engine::setRayMargin(float margin) { rayMargin_.store(std::clamp(margin, 1.0e-6F, 1.0e-1F)); }
 void Engine::setDomeVisible(bool visible) { domeVisible_.store(visible); }
 void Engine::setScreenSpaceReflections(bool on) { screenSpaceReflections_.store(on); }
@@ -3861,7 +3862,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             paths.glassShadows = glassShadows_.load();
             paths.rayMargin = rayMargin_.load();
             paths.errorTarget = pathError_.load();
-            paths.headlight = frame.lights == nullptr || frame.lights->count() == 0;
+            paths.headlight = headlight_.load() && (frame.lights == nullptr || frame.lights->count() == 0);
             PathState now;
             now.worldToView = projection.worldToView;
             now.focalX = projection.focalX;
@@ -3884,6 +3885,7 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             now.adaptive = paths.adaptive;
             now.mis = paths.mis;
             now.glassShadows = paths.glassShadows;
+            now.headlight = paths.headlight;
             now.rayMargin = paths.rayMargin;
             now.cameraMoves = projection.cameraMoves;
             now.cameraStart = projection.viewToWorldStart;

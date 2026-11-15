@@ -529,6 +529,10 @@ public:
     /// (`athenea:glassShadows`, on by default): a lamp behind its lens lights
     /// what stands in front by next event estimation. Off: glass stops them.
     void setGlassShadows(bool glass);
+    /// Whether the path tracer lights a stage that has no light from the eye
+    /// (`athenea:headlight`, on by default). Off, such a stage is dark but for
+    /// what glows: what a scene shot with its lamps switched off wants.
+    void setHeadlight(bool headlight);
     /// How far the path tracer's rays leave a surface that is no crossing, as a
     /// share of the position's distance from the origin (`athenea:rayMargin`,
     /// 1e-3 by default): smaller for a scene far from its origin or in small units.

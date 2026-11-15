@@ -391,6 +391,10 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     glassShadows.name = "Shadow rays pass clear glass, tinted (rt)";
     glassShadows.key = TfToken("athenea:glassShadows");
     glassShadows.defaultValue = VtValue(true);
+    HdRenderSettingDescriptor headlight;
+    headlight.name = "A stage with no light is lit from the eye (rt)";
+    headlight.key = TfToken("athenea:headlight");
+    headlight.defaultValue = VtValue(true);
     HdRenderSettingDescriptor rayMargin;
     rayMargin.name = "How far a ray leaves a surface, as a share of its distance from the origin (rt)";
     rayMargin.key = TfToken("athenea:rayMargin");
@@ -453,7 +457,7 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
             total,     denoise,     adaptive,    error,       mis,        glassShadows, motion,     transferIndirect, displayBlend, reflectCloud, splatShadows,
             cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, domePrefiltered, domeVisible, splatView,
-            screenSpaceReflections, meshAntialias, meshLights, meshLightSamples, volumeCache, volumeFilter, rayMargin};
+            screenSpaceReflections, meshAntialias, meshLights, meshLightSamples, volumeCache, volumeFilter, rayMargin, headlight};
 }
 
 athenea::world::VolumeFilter HdAtheneaRenderDelegate::GetVolumeFilter() const {
@@ -658,6 +662,11 @@ uint32_t HdAtheneaRenderDelegate::GetSplatView() const {
     return _WholeSetting(GetRenderSetting(TfToken("athenea:splatView")), whole)
                ? static_cast<uint32_t>(std::clamp<int64_t>(whole, 0, UINT32_MAX))
                : 0u;
+}
+
+bool HdAtheneaRenderDelegate::GetHeadlight() const {
+    const VtValue value = GetRenderSetting(TfToken("athenea:headlight"));
+    return !value.IsHolding<bool>() || value.UncheckedGet<bool>();
 }
 
 bool HdAtheneaRenderDelegate::GetGlassShadows() const {

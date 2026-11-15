@@ -151,6 +151,9 @@ public:
     /// "athenea:glassShadows": the path tracer's shadow rays pass glass whose
     /// transmission is a delta, tinted (true, the default).
     [[nodiscard]] bool GetGlassShadows() const;
+    /// "athenea:headlight": the path tracer lights a stage that has no light
+    /// from the eye (true, the default); false leaves it dark but for what glows.
+    [[nodiscard]] bool GetHeadlight() const;
     /// "athenea:rayMargin": how far the path tracer's rays leave a surface, as a
     /// share of the position's distance from the origin (1e-3, the default).
     [[nodiscard]] float GetRayMargin() const;

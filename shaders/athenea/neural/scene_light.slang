@@ -96,7 +96,9 @@ void sceneRelight(uint3 tid: SV_DispatchThreadID) {
     if (params.keep != 0u) {
         // A GROUP OF LIGHTS' OWN LAYER: the frame was path traced under that group alone, and what each
         // gaussian sends then is kept as light, to be added to the scene's by a level (sceneAddLight).
-        layer[i] = float4(light, 1.0);
+        // And how far the eye was (a): of the views that show a gaussian, the nearest is the one that sees
+        // it largest -- as the look that made it did -- and its word is the one kept.
+        layer[i] = float4(light, z);
         return;
     }
     const float3 put = params.linearCloud != 0u ? light : shown;
@@ -116,7 +118,7 @@ void sceneAddLight(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const float4 more = added[i];
-    if (!(more.a > 0.5)) {
+    if (!(more.a > 0.0)) {
         return;
     }
     const uint row = i * 4u;

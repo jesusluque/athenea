@@ -1382,6 +1382,10 @@ void StageRenderer::setMeshAntialias(uint32_t samples) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:meshAntialias"), VtValue(static_cast<int>(samples)));
 }
 
+void StageRenderer::setHeadlight(bool headlight) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:headlight"), VtValue(headlight));
+}
+
 void StageRenderer::setGlassShadows(bool glass) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:glassShadows"), VtValue(glass));
 }

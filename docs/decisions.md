@@ -23416,3 +23416,43 @@ a group needs no stage of its own: the scene is shot with the lamps off, each gr
 on. `qa_flows.py` does that on the materials stage with its sun as the group, and draws the scene with the
 group at a half and at a tint: 35 of 35 end well on Metal. Windows through Vulkan passes `[scene]` (295
 assertions with the group's case) and its 31 workflows of before; CUDA is being run.
+
+## Groups on a stage with lights of its own: what glows, the eye's light, and which view speaks (15 Nov)
+
+The materials stage shot without its sky (`--lights-off /World/Sky`), the sky kept as a group, against the
+stage shot whole (26.94, 25.26, 25.79, 23.78 dB at h0..h3 against the path tracer): the two should read
+alike, and did not. Three things, found one at a time:
+
+| h0..h3, dB against the path traced stage | |
+|---|---|
+| the scene without the sky and the sky's group at 1 | 22.20, 22.17, 23.54, 24.19 |
+| ... less the `dark` group | 22.63, 23.16, 24.04, 24.65 |
+| ... and the nearest view's word of each gaussian | 23.89, 23.88, 23.99, 24.39 (SSIM 0.898, 0.878, 0.873, 0.854 for the whole scene's 0.924, 0.888, 0.884, 0.846) |
+
+**What glows is in every frame.** The stage's emissive ball lights the scene's own frames and every
+group's: a group's layer held its light a second time (with the sun as the group -- a sun that lights
+nothing, backlog NEU26 -- adding the group took h0 from 26.94 to 25.44). A group named `dark`, shot with
+every light off, is what glows alone; drawn, it is taken out once for each group drawn, at that group's
+level (last, so that no step goes under nothing).
+
+**A stage with no light on was not dark.** The path tracer lights a stage that has no light from the eye
+(`PathSettings::headlight`): another light for every camera. That is what Sponza's scene was found under
+all along -- not "the default lights, a sky and a sun", as the sections above say: those are `athenea
+stage --default-lights`' and a shoot never set them. A render setting, `athenea:headlight`
+(`StageRenderer::setHeadlight`), turns it off, and `shoot` does so when lights are switched by path or a
+group is shot (`--no-headlight` for a stage with none).
+
+**Which view speaks for a gaussian.** A group's layer kept the last view's word. A view from far reads, at
+a gaussian's middle, a pixel several gaussians wide, and the layer was the scene low-passed. The kernel now
+hands how far the eye was, and of the views that show a gaussian the nearest one's stands -- the one that
+sees it as large as the look that made it did.
+
+What is left between the two (1.4 to 3 dB at three views, none at the fourth) is, by the pictures, the
+polished balls -- which view's picture a mirror keeps is not the same in a layer as in the scene -- and the
+noise of three frames where one was (the scene's, the group's and the dark one's, at the glowing ball).
+
+Not done: **Sponza's groups measured again with its scene found dark** (`--no-headlight`): the figures of
+the section before were a scene found under the eye's light, with the two groups over it, against a stage
+lit by a sky, a sun and the lamps -- three different lights off the lamps, which the lamps drown;
+`--relight`'s layers still keep the last view's word (there a later frame is a later time); a group shot
+before this change has no distance in its file and is read as before.

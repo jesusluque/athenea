@@ -124,6 +124,7 @@ struct SceneOptions {
     bool                     relight = false;         // shoot: a frame takes the light of what the scene holds again
     std::string              lightGroup;              // shoot: the frames are a group of lights' own, kept as its layer
     std::vector<std::string> groups;                  // render: NAME=LEVEL or NAME=R,G,B, a group of lights' level
+    bool                     noHeadlight = false;     // shoot: a stage with no light is not lit from the eye
     std::vector<std::string> lightsOn;                // shoot: the stage's lights left on (the rest switched off)
     std::vector<std::string> lightsOff;               // shoot: the stage's lights switched off
     bool                     antialias = false;       // shoot: a new scene drawn with the 2D filter's compensation
@@ -314,9 +315,30 @@ Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& l
                 groups[name.substr(stem.size(), dot - stem.size())].emplace_back(
                     static_cast<uint32_t>(std::stoul(name.substr(dot + 1))), entry.path());
             }
-            for (auto& [group, files] : groups) {
+            // WHAT GLOWS IS IN EVERY GROUP'S LAYER: a frame path traced under one group of lights holds the
+            // light of the stage's emissive surfaces as well, as the scene's own does. The group named `dark`
+            // is that light alone (shot with every light off), and it is taken out once for each group drawn,
+            // at that group's level -- so the scene and its groups hold what glows once.
+            std::array<float, 3> drawn{0.0F, 0.0F, 0.0F};
+            for (const auto& [group, files] : groups) {
+                if (group == "dark") continue;
                 const auto named = groupGain.find(group);
                 const std::array<float, 3> gain = named != groupGain.end() ? named->second : groupDefault;
+                for (int c = 0; c < 3; ++c) drawn[c] += gain[c];
+            }
+            // The groups first and `dark` last: a colour is kept at nothing or more at each step.
+            std::vector<std::string> order;
+            for (const auto& [group, files] : groups) {
+                if (group != "dark") order.push_back(group);
+            }
+            if (groups.count("dark") != 0) order.push_back("dark");
+            for (const std::string& group : order) {
+                auto& files = groups[group];
+                const auto named = groupGain.find(group);
+                // (`dark` named on the command line is drawn at what is said: `--group dark=0` leaves it in.)
+                const std::array<float, 3> gain = named != groupGain.end() ? named->second
+                                                  : group == "dark" ? std::array<float, 3>{-drawn[0], -drawn[1], -drawn[2]}
+                                                                    : groupDefault;
                 if (gain[0] == 0.0F && gain[1] == 0.0F && gain[2] == 0.0F) {
                     continue;
                 }
@@ -1671,8 +1693,13 @@ int runShoot(const SceneOptions& all) {
             if (auto set = stage.setLightOn(light.prim, lit); !set) return report(set.error());
             ++(lit ? on : off);
         }
-        out("lights: %u of the stage's on, %u off%s\n", on, off,
-            on == 0 ? "; none is left on, and a stage with no light is lit by the engine's default ones" : "");
+        // A stage whose lights were switched is lit by what is left on and by nothing else: with none on it
+        // is dark but for what glows, not lit from the eye.
+        stage.setHeadlight(false);
+        out("lights: %u of the stage's on, %u off%s\n", on, off, on == 0 ? "; none is on: the stage is dark but for what glows" : "");
+    }
+    if (all.noHeadlight || !all.lightGroup.empty()) {
+        stage.setHeadlight(false);
     }
     stage.setPathSamples(std::max(all.passSamples, 1u));
     stage.setPathTotal(std::max(all.samples, 1u));
@@ -2397,14 +2424,17 @@ int runShoot(const SceneOptions& all) {
                 }
                 auto floats = layer->readAll<float>(device);
                 if (!floats) return std::move(floats).error();
-                // Gathered a piece over the run: a later frame's word of a gaussian stands over an earlier
-                // one's, and the piece's layer is written once, when every view is taken.
+                // Gathered a piece over the run: of the views that show a gaussian the nearest one's word
+                // stands (the fourth float is how far the eye was) -- a view from far reads, at the gaussian's
+                // middle, a pixel that is several gaussians wide -- and the piece's layer is written once,
+                // when every view is taken.
                 std::vector<float>& whole = groupLayers[piece.cloud];
                 whole.resize(size_t{cloud.count} * 4, 0.0F);
                 for (uint32_t g = 0; g < cloud.count; ++g) {
                     const float* one = &(*floats)[size_t{g} * 4];
-                    if (one[3] > 0.5F) {
-                        std::copy(one, one + 4, &whole[size_t{g} * 4]);
+                    float* held = &whole[size_t{g} * 4];
+                    if (one[3] > 0.0F && (held[3] <= 0.0F || one[3] < held[3])) {
+                        std::copy(one, one + 4, held);
                     }
                 }
                 kept += took;
@@ -2593,7 +2623,7 @@ int runShoot(const SceneOptions& all) {
             std::vector<float> said;
             for (size_t g = 0; g * 4 < whole.size(); ++g) {
                 const float* one = &whole[g * 4];
-                if (one[3] > 0.5F && (one[0] > 0.0F || one[1] > 0.0F || one[2] > 0.0F)) {
+                if (one[3] > 0.0F && (one[0] > 0.0F || one[1] > 0.0F || one[2] > 0.0F)) {
                     said.insert(said.end(), {static_cast<float>(g), one[0], one[1], one[2]});
                 }
             }
@@ -3970,6 +4000,7 @@ void addNeuralScene(CLI::App& app) {
     shoot->add_option("--tolerance", o.tolerance, "a surface is already held where the scene's depth is within this share of the render's");
     shoot->add_option("--refine", o.refine, "a surface held with gaussians more than this many times as wide as this look's is made again, finer");
     shoot->add_option("--repaint", o.repaint, "a surface held whose colour is off the render's by more than this share is made again (0: held by its depth alone)");
+    shoot->add_flag("--no-headlight", o.noHeadlight, "a stage that authors no light is left dark but for what glows, where the path tracer lights it from the eye (and so differently for each camera)");
     shoot->add_option("--lights-on", o.lightsOn, "only these lights of the stage light it (prim paths, comma separated or repeated): every other light the stage authors is switched off -- a group's lamps for --light-group")->delimiter(',');
     shoot->add_option("--lights-off", o.lightsOff, "these lights of the stage are switched off (prim paths): the scene shot without the lamps that are groups")->delimiter(',');
     shoot->add_option("--light-group", o.lightGroup, "the stage handed is lit by one group of lights alone: each frame is path traced and what every gaussian of the scene sends in it is kept as that group's layer of light, by this name; the scene itself is not touched (render --group sets the group's level)");
