@@ -23521,3 +23521,10 @@ one stands. **No shadow**: the lamp lights through walls (the disc's two sides a
 
 Not done: a shadow in the player (a cube of depths from the lamp); the lamp's highlight; more than one
 lamp; glass and chrome under it, which follow the cube of the room when it is drawn again.
+
+**The three backends, with groups** (15 Nov, the evening). `[scene]` passes on Metal, on CUDA (WSL) and on
+Vulkan (Windows) with the case of a group's layer in it: 295 assertions in 12 cases each. `qa_flows.py`,
+with the sun of the materials stage as a group (`--group-light /World/Sun`) -- the scene shot without it,
+its layer, the scene drawn and handed on at a level, and the group handed on alone -- ends well 37 of 37 on
+Metal and on Vulkan. (A run of CUDA in between had tested the code of the step before: the copy kept the
+Mac's file times and nothing was rebuilt; the copy now sets them.)
