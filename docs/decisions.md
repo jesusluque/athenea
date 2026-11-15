@@ -23314,8 +23314,9 @@ where its bent ray meets a gaussian -- and no camera of the walk saw the floor b
 the highlight, which is run on Metal alone so far). `qa_flows.py` has five ways more -- `render --lamps`,
 the same with `--lamps-only` and one ray, `shoot --relight` over a scene just shot, its stored frames
 after, and a snapshot before -- and ends well 31 of 31 on Metal. The 119 000 gaussians more that stood
-after Sponza's relit pass are, most likely, the lamps themselves, which the path tracer draws as lit balls
-(k45 looks at one): not checked.
+after Sponza's relit pass are not the lamps (a shoot of the stage with a lamp leaves 2 112 486, as one
+without): they are what a second pass over the same cameras makes of a scene the first left, light or no
+light, and are not looked into.
 
 **The coarser gaussians take the light again too** (15 Nov). `sceneRelight` asked the gaussians a piece's
 cloud draws, and in a shoot those are the finest: what a finer look was laid over -- what `render --lod` and
@@ -23335,3 +23336,20 @@ written as a USD layer and as text draw the same picture (57.3 dB one against th
 goes through a matrix printed to six digits). Not done: rect, disk, cylinder and dome lights, and a
 normalised light (left out, counted in the printed line); a light's colour temperature; lights that move
 (read at `--at`, or at 0).
+
+**A lamp that moves while the camera walks: what a layer of light cannot say** (15 Nov). Sponza with a lamp
+that goes once round the knights over 20 frames, shot through the 20 cameras of the walk with `--relight`
+(566 s, 2 112 486 gaussians, 556 MB). Each stored frame is right: it is the frame's own picture. But the
+scene **at a time, from anywhere else**, is a patchwork: a wall the camera last looked at ten frames ago
+keeps the lamp where it was then, and the edge of each camera's frame is drawn across the floor as a seam
+of light. The light is said where a frame looks; with one camera that looks at everything (the stage whose
+sun moves) that is the whole scene, and with a camera that walks it is not.
+
+So the two ways are for two things. A light that changes for the whole scene under a camera that keeps
+seeing it -- or a pass over every camera again -- is `shoot --relight`: path traced light, bounces and
+all, as layers a time. A lamp that moves is `render --lamps` over a scene found without it: worked out a
+gaussian at whatever time and from wherever, whole and with no seam (the 48 positions of the lamp round the
+knights, 0.4 s each), direct light with one matt bounce. Not done: the two together -- a shoot that takes
+the stage's known lamps out of the light it keeps, so that what is stored is the light that does not move
+and the lamps are worked out; that is what "the material apart from the light of each moment" asks for in
+full, and it needs the lamps' own share of a frame, which the path tracer does not hand over yet.
