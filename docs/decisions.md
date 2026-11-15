@@ -23545,3 +23545,72 @@ the scene took 117 s: every view read off the disk, again, the two hundred piece
 finest. Those pieces and every piece's record of what is gone are now read once a run and kept, and each
 view's line is flushed: 97 to 125 s a view. An hour and a half of the queue went on the wrong reading of
 it.
+
+## Where a shoot's time goes, and the groups of lights found by the scene's own paths (`shoot --light-groups`, 15 Nov)
+
+**Measured first.** A pass of one group of lights over the 1080p Sponza scene (8 366 012 gaussians, 20 views, 32
+paths, 3 bounces, denoised; Metal, M5 Pro) took 2428 s, against 2339 s for the scene itself. With a clock on each
+part of a view (the line a view prints now says them): the scene's pieces brought 0.0 s, the frame path traced
+113.6 s, the light kept 0.1 s. The path tracer alone, one view at 1920x1080 (`athenea stage --technique rt`):
+
+| what | seconds |
+|---|---|
+| the stage loaded, one path, no bounce | 43.1 |
+| 32 paths in passes of 8, 3 bounces, denoised | 147.9 |
+| the same, not denoised | 148.6 |
+| the same in one pass of 32 | 148.6 |
+| 32 paths, no bounce (the first hit and its direct light) | 66.3 |
+| 32 paths, one bounce | 95.4 |
+
+So of 105 s of tracing, 23 s are the first hit with its direct light and each bounce costs about 27 s more; the
+denoiser and the number of passes cost nothing. 66 M paths in 105 s is 2.4 M path segments a second. Before the
+clock I had supposed part of a group's view was the pieces read and the layer merged: it was not.
+
+**What changed.**
+
+- *The groups by the same paths.* The path tracer already gathers what each light group puts in a frame
+  (`athenea:lightGroup`, the output `lightGroup:NAME`, one light chosen a path). `shoot --light-groups NAME=PATH`
+  names the stage's lights at PATH as a group in the session layer (`StageRenderer::setLightGroup`), asks for the
+  planes, makes the scene from what no group holds of each frame and keeps each plane as the group's layer -- the
+  files a pass of `--light-group` writes, read by the same `render --group` and `export --group`.
+- *What no group holds is a plane of its own* (`lightGroupRest`): the frame's colour times the share of it the
+  path tracer's raw sums say no group put there, taken before the denoiser and denoised as the groups' planes
+  are. Two things were tried before it and looked at with the groups off (`--group "*=0"`), against the scene
+  shot with the lamps off: drawing the whole frame's scene less its layers left coloured blotches everywhere
+  (a gaussian's colour and its layer come from different views); the denoised colour less the denoised planes
+  left them on the wall the lamp lights (31.8--35.1 dB against the lamps-off scene, SSIM 0.84--0.89). The plane
+  of its own: 34.2--44.8 dB, SSIM 0.991--0.997.
+- *A denoised frame's group planes are denoised* (they were not: a clean colour over noisy groups), each with
+  the frame's albedo and normal, and then scaled a channel so that with the rest they add up to the denoised
+  colour again (`groupsToWhole`, held to four times). This is the engine's, for every reader of `lightGroup:`
+  outputs.
+- *A group's layer is merged on the device* (`sceneRelight` with `merge`: the nearest view's word stands): the
+  pass of a group read every piece's layer back each view and compared it on the CPU, which this codebase does
+  not do.
+
+**Sponza with two lamps, 960x540, 20 views, four views not taken** (PSNR against the stage path traced with 128
+paths; the baseline is the scene shot with the lamps off and a `--light-group` pass a lamp):
+
+| | seconds | lamps on: k10, k45, a, b | warm at half, spot tinted |
+|---|---|---|---|
+| three passes | 548 + 566 + 702 = 1816 | 27.94, 22.76, 25.81, 24.24 | 28.78, 24.00, 26.77, 25.42 |
+| `--light-groups`, one pass | 584 | 27.44, 22.86, 25.59, 23.99 | 28.09, 24.06, 26.42, 25.02 |
+
+A third of the time, and between 0.7 dB under and 0.1 dB over. The three passes' seconds are the views' own and
+leave out the stage loaded three times (43 s each at 1080p); the one pass's are the whole run.
+
+**A sun too weak to see.** On the materials stage the QA flows name `/World/Sun` as the group, and one pass keeps
+its light for 5 407 gaussians where the pass of its own kept it for 355 607. The planes' means for a view (the
+group's, what no group holds, the colour): 0.0004, 0.368, 0.403 with the sun as the group; 0.204, 0.198, 0.403 with
+the sky. That sun lights next to nothing (NEU26: a `DistantLight` of intensity 5), and what the pass of its own kept
+was the light of what glows, which every group's own frame holds and a `dark` group takes out; a light's plane
+holds that light's alone. The colour's mean is more than the sun's plane and the rest by the sky seen behind the
+stage, which goes into the dome's group. A group's plane is not read by its alpha (the path tracer's count, not a
+coverage): the frame's depth says where a surface is.
+
+**Not done.** Why one pass reads up to 0.7 dB under is not settled: a group's paths are a share of the frame's
+where a pass of its own has them all, which is the likely part, and it was not measured with more paths. The
+1080p scene with its groups was not shot again this way yet. The path tracer's 2.4 M segments a second is not
+explained: a shadow ray always walks nearest-first where glass may let it through (`glassShadows` is on by
+default), but it reads a material's row there and evaluates nothing, so what it costs is not known until it is
+measured. Next: the found scene as the path tracer's cache of what a bounce meets. `bake` still ignores groups.

@@ -174,6 +174,13 @@ if args.stage and args.walk:
             os.path.join(out, "xgroup")], [os.path.join(out, "xgroup_*.spz"), os.path.join(out, "xgroup.json")])
         run("export --own-light 0, the group alone", ["neural-scene", "export", based, "--own-light", "0", "--group",
             "lamp=1", "-o", os.path.join(out, "xalone")], [os.path.join(out, "xalone_*.spz")])
+        # THE SAME GROUP FOUND WITH THE SCENE, by the same paths: one shoot, the group's layer beside the pieces.
+        once = os.path.join(out, "once.aths")
+        run("shoot --light-groups", ["neural-scene", "shoot", os.path.basename(args.stage), once, "--views", short,
+            "--samples", "8", "--pass-samples", "8", "--bounces", "2", "--light-groups", "lamp=" + lamp] + common,
+            [os.path.join(once, "scene.json"), os.path.join(once, "pieces", "*.g.lamp.1")], cwd=stage_dir)
+        run("render --group lamp=0, a scene shot with its groups", ["neural-scene", "render", once, "--views", views,
+            "--group", "lamp=0"] + common + ["-o", os.path.join(out, "once")], [os.path.join(out, "once_*.exr")])
     run("shoot --time-step --repaint --free-each-frame", ["neural-scene", "shoot", os.path.basename(args.stage),
         os.path.join(out, "timed.aths"), "--views", short, "--time", "0", "--time-step", "1", "--repaint", "0.3",
         "--free-each-frame", "--samples", "8", "--pass-samples", "8", "--bounces", "2"] + common,

@@ -236,11 +236,16 @@ public:
     /// is how many did. Nothing is made and nothing is taken out. With
     /// `gone` (the piece's record of what is gone) every gaussian still there
     /// is asked, those finer looks were laid over too; without it, those the
-    /// cloud draws.
+    /// cloud draws. With `keep` and `into` (a layer an earlier call handed
+    /// for this cloud) the layer is a run's: a gaussian keeps the word of
+    /// the view that saw it from nearest, and `into` is what is returned.
+    /// `colourBase`: where in `frameColour` the frame starts, in pixels (a
+    /// light group's plane in a buffer of several).
     [[nodiscard]] Result<gpu::Buffer> relight(scene::GpuSplats& cloud, const gpu::Buffer& frameColour,
                                               const gpu::Buffer& frameDepth, uint32_t width, uint32_t height,
                                               const Projection& projection, float nearness, uint32_t& taken,
-                                              const gpu::Buffer* gone = nullptr, bool keep = false);
+                                              const gpu::Buffer* gone = nullptr, bool keep = false,
+                                              const gpu::Buffer* into = nullptr, uint32_t colourBase = 0);
 
     /// A layer of light (a float4 a gaussian: rgb, linear, and 1 where there
     /// is any) added to `cloud`'s own colours, times `gain`: a group of
@@ -251,6 +256,10 @@ public:
     /// The same over a render's records on the device (`count` of `floats`
     /// floats, as a file keeps them): each record's own light times `own`,
     /// and the layer's times `gain`. For whoever hands the scene on.
+    /// One plane of a buffer of several (`pixels` float4 from `base`), copied
+    /// out. The buffer is this object's, written again by the next call.
+    [[nodiscard]] Result<gpu::Buffer> framePlane(const gpu::Buffer& planes, uint32_t base, uint32_t pixels);
+
     [[nodiscard]] Result<void> addLightToRecords(gpu::Buffer& records, uint32_t count, uint32_t floats,
                                                  const gpu::Buffer& layer, const std::array<float, 3>& gain, float own);
     /// Each record's base colour written as its colour (what is opaque; glass
@@ -340,7 +349,8 @@ private:
     void bind(rhi::ShaderCursor cursor) const;
 
     gpu::ShaderLibrary* library_ = nullptr;
-    gpu::ComputeKernel  relight_, addLight_, recordsLight_, recordsBase_;
+    gpu::ComputeKernel  relight_, addLight_, recordsLight_, recordsBase_, framePlane_;
+    gpu::Buffer         ownFrame_;   ///< framePlane's result, kept between calls
     gpu::ComputeKernel  clear_, mark_, count_, mask_, gone_, sizes_, frameValid_, framePack_, frameThrough_;
     gpu::ComputeKernel  renderValid_, renderPack_, renderSpare_, cut_, cutFlags_, gather_, cutSpans_, exportFlat_, levelFlags_, levelGather_;
     std::optional<gpu::PrefixSum> prefix_;

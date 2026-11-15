@@ -2329,7 +2329,9 @@ AovView Engine::aovView(const render::RenderTargets& targets, AovSource aov) con
     // A light group's plane, one of the frame's in one buffer: the offset
     // addresses it at a stride of one.
     case AovKind::LightGroup:
-        if (aov.primvar >= lightGroupCount_ || lightGroupPixels_ != uint64_t{targets.width} * targets.height) {
+        // The plane after the groups' is what no group holds of a path traced frame.
+        if (aov.primvar > lightGroupCount_ || (aov.primvar == lightGroupCount_ && !groupRestValid_) ||
+            lightGroupPixels_ != uint64_t{targets.width} * targets.height) {
             return view;
         }
         // The raster's shading writes the planes; a path traced frame's means
@@ -3717,7 +3719,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         lightGroupCount_ = static_cast<uint32_t>(aovRequest.lightGroups.size());
         if (lightGroupCount_ > 0) {
             const uint64_t pixels = uint64_t{settings.width} * settings.height;
-            const uint64_t bytes = pixels * lightGroupCount_ * 16;
+            // A plane a group, and one more: what no group holds of a path traced frame (restOfGroups).
+            const uint64_t bytes = pixels * (lightGroupCount_ + 1) * 16;
             if (!lightGroupColour_.valid() || lightGroupColour_.bytes() < bytes || lightGroupPixels_ != pixels) {
                 gpu::BufferDesc desc;
                 desc.bytes = bytes;
@@ -4063,6 +4066,31 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             if (!progress) return std::move(progress).error();
             pathProgress_ = *progress;
         }
+        // WHAT NO LIGHT GROUP HOLDS, before the denoiser reaches the colour: the frame's colour times the share
+        // of it the path tracer's sums say no group put there, in the plane after the groups'.
+        groupRestValid_ = false;
+        if (pathTracing && lightGroupCount_ > 0 && lightGroupColour_.valid() && pathTracer_.has_value() &&
+            pathTracer_->lightGroups() >= lightGroupCount_ &&
+            lightGroupPixels_ == uint64_t{settings.width} * settings.height) {
+            if (!groupsRest_.has_value()) {
+                auto made = gpu::ComputeKernel::create(*library_, "athenea/technique/exposure", "restOfGroups");
+                if (!made) return std::move(made).error();
+                groupsRest_.emplace(std::move(*made));
+            }
+            const uint32_t pixels = settings.width * settings.height;
+            gpu::CommandBatch rest(*device_);
+            groupsRest_->dispatch(rest, {pixels, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["source"].setBinding(pathTracer_->sum().rhi());
+                cursor["whole"].setBinding(meshLayer_.colour.rhi());
+                cursor["colour"].setBinding(lightGroupColour_.rhi());
+                cursor["colourBase"].setData(pixels * lightGroupCount_);
+                cursor["groups"].setData(pathTracer_->lightGroups());
+                cursor["params"]["scale"].setData(1.0F);
+                cursor["params"]["pixels"].setData(pixels);
+            });
+            ATHENEA_TRY(rest.submit(true));
+            groupRestValid_ = true;
+        }
         // After the frame's batch, never inside it: the denoiser submits work
         // of its own and waits for OIDN. It runs on a path traced frame that
         // has gathered what it was asked for, in place over the mean -- the
@@ -4353,11 +4381,69 @@ Result<void> Engine::gatherLightGroups(bool traced, uint32_t width, uint32_t hei
     groupsScaled_->dispatch(batch, {entries, 1, 1}, [&](rhi::ShaderCursor cursor) {
         cursor["source"].setBinding(pathTracer_->sum().rhi());
         cursor["sourceBase"].setData(static_cast<uint32_t>(pathTracer_->lightGroupMeanOffset(0)));
+        cursor["colourBase"].setData(uint32_t{0});
         cursor["colour"].setBinding(lightGroupColour_.rhi());
         cursor["params"]["scale"].setData(1.0F);
         cursor["params"]["pixels"].setData(entries);
     });
-    return batch.submit();
+    // A DENOISED FRAME'S GROUPS ARE DENOISED AS IT IS: each plane is what one group of lights puts in the
+    // colour, gathered by the same paths, and a clean colour over noisy groups is not their sum. A plane at a
+    // time, out to a buffer of its own and back -- the denoiser takes a whole buffer -- with the frame's own
+    // albedo and normal.
+    if (!denoise_.load() || denoiserFailed_ || !denoiser_.has_value() || pathTracer_->accumulated() < pathTotal_.load()) {
+        return batch.submit();
+    }
+    ATHENEA_TRY(batch.submit(true));
+    if (!groupPlane_.valid() || groupPlane_.bytes() < pixels * 16) {
+        gpu::BufferDesc desc;
+        desc.bytes = pixels * 16;
+        desc.elementBytes = 16;
+        desc.label = "lightGroup.plane";
+        auto made = gpu::Buffer::create(*device_, desc);
+        if (!made) return std::move(made).error();
+        groupPlane_ = std::move(*made);
+    }
+    for (uint32_t g = 0; g < lightGroupCount_ + (groupRestValid_ ? 1u : 0u); ++g) {
+        const auto copy = [&](const gpu::Buffer& from, uint32_t fromBase, gpu::Buffer& to, uint32_t toBase) -> Result<void> {
+            gpu::CommandBatch one(*device_);
+            groupsScaled_->dispatch(one, {static_cast<uint32_t>(pixels), 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["source"].setBinding(from.rhi());
+                cursor["sourceBase"].setData(fromBase);
+                cursor["colourBase"].setData(toBase);
+                cursor["colour"].setBinding(to.rhi());
+                cursor["params"]["scale"].setData(1.0F);
+                cursor["params"]["pixels"].setData(static_cast<uint32_t>(pixels));
+            });
+            return one.submit(true);
+        };
+        const uint32_t base = static_cast<uint32_t>(g * pixels);
+        ATHENEA_TRY(copy(lightGroupColour_, base, groupPlane_, 0));
+        if (auto ran = denoiser_->denoise(groupPlane_, &pathAux_.planes, 0, pathAux_.normalOffsetBytes(), groupPlane_, width,
+                                         height);
+            !ran) {
+            log::warn("hdAthenea: a light group's plane was not denoised: {}", ran.error().toString());
+            return ok();
+        }
+        ATHENEA_TRY(copy(groupPlane_, 0, lightGroupColour_, base));
+    }
+    // And the denoised planes made to add up to the denoised colour again (groupsToWhole).
+    if (groupRestValid_ && meshLayer_.colour.valid()) {
+        if (!groupsWhole_.has_value()) {
+            auto made = gpu::ComputeKernel::create(*library_, "athenea/technique/exposure", "groupsToWhole");
+            if (!made) return std::move(made).error();
+            groupsWhole_.emplace(std::move(*made));
+        }
+        gpu::CommandBatch whole(*device_);
+        groupsWhole_->dispatch(whole, {static_cast<uint32_t>(pixels), 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["whole"].setBinding(meshLayer_.colour.rhi());
+            cursor["colour"].setBinding(lightGroupColour_.rhi());
+            cursor["groups"].setData(lightGroupCount_);
+            cursor["params"]["scale"].setData(1.0F);
+            cursor["params"]["pixels"].setData(static_cast<uint32_t>(pixels));
+        });
+        ATHENEA_TRY(whole.submit(true));
+    }
+    return ok();
 }
 
 Result<void> Engine::applyExposure(double stops, uint32_t width, uint32_t height, render::RenderTargets& targets) {
@@ -4378,7 +4464,7 @@ Result<void> Engine::applyExposure(double stops, uint32_t width, uint32_t height
     });
     // The light groups are what the colour is made of, and take its exposure.
     if (lightGroupCount_ > 0 && lightGroupColour_.valid() && lightGroupPixels_ == pixels) {
-        const uint32_t entries = pixels * lightGroupCount_;
+        const uint32_t entries = pixels * (lightGroupCount_ + (groupRestValid_ ? 1u : 0u));
         exposure_->dispatch(batch, {entries, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["colour"].setBinding(lightGroupColour_.rhi());
             cursor["params"]["scale"].setData(static_cast<float>(std::exp2(stops)));

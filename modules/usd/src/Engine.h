@@ -857,6 +857,10 @@ private:
     /// a pixel each, the means in `colour` and the path tracer's sums in
     /// `sum`; sized for `lightGroupPixels_`.
     gpu::Buffer                               lightGroupColour_;
+    gpu::Buffer                               groupPlane_;   ///< one group's plane, while it is denoised
+    bool                                      groupRestValid_ = false;   ///< the plane after the groups' holds this frame's rest
+    std::optional<gpu::ComputeKernel>         groupsWhole_;  ///< a denoised frame's groups made to add up to it
+    std::optional<gpu::ComputeKernel>         groupsRest_;   ///< what no group holds of a path traced frame
     uint32_t                                  lightGroupCount_ = 0;
     uint64_t                                  lightGroupPixels_ = 0;
     std::optional<technique::Denoiser>        denoiser_;     ///< made on first use

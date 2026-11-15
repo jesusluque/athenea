@@ -34,10 +34,12 @@ struct RelightParams {
     uint  hasPbr;
     uint  hasGone;      // `gone` says what stands; without it, a gaussian's opacity does
     uint  keep;         // sceneRelight: 1 leaves the cloud's colours as they are and hands the frame's light as it is (rgb, linear)
-    float gainR; float gainG; float gainB; uint pad2;   // sceneAddLight: what the layer is multiplied by
+    float gainR; float gainG; float gainB;              // sceneAddLight: what the layer is multiplied by
+    uint  merge;        // sceneRelight with keep: 1 leaves in `layer` what a nearer view said (the layer is a run's, not a frame's)
     uint  floats;       // recordsAddLight: floats a record
     float own;          // recordsAddLight: what the record's own light is multiplied by
-    uint  pad3; uint pad4;
+    uint  colourBase;   // sceneRelight: where in `frameColour` the frame starts (a light group's plane in a buffer of several)
+    uint  pad4;
 };
 
 StructuredBuffer<float4>   positions;    // xyz, opacity (0 and under: not standing)
@@ -64,7 +66,9 @@ void sceneRelight(uint3 tid: SV_DispatchThreadID) {
     if (i >= params.count) {
         return;
     }
-    layer[i] = float4(0.0);
+    if (params.merge == 0u) {
+        layer[i] = float4(0.0);
+    }
     // With the record of what is gone, every gaussian that is still there is asked: the finest, and the
     // coarser ones finer looks were laid over, which are what the scene is drawn with from far.
     if (params.hasGone != 0u ? gone[i] != 0u : positions[i].w <= 0.0) {
@@ -90,8 +94,10 @@ void sceneRelight(uint3 tid: SV_DispatchThreadID) {
     if (!(seenAt > 0.0) || abs(seenAt - z) > params.nearness * z) {
         return;
     }
-    const float4 pixel = frameColour[at];
-    if (!(pixel.a > 0.5)) {
+    const float4 pixel = frameColour[params.colourBase + at];
+    // A frame's colour says where it holds a surface by its alpha; a light group's plane does not (its alpha
+    // is the path tracer's own count, not a coverage), and there the depth above is what says so.
+    if (params.keep == 0u && !(pixel.a > 0.5)) {
         return;
     }
     const float3 light = max(pixel.rgb, float3(0.0));
@@ -102,7 +108,10 @@ void sceneRelight(uint3 tid: SV_DispatchThreadID) {
         // gaussian sends then is kept as light, to be added to the scene's by a level (sceneAddLight).
         // And how far the eye was (a): of the views that show a gaussian, the nearest is the one that sees
         // it largest -- as the look that made it did -- and its word is the one kept.
-        layer[i] = float4(light, z);
+        // Over a run (merge) the layer holds what the views before said, and a farther view leaves it.
+        if (params.merge == 0u || !(layer[i].a > 0.0) || z < layer[i].a) {
+            layer[i] = float4(light, z);
+        }
         return;
     }
     const float3 put = params.linearCloud != 0u ? light : shown;
@@ -178,4 +187,14 @@ void recordsBaseColour(uint3 tid: SV_DispatchThreadID) {
     records[row + 11u] = (encodedLight(base.r) - 0.5) / 0.28209479;
     records[row + 12u] = (encodedLight(base.g) - 0.5) / 0.28209479;
     records[row + 13u] = (encodedLight(base.b) - 0.5) / 0.28209479;
+}
+
+// A PLANE OF A BUFFER OF SEVERAL, COPIED OUT: `count` pixels of `added` from `colourBase`, into `layer`. What
+// reads a frame's colour takes a buffer whole; a light group's plane, or what no group holds, is one of several.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void framePlane(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x < params.count) {
+        layer[tid.x] = added[params.colourBase + tid.x];
+    }
 }

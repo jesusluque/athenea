@@ -697,6 +697,15 @@ public:
     /// it, background included.
     [[nodiscard]] Result<void> setLightOn(const std::string& prim, bool on);
 
+    /// The light at `prim` put in the light group `group` (`athenea:lightGroup`),
+    /// as a session opinion: what it lights is gathered in the output
+    /// `lightGroup:<group>` of a frame that asks for it (requestOutputs), and
+    /// `displaySource("lightGroup:<group>")` is that plane.
+    /// `displaySource("lightGroupRest")` is what no group asked for holds of
+    /// a path traced frame (the lights in none, what glows), from the same
+    /// paths: the frame is that and the groups' planes.
+    [[nodiscard]] Result<void> setLightGroup(const std::string& prim, const std::string& group);
+
     /// THE STAGE'S LAMPS (LightGroups.h): its light groups and states, read
     /// from its Scopes when it was opened or a variant recomposed it.
     [[nodiscard]] const LightRig& lightRig() const;

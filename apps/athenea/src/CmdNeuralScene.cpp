@@ -123,6 +123,7 @@ struct SceneOptions {
     float                    madeSpread = -1.0F;      // render: the width, in pixels, the scene's discs were made at
     bool                     relight = false;         // shoot: a frame takes the light of what the scene holds again
     std::string              lightGroup;              // shoot: the frames are a group of lights' own, kept as its layer
+    std::vector<std::string> lightGroups;             // shoot: NAME=PATH, lights whose share of each frame is kept as a group's layer
     std::vector<std::string> groups;                  // render, export: NAME=LEVEL or NAME=R,G,B, a group of lights' level
     float                    ownLight = 1.0F;         // export: what the scene's own light is multiplied by
     bool                     baseColour = false;      // export: each gaussian's base colour as its colour
@@ -1728,8 +1729,45 @@ int runShoot(const SceneOptions& all) {
     stage.setPathBounces(all.bounces);
     stage.setDenoise(all.denoise);
     if (all.rayMargin > 0.0F) stage.setRayMargin(all.rayMargin);
+    // THE GROUPS OF LIGHTS FOUND WITH THE SCENE (--light-groups NAME=PATH): each light at or under PATH is
+    // put in the group NAME, and the path tracer gathers what each group lights in a plane of its own, from
+    // the same paths as the frame -- the frame is the sum of what no group lights and the planes. The scene
+    // is made from the frame less the planes (its own light: what a shoot with those lights off finds), and
+    // each plane is kept as its group's layer.
+    std::vector<std::string> withinNames;
+    for (const std::string& said : all.lightGroups) {
+        const size_t eq = said.find('=');
+        if (eq == std::string::npos || eq == 0 || eq + 1 >= said.size()) {
+            err("--light-groups takes NAME=PATH, not '%s'\n", said.c_str());
+            return kExitFailure;
+        }
+        const std::string group = said.substr(0, eq);
+        const std::string path = said.substr(eq + 1);
+        uint32_t named = 0;
+        for (const usd::StageLight& light : stage.lights()) {
+            if (light.prim == path || (light.prim.size() > path.size() && light.prim.compare(0, path.size(), path) == 0 &&
+                                       light.prim[path.size()] == '/')) {
+                if (auto set = stage.setLightGroup(light.prim, group); !set) return report(set.error());
+                ++named;
+            }
+        }
+        if (named == 0) {
+            err("--light-groups %s: the stage has no light at or under %s\n", said.c_str(), path.c_str());
+            return kExitFailure;
+        }
+        if (std::find(withinNames.begin(), withinNames.end(), group) == withinNames.end()) {
+            withinNames.push_back(group);
+        }
+        out("group %s: %u of the stage's lights at %s\n", group.c_str(), named, path.c_str());
+    }
+    if (!withinNames.empty() && !all.lightGroup.empty()) {
+        err("--light-groups finds the groups with the scene; --light-group is a pass of one group over a scene found\n");
+        return kExitFailure;
+    }
     // The path tracer's planes beside the picture: what each pixel's surface is made of.
-    stage.requestOutputs({"material"});
+    std::vector<std::string> outputs{"material"};
+    for (const std::string& group : withinNames) outputs.push_back("lightGroup:" + group);
+    stage.requestOutputs(outputs);
     gpu::Device& device = stage.device();
     gpu::ShaderLibrary& library = stage.library();
     auto loader = scene::CloudLoader::create(library);
@@ -1903,7 +1941,21 @@ int runShoot(const SceneOptions& all) {
             err("the render left no colour, depth or material planes: neural-scene shoot wants a path traced stage of meshes\n");
             return kExitFailure;
         }
-        const gpu::Buffer& frameColour = *colourOf->buffer;
+        // With groups of lights found with the scene (--light-groups), the scene's own light is what no group
+        // holds of the frame: the plane the engine keeps beside the groups', from the same paths.
+        gpu::Buffer ownFrame;
+        if (!withinNames.empty()) {
+            auto rest = stage.displaySource("lightGroupRest");
+            if (!rest) return report(rest.error());
+            if (rest->buffer == nullptr) {
+                err("the render left no plane for what its light groups do not hold\n");
+                return kExitFailure;
+            }
+            auto plane = discovery->framePlane(*rest->buffer, rest->offset, width * height);
+            if (!plane) return report(plane.error());
+            ownFrame = *plane;
+        }
+        const gpu::Buffer& frameColour = withinNames.empty() ? *colourOf->buffer : ownFrame;
         const gpu::Buffer& frameDepth = *depthOf->buffer;
         const gpu::Buffer& planes = *planesOf->buffer;
         scene.snapshots.push_back({time, name, {}, samples, footprint, clock()});
@@ -2398,7 +2450,8 @@ int runShoot(const SceneOptions& all) {
     };
 
     uint32_t groupFrame = 0;   // --light-group: the frames of this run, counted from one
-    std::map<std::string, std::vector<float>> groupLayers;   // and what they said, a piece: four floats a gaussian
+    std::map<std::string, gpu::Buffer> groupLayers;         // and what they said, a piece: on the device, four floats a gaussian
+    std::map<std::string, uint32_t> groupCounts;            // and how many gaussians each is of
     std::map<std::string, gpu::Buffer> groupGone;            // a piece's record of what is gone, read once
     std::map<size_t, std::unique_ptr<scene::GpuSplats>> groupCoarse;   // the pieces read for a group alone, kept
     // ONE VIEW AT ONE TIME: drawn a pass at a time, and looked at as it gathers.
@@ -2406,6 +2459,7 @@ int runShoot(const SceneOptions& all) {
         const auto began = std::chrono::steady_clock::now();
         if (auto brought = bringInView(camera); !brought) return report(brought.error());
         if (!all.lightGroup.empty()) {
+            const auto brought = std::chrono::steady_clock::now();
             // A GROUP OF LIGHTS' OWN FRAME (--light-group). The stage handed is lit by that group alone;
             // the frame is path traced whole and what each gaussian of the scene sends in it is kept as the
             // group's layer. Nothing of the scene is made, taken out or said anew: no look is taken.
@@ -2423,6 +2477,7 @@ int runShoot(const SceneOptions& all) {
                 err("the render left no colour or depth\n");
                 return kExitFailure;
             }
+            const auto traced = std::chrono::steady_clock::now();
             const render::Projection projection = render::projectionFor(camera, width, height);
             ++groupFrame;
             uint32_t kept = 0;
@@ -2444,27 +2499,20 @@ int runShoot(const SceneOptions& all) {
                     if (!made) return std::move(made).error();
                     found = groupGone.emplace(piece.cloud, *made).first;
                 }
+                // Gathered a piece over the run, on the device: of the views that show a gaussian the nearest
+                // one's word stands (the fourth float is how far the eye was) -- a view from far reads, at the
+                // gaussian's middle, a pixel that is several gaussians wide -- and the piece's layer is read
+                // back and written once, when every view is taken.
                 uint32_t took = 0;
+                const std::string key = all.lightGroup + "\t" + piece.cloud;
+                auto whole = groupLayers.find(key);
                 auto layer = discovery->relight(cloud, *colourOf->buffer, *depthOf->buffer, width, height, projection,
-                                                all.tolerance, took, &found->second, true);
+                                                all.tolerance, took, &found->second, true,
+                                                whole != groupLayers.end() ? &whole->second : nullptr);
                 if (!layer) return std::move(layer).error();
-                if (took == 0) {
-                    return ok();
-                }
-                auto floats = layer->readAll<float>(device);
-                if (!floats) return std::move(floats).error();
-                // Gathered a piece over the run: of the views that show a gaussian the nearest one's word
-                // stands (the fourth float is how far the eye was) -- a view from far reads, at the gaussian's
-                // middle, a pixel that is several gaussians wide -- and the piece's layer is written once,
-                // when every view is taken.
-                std::vector<float>& whole = groupLayers[piece.cloud];
-                whole.resize(size_t{cloud.count} * 4, 0.0F);
-                for (uint32_t g = 0; g < cloud.count; ++g) {
-                    const float* one = &(*floats)[size_t{g} * 4];
-                    float* held = &whole[size_t{g} * 4];
-                    if (one[3] > 0.0F && (held[3] <= 0.0F || one[3] < held[3])) {
-                        std::copy(one, one + 4, held);
-                    }
+                if (whole == groupLayers.end()) {
+                    groupLayers.emplace(key, *layer);
+                    groupCounts[key] = cloud.count;
                 }
                 kept += took;
                 return ok();
@@ -2489,8 +2537,11 @@ int runShoot(const SceneOptions& all) {
                 }
                 if (auto done = keepOf(piece, *held->second); !done) return report(done.error());
             }
-            out("%s at %g: the light of group %s kept for %u gaussians, in %.1f s\n", name.c_str(), time,
-                all.lightGroup.c_str(), kept, std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count());
+            const auto ended = std::chrono::steady_clock::now();
+            out("%s at %g: the light of group %s kept for %u gaussians, in %.1f s (the scene's pieces brought %.1f, the frame "
+                "path traced %.1f, the light kept %.1f)\n", name.c_str(), time, all.lightGroup.c_str(), kept,
+                std::chrono::duration<double>(ended - began).count(), std::chrono::duration<double>(brought - began).count(),
+                std::chrono::duration<double>(traced - brought).count(), std::chrono::duration<double>(ended - traced).count());
             std::fflush(stdout);   // a walk of groups is long: each view is said when it is done
             return 0;
         }
@@ -2554,6 +2605,45 @@ int runShoot(const SceneOptions& all) {
             }
             if (whole) {
                 break;
+            }
+        }
+        // THE GROUPS' SHARE OF THIS FRAME, KEPT (--light-groups): the frame is whole, and each group's plane of
+        // it is read at every gaussian the view shows, as a pass of the group alone would read its frame --
+        // of the views that show a gaussian, the nearest one's word stands.
+        if (!withinNames.empty()) {
+            auto depthOf = stage.displaySource("depth");
+            if (!depthOf) return report(depthOf.error());
+            const render::Projection projection = render::projectionFor(camera, width, height);
+            for (const std::string& group : withinNames) {
+                auto planeOf = stage.displaySource("lightGroup:" + group);
+                if (!planeOf) return report(planeOf.error());
+                if (planeOf->buffer == nullptr || depthOf->buffer == nullptr) {
+                    err("the render left no plane for the light group %s\n", group.c_str());
+                    return kExitFailure;
+                }
+                for (size_t k = 0; k < clouds.size(); ++k) {
+                    const io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
+                    if (piece.cloud.size() < 5 || piece.cloud.compare(piece.cloud.size() - 5, 5, ".athg") != 0 ||
+                        clouds[k]->count == 0) {
+                        continue;
+                    }
+                    const std::string key = group + "\t" + piece.cloud;
+                    auto whole = groupLayers.find(key);
+                    if (whole != groupLayers.end() && groupCounts[key] != clouds[k]->count) {
+                        err("%s: the piece was of %u gaussians when the group %s was first kept for it, and is of %u\n",
+                            piece.cloud.c_str(), groupCounts[key], group.c_str(), clouds[k]->count);
+                        return kExitFailure;
+                    }
+                    uint32_t took = 0;
+                    auto layer = discovery->relight(*clouds[k], *planeOf->buffer, *depthOf->buffer, width, height, projection,
+                                                    all.tolerance, took, nullptr, true,
+                                                    whole != groupLayers.end() ? &whole->second : nullptr, planeOf->offset);
+                    if (!layer) return report(layer.error());
+                    if (whole == groupLayers.end()) {
+                        groupLayers.emplace(key, *layer);
+                        groupCounts[key] = clouds[k]->count;
+                    }
+                }
             }
         }
         uint32_t standing = 0;
@@ -2651,11 +2741,17 @@ int runShoot(const SceneOptions& all) {
             return code;
         }
     }
-    if (!all.lightGroup.empty()) {
-        // THE GROUP'S LAYERS, WRITTEN: a file a piece, of the gaussians that send any of the group's light --
+    if (!all.lightGroup.empty() || !withinNames.empty()) {
+        // THE GROUPS' LAYERS, WRITTEN: a file a piece, of the gaussians that send any of the group's light --
         // which one, and the light. What an earlier run kept of the same group for the piece is replaced.
-        uint64_t lit = 0;
-        for (const auto& [cloud, whole] : groupLayers) {
+        std::map<std::string, uint64_t> lit;
+        for (const auto& [key, layer] : groupLayers) {
+            const std::string group = key.substr(0, key.find('\t'));
+            const std::string cloud = key.substr(key.find('\t') + 1);
+            auto read = layer.readAll<float>(device);
+            if (!read) return report(read.error());
+            const size_t floats = std::min(read->size(), size_t{groupCounts[key]} * 4);
+            const std::vector<float> whole(read->begin(), read->begin() + static_cast<std::ptrdiff_t>(floats));
             std::vector<float> said;
             for (size_t g = 0; g * 4 < whole.size(); ++g) {
                 const float* one = &whole[g * 4];
@@ -2663,7 +2759,7 @@ int runShoot(const SceneOptions& all) {
                     said.insert(said.end(), {static_cast<float>(g), one[0], one[1], one[2]});
                 }
             }
-            const std::filesystem::path file = directory / (cloud + ".g." + all.lightGroup + ".1");
+            const std::filesystem::path file = directory / (cloud + ".g." + group + ".1");
             const std::string stem = file.filename().string();
             const std::string prefix = stem.substr(0, stem.size() - 1);
             std::error_code ignored;
@@ -2684,14 +2780,17 @@ int runShoot(const SceneOptions& all) {
             if (auto written = io::writeGaussians(file, static_cast<uint32_t>(said.size() / 4), 4, said); !written) {
                 return report(written.error());
             }
-            lit += said.size() / 4;
+            lit[group] += said.size() / 4;
         }
-        if (std::find(scene.lightGroups.begin(), scene.lightGroups.end(), all.lightGroup) == scene.lightGroups.end()) {
-            scene.lightGroups.push_back(all.lightGroup);
+        std::vector<std::string> kept = withinNames;
+        if (!all.lightGroup.empty()) kept.push_back(all.lightGroup);
+        for (const std::string& group : kept) {
+            if (std::find(scene.lightGroups.begin(), scene.lightGroups.end(), group) == scene.lightGroups.end()) {
+                scene.lightGroups.push_back(group);
+            }
+            out("group %s: its light kept for %llu gaussians\n", group.c_str(), static_cast<unsigned long long>(lit[group]));
         }
         if (auto written = io::writeNeuralScene(directory, scene); !written) return report(written.error());
-        out("group %s: its light kept for %llu gaussians in %zu pieces\n", all.lightGroup.c_str(),
-            static_cast<unsigned long long>(lit), groupLayers.size());
     }
     // The file that grew is whole: its index says no more is coming.
     if (!all.grow.empty()) {
@@ -4071,6 +4170,7 @@ void addNeuralScene(CLI::App& app) {
     shoot->add_flag("--no-headlight", o.noHeadlight, "a stage that authors no light is left dark but for what glows, where the path tracer lights it from the eye (and so differently for each camera)");
     shoot->add_option("--lights-on", o.lightsOn, "only these lights of the stage light it (prim paths, comma separated or repeated): every other light the stage authors is switched off -- a group's lamps for --light-group")->delimiter(',');
     shoot->add_option("--lights-off", o.lightsOff, "these lights of the stage are switched off (prim paths): the scene shot without the lamps that are groups")->delimiter(',');
+    shoot->add_option("--light-groups", o.lightGroups, "NAME=PATH (repeatable): the stage's lights at or under PATH are the group NAME, and what they put in each frame is kept as that group's layer of light, from the same paths that find the scene -- no pass of its own. The scene's own light is the frame less its groups, as a scene shot with --lights-off and a --light-group pass a group");
     shoot->add_option("--light-group", o.lightGroup, "the stage handed is lit by one group of lights alone: each frame is path traced and what every gaussian of the scene sends in it is kept as that group's layer of light, by this name; the scene itself is not touched (render --group sets the group's level)");
     shoot->add_flag("--relight", o.relight, "each frame first takes again the light of what the scene holds and the frame shows: those gaussians keep their place and what they are made of, and a layer of light is kept for the time (a stage whose light changes)");
     shoot->add_flag("--antialias", o.antialias, "a new scene is drawn with the Mip-Splatting 2D filter's compensation, by the looks and by whoever draws it after (kept in its manifest); without it, the default, a disc narrower than a pixel stays opaque");

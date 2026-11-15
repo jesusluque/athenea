@@ -89,6 +89,7 @@ namespace athenea::usd {
 
 struct StageRenderer::Impl {
     UsdStageRefPtr                         stage;
+    std::vector<std::string>               groupOutputs;       ///< the light groups asked for as outputs, in order
     std::function<uint64_t()>              liveClock;          ///< setLiveClock's, handed over at execute
     bool                                   liveClockSet = false;
     std::unique_ptr<HdAtheneaRenderDelegate>   delegate;
@@ -685,6 +686,23 @@ Result<void> StageRenderer::setLightOn(const std::string& prim, bool on) {
     return ok();
 }
 
+Result<void> StageRenderer::setLightGroup(const std::string& prim, const std::string& group) {
+    Impl& impl = *impl_;
+    const UsdPrim carrier = impl.stage->GetPrimAtPath(SdfPath(prim));
+    if (!carrier || !carrier.HasAPI<UsdLuxLightAPI>()) {
+        return Error(ErrorCode::NotFound, "no light at " + prim);
+    }
+    {
+        const UsdEditContext session(impl.stage, impl.stage->GetSessionLayer());
+        const UsdAttribute named = carrier.CreateAttribute(TfToken("athenea:lightGroup"), SdfValueTypeNames->String, false);
+        if (!named || !named.Set(group)) {
+            return Error(ErrorCode::InternalError, "cannot name the group of " + prim);
+        }
+    }
+    impl.sceneIndices.stageSceneIndex->ApplyPendingUpdates();
+    return ok();
+}
+
 const LightRig& StageRenderer::lightRig() const {
     return impl_->lightRig;
 }
@@ -1176,10 +1194,14 @@ GaussianStats StageRenderer::gaussianStats() const {
 
 void StageRenderer::requestOutputs(const std::vector<std::string>& aovs) {
     TfTokenVector outputs{HdAovTokens->color, HdAovTokens->depth};
+    impl_->groupOutputs.clear();
     for (const std::string& aov : aovs) {
         const TfToken token(aov);
         if (std::find(outputs.begin(), outputs.end(), token) == outputs.end()) {
             outputs.push_back(token);
+            if (aov.rfind("lightGroup:", 0) == 0) {
+                impl_->groupOutputs.push_back(aov.substr(11));   // numbered in this order by the render pass
+            }
         }
     }
     impl_->controller->SetRenderOutputs(outputs);
@@ -2340,6 +2362,24 @@ Result<technique::DisplaySource> StageRenderer::displaySource(const std::string&
                       : aov == "throughTint"     ? AovKind::ThroughTint
                                                  : AovKind::TransmissionColour;
         shown.kind = technique::DisplaySource::Kind::Vector;
+    } else if (aov == "lightGroupRest") {
+        // What no light group holds of a path traced frame: the plane after the groups'.
+        if (impl_->groupOutputs.empty()) {
+            return Error(ErrorCode::InvalidArgument, "no light group is among the outputs asked for");
+        }
+        source.kind = AovKind::LightGroup;
+        source.primvar = static_cast<uint32_t>(impl_->groupOutputs.size());
+        shown.kind = technique::DisplaySource::Kind::Colour;
+    } else if (aov.rfind("lightGroup:", 0) == 0) {
+        // A light group's plane: the groups are numbered as the outputs asked for them stand (requestOutputs).
+        const auto at = std::find(impl_->groupOutputs.begin(), impl_->groupOutputs.end(), aov.substr(11));
+        if (at == impl_->groupOutputs.end()) {
+            return Error::make(ErrorCode::InvalidArgument, "the light group '{}' is not among the outputs asked for",
+                               aov.substr(11));
+        }
+        source.kind = AovKind::LightGroup;
+        source.primvar = static_cast<uint32_t>(at - impl_->groupOutputs.begin());
+        shown.kind = technique::DisplaySource::Kind::Colour;
     } else {
         return Error::make(ErrorCode::InvalidArgument, "no display for AOV '{}'", aov);
     }

@@ -73,6 +73,9 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
         auto recordsBase = gpu::ComputeKernel::create(library, "athenea/neural/scene_light", "recordsBaseColour");
         if (!recordsBase) return std::move(recordsBase).error();
         d.recordsBase_ = std::move(*recordsBase);
+        auto frameLess = gpu::ComputeKernel::create(library, "athenea/neural/scene_light", "framePlane");
+        if (!frameLess) return std::move(frameLess).error();
+        d.framePlane_ = std::move(*frameLess);
         auto exportFlat = gpu::ComputeKernel::create(library, "athenea/neural/scene_export", "exportFlat");
         if (!exportFlat) return std::move(exportFlat).error();
         d.exportFlat_ = std::move(*exportFlat);
@@ -573,14 +576,16 @@ Result<gpu::Buffer> Discovery::seenThrough(const gpu::Buffer& colour, const gpu:
 Result<gpu::Buffer> Discovery::relight(scene::GpuSplats& cloud, const gpu::Buffer& frameColour,
                                        const gpu::Buffer& frameDepth, uint32_t width, uint32_t height,
                                        const Projection& projection, float nearness, uint32_t& taken,
-                                       const gpu::Buffer* gone, bool keep) {
+                                       const gpu::Buffer* gone, bool keep, const gpu::Buffer* into,
+                                       uint32_t colourBase) {
     gpu::Device& device = library_->device();
     taken = 0;
+    const bool merge = keep && into != nullptr && into->valid();
     gpu::BufferDesc desc;
     desc.bytes = uint64_t{std::max<uint32_t>(cloud.count, 1)} * 16;
     desc.elementBytes = 16;
     desc.label = "scene.light";
-    auto layer = gpu::Buffer::create(device, desc);
+    Result<gpu::Buffer> layer = merge ? Result<gpu::Buffer>(*into) : gpu::Buffer::create(device, desc);
     if (!layer) return layer;
     if (cloud.count == 0) {
         return layer;
@@ -600,6 +605,8 @@ Result<gpu::Buffer> Discovery::relight(scene::GpuSplats& cloud, const gpu::Buffe
         cursor["added"].setBinding(frameColour.rhi());
         cursor["records"].setBinding(spareFloats_.rhi());
         cursor["params"]["keep"].setData(uint32_t{keep ? 1u : 0u});
+        cursor["params"]["merge"].setData(uint32_t{merge ? 1u : 0u});
+        cursor["params"]["colourBase"].setData(colourBase);
         cursor["counters"].setBinding(counters_.rhi());
         const auto rowOf = [&](int r) {
             return std::array<float, 4>{static_cast<float>(projection.worldToView.at(r, 0)),
@@ -685,6 +692,36 @@ Result<void> Discovery::addLightToRecords(gpu::Buffer& records, uint32_t count, 
         cursor["params"]["gainB"].setData(gain[2]);
     });
     return batch.submit(true);
+}
+
+Result<gpu::Buffer> Discovery::framePlane(const gpu::Buffer& planes, uint32_t base, uint32_t pixels) {
+    gpu::Device& device = library_->device();
+    if (!ownFrame_.valid() || ownFrame_.bytes() < uint64_t{pixels} * 16) {
+        gpu::BufferDesc desc;
+        desc.bytes = uint64_t{std::max<uint32_t>(pixels, 1)} * 16;
+        desc.elementBytes = 16;
+        desc.label = "scene.ownFrame";
+        auto made = gpu::Buffer::create(device, desc);
+        if (!made) return made;
+        ownFrame_ = *made;
+    }
+    gpu::CommandBatch batch(device);
+    framePlane_.dispatch(batch, {pixels, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["positions"].setBinding(counters_.rhi());
+        cursor["shape"].setBinding(counters_.rhi());
+        cursor["pbr"].setBinding(counters_.rhi());
+        cursor["gone"].setBinding(counters_.rhi());
+        cursor["frameColour"].setBinding(counters_.rhi());
+        cursor["frameDepth"].setBinding(spareFloats_.rhi());
+        cursor["layer"].setBinding(ownFrame_.rhi());
+        cursor["added"].setBinding(planes.rhi());
+        cursor["records"].setBinding(spareFloats_.rhi());
+        cursor["counters"].setBinding(counters_.rhi());
+        cursor["params"]["count"].setData(pixels);
+        cursor["params"]["colourBase"].setData(base);
+    });
+    ATHENEA_TRY(batch.submit(true));
+    return ownFrame_;
 }
 
 Result<void> Discovery::baseColourOfRecords(gpu::Buffer& records, uint32_t count, uint32_t floats) {
