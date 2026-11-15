@@ -113,6 +113,7 @@
     <div class="row"><span>Resolution</span><input type="range" id="optPixels" min="0.5" max="2" step="0.25"><output id="outPixels"></output></div>
     <div class="row"><span>Field of view</span><input type="range" id="optFov" min="20" max="100" step="1"><output id="outFov"></output></div>
     <div class="row"><span>Glass and chrome</span><input type="checkbox" id="optGlass"><span class="note">shaded by where the eye is</span></div>
+    <div id="optGroups"></div>
     <div class="row"><span>Sky</span><input type="color" id="optSky"><span class="note">behind the scene, and in what mirrors it</span></div>
     <div class="row"><span>Reflections</span><select id="optCube"><option value="256">256</option><option value="512">512</option><option value="1024">1024</option></select></div>
     <h3>Camera</h3>
@@ -277,6 +278,93 @@
         ready: false, target: null,
       });
       const kinds = { glass: kindOf("glass"), mirror: kindOf("mirror") };
+
+      // GROUPS OF LIGHTS. A scene handed on with its lamps as groups (index.groups: a name and the stem of
+      // that group's own export, the same gaussians in the same order with the group's light alone as their
+      // colour) is its own light and each group's times a level: light is linear, so a lamp is dimmed,
+      // tinted or put out here with nothing traced. A group's light is read once a part into a texture, a
+      // texel a gaussian, and a modifier adds them at the levels the panel sets.
+      const groupWide = 2048;
+      const groups = (index.groups ?? []).map((g) => ({
+        name: g.name, stem: g.stem, level: 1, tint: [1, 1, 1], parts: null,
+        gain: dyno.dynoVec3(new THREE.Vector3(1, 1, 1)),
+      }));
+      window.__groups = groups;
+      const setGroup = (g) => g.gain.value.set(g.level * g.tint[0], g.level * g.tint[1], g.level * g.tint[2]);
+      const groupTexture = async (url) => {
+        // The group's part, read for its colours alone and let go: Spark's packed splat keeps a colour in
+        // the first word of four, a byte a channel.
+        const read = new SplatMesh({ url });
+        await read.initialized;
+        const packed = read.packedSplats?.packedArray;
+        const count = read.packedSplats?.numSplats ?? 0;
+        const high = Math.max(Math.ceil(count / groupWide), 1);
+        const texels = new Uint8Array(groupWide * high * 4);
+        if (packed) {
+          for (let i = 0; i < count; ++i) {
+            const word = packed[i * 4];
+            texels[i * 4] = word & 255; texels[i * 4 + 1] = (word >>> 8) & 255; texels[i * 4 + 2] = (word >>> 16) & 255;
+            texels[i * 4 + 3] = 255;
+          }
+        }
+        read.dispose?.();
+        const texture = new THREE.DataTexture(texels, groupWide, high, THREE.RGBAFormat, THREE.UnsignedByteType);
+        texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
+        texture.needsUpdate = true;
+        return texture;
+      };
+      const groupLight = (textures) => dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
+        const inTypes = { gsplat: dyno.Gsplat };
+        const inputs = { gsplat };
+        textures.forEach((texture, k) => {
+          inTypes[`light${k}`] = "sampler2D"; inputs[`light${k}`] = dyno.dynoSampler2D(texture);
+          inTypes[`gain${k}`] = "vec3"; inputs[`gain${k}`] = groups[k].gain;
+        });
+        const add = new dyno.Dyno({
+          inTypes, outTypes: { gsplat: dyno.Gsplat }, inputs,
+          globals: () => [dyno.defineGsplat],
+          statements: ({ inputs, outputs }) => dyno.unindentLines(`
+            ${outputs.gsplat} = ${inputs.gsplat};
+            if (isGsplatActive(${outputs.gsplat}.flags)) {
+              ivec2 at = ivec2(${inputs.gsplat}.index % ${groupWide}, ${inputs.gsplat}.index / ${groupWide});
+              vec3 light = pow(max(${inputs.gsplat}.rgba.rgb, vec3(0.0)), vec3(2.2));
+              ${textures.map((_, k) => `light += ${inputs[`gain${k}`]} * pow(texelFetch(${inputs[`light${k}`]}, at, 0).rgb, vec3(2.2));`).join("\n              ")}
+              ${outputs.gsplat}.rgba.rgb = pow(max(light, vec3(0.0)), vec3(1.0 / 2.2));
+            }
+          `),
+        });
+        return { gsplat: add.outputs.gsplat };
+      });
+      for (const g of groups) {
+        // Each group's own index: its parts are the scene's, one for one.
+        try { g.parts = (await (await fetch(`./scenes/${g.stem}.json`, { cache: "no-store" })).json()).parts; }
+        catch (error) { g.parts = null; }
+      }
+      // A row a group in the panel: its level, and a tint over the colour it was shot with.
+      for (const g of groups) {
+        const row = document.createElement("div");
+        row.className = "row";
+        const label = document.createElement("span");
+        label.textContent = `Light: ${g.name}`;
+        const level = document.createElement("input");
+        level.type = "range"; level.min = "0"; level.max = "2"; level.step = "0.05"; level.value = "1";
+        const tint = document.createElement("input");
+        tint.type = "color"; tint.value = "#ffffff";
+        const said = document.createElement("output");
+        said.textContent = "1.00";
+        const changed = () => {
+          g.level = Number(level.value);
+          const hex = tint.value;
+          g.tint = [1, 3, 5].map((at) => parseInt(hex.slice(at, at + 2), 16) / 255);
+          said.textContent = g.level.toFixed(2);
+          setGroup(g);
+          shadeStale = true;   // what the glass and the chrome show changed with it
+        };
+        level.addEventListener("input", changed);
+        tint.addEventListener("input", changed);
+        row.append(label, level, tint, said);
+        document.getElementById("optGroups").append(row);
+      }
       let shadeStale = false;   // what is shown changed: the cubes are drawn again
       let shadeBusy = false;
       let shadeFresh = false;   // a cube was just drawn: the gaussians are shaded from it
@@ -489,6 +577,12 @@
               // gaussians a millimetre wide fell into rows with gaps between them, seen from near.
               const mesh = new SplatMesh({ url: `./scenes/${span.file}`, extSplats: true });
               await mesh.initialized;
+              if (span === part && detail === 0 && groups.length > 0 && groups.every((g) => g.parts?.[meshes.length]?.file)) {
+                const textures = [];
+                for (const g of groups) textures.push(await groupTexture(`./scenes/${g.parts[meshes.length].file}`));
+                mesh.worldModifier = groupLight(textures);
+                mesh.updateGenerator();
+              }
               own.push({ mesh, until, gaussians: span.gaussians ?? 0 });
             }
             for (const [which, made] of [["glass", span.glass], ["mirror", span.mirror]]) {

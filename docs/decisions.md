@@ -23493,3 +23493,19 @@ Not done: the player given the layers themselves and a control a group; the leve
 history of an export (`--levels`, `--history`) go through the same piece and are not looked at with
 groups; `bake` (`.athc`); a group's layer for the gaussians of glass and mirror a player shades by
 itself.
+
+**The player sets the lamps** (15 Nov). `export_groups.py` hands a scene on as the player wants it for
+groups: the scene with every group off, and each group alone (`--own-light 0`, the group at 1), each an
+export of the same options and so the same gaussians in the same order, the groups named in the scene's
+index. The player (`neural-scene-viewer/index.html`) reads each group's part once for its colours -- the
+first word of Spark's packed splat, a byte a channel -- into a texture, a texel a gaussian, and a modifier
+on the part's mesh adds them to the gaussian's own colour as light, each times a level and a tint its
+panel sets (a row a group in Options). Sponza with its two lamps, Chrome headless on the Mac, the last
+frame's camera: both on as the engine draws it; both levels at 0, the scene found without them; the lamp
+tinted red and the spot at a half, by the panel alone. Nothing is loaded again.
+
+Not done: the gaussians of glass and polished metal, which the player shades by the eye from a cube of the
+room -- they follow the room's light when the cube is drawn again, and a group's own layer for them is not
+read; a level of detail (`--levels`) has no group textures and is drawn with the groups off; a group's
+light is a byte a channel after the export's exposure, so a lamp cannot be raised far past what was shot;
+a phone; the published page, which is the user's to ask of sysop.
