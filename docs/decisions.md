@@ -23682,3 +23682,13 @@ group's; a level made of them was the scene unlit, and the picture went from dar
 **Not done.** No figure at a connection's speed: the throttle of the browser's protocol did not reach Spark's
 fetches (the whole scene in 8 s at a nominal 50 Mbit/s, which 250 MB cannot do). The one file opened from a disk,
 with its folder picker, was not exercised. A level of detail has no controls of light (NEU28). Not opened on a phone.
+
+## A group found with the scene reaches the coarser gaussians too (15 Nov)
+
+A level of detail of the 1080p Sponza scene, exported with its lamps on, was dimmer than the scene whole. With
+`shoot --light-groups` only the gaussians a cloud draws were asked for each group's light: the coarser ones finer
+looks were laid over, and the pieces that hold nothing finest, are what a level of detail draws and had none. Now
+every gaussian still there is asked, by its piece's record of what is gone, as a pass of `--light-group` asks:
+the group's light is kept for 12 537 864 gaussians where it was for 9 818 743, the run takes 2195 s where it took
+2046 s, the four views not taken read the same (27.35, 22.91, 25.71, 24.20 dB: they draw the finest), and the level
+of detail the player draws first is lit as the whole scene is. Three passes at 1080p: 2339 + 2428 + about 2428 s.

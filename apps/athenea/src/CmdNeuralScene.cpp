@@ -2632,28 +2632,65 @@ int runShoot(const SceneOptions& all) {
                     err("the render left no plane for the light group %s\n", group.c_str());
                     return kExitFailure;
                 }
-                for (size_t k = 0; k < clouds.size(); ++k) {
-                    const io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
-                    if (piece.cloud.size() < 5 || piece.cloud.compare(piece.cloud.size() - 5, 5, ".athg") != 0 ||
-                        clouds[k]->count == 0) {
-                        continue;
+                // Every gaussian still there is asked, by its piece's record of what is gone: the finest, and the
+                // coarser ones finer looks were laid over, which are what a level of detail draws -- in the
+                // pieces on the device and in those that hold nothing finest and are read for this alone.
+                const auto keepFor = [&](const io::NeuralScenePiece& piece, scene::GpuSplats& cloud, const gpu::Buffer* known) -> int {
+                    if (piece.cloud.size() < 5 || piece.cloud.compare(piece.cloud.size() - 5, 5, ".athg") != 0 || cloud.count == 0) {
+                        return 0;
+                    }
+                    gpu::Buffer record;
+                    if (known != nullptr && known->valid()) {
+                        record = *known;
+                    } else {
+                        std::vector<uint32_t> words;
+                        if (!piece.gone.empty()) {
+                            auto read = io::readSeen(directory / piece.gone, cloud.count);
+                            if (!read) return report(read.error());
+                            words = std::move(*read);
+                        }
+                        auto made = discovery->record(cloud.count, words);
+                        if (!made) return report(made.error());
+                        record = *made;
                     }
                     const std::string key = group + "\t" + piece.cloud;
                     auto whole = groupLayers.find(key);
-                    if (whole != groupLayers.end() && groupCounts[key] != clouds[k]->count) {
+                    if (whole != groupLayers.end() && groupCounts[key] != cloud.count) {
                         err("%s: the piece was of %u gaussians when the group %s was first kept for it, and is of %u\n",
-                            piece.cloud.c_str(), groupCounts[key], group.c_str(), clouds[k]->count);
+                            piece.cloud.c_str(), groupCounts[key], group.c_str(), cloud.count);
                         return kExitFailure;
                     }
                     uint32_t took = 0;
-                    auto layer = discovery->relight(*clouds[k], *planeOf->buffer, *depthOf->buffer, width, height, projection,
-                                                    all.tolerance, took, nullptr, true,
+                    auto layer = discovery->relight(cloud, *planeOf->buffer, *depthOf->buffer, width, height, projection,
+                                                    all.tolerance, took, &record, true,
                                                     whole != groupLayers.end() ? &whole->second : nullptr, planeOf->offset);
                     if (!layer) return report(layer.error());
                     if (whole == groupLayers.end()) {
                         groupLayers.emplace(key, *layer);
-                        groupCounts[key] = clouds[k]->count;
+                        groupCounts[key] = cloud.count;
                     }
+                    return 0;
+                };
+                for (size_t k = 0; k < clouds.size(); ++k) {
+                    if (const int code = keepFor(scene.pieces[pieceOf[k]], *clouds[k], k < gone.size() ? &gone[k] : nullptr);
+                        code != 0) {
+                        return code;
+                    }
+                }
+                for (size_t k = 0; k < scene.pieces.size(); ++k) {
+                    const io::NeuralScenePiece& piece = scene.pieces[k];
+                    if (std::find(pieceOf.begin(), pieceOf.end(), k) != pieceOf.end() ||
+                        !boxInView(piece.boundsMin, piece.boundsMax, projection, width, height) || piece.cloud.size() < 5 ||
+                        piece.cloud.compare(piece.cloud.size() - 5, 5, ".athg") != 0) {
+                        continue;
+                    }
+                    auto held = groupCoarse.find(k);
+                    if (held == groupCoarse.end()) {
+                        auto cloud = load(library, *loader, directory / piece.cloud);
+                        if (!cloud) return report(cloud.error());
+                        held = groupCoarse.emplace(k, std::make_unique<scene::GpuSplats>(std::move(*cloud))).first;
+                    }
+                    if (const int code = keepFor(piece, *held->second, nullptr); code != 0) return code;
                 }
             }
         }
