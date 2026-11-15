@@ -110,6 +110,13 @@ struct NeuralScenePiece {
     /// fine to matter.
     std::string            refined;
     uint32_t               refinedCount = 0;
+    /// THE LIGHT TAKEN AGAIN: the snapshots at which a frame said the light
+    /// of this piece's gaussians anew, in order. Each is a file beside the
+    /// piece, `<cloud>.l<snapshot>`, four floats a gaussian the frame spoke
+    /// of (which one of the piece's, and its colour as a record keeps one):
+    /// the piece at a time is its records with the layers up to that time
+    /// laid over them.
+    std::vector<uint32_t>  lights;
     /// The snapshot the piece came in at, counted from one (0: it was there
     /// before any look), and the side in pixels of the cell each of its
     /// gaussians was made of (0: not a render's).

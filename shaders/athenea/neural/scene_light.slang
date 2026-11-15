@@ -1,0 +1,91 @@
+// Copyright (c) 2026 jesus luque.
+//
+// A SCENE'S LIGHT, TAKEN AGAIN FROM A FRAME.
+//
+// A found scene's gaussian keeps where a surface is and what it is made of, and the light a look saw leave
+// it. When the stage's light changes and nothing else does, the first two still hold: only the light is
+// taken again. A frame path traced under the new light is read at each standing gaussian's own middle --
+// where the frame shows a surface at the gaussian's depth, which is that gaussian's surface -- and the
+// gaussian's colour becomes the frame's there. Nothing is taken out and nothing is made.
+//
+// What the kernel leaves beside the cloud's colours is a layer: a float4 a gaussian, the colour as a record
+// keeps one (rgb) and whether this frame said it (a). A scene keeps a layer a frame that took its light
+// again, beside the piece, and whoever draws the scene at a time lays over each piece the layers up to it.
+//
+// Not asked: a gaussian that lets light through (its picture is made of what is behind it, not read off
+// the frame), one the frame does not show (behind something, out of the frame), one that is gone.
+module scene_light;
+import athenea.common.packing;
+import athenea.common.color;
+import athenea.scene.splat_encoding;
+
+struct RelightParams {
+    uint  count;
+    uint  width;
+    uint  height;
+    uint  linearCloud;
+    float4 viewX;
+    float4 viewY;
+    float4 viewZ;
+    float lensX; float lensY; float middleX; float middleY;
+    float nearness;     // the share of its depth a surface may stand off the gaussian and be the gaussian's
+    uint  hasPbr;
+    uint  pad0; uint pad1;
+};
+
+StructuredBuffer<float4>   positions;    // xyz, opacity (0 and under: not standing)
+RWStructuredBuffer<uint>   shape;        // four words a gaussian; the colour is written
+StructuredBuffer<uint>     pbr;          // metallic, roughness, transmission
+StructuredBuffer<float4>   frameColour;  // the frame's light a pixel
+StructuredBuffer<float>    frameDepth;   // and its depth along the view (0: nothing)
+RWStructuredBuffer<float4> layer;        // the colour as a record keeps it, and whether it was said
+RWStructuredBuffer<uint>   counters;     // [0]: gaussians whose light was taken again
+ConstantBuffer<RelightParams> params;
+
+float encodedLight(float linear) {
+    const float v = max(linear, 0.0);
+    return v <= 0.0031308 ? 12.92 * v : 1.055 * pow(v, 1.0 / 2.4) - 0.055;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void sceneRelight(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    layer[i] = float4(0.0);
+    if (positions[i].w <= 0.0) {
+        return;
+    }
+    if (params.hasPbr != 0u && pbrTransmission(pbr[i]) > 0.02) {
+        return;
+    }
+    const float3 p = positions[i].xyz;
+    const float z = dot(params.viewZ.xyz, p) + params.viewZ.w;
+    if (!(z > 0.0)) {
+        return;
+    }
+    const float x = params.middleX + params.lensX * (dot(params.viewX.xyz, p) + params.viewX.w) / z;
+    const float y = params.middleY + params.lensY * (dot(params.viewY.xyz, p) + params.viewY.w) / z;
+    if (x < 0.0 || y < 0.0 || x >= float(params.width) || y >= float(params.height)) {
+        return;
+    }
+    const uint at = uint(y) * params.width + uint(x);
+    const float seenAt = frameDepth[at];
+    if (!(seenAt > 0.0) || abs(seenAt - z) > params.nearness * z) {
+        return;
+    }
+    const float4 pixel = frameColour[at];
+    if (!(pixel.a > 0.5)) {
+        return;
+    }
+    const float3 light = max(pixel.rgb, float3(0.0));
+    const float3 shown = float3(encodedLight(light.r), encodedLight(light.g), encodedLight(light.b));
+    const float3 put = params.linearCloud != 0u ? light : shown;
+    const uint row = i * 4u;
+    shape[row + 2u] = packHalves(lowHalf(shape[row + 2u]), put.r);
+    shape[row + 3u] = packHalves(put.g, put.b);
+    layer[i] = float4((shown - 0.5) / 0.28209479, 1.0);
+    InterlockedAdd(counters[0], 1u);
+}

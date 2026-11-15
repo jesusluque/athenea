@@ -1586,6 +1586,101 @@ TEST_CASE("a lamp added to a found scene lights what it reaches by its base colo
     CHECK(aloneShadowed[0] < 0.02);
 }
 
+TEST_CASE("a frame's light is taken again by the gaussians it shows at their depth, and by no others",
+          "[render][gpu][neural][scene][relight]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto discovery = render::Discovery::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!discovery) FAIL(discovery.error().toString());
+    // A WALL five units before the eye, found grey, and another two units behind it, found grey too. A frame
+    // that shows an orange surface five units away says the near wall's light anew, and nothing of the far.
+    const uint32_t stride = render::kRenderRecord;
+    std::vector<float> records;
+    const auto shown = [](float light) {
+        const float encoded = light <= 0.0031308F ? 12.92F * light : 1.055F * std::pow(light, 1.0F / 2.4F) - 0.055F;
+        return (encoded - 0.5F) / 0.28209479F;
+    };
+    const auto wall = [&](float z, float reach) {
+        uint32_t made = 0;
+        for (int j = -30; j <= 30; ++j) {
+            for (int i = -30; i <= 30; ++i) {
+                const size_t at = records.size();
+                records.resize(at + stride, 0.0F);
+                float* r = &records[at];
+                r[0] = static_cast<float>(i) * reach; r[1] = static_cast<float>(j) * reach; r[2] = z;
+                r[3] = 4.0F;
+                r[4] = std::log(reach * 0.7F); r[5] = std::log(reach * 0.7F); r[6] = std::log(reach * 0.035F);
+                r[7] = 1.0F;
+                for (int c = 0; c < 3; ++c) r[11 + c] = shown(0.2F);
+                r[16] = 1.0F;
+                r[18] = 1.0F;
+                r[render::kRenderRecordIndex] = 1.0F;
+                r[render::kRenderRecordSheet] = 1.0F;
+                ++made;
+            }
+        }
+        return made;
+    };
+    const uint32_t near = wall(0.0F, 0.05F);
+    const uint32_t far = wall(-2.0F, 0.2F);
+    io::RawSplats raw;
+    raw.source = "test";
+    raw.count = near + far;
+    raw.encoding = render::Discovery::renderEncoding();
+    raw.records = std::move(records);
+    loader->keepFaint(true);
+    auto piece = loader->upload(raw, 0);
+    loader->keepFaint(false);
+    if (!piece) FAIL(piece.error().toString());
+    render::RenderSettings settings;
+    settings.width = 160;
+    settings.height = 120;
+    const render::Camera camera = render::Camera::lookingAt({0.0, 0.0, 5.0}, {0.0, 0.0, 0.0});
+    const render::Projection projection = render::projectionFor(camera, settings.width, settings.height);
+    const uint32_t pixels = settings.width * settings.height;
+    const std::vector<std::array<float, 4>> orange(pixels, {0.6F, 0.3F, 0.05F, 1.0F});
+    const std::vector<float> five(pixels, 5.0F);
+    auto colour = gpu::Buffer::fromSpan<std::array<float, 4>>(
+        *gpu->device, std::span<const std::array<float, 4>>(orange), "test.frame");
+    auto depth = gpu::Buffer::fromSpan<float>(*gpu->device, std::span<const float>(five), "test.depth");
+    REQUIRE(colour);
+    REQUIRE(depth);
+    const auto middle = [&]() {
+        const render::SplatInstance instance{&*piece, render::Mat4::identity()};
+        render::RenderTargets frame;
+        REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&instance, 1), settings, frame));
+        auto stats = render::imageStats(*gpu->library, frame.colour, settings.width, settings.height, 70, 50, 90, 70);
+        REQUIRE(stats);
+        const double cover = std::max(stats->mean[3], 1.0e-6);
+        return std::array<double, 3>{stats->mean[0] / cover, stats->mean[1] / cover, stats->mean[2] / cover};
+    };
+    const std::array<double, 3> before = middle();
+    uint32_t taken = 0;
+    auto layer = discovery->relight(*piece, *colour, *depth, settings.width, settings.height, projection, 0.06F, taken);
+    if (!layer) FAIL(layer.error().toString());
+    const std::array<double, 3> after = middle();
+    std::printf("  a wall of %u gaussians and one of %u behind it: %u took the frame's light; the middle was %.3f and "
+                "is (%.3f %.3f %.3f)\n",
+                near, far, taken, before[0], after[0], after[1], after[2]);
+    CHECK(before[0] == Catch::Approx(0.2).margin(0.02));
+    // The near wall where the frame holds it, and none of the far one, which the frame's depth is not at.
+    CHECK(taken > 0);
+    CHECK(taken <= near);
+    CHECK(after[0] == Catch::Approx(0.6).margin(0.03));
+    CHECK(after[1] == Catch::Approx(0.3).margin(0.03));
+    CHECK(after[2] == Catch::Approx(0.05).margin(0.02));
+    // Asked again of a frame that shows nothing there, nothing is taken.
+    const std::vector<float> nothing(pixels, 0.0F);
+    auto empty = gpu::Buffer::fromSpan<float>(*gpu->device, std::span<const float>(nothing), "test.depth0");
+    REQUIRE(empty);
+    uint32_t again = 0;
+    REQUIRE(discovery->relight(*piece, *colour, *empty, settings.width, settings.height, projection, 0.06F, again));
+    CHECK(again == 0);
+}
+
 TEST_CASE("a found scene's polished metal mirrors what the eye's side holds, and something else from elsewhere",
           "[render][gpu][neural][scene][glass]") {
     ATHENEA_REQUIRE_GPU(gpu);

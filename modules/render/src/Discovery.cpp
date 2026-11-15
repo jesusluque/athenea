@@ -61,6 +61,9 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
         auto renderSpare = gpu::ComputeKernel::create(library, "athenea/neural/scene_render", "renderSparePanes");
         if (!renderSpare) return std::move(renderSpare).error();
         d.renderSpare_ = std::move(*renderSpare);
+        auto relight = gpu::ComputeKernel::create(library, "athenea/neural/scene_light", "sceneRelight");
+        if (!relight) return std::move(relight).error();
+        d.relight_ = std::move(*relight);
         auto exportFlat = gpu::ComputeKernel::create(library, "athenea/neural/scene_export", "exportFlat");
         if (!exportFlat) return std::move(exportFlat).error();
         d.exportFlat_ = std::move(*exportFlat);
@@ -556,6 +559,61 @@ Result<gpu::Buffer> Discovery::seenThrough(const gpu::Buffer& colour, const gpu:
         *repainted = read[3];
     }
     return *mask;
+}
+
+Result<gpu::Buffer> Discovery::relight(scene::GpuSplats& cloud, const gpu::Buffer& frameColour,
+                                       const gpu::Buffer& frameDepth, uint32_t width, uint32_t height,
+                                       const Projection& projection, float nearness, uint32_t& taken) {
+    gpu::Device& device = library_->device();
+    taken = 0;
+    gpu::BufferDesc desc;
+    desc.bytes = uint64_t{std::max<uint32_t>(cloud.count, 1)} * 16;
+    desc.elementBytes = 16;
+    desc.label = "scene.light";
+    auto layer = gpu::Buffer::create(device, desc);
+    if (!layer) return layer;
+    if (cloud.count == 0) {
+        return layer;
+    }
+    const std::array<uint32_t, 4> none{0, 0, 0, 0};
+    ATHENEA_TRY(counters_.write(device, 0, sizeof(none), none.data()));
+    gpu::CommandBatch batch(device);
+    relight_.dispatch(batch, {cloud.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        cursor["positions"].setBinding(cloud.positions.rhi());
+        cursor["shape"].setBinding(cloud.shape.rhi());
+        cursor["pbr"].setBinding(cloud.hasPbr() ? cloud.pbr.rhi() : cloud.shape.rhi());
+        cursor["frameColour"].setBinding(frameColour.rhi());
+        cursor["frameDepth"].setBinding(frameDepth.rhi());
+        cursor["layer"].setBinding(layer->rhi());
+        cursor["counters"].setBinding(counters_.rhi());
+        const auto rowOf = [&](int r) {
+            return std::array<float, 4>{static_cast<float>(projection.worldToView.at(r, 0)),
+                                        static_cast<float>(projection.worldToView.at(r, 1)),
+                                        static_cast<float>(projection.worldToView.at(r, 2)),
+                                        static_cast<float>(projection.worldToView.at(r, 3))};
+        };
+        cursor["params"]["count"].setData(cloud.count);
+        cursor["params"]["width"].setData(width);
+        cursor["params"]["height"].setData(height);
+        cursor["params"]["linearCloud"].setData(uint32_t{cloud.linear ? 1u : 0u});
+        cursor["params"]["viewX"].setData(rowOf(0));
+        cursor["params"]["viewY"].setData(rowOf(1));
+        cursor["params"]["viewZ"].setData(rowOf(2));
+        cursor["params"]["lensX"].setData(static_cast<float>(projection.focalX));
+        cursor["params"]["lensY"].setData(static_cast<float>(projection.focalY));
+        cursor["params"]["middleX"].setData(static_cast<float>(projection.centreX));
+        cursor["params"]["middleY"].setData(static_cast<float>(projection.centreY));
+        cursor["params"]["nearness"].setData(nearness);
+        cursor["params"]["hasPbr"].setData(uint32_t{cloud.hasPbr() ? 1u : 0u});
+    });
+    ATHENEA_TRY(batch.submit(true));
+    std::array<uint32_t, 4> read{};
+    ATHENEA_TRY(counters_.read(device, 0, sizeof(read), read.data()));
+    taken = read[0];
+    if (taken > 0) {
+        ++cloud.revision;   // its colours changed where its buffers did not
+    }
+    return layer;
 }
 
 Result<uint32_t> Discovery::markGone(const gpu::Buffer& lifted, uint32_t base, gpu::Buffer& gone, uint32_t count,

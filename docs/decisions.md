@@ -23233,3 +23233,54 @@ Not done, seen in the pictures: what a look found *through* glass (the floor und
 base colour -- the planes describe the glass, not what is behind it -- and stays as dark as it was found, a
 pool under the knight where the stage has the lamp's light through it; the shadows are black where the
 stage's are filled; the chrome knight shows the lit room only where its mirror ray meets a gaussian.
+
+## A scene's light taken again a frame: a layer of light a time (`shoot --relight`, 15 Nov)
+
+**What.** For a stage whose light changes, a frame first takes again the light of what the scene holds:
+`Discovery::relight` (scene_light.slang's `sceneRelight`) reads the frame at each standing gaussian's own
+middle and, where the frame shows a surface at the gaussian's depth (within `--tolerance`), the gaussian's
+colour becomes the frame's there. The gaussian stays -- its place, its shape, what it is made of. What the
+frame said is kept beside the piece as a layer (`<cloud>.l<snapshot>`: which gaussian, and its colour), the
+manifest names the layers a piece has (`pieces[].lights`), and a piece read at a time is its records with the
+layers up to that time laid over them (`render --at`, `--snapshot`, `--frame`, `--frames`). It is done at
+the frame's last look, before the scene is asked what it holds, so a look that asks about colour then finds
+the scene's light the frame's.
+
+**A stage where only the sun moves** (`neural-qa/relit`: the sun turns 90 degrees and falls from 4000 to
+1500 over 24 frames, one camera; each stored frame against the stage path traced at its time):
+
+| frame | nothing done: dB, SSIM | `--repaint 0.3` | `--relight` |
+|---|---|---|---|
+| 1 | 26.43, 0.957 | 26.43, 0.957 | 26.43, 0.957 |
+| 6 | 26.10, 0.955 | 26.64, 0.958 | 27.02, 0.960 |
+| 12 | 23.56, 0.953 | 25.08, 0.957 | 27.38, 0.960 |
+| 18 | 19.61, 0.945 | 23.17, 0.914 | 27.84, 0.960 |
+| 24 | 16.11, 0.929 | 22.68, 0.864 | 28.38, 0.961 |
+
+With `--relight` no gaussian is made and none taken out (521 082 stand at every frame, each saying its light
+anew); `--repaint` takes out and makes 20 000 to 157 000 a frame. 8.8 to 9.8 s a frame all three ways: the
+frame is path traced whichever. (The stage as first written had a sun of 5, which in UsdLux is a radiance
+over a disc of 2 degrees and lights nothing: the first run of it measured no change at all.)
+
+**Sponza, lit by the two lamps of the section above, three ways to the lit scene** (against the stage with
+the lamps path traced, 960x540):
+
+| view | `render --lamps` over the scene found without them | the same scene, its light taken again from the stage with them | the stage with them shot anew |
+|---|---|---|---|
+| k10: dB, SSIM | 25.79, 0.793 | 28.33, 0.890 | 28.98, 0.906 |
+| k45 | 21.04, 0.655 | 21.90, 0.764 | 23.57, 0.788 |
+| a (not taken) | 23.92, 0.768 | 25.83, 0.855 | 26.93, 0.879 |
+| b (not taken) | 22.41, 0.734 | 23.99, 0.824 | 24.77, 0.839 |
+
+0.4 s, 574 s and 549 s. Read as of the snapshot before the lamps (`--snapshot 23`), the relit scene is the
+scene found without them (63.9 dB at k10 against it). The layers are 297 MB over the scene's 399 MB (20
+frames; 1.49 M gaussians took the first frame's light, 0.49 M the last's): kept as only the gaussians a
+frame spoke of, where a float4 a gaussian of the piece was 800 MB.
+
+Not done: the light is said where a frame looks and nowhere else -- what the walk does not see again keeps
+the light it had; what lets light through is not said anew, nor what was found through glass (the floor
+under the glass knight stays as dark as it was found); the coarser gaussians a finer look was laid over
+keep their old light, so a level of detail drawn from them shows it; `export` and the web player do not
+read the layers; 119 000 gaussians more stand after the relit pass of Sponza than before it, not looked at;
+a surface whose material changed in place has its colour said anew and its material left as it was; a layer
+is not thinned by what a later one says of the same gaussian; CUDA and Vulkan are not run.

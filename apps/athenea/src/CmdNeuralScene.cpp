@@ -121,6 +121,7 @@ struct SceneOptions {
     uint32_t                 lampBounceRays = 16;     // render: rays that gather what the lamps' light bounces on to
     bool                     noAntialias = false;
     float                    madeSpread = -1.0F;      // render: the width, in pixels, the scene's discs were made at
+    bool                     relight = false;         // shoot: a frame takes the light of what the scene holds again
     bool                     antialias = false;       // shoot: a new scene drawn with the 2D filter's compensation
     float                    shootSpread = 0.5F;      // shoot's own default: half a cell
     float                    exposure = 0.0F;
@@ -164,6 +165,9 @@ std::optional<bool> drawnAs;
 /// The width its discs were made at (io::NeuralScene::spread), for every frame this command draws of it:
 /// drawn without the compensation, a disc pays it only where it projects narrower than it was made.
 float madeAs = 0.0F;
+/// THE TIME A PIECE'S LIGHT IS READ AT: the last snapshot whose layers of light are laid over a piece as it
+/// is loaded (io::NeuralScenePiece::lights); 0, every layer there is -- the scene as it stands.
+uint32_t lightAsOf = 0;
 void drawAs(const io::NeuralScene& scene) {
     drawnAs = scene.antialiased ? std::optional<bool>{} : std::optional<bool>{false};
     madeAs = scene.spread;
@@ -224,8 +228,49 @@ Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& l
             if (!laid) return std::move(laid).error();
             *matter = *laid;
         }
+        uint32_t lightOf = 0;   // the last layer laid over the records
+        // THE LIGHT TAKEN AGAIN SINCE: the layers beside the piece (`<piece>.l<snapshot>`), in order up to
+        // the time asked, each laid over the records where its frame said a gaussian's light anew. A copy of
+        // what a kernel left (render::Discovery::relight), field for field.
+        {
+            std::vector<std::pair<uint32_t, std::filesystem::path>> layers;
+            const std::string stem = path.filename().string() + ".l";
+            std::error_code ignored;
+            for (const auto& entry : std::filesystem::directory_iterator(path.parent_path(), ignored)) {
+                const std::string name = entry.path().filename().string();
+                if (name.size() > stem.size() && name.compare(0, stem.size(), stem) == 0 &&
+                    name.find_first_not_of("0123456789", stem.size()) == std::string::npos) {
+                    const uint32_t at = static_cast<uint32_t>(std::stoul(name.substr(stem.size())));
+                    if (lightAsOf == 0 || at <= lightAsOf) {
+                        layers.emplace_back(at, entry.path());
+                    }
+                }
+            }
+            std::sort(layers.begin(), layers.end());
+            for (const auto& [at, file] : layers) {
+                lightOf = at;
+                auto light = io::readGaussians(file);
+                if (!light) return std::move(light).error();
+                if (light->floats != 4 || light->count > held->count) {
+                    return Error::make(ErrorCode::Unsupported, "{}: a layer of light of {} gaussians of {} floats, over a piece of {}",
+                                       file.string(), light->count, light->floats, held->count);
+                }
+                // Four floats a gaussian whose light was said: which one, and its colour.
+                for (uint32_t k = 0; k < light->count; ++k) {
+                    const float* said = &light->records[size_t{k} * 4];
+                    const uint32_t which = static_cast<uint32_t>(said[0]);
+                    if (which < held->count) {
+                        float* record = &held->records[size_t{which} * held->floats];
+                        record[11] = said[1];
+                        record[12] = said[2];
+                        record[13] = said[3];
+                    }
+                }
+            }
+        }
         io::RawSplats raw;
-        raw.source = path.string();
+        // Under another light it is another cloud to whoever keeps clouds by where they came from.
+        raw.source = lightOf != 0 ? path.string() + "@light" + std::to_string(lightOf) : path.string();
         raw.count = held->count;
         raw.encoding = render::Discovery::renderEncoding();
         raw.encoding.floatsPerRecord = held->floats;
@@ -234,6 +279,11 @@ Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& l
         loader.keepFaint(true);   // a record of what is gone counts every gaussian the file holds
         auto cloud = loader.upload(raw, 0);
         loader.keepFaint(false);
+        if (cloud && lightOf != 0) {
+            // Read again under another light it may come back in the buffers the last reading left: its
+            // revision says it is not what was drawn from them.
+            cloud->revision += lightOf;
+        }
         return cloud;
     }
     return scene::loadSplatFile(loader, path.string(), 3);
@@ -1778,6 +1828,47 @@ int runShoot(const SceneOptions& all) {
         render::RenderTargets before;
         render::RenderTargets beforeSize;
         bool hasBefore = false;
+        if (all.relight && last && !instances.empty()) {
+            // THE LIGHT OF WHAT THE SCENE HOLDS, TAKEN AGAIN (--relight). Before the frame is asked what it
+            // holds: each standing gaussian the frame shows at its own depth takes the frame's colour, and
+            // the piece keeps that as a layer of light stamped with this look. The gaussians stay -- where
+            // they are, what they are made of -- and a look that asks about colour (--repaint) then finds the
+            // scene's light the frame's, and takes out only what is of another surface.
+            uint32_t relit = 0;
+            for (size_t k = 0; k < clouds.size(); ++k) {
+                io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
+                if (piece.foundIn >= frameFirst || piece.cloud.size() < 5 ||
+                    piece.cloud.compare(piece.cloud.size() - 5, 5, ".athg") != 0) {
+                    continue;   // this frame's own, which is this light already; or not a render's piece
+                }
+                uint32_t took = 0;
+                auto layer = discovery->relight(*clouds[k], frameColour, frameDepth, width, height, projection,
+                                                all.tolerance, took);
+                if (!layer) return report(layer.error());
+                if (took == 0) {
+                    continue;
+                }
+                auto floats = layer->readAll<float>(device);
+                if (!floats) return report(floats.error());
+                // Kept as the gaussians the frame spoke of and no more: which one, and its colour (a piece
+                // holds under 2^24 gaussians, which a float counts exactly).
+                std::vector<float> said;
+                said.reserve(size_t{took} * 4);
+                for (uint32_t g = 0; g < clouds[k]->count; ++g) {
+                    const float* one = &(*floats)[size_t{g} * 4];
+                    if (one[3] > 0.5F) {
+                        said.insert(said.end(), {static_cast<float>(g), one[0], one[1], one[2]});
+                    }
+                }
+                const std::filesystem::path file = directory / (piece.cloud + ".l" + std::to_string(stamp));
+                if (auto written = io::writeGaussians(file, static_cast<uint32_t>(said.size() / 4), 4, said); !written) {
+                    return report(written.error());
+                }
+                piece.lights.push_back(stamp);
+                relit += took;
+            }
+            out("%s at %g: %u gaussians the scene held took the frame's light again\n", name.c_str(), time, relit);
+        }
         if (!instances.empty()) {
             if (auto drawn = drawKnown(); !drawn) return report(drawn.error());
             {
@@ -2344,6 +2435,7 @@ int runRenderStored(const SceneOptions& o, const io::NeuralScene& scene) {
         gpu::Buffer                       gone;      // its record, where it has one
         gpu::Buffer                       refined;   // its record of what finer looks were laid over
         gpu::Buffer                       parent;    // the width of what each was laid over
+        uint32_t                          light = 0; // the last layer of light laid over it as it was read
     };
     std::vector<Held> held(scene.pieces.size());
     // The snapshot a coarse look's piece was wholly replaced by: its frame's last.
@@ -2376,6 +2468,7 @@ int runRenderStored(const SceneOptions& o, const io::NeuralScene& scene) {
         if (glass) {
             // With glass the frame is the scene as it stood then, cut as one cloud, its glass seen from the
             // frame's camera (read again a frame: the cut owns what it loads).
+            lightAsOf = frame.lastSnapshot;
             auto cut = cutScene(library, *loader, *discovery, directory, scene, projection, frame.width, frame.height,
                                 o.lod, frame.lastSnapshot, o.morph, &*glass);
             if (!cut) return report(cut.error());
@@ -2397,10 +2490,21 @@ int runRenderStored(const SceneOptions& o, const io::NeuralScene& scene) {
                 !boxInView(piece.boundsMin, piece.boundsMax, projection, frame.width, frame.height)) {
                 continue;
             }
+            // A piece whose light was taken again is read as its light stood at this frame: again, where a
+            // layer came in since the frame it was last read for.
+            uint32_t lit = 0;
+            for (const uint32_t layer : piece.lights) {
+                if (layer <= frame.lastSnapshot) lit = layer;
+            }
+            if (held[k].cloud && lit != held[k].light) {
+                held[k] = Held{};
+            }
             if (!held[k].cloud) {
+                lightAsOf = frame.lastSnapshot;
                 auto cloud = load(library, *loader, directory / piece.cloud, &held[k].parent);
                 if (!cloud) return report(cloud.error());
                 held[k].cloud = std::make_unique<scene::GpuSplats>(std::move(*cloud));
+                held[k].light = lit;
                 for (int which = 0; which < 2; ++which) {
                     const std::string& file = which == 0 ? piece.gone : piece.refined;
                     if (file.empty()) {
@@ -2468,6 +2572,7 @@ int runBake(const SceneOptions& o) {
         return kExitFailure;
     }
     const uint32_t asOf = o.snapshot != 0 ? o.snapshot : o.at >= 0.0 ? snapshotAt(*scene, o.at) : 0u;
+    lightAsOf = asOf;   // a piece's light as it was said up to then
     // The standing records, piece after piece: which are kept is read off each piece's stamps; nothing
     // of a record is computed.
     std::vector<float> records;
@@ -2624,6 +2729,7 @@ int runExport(const SceneOptions& o) {
         return kExitFailure;
     }
     const uint32_t asOf = o.snapshot != 0 ? o.snapshot : o.at >= 0.0 ? snapshotAt(*scene, o.at) : 0u;
+    lightAsOf = asOf;   // a piece's light as it was said up to then
     auto device = gpu::Device::create();
     if (!device) return report(device.error());
     gpu::ShaderLibrary library(*device);
@@ -3066,6 +3172,7 @@ int runRender(const SceneOptions& given) {
     // THE SCENE AS IT STOOD (--at a time, --snapshot one of the manifest's): the pieces in by then, less
     // the gaussians gone by then.
     const uint32_t asOf = o.snapshot != 0 ? o.snapshot : o.at >= 0.0 ? snapshotAt(*scene, o.at) : 0u;
+    lightAsOf = asOf;   // a piece's light as it was said up to then
     if ((o.snapshot != 0 || o.at >= 0.0) && asOf == 0) {
         err("the scene has no snapshot by time %g\n", o.at);
         return kExitFailure;
@@ -3551,6 +3658,7 @@ void addNeuralScene(CLI::App& app) {
     shoot->add_option("--tolerance", o.tolerance, "a surface is already held where the scene's depth is within this share of the render's");
     shoot->add_option("--refine", o.refine, "a surface held with gaussians more than this many times as wide as this look's is made again, finer");
     shoot->add_option("--repaint", o.repaint, "a surface held whose colour is off the render's by more than this share is made again (0: held by its depth alone)");
+    shoot->add_flag("--relight", o.relight, "each frame first takes again the light of what the scene holds and the frame shows: those gaussians keep their place and what they are made of, and a layer of light is kept for the time (a stage whose light changes)");
     shoot->add_flag("--antialias", o.antialias, "a new scene is drawn with the Mip-Splatting 2D filter's compensation, by the looks and by whoever draws it after (kept in its manifest); without it, the default, a disc narrower than a pixel stays opaque");
     shoot->add_flag("--no-antialias", o.noAntialias, "the scene is drawn without the compensation from here on, whatever its manifest says");
     shoot->add_option("--turned", o.turned, "the least a disc's facing is taken as: it is stretched along the surface's fall by no more than 1 over this");

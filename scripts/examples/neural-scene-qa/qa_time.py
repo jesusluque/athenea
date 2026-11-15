@@ -31,6 +31,7 @@ parser.add_argument("--bounces", type=int, default=3)
 # A stage that moves is asked about colour too: what stood where a surface of another colour now stands is
 # taken out, which depth alone does not say of a ball's foot on the floor it rolled over.
 parser.add_argument("--repaint", default="0.3")
+parser.add_argument("--shoot-options", default="", help="more options for shoot, as one string (--relight)")
 parser.add_argument("--skip-shoot", action="store_true")
 # `athenea compare` runs its kernels through gpe, which has Metal and CUDA and neither Vulkan nor D3D12: on a
 # machine that renders through one of those the measures are taken through this one.
@@ -80,7 +81,7 @@ if not args.skip_shoot:
     rc, lines, seconds = run(["neural-scene", "shoot", stage_name, scene, "--views", os.path.join(stage_dir, args.walk),
                               "--time", "0", "--time-step", "1", "--focal", str(args.focal), "--size", args.size,
                               "--samples", str(args.samples), "--pass-samples", "8", "--bounces", str(args.bounces),
-                              "--denoise", "--repaint", args.repaint])
+                              "--denoise", "--repaint", args.repaint] + args.shoot_options.split())
     frames = [line for line in lines if ": frame " in line]
     report.append("- shoot: %d frames in %.0f s (%.1f s a frame, rc %d)" % (len(frames), seconds,
                                                                            seconds / max(len(frames), 1), rc))

@@ -164,6 +164,7 @@ Result<NeuralScene> readNeuralScene(const std::filesystem::path& directory) {
             p.removed = from.value("removed", 0u);
             p.refined = from.value("refined", std::string{});
             p.refinedCount = from.value("refinedCount", 0u);
+            p.lights = from.value("lights", std::vector<uint32_t>{});
             p.seen = from.value("seen", std::string{});
             p.discovered = from.value("discovered", 0u);
             p.movedAt = from.value("movedAt", p.revision);
@@ -285,6 +286,7 @@ Result<void> writeNeuralScene(const std::filesystem::path& directory, const Neur
             piece["refined"] = p.refined;
             piece["refinedCount"] = p.refinedCount;
         }
+        if (!p.lights.empty()) piece["lights"] = p.lights;
         if (!p.gone.empty()) {
             piece["gone"] = p.gone;
             piece["removed"] = p.removed;
