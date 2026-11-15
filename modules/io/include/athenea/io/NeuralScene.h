@@ -181,6 +181,10 @@ struct NeuralScene {
     /// that found each (`shoot --spread`); 0: not said. A scene drawn without
     /// the compensation pays it only under this width (RenderSettings::madeSpread).
     float       spread = 0.0f;
+    /// Its gaussians keep the base colour of the surface under each, apart
+    /// from the light a look saw leave it (what is opaque: in the record's
+    /// tint): what a lamp added after is multiplied by (`render --lamps`).
+    bool        baseColour = false;
     std::string source;                   ///< the stage the pieces were converted from
     std::string licence;                  ///< what the source asks of whoever uses it
     std::vector<NeuralScenePiece>  pieces;

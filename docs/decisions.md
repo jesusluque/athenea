@@ -23154,3 +23154,57 @@ show it less, and it is published again only through sysop with the user's word;
 splats take twice the texture memory and it is not tried there; the chrome's mirror shading in the player
 is in facets from that near, where the engine's `--glass` is smooth (not looked into); a level of 800 000
 gaussians could not be written for this scene (the coarsest it holds draws 1 067 431).
+
+## A found scene keeps what its surfaces are apart from their light, and lamps are added to it (15 Nov)
+
+**Why.** A gaussian kept the light a look saw leave it: the surface's colour times the light of that moment.
+A change of light could then only be a change of colour -- the gaussian taken out and made again whole
+(`--repaint`), though where it stands and what it is made of had not changed. The user's direction: what a
+gaussian keeps of the material apart from the light of each moment, so a change of light touches one part.
+
+**The base colour.** The path tracer's plane of what a surface lets through (PathAux's sixth) now holds, for
+what is opaque, its base colour: what its matt lobes return (a lobe's weight is its colour times its share),
+or, of a metal, what the stack returns towards the eye. It goes into the record's tint, which what is opaque
+left at nothing: the record is the same thirty floats and no file changes. A scene begun now says so in its
+manifest (`baseColour`).
+
+*What was wrong before, found on the way*: the metal's colour of 14 Nov read `materialSampleOf(...).albedo`,
+which is nothing in this kernel -- every opaque record of a real shoot had a tint of zero, and the mirrors
+of `render --glass` were white by the kernel's fallback (its test hands the tint itself and passed). The
+chrome knight's 25.54 to 25.82 dB of that section was a white mirror's; it is not measured again yet.
+
+**Lamps** (`render --lamps`, `SceneGlass::setLamps`, scene_glass.slang's `sceneLit`). Over the cut the glass
+is shown, before the glass: each gaussian that is neither glass nor a polished metal gains
+`base colour x L (R / d)^2 cos` of a sphere of radius R and radiance L at a distance d (UsdLux's intensity
+times colour, not normalised; a cone for a spot; a distant light by its irradiance), where a ray from the
+gaussian to the lamp's middle meets nothing of the scene (`glassNearest`, with the clearance over the
+gaussian's own plane a mirror ray has). `--lamps-only` leaves the found light out. The test
+(`[lamps]`): a floor, a wall and a lamp behind it -- 0.442 added for 0.447 worked out by hand, nothing in the
+wall's shadow.
+
+**Measured** (`qa_relight.py`: the same lamps written as UsdLux lights in a layer over the stage, path traced
+at 128 paths and 8 bounces from views the walk did not take, Metal, 960x540; dB where the scene holds
+something, against the stage *with* the lamps):
+
+| stage, view | the scene as found | with `--lamps` | against one bounce | mean light: scene with lamps, stage with lamps |
+|---|---|---|---|---|
+| materials (a warm sphere, a cool spot), h0 | 24.08 | 25.46 | 25.24 | 0.295, 0.370 |
+| h1 | 23.27 | 24.05 | 23.69 | 0.296, 0.301 |
+| h2 | 23.02 | 24.41 | 24.03 | 0.296, 0.306 |
+| h3 | 22.23 | 23.18 | 23.04 | 0.266, 0.315 |
+| Sponza with the knights (the same two kinds), k10 | 16.12 | 25.45 | 26.45 | 0.0188, 0.0283 |
+| k45 | 15.02 | 20.87 | 22.05 | 0.0174, 0.1481 |
+| a (not taken) | 15.45 | 23.68 | 24.81 | 0.0182, 0.0315 |
+| b (not taken) | 15.14 | 22.23 | 23.47 | 0.0192, 0.0379 |
+
+The lamps cost 6 to 10 ms for 992 917 gaussians (materials) and 14 to 17 ms for 1 777 799 (Sponza), beside
+some 260 ms and more of the tree over the cut; the stage with the lamps path traced took 454 s and 954 s for
+its four views. In Sponza, lit by little else, the lamps are most of the picture, and the scene with them
+reads as the path traced stage does: the warm side, the spot's circle, the knights' shadows.
+
+Not done: what the lamps' light bounces on to (the scene reads a third darker than the stage in Sponza:
+0.019 for 0.028 to 0.038); a soft shadow (one ray to the lamp's middle); a lamp's highlight, and a rough
+metal as anything but matt; the lamp itself is not drawn (k45 looks at one: 0.148 of mean in the stage);
+the glass knight is darker than the stage's; **a change of the stage's own light over time is still a
+repaint** -- a layer of light a time over the same gaussians is the next step; the web player and `export`
+know nothing of lamps; CUDA and Vulkan are not run yet; `qa_relight.py` writes no distant light.

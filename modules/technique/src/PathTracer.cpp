@@ -3206,9 +3206,19 @@ void pathGuides(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
         const float3 firstTint = transmits ? transmissionTint(m) : sheer ? float3(1.0 - sh.stack.opacity) : float3(0.0);
         const bool thin = (m.flags & kMaterialThinGlass) != 0u || !transmits;
         made = float4(ms.metallic, ms.roughnessSeen > 0.0 ? ms.roughness : 1.0, max(firstTint.x, max(firstTint.y, firstTint.z)), 1.0);
-        // A metal lets nothing through: what it keeps here is what it reflects head on, its base colour,
-        // which is what a mirror made of the gaussian needs and no picture of one eye's says.
-        tint = float4(!transmits && !sheer && ms.metallic >= 0.5 ? saturate(ms.albedo) : firstTint, 1.0);
+        // WHAT IS OPAQUE KEEPS ITS BASE COLOUR HERE, apart from the light the pixel saw leave it: what its
+        // matt lobes return of the light that reaches them (a lobe's weight is its colour times its share),
+        // or, of a metal, which has none, what the stack returns towards the eye -- what a mirror made of
+        // the gaussian needs, and what a lamp added to a found scene is multiplied by.
+        float3 matt = float3(0.0);
+        for (uint k = 0; k < sh.stack.count; ++k) {
+            const uint kind = sh.stack.lobes[k].kind;
+            if (kind == kLobeOrenNayar || kind == kLobeBurley || kind == kLobeTranslucent) {
+                matt += sh.stack.lobes[k].weight * lobeAlbedo(sh.stack.lobes[k], sh.toEye);
+            }
+        }
+        const float3 base = any(matt > float3(0.0)) ? matt : albedo.rgb;
+        tint = float4(!transmits && !sheer ? saturate(base) : firstTint, 1.0);
         row = float4(float(materialRowOf(found.s) + 1u), transmits && !thin ? 0.0 : 1.0, transmits ? transmissionIndex(m) : 1.0, 1.0);
         if (kTraces && (transmits || sheer)) {
             const uint mask = sampleMask(tid, 0u);

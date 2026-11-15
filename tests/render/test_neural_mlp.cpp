@@ -1,5 +1,6 @@
 // Copyright (c) 2026 jesus luque.
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 
 #include "../gpu/GpuTest.h"
 
@@ -1474,6 +1475,115 @@ TEST_CASE("a found scene's glass shows what stands behind it from where the eye 
     CHECK(left[2] > 0.5);
     CHECK(left[0] < 0.2);
     CHECK(left[1] < 0.15);
+}
+
+TEST_CASE("a lamp added to a found scene lights what it reaches by its base colour, and not what stands in a shadow",
+          "[render][gpu][neural][scene][glass][lamps]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto discovery = render::Discovery::create(*gpu->library);
+    auto glass = render::SceneGlass::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!discovery) FAIL(discovery.error().toString());
+    if (!glass) FAIL(glass.error().toString());
+    // A GREY FLOOR found under a dim light (0.1), whose base colour reflects half of red and green and a
+    // quarter of blue; a wall standing on it at x = 0.5; and a lamp low on the wall's far side. The floor
+    // past the wall is in the lamp's light, the floor before it in the wall's shadow.
+    const uint32_t stride = render::kRenderRecord;
+    std::vector<float> records;
+    std::vector<std::array<float, 4>> made;
+    const auto shown = [](float light) {
+        const float encoded = light <= 0.0031308F ? 12.92F * light : 1.055F * std::pow(light, 1.0F / 2.4F) - 0.055F;
+        return (encoded - 0.5F) / 0.28209479F;
+    };
+    const auto disc = [&](float x, float y, float z, float size, bool upright, std::array<float, 4> base) {
+        const size_t at = records.size();
+        records.resize(at + stride, 0.0F);
+        float* r = &records[at];
+        r[0] = x; r[1] = y; r[2] = z;
+        r[3] = 4.0F;
+        r[4] = std::log(upright ? size * 0.05F : size); r[5] = std::log(size);
+        r[6] = std::log(upright ? size : size * 0.05F);
+        r[7] = 1.0F;
+        for (int c = 0; c < 3; ++c) r[11 + c] = shown(0.1F);
+        r[upright ? 14 : 16] = 1.0F;
+        r[18] = 1.0F;
+        r[render::kRenderRecordIndex] = 1.0F;
+        r[render::kRenderRecordSheet] = 1.0F;
+        made.push_back(base);
+    };
+    for (int j = -30; j <= 30; ++j) {
+        for (int i = -40; i <= 60; ++i) {
+            disc(static_cast<float>(i) * 0.05F, static_cast<float>(j) * 0.05F, 0.0F, 0.035F, false, {0.5F, 0.5F, 0.25F, 0.0F});
+        }
+    }
+    for (int j = -30; j <= 30; ++j) {
+        for (int k = 0; k <= 30; ++k) {
+            disc(0.5F, static_cast<float>(j) * 0.05F, static_cast<float>(k) * 0.05F, 0.035F, true, {0.0F, 0.0F, 0.0F, 0.0F});
+        }
+    }
+    const uint32_t count = static_cast<uint32_t>(records.size() / stride);
+    io::RawSplats raw;
+    raw.source = "test";
+    raw.count = count;
+    raw.encoding = render::Discovery::renderEncoding();
+    raw.records = std::move(records);
+    loader->keepFaint(true);
+    auto piece = loader->upload(raw, 0);
+    loader->keepFaint(false);
+    if (!piece) FAIL(piece.error().toString());
+    auto matter = gpu::Buffer::fromSpan<std::array<float, 4>>(
+        *gpu->device, std::span<const std::array<float, 4>>(made), "test.matter");
+    REQUIRE(matter);
+    render::RenderSettings settings;
+    settings.width = 320;
+    settings.height = 240;
+    const auto over = [&](double x, bool only, bool lamps) {
+        // Straight down on the floor at x.
+        render::Camera camera = render::Camera::lookingAt({x, 0.0, 6.0}, {x, 0.0, 0.0}, {0.0, 1.0, 0.0});
+        const render::Projection projection = render::projectionFor(camera, settings.width, settings.height);
+        auto plan = discovery->planCut(*piece, nullptr, nullptr, nullptr, projection, 0.0F);
+        if (!plan) FAIL(plan.error().toString());
+        auto cut = discovery->cutCloud(*piece, plan->drawn);
+        if (!cut) FAIL(cut.error().toString());
+        auto room = glass->room(*cut);
+        if (!room) FAIL(room.error().toString());
+        REQUIRE(discovery->gatherCut(*piece, nullptr, *plan, projection, 0.0F, 0.0F, *cut, 0));
+        REQUIRE(glass->gather(*piece, *matter, *plan, *cut, *room, 0));
+        render::SceneLamp lamp;
+        lamp.position = {4.0F, 0.0F, 1.0F};
+        lamp.radius = 0.2F;
+        lamp.radiance = {250.0F, 250.0F, 250.0F};
+        REQUIRE(glass->setLamps(lamps ? std::span<const render::SceneLamp>(&lamp, 1) : std::span<const render::SceneLamp>(),
+                                only));
+        auto seen = glass->see(projection, *cut, *room);
+        if (!seen) FAIL(seen.error().toString());
+        const render::SplatInstance instance{&*cut, render::Mat4::identity()};
+        render::RenderTargets frame;
+        REQUIRE(raster->render(camera, std::span<const render::SplatInstance>(&instance, 1), settings, frame));
+        auto stats = render::imageStats(*gpu->library, frame.colour, settings.width, settings.height, 150, 110, 170, 130);
+        REQUIRE(stats);
+        const double cover = std::max(stats->mean[3], 1.0e-6);
+        return std::array<double, 3>{stats->mean[0] / cover, stats->mean[1] / cover, stats->mean[2] / cover};
+    };
+    const std::array<double, 3> asFound = over(2.0, false, false);
+    const std::array<double, 3> lit = over(2.0, false, true);
+    const std::array<double, 3> shadowed = over(-1.0, false, true);
+    const std::array<double, 3> alone = over(2.0, true, true);
+    const std::array<double, 3> aloneShadowed = over(-1.0, true, true);
+    // At x = 2 the lamp is sqrt(5) away and 0.447 off the floor's normal: base x 250 x 0.2^2 / 5 x 0.447.
+    const double sends = 250.0 * 0.04 / 5.0 * 0.4472;
+    std::printf("  a floor under a lamp behind a wall: as found %.3f; lit (%.3f %.3f %.3f), for %.3f and %.3f more; in "
+                "the wall's shadow %.3f; the lamp alone %.3f, and in the shadow %.3f\n",
+                asFound[0], lit[0], lit[1], lit[2], 0.5 * sends, 0.25 * sends, shadowed[0], alone[0], aloneShadowed[0]);
+    CHECK(asFound[0] == Catch::Approx(0.1).margin(0.02));
+    CHECK(lit[0] - asFound[0] == Catch::Approx(0.5 * sends).epsilon(0.15));
+    CHECK(lit[2] - asFound[2] == Catch::Approx(0.25 * sends).epsilon(0.15));
+    CHECK(shadowed[0] == Catch::Approx(asFound[0]).margin(0.02));
+    CHECK(alone[0] == Catch::Approx(0.5 * sends).epsilon(0.15));
+    CHECK(aloneShadowed[0] < 0.02);
 }
 
 TEST_CASE("a found scene's polished metal mirrors what the eye's side holds, and something else from elsewhere",

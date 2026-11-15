@@ -115,6 +115,8 @@ struct SceneOptions {
     float                    growExposure = 0.0F;
     float                    morph = 0.0F;
     bool                     glass = false;
+    std::string              lamps;                   // render: a file of lamps added to the scene (--lamps)
+    bool                     lampsOnly = false;       // render: and the light it was found under left out
     bool                     noAntialias = false;
     float                    madeSpread = -1.0F;      // render: the width, in pixels, the scene's discs were made at
     bool                     antialias = false;       // shoot: a new scene drawn with the 2D filter's compensation
@@ -1532,6 +1534,7 @@ int runShoot(const SceneOptions& all) {
     // is there already is drawn as its manifest says.
     scene.antialiased = all.antialias;
     scene.spread = all.shootSpread;
+    scene.baseColour = true;   // a scene begun now: every gaussian of it keeps its surface's base colour
     if (std::filesystem::exists(directory / "scene.json")) {
         auto read = io::readNeuralScene(directory);
         if (!read) return report(read.error());
@@ -3078,17 +3081,70 @@ int runRender(const SceneOptions& given) {
     }
     // WITH GLASS (--glass) the scene is cut whatever the threshold (none: the finest there is), as one cloud
     // that holds the glass and the room it shows, and each glass gaussian's colour is the view's.
-    const bool cutting = o.lod > 0.0F || o.glass;
+    // WITH LAMPS (--lamps) the same cut, and before the glass is shown the room each gaussian that is neither
+    // glass nor a mirror is given what the lamps send it (render::SceneGlass::setLamps).
+    std::vector<render::SceneLamp> lamps;
+    if (!o.lamps.empty()) {
+        if (!scene->baseColour) {
+            err("%s does not keep its surfaces' base colour (it was shot before a scene did): a lamp has nothing "
+                "to light; shoot it again\n", directory.string().c_str());
+            return kExitFailure;
+        }
+        std::ifstream file(o.lamps);
+        if (!file) {
+            err("cannot read %s\n", o.lamps.c_str());
+            return kExitFailure;
+        }
+        std::string line;
+        while (std::getline(file, line)) {
+            std::istringstream words(line);
+            std::string kind;
+            if (!(words >> kind) || kind[0] == '#') continue;
+            std::vector<float> n;
+            for (float v = 0.0F; words >> v;) n.push_back(v);
+            render::SceneLamp lamp;
+            if (kind == "sphere" && n.size() == 8) {
+                // sphere x y z radius intensity r g b
+                lamp.position = {n[0], n[1], n[2]};
+                lamp.radius = n[3];
+                lamp.radiance = {n[4] * n[5], n[4] * n[6], n[4] * n[7]};
+            } else if (kind == "spot" && n.size() == 12) {
+                // spot x y z  tx ty tz  half-angle(degrees) radius intensity r g b
+                lamp.position = {n[0], n[1], n[2]};
+                lamp.axis = {n[3] - n[0], n[4] - n[1], n[5] - n[2]};
+                lamp.cone = std::cos(n[6] * 3.14159265F / 180.0F);
+                lamp.radius = n[7];
+                lamp.radiance = {n[8] * n[9], n[8] * n[10], n[8] * n[11]};
+            } else if (kind == "distant" && n.size() == 7) {
+                // distant tx ty tz irradiance r g b: towards the light, and what it lays on a surface facing it
+                lamp.position = {n[0], n[1], n[2]};
+                lamp.distant = true;
+                const float share = n[3] / 3.14159265F;
+                lamp.radiance = {share * n[4], share * n[5], share * n[6]};
+            } else {
+                err("%s: a lamp is `sphere x y z radius intensity r g b`, `spot x y z tx ty tz half-angle radius "
+                    "intensity r g b` or `distant tx ty tz irradiance r g b`, not: %s\n", o.lamps.c_str(), line.c_str());
+                return kExitFailure;
+            }
+            lamps.push_back(lamp);
+        }
+    }
+    const bool shaded = o.glass || !lamps.empty();
+    const bool cutting = o.lod > 0.0F || shaded;
     std::optional<render::SceneGlass> glass;
-    if (o.glass) {
+    if (shaded) {
         auto made = render::SceneGlass::create(library);
         if (!made) return report(made.error());
         glass.emplace(std::move(*made));
+        if (auto set = glass->setLamps(lamps, o.lampsOnly); !set) return report(set.error());
     }
     const auto saidOfGlass = [&](const render::GlassSeen& seen) {
         out("glass: %u gaussians and %u of polished metal; through it %u met the scene, mirrored %u did; the tree "
             "%.1f ms, the rays %.1f ms\n",
             seen.glass, seen.mirrors, seen.behind, seen.mirrored, seen.treeMs, seen.seenMs);
+        if (!lamps.empty()) {
+            out("lamps: %zu, asked of %u gaussians in %.1f ms\n", lamps.size(), seen.lit, seen.litMs);
+        }
     };
     std::unique_ptr<scene::GpuSplats> wholeCut;
     if (cutting && o.views.empty()) {
@@ -3241,7 +3297,7 @@ int runRender(const SceneOptions& given) {
                 lod = *threshold;
                 walkThreshold = lod;
             }
-            if (lod > 0.0F || o.glass) {
+            if (lod > 0.0F || shaded) {
                 const render::Projection projection = render::projectionFor(view, width, height);
                 render::GlassSeen seen;
                 auto cut = cutScene(library, *loader, *discovery, directory, *scene, projection, width, height, lod, asOf,
@@ -3256,9 +3312,9 @@ int runRender(const SceneOptions& given) {
                     cutInstances.push_back(render::SplatInstance{&cutClouds.back(), render::Mat4::identity(), {}});
                 }
             }
-            auto stats = raster->render(view, lod > 0.0F || o.glass ? cutInstances : drawnAs, waited, frame);
+            auto stats = raster->render(view, lod > 0.0F || shaded ? cutInstances : drawnAs, waited, frame);
             if (!stats) return report(stats.error());
-            if (lod > 0.0F || o.glass) {
+            if (lod > 0.0F || shaded) {
                 // A cut's clouds are new to the rasteriser, and a first frame of anything pays for that: the
                 // frame timed is the one after, as a scene drawn flat is timed from its second view on.
                 stats = raster->render(view, cutInstances, waited, frame);
@@ -3420,6 +3476,8 @@ void addNeuralScene(CLI::App& app) {
     render->add_option("--budget", o.budget, "levels of detail by a count: the finest threshold that draws no more than this many gaussians from the view, in place of --lod");
     render->add_option("--made-spread", o.madeSpread, "a scene drawn without the compensation pays it under this width: the sigma in pixels its discs were made at (shoot's --spread)");
     render->add_flag("--no-antialias", o.noAntialias, "no Mip-Splatting 2D filter compensation: a gaussian is spread a third of a pixel and keeps its opacity");
+    render->add_option("--lamps", o.lamps, "a file of lamps added to the scene: each lights the gaussians it reaches by their surface's base colour, over the light the scene was found under (implies the cut --glass draws)");
+    render->add_flag("--lamps-only", o.lampsOnly, "--lamps: without the light the scene was found under");
     render->add_flag("--glass", o.glass, "solid glass shows what it bends and mirrors of the scene from each view, worked out from what the glass is made of, in place of the picture the look that found it saw");
     render->add_option("--morph", o.morph, "--lod, --budget: a gaussian is moved towards what it was laid over across this share of the threshold before that is drawn in its place (0: a step)");
     render->add_option("--frames", o.storedFrames, "the stored frames FIRST to LAST as pictures, the scene read once: -o a prefix, written <stem>_NNNN.png or .exr")->expected(2);

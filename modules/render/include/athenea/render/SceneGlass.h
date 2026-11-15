@@ -17,6 +17,10 @@
 #include <optional>
 
 #include "athenea/core/Result.h"
+#include <array>
+#include <optional>
+#include <span>
+
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/ComputeKernel.h"
 #include "athenea/render/Discovery.h"
@@ -26,12 +30,27 @@
 namespace athenea::render {
 
 struct GlassSeen {
+    uint32_t lit = 0;         ///< gaussians the lamps were asked about (SceneGlass::setLamps)
+    double   litMs = 0.0;
     uint32_t glass = 0;       ///< gaussians of solid glass in the cloud
     uint32_t behind = 0;      ///< whose ray through the glass met a gaussian of the scene
     uint32_t mirrored = 0;    ///< whose mirror ray did
     uint32_t mirrors = 0;     ///< gaussians of polished metal, shown as mirrors
     double   treeMs = 0.0;    ///< the tree over the cloud
     double   seenMs = 0.0;    ///< the rays
+};
+
+/// A LAMP NOBODY PATH TRACED, added to a found scene a gaussian (scene_glass.slang's `sceneLit`): a sphere
+/// of `radius` at `position` sending `radiance` (UsdLux's intensity times colour, not normalised), within a
+/// cone about `axis` where `cone` (the cosine of its half angle) is over -1.5; or a distant light `position`
+/// points towards, whose `radiance` is the irradiance it lays on a surface facing it, over pi.
+struct SceneLamp {
+    std::array<float, 3> position{0.0F, 0.0F, 0.0F};
+    float                radius = 0.1F;
+    std::array<float, 3> axis{0.0F, -1.0F, 0.0F};
+    float                cone = -2.0F;
+    std::array<float, 3> radiance{1.0F, 1.0F, 1.0F};
+    bool                 distant = false;
 };
 
 class SceneGlass {
@@ -55,10 +74,18 @@ public:
     [[nodiscard]] Result<GlassSeen> see(const Projection& projection, scene::GpuSplats& cloud,
                                         const gpu::Buffer& matter);
 
+    /// The lamps `see` adds to what is neither glass nor a mirror before the
+    /// glass is shown the room (so it shows the room lit); `only` leaves out
+    /// the light the scene was found under. `matter` then holds an opaque
+    /// gaussian's base colour.
+    [[nodiscard]] Result<void> setLamps(std::span<const SceneLamp> lamps, bool only);
+
 private:
     gpu::ShaderLibrary* library_ = nullptr;
-    gpu::ComputeKernel  gather_, seen_;
-    gpu::Buffer         counters_;
+    gpu::ComputeKernel  gather_, seen_, lit_;
+    gpu::Buffer         counters_, lamps_;
+    uint32_t            lampCount_ = 0;
+    bool                lampsOnly_ = false;
     std::optional<GaussianRayTracer> tracer_;
 };
 
