@@ -23,6 +23,7 @@ parser.add_argument("--athenea", required=True)
 parser.add_argument("--scene", required=True)
 parser.add_argument("--out", required=True)
 parser.add_argument("--exposure", default="")
+parser.add_argument("--levels", default="", help="budgets of gaussians for levels of detail of the scene itself (export --levels): what a player draws first")
 parser.add_argument("more", nargs="*", help="more options for export, after --")
 args = parser.parse_args()
 
@@ -54,6 +55,24 @@ for group in groups:
 index_path = args.out + ".json"
 index = json.load(open(index_path))
 index["groups"] = named
+# LEVELS OF DETAIL WITH THE LAMPS ON. The scene's own parts hold its light alone -- the player adds each
+# group's at the level its panel sets -- but a level of detail is drawn as it is, and it is what a player draws
+# first: its levels are made of the scene with every group at one, so the picture does not go from unlit to
+# lit when the whole scene arrives. That export's own parts are not kept.
+if args.levels:
+    lit = args.out + "_lit"
+    export(lit, ["--group", "*=1", "--levels", args.levels])
+    lit_index = json.load(open(lit + ".json"))
+    index["levels"] = lit_index.get("levels", [])
+    kept = set()
+    for level in index["levels"]:
+        for part in level.get("parts", []):
+            part = part if isinstance(part, dict) else {"file": part}
+            kept.update(f for f in (part.get("file"), (part.get("glass") or {}).get("file"), (part.get("mirror") or {}).get("file")) if f)
+    folder = os.path.dirname(os.path.abspath(lit))
+    for name in os.listdir(folder):
+        if name.startswith(os.path.basename(lit)) and name not in kept:
+            os.remove(os.path.join(folder, name))
 # And, where the scene keeps them, its base colours: what the player's own lamp is multiplied by. No exposure:
 # a base colour is a share, not a light.
 if manifest.get("baseColour"):

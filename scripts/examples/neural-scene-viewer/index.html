@@ -152,7 +152,7 @@
     import { SparkRenderer, SplatMesh, SparkControls, dyno } from "@sparkjsdev/spark";
 
     const params = new URLSearchParams(location.search);
-    const name = (params.get("scene") ?? "sponza_growth").replace(/[^\w-]/g, "");
+    const name = (params.get("scene") ?? window.__sceneName ?? "sponza_growth").replace(/[^\w-]/g, "");
     const $ = (id) => document.getElementById(id);
     const status = $("stats");
     const slider = $("frame");
@@ -210,7 +210,20 @@
       renderer.setSize(innerWidth, innerHeight);
     });
 
-    const readIndex = async () => (await fetch(`./scenes/${name}.json`, { cache: "no-store" })).json();
+    // WHERE THE SCENE'S FILES ARE: beside the page (./scenes/), at another address (?base=https://.../scenes/),
+    // or in a folder the reader opened (a standalone page read from the disk: window.__sceneFiles, a map of a
+    // file's name to its URL, which the page's opener fills). A part is named to Spark as well as addressed:
+    // a folder's URL carries no extension to tell a format by.
+    const base = (() => {
+      const said = params.get("base");
+      if (!said) return "./scenes/";
+      try { const at = new URL(said, location.href); return at.protocol === "https:" || at.protocol === "http:" ? at.href.replace(/\/?$/, "/") : "./scenes/"; }
+      catch { return "./scenes/"; }
+    })();
+    const urlOf = (file) => window.__sceneFiles?.get(file) ?? `${base}${file}`;
+    const splatOf = (file, more = {}) => new SplatMesh({ url: urlOf(file), fileName: file, ...more });
+    const began = performance.now();
+    const readIndex = async () => (await fetch(urlOf(`${name}.json`), { cache: "no-store" })).json();
 
     try {
       let index = await readIndex();
@@ -248,6 +261,14 @@
                                 // stands to the end (until 0), and its history's, each until a frame
       let shaded = [];          // and their glass and mirrors: [{ mesh, kind, shading, until }]
       let generation = 0;       // what is being loaded: a change of detail leaves the older load behind
+      // COARSE FIRST. Where the scene has levels of detail, the coarsest is read and drawn first -- a small
+      // file, a picture at once -- and the detail the device is to draw is read behind it, out of the scene,
+      // and takes its place when it is whole: `outgoing` is what stays drawn meanwhile, `staging` where the
+      // next is gathered.
+      const staging = new THREE.Group();
+      let outgoing = [];
+      let keeping = false;
+      const letGo = (list) => { for (const m of list) { m.mesh.parent?.remove(m.mesh); m.mesh.dispose?.(); } };
       let cameras = new Map((index.cameras ?? []).map((c) => [c.name, c]));
       let shown = 0;            // parts drawn: the scene as it stood after that many
       let atEnd = true;         // the timeline is at its end: new parts are shown as they arrive
@@ -291,10 +312,10 @@
       }));
       window.__groups = groups;
       const setGroup = (g) => g.gain.value.set(g.level * g.tint[0], g.level * g.tint[1], g.level * g.tint[2]);
-      const groupTexture = async (url) => {
+      const groupTexture = async (file) => {
         // The group's part, read for its colours alone and let go: Spark's packed splat keeps a colour in
         // the first word of four, a byte a channel.
-        const read = new SplatMesh({ url });
+        const read = splatOf(file);
         await read.initialized;
         const packed = read.packedSplats?.packedArray;
         const count = read.packedSplats?.numSplats ?? 0;
@@ -327,7 +348,7 @@
       const lampGain = Math.pow(2, Number(index.exposure) || 0);
       const setLamp = () => lamp.sends.value.set(...lamp.tint.map((c) => (lamp.on ? lamp.level * lampGain * c : 0)));
       if (index.base) {
-        try { lamp.parts = (await (await fetch(`./scenes/${index.base}.json`, { cache: "no-store" })).json()).parts; }
+        try { lamp.parts = (await (await fetch(urlOf(`${index.base}.json`), { cache: "no-store" })).json()).parts; }
         catch (error) { lamp.parts = null; }
       }
       const groupLight = (textures, base) => dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
@@ -370,7 +391,7 @@
       });
       for (const g of groups) {
         // Each group's own index: its parts are the scene's, one for one.
-        try { g.parts = (await (await fetch(`./scenes/${g.stem}.json`, { cache: "no-store" })).json()).parts; }
+        try { g.parts = (await (await fetch(urlOf(`${g.stem}.json`), { cache: "no-store" })).json()).parts; }
         catch (error) { g.parts = null; }
       }
       // A row a group in the panel: its level, and a tint over the colour it was shot with.
@@ -638,14 +659,14 @@
               // extSplats: Spark's packed splat keeps a centre in three half floats, a part in 2048 of its
               // distance from the origin -- a centimetre in a stage of centimetres twenty metres across -- and
               // gaussians a millimetre wide fell into rows with gaps between them, seen from near.
-              const mesh = new SplatMesh({ url: `./scenes/${span.file}`, extSplats: true });
+              const mesh = splatOf(span.file, { extSplats: true });
               await mesh.initialized;
               const grouped = groups.length > 0 && groups.every((g) => g.parts?.[meshes.length]?.file);
               const based = lamp.parts?.[meshes.length]?.file;
               if (span === part && detail === 0 && (grouped || based)) {
                 const textures = [];
-                if (grouped) for (const g of groups) textures.push(await groupTexture(`./scenes/${g.parts[meshes.length].file}`));
-                const base = based ? await groupTexture(`./scenes/${based}`) : null;
+                if (grouped) for (const g of groups) textures.push(await groupTexture(g.parts[meshes.length].file));
+                const base = based ? await groupTexture(based) : null;
                 mesh.worldModifier = groupLight(textures, base);
                 mesh.updateGenerator();
               }
@@ -653,25 +674,47 @@
             }
             for (const [which, made] of [["glass", span.glass], ["mirror", span.mirror]]) {
               if (!made) continue;
-              const other = new SplatMesh({ url: `./scenes/${made.file}`, extSplats: true });
+              const other = splatOf(made.file, { extSplats: true });
               await other.initialized;
               beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0,
                             shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1])) });
             }
           }
           if (mine !== generation) { for (const m of [...own, ...beside]) m.mesh.dispose?.(); break; }
-          for (const m of [...own, ...beside]) { m.mesh.visible = false; root.add(m.mesh); }
+          for (const m of [...own, ...beside]) { m.mesh.visible = false; (keeping ? staging : root).add(m.mesh); }
           meshes.push(own);
           shaded.push(beside);
           applyShading();
           window.__scene.parts = meshes.length;
-          report(meshes.length < parts.length ? `loading… ${meshes.length} of ${parts.length} parts` : summary());
-          if (detail === 0 && atEnd && !playing) show(meshes.length, true);
-          else show(cursor, false);
+          report(meshes.length < parts.length
+                 ? `${keeping ? "refining" : "loading"}… ${meshes.length} of ${parts.length} parts` : summary());
+          if (!keeping) {
+            if (detail === 0 && atEnd && !playing) show(meshes.length, true);
+            else show(cursor, false);
+            if (window.__player.firstMs === undefined) window.__player.firstMs = Math.round(performance.now() - began);
+          }
         }
         if (mine === generation) {
+          if (keeping) {
+            // The finer detail is whole: it comes into the scene and what stood for it goes.
+            for (const m of [...meshes, ...shaded].flat()) root.add(m.mesh);
+            letGo(outgoing);
+            outgoing = [];
+            keeping = false;
+            applyShading();
+            if (detail === 0 && atEnd && !playing) show(meshes.length, true);
+            else show(cursor, false);
+          }
           loading = false;
           window.__scene.loaded = true;
+          if (window.__player.then !== undefined) {
+            // The coarse level is in: now the detail asked for, behind it.
+            const next = window.__player.then;
+            window.__player.then = undefined;
+            window.__player.coarseMs = Math.round(performance.now() - began);
+            if (next !== detail) { setDetail(next, true); return; }
+          }
+          window.__player.wholeMs = Math.round(performance.now() - began);
           // Spark's ray through the gaussians starts itself on the first one asked and answers from the
           // second: one is asked here, so that the first finger laid on the scene finds what is under it.
           const first = meshes.flat()[0];
@@ -683,15 +726,20 @@
 
       // THE DETAIL DRAWN. The scene as it grew, or one of its levels of detail: what was drawn is let go and
       // the other read in its place. The timeline is the grown scene's; a level is the scene whole.
-      const setDetail = (wanted) => {
+      const setDetail = (wanted, keep = false) => {
         const next = Math.max(0, Math.min(wanted, levels.length));
         generation += 1;
         loading = false;
-        for (const list of [...meshes, ...shaded]) for (const m of list) { root.remove(m.mesh); m.mesh.dispose?.(); }
+        // What was being gathered behind the scene is let go; what is drawn stays until the next is whole
+        // (`keep`), or goes now.
+        if (keeping) letGo([...meshes, ...shaded].flat());
+        else if (keep) outgoing = [...outgoing, ...[...meshes, ...shaded].flat()];
+        else letGo([...meshes, ...shaded].flat());
+        if (!keep) { letGo(outgoing); outgoing = []; }
+        keeping = keep && outgoing.length > 0;
         meshes = [];
         shaded = [];
-        shown = 0;
-        cursor = 0;
+        if (!keeping) { shown = 0; cursor = 0; }
         atEnd = true;
         setPlaying(false);
         detail = next;
@@ -700,7 +748,7 @@
         window.__scene.parts = 0;
         window.__player.detail = detail;
         $("optDetail").value = settings.detail === "auto" ? "auto" : String(detail);
-        show(0, false);
+        if (!keeping) show(0, false);
         loadMore();
       };
       // WHAT THE DEVICE CAN HOLD: gaussians it is trusted to draw at a frame rate worth having. A phone a
@@ -737,7 +785,7 @@
         if (settings.detail === "auto" && !loading && !playing && !document.hidden && fps < 15 && detail < levels.length) {
           window.__player.lowered += 1;
           $("detailNote").textContent = `${fps.toFixed(0)} frames a second at ${detail === 0 ? "full detail" : "level " + detail}: a coarser level is drawn.`;
-          setDetail(detail + 1);
+          setDetail(detail + 1, true);   // what is drawn stays until the coarser level is in
         }
       };
 
@@ -764,7 +812,7 @@
       // The scenes there are to see, where the site lists them (scenes/scenes.json).
       const sceneSelect = $("optScene");
       sceneSelect.append(new Option(index.title ?? name, name));
-      fetch("./scenes/scenes.json", { cache: "no-store" }).then((r) => r.ok ? r.json() : []).then((list) => {
+      fetch(urlOf("scenes.json"), { cache: "no-store" }).then((r) => r.ok ? r.json() : []).then((list) => {
         if (!Array.isArray(list) || list.length === 0) return;
         sceneSelect.replaceChildren(...list.map((s) => new Option(s.title ?? s.name, s.name)));
         if (!list.some((s) => s.name === name)) sceneSelect.append(new Option(name, name));
@@ -961,8 +1009,18 @@
 
       overview();
       drawPath();
-      setDetail(settings.detail === "auto" ? autoDetail()
-                : settings.detail === "full" ? 0 : Number(settings.detail) || 0);
+      {
+        // The detail to end at, and -- where there is a coarser level than that, and the scene is not still
+        // being rendered -- the coarsest first (?progressive=0: the detail asked for, as it comes).
+        const wanted = settings.detail === "auto" ? autoDetail() : settings.detail === "full" ? 0 : Number(settings.detail) || 0;
+        const coarse = levels.length;
+        if (coarse > 0 && wanted !== coarse && !index.growing && params.get("progressive") !== "0") {
+          window.__player.then = wanted;
+          setDetail(coarse);
+        } else {
+          setDetail(wanted);
+        }
+      }
       $("overview").addEventListener("click", () => { follow.checked = false; overview(); show(cursor, false); });
       follow.addEventListener("change", () => show(cursor, true));
 

@@ -23654,3 +23654,31 @@ athenea-research's proposal 117), which is what would let a path that ends early
 kernel's loop. The cells hold only what a camera has seen: a bounce that lands behind the walk finds nothing, and
 nothing fills the cells from the paths themselves. A cell is 23 cm in Sponza and holds one mean for both sides of
 anything thinner. Off by default.
+
+## The player draws the coarsest level first, and the player as one file (15 Nov)
+
+**What changed.** Where a scene's index carries levels of detail, the viewer page reads and draws the coarsest
+first and gathers the detail the device is to draw out of the scene, which takes the coarse level's place when it
+is whole (`setDetail(n, keep)`: `outgoing` stays drawn, `staging` gathers); the fall to a coarser level when frames
+are slow keeps what is drawn the same way. Every address of a scene's file goes through one function (`urlOf`):
+beside the page, at `?base=`, or a folder's files by their names. `make_standalone.py` writes the page as one
+file: each module's source as text in the page, an object URL of each made in the order they import one another
+with the importer's specifier rewritten, Spark's WebAssembly as base64 handed to it in place of the file it fetches
+beside itself. Spark's WebGPU half is left out.
+
+**Measured** (headless Chrome on the Mac, files from a server on the same machine, so no network to speak of):
+
+| scene | the page before: the scene whole | coarsest level drawn | whole, coarse first |
+|---|---|---|---|
+| chrome2, 11.8 M gaussians, one level of 2.8 M | 7.8 s | 1.1 s | 6.0 s |
+| Sponza at 1080p with two lamps, 8.4 M, one level of 1.9 M | 14.0 s | 0.85 s | 13.6 s |
+
+The one file reads the same as the page (first picture 0.55 s, coarse 1.2 s, whole 5.9 s on chrome2), with no error.
+
+**A level of detail is drawn with its lamps on.** A scene's own parts hold its light alone and the page adds each
+group's; a level made of them was the scene unlit, and the picture went from dark to lit when the whole arrived.
+`export_groups.py --levels` makes the levels of the scene with every group at 1.
+
+**Not done.** No figure at a connection's speed: the throttle of the browser's protocol did not reach Spark's
+fetches (the whole scene in 8 s at a nominal 50 Mbit/s, which 250 MB cannot do). The one file opened from a disk,
+with its folder picker, was not exercised. A level of detail has no controls of light (NEU28). Not opened on a phone.
