@@ -23353,3 +23353,20 @@ knights, 0.4 s each), direct light with one matt bounce. Not done: the two toget
 the stage's known lamps out of the light it keeps, so that what is stored is the light that does not move
 and the lamps are worked out; that is what "the material apart from the light of each moment" asks for in
 full, and it needs the lamps' own share of a frame, which the path tracer does not hand over yet.
+
+**A correction to the Sponza figures of `--lamps`** (15 Nov). `sponza_knights.usda` authors no light: the
+scene was found under the engine's default lights (a sky of 0.6 and a sun of 2.5), and those go when a
+layer adds a lamp. The stage "with the lamps" is lit by the lamps *alone*, and what compares with it is the
+scene with `--lamps-only`, not the found light and the lamps together:
+
+| view | found light and lamps (as tabled above) | the lamps only: dB, SSIM |
+|---|---|---|
+| k10 | 26.64 | 25.32, 0.788 |
+| k45 | 21.26 | 21.05, 0.632 |
+| a | 24.45 | 23.73, 0.758 |
+| b | 22.68 | 22.17, 0.706 |
+
+The found light (a tenth of the lamps' in the mean) stood in for some of the bounce the lamps' light lacks,
+and read half a dB to 1.3 better than it should. The relit pass and the fresh shoot of that section are not
+touched by this: both are the stage with the lamps, as the reference is. The materials stage has lights of
+its own and its figures stand. `qa_relight.py` now tables the lamps alone beside the rest.

@@ -175,13 +175,18 @@ def image_of(stem, view):
     return os.path.join(out, "%s_%s.exr" % (stem, view))
 
 
+# A STAGE THAT AUTHORS NO LIGHT OF ITS OWN is lit by the engine's default lights, and those go when a layer
+# adds a lamp: the stage with the lamps is then lit by the lamps alone, and what compares with it is the scene
+# with the lamps *only* -- the last column. For a stage with lights of its own it is the third.
 report += ["", "| view | found, against the stage with lamps: dB, SSIM | with the lamps: dB, SSIM | mean light: scene with "
-           "lamps, stage with lamps | with the lamps against one bounce: dB |", "|---|---|---|---|---|"]
+           "lamps, stage with lamps | with the lamps against one bounce: dB | the lamps only, against the stage with "
+           "lamps: dB, SSIM |", "|---|---|---|---|---|---|"]
 for view in names:
     before = measure(image_of("found", view), os.path.join(whole, "%s.exr" % view))
     after = measure(image_of("lit", view), os.path.join(whole, "%s.exr" % view))
     alone = measure(image_of("lit", view), os.path.join(direct, "%s.exr" % view))
-    report.append("| %s | %s, %s | %s, %s | %s, %s | %s |" % (view, before[0], before[1], after[0], after[1],
-                                                           after[2], after[3], alone[0]))
+    only = measure(image_of("lamps", view), os.path.join(whole, "%s.exr" % view))
+    report.append("| %s | %s, %s | %s, %s | %s, %s | %s | %s, %s |" % (view, before[0], before[1], after[0], after[1],
+                                                                    after[2], after[3], alone[0], only[0], only[1]))
 open(os.path.join(out, "report.md"), "w").write("\n".join(report) + "\n")
 print("\n".join(report))
