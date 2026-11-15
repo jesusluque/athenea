@@ -88,7 +88,7 @@ public:
 private:
     gpu::ShaderLibrary* library_ = nullptr;
     gpu::ComputeKernel  gather_, seen_, lit_, shown_;
-    gpu::Buffer         counters_, lamps_, lampLight_;
+    gpu::Buffer         counters_, lamps_, lampLight_, spare_;
     uint32_t            shadowRays_ = 8, bounceRays_ = 16;
     uint32_t            lampCount_ = 0;
     bool                lampsOnly_ = false;

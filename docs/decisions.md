@@ -23284,3 +23284,20 @@ keep their old light, so a level of detail drawn from them shows it; `export` an
 read the layers; 119 000 gaussians more stand after the relit pass of Sponza than before it, not looked at;
 a surface whose material changed in place has its colour said anew and its material left as it was; a layer
 is not thinned by what a later one says of the same gaussian; CUDA and Vulkan are not run.
+
+**A lamp's highlight** (the same day, after the layers). `sceneLit` adds, towards the eye the scene is cut
+for, a GGX lobe at each gaussian's roughness: 0.04 of reflectance head on for what is not metal, the base
+colour for a rough metal (which is now lit by that alone: it has no matt share); a sphere's highlight is
+widened by the angle the lamp shows and thinned to keep what it sends. It is left out of what the bounce
+gathers.
+
+| view | `--lamps` before the highlight: dB, SSIM | with it |
+|---|---|---|
+| Sponza k10 | 25.79, 0.793 | 26.64, 0.810 |
+| k45 | 21.04, 0.655 | 21.26, 0.656 |
+| a | 23.92, 0.768 | 24.45, 0.786 |
+| b | 22.41, 0.734 | 22.68, 0.744 |
+| materials h0..h3 | 25.49, 24.02, 24.44, 23.20 | 25.76, 24.53, 24.77, 23.31 |
+
+Sponza's mean light with the lamps goes from 0.0195 to 0.0219 at k10, of the stage's 0.0283. 147 ms for the
+lamps where it was 129.

@@ -46,6 +46,9 @@ Result<SceneGlass> SceneGlass::create(gpu::ShaderLibrary& library) {
     auto light = zeroed(library.device(), 1, 16, "glass.lampLight");
     if (!light) return std::move(light).error();
     g.lampLight_ = *light;
+    auto spare = zeroed(library.device(), 1, 16, "glass.spare");
+    if (!spare) return std::move(spare).error();
+    g.spare_ = *spare;
     auto lamps = zeroed(library.device(), 3, 16, "glass.lamps");
     if (!lamps) return std::move(lamps).error();
     g.lamps_ = *lamps;
@@ -97,6 +100,8 @@ Result<void> SceneGlass::gather(const scene::GpuSplats& piece, const gpu::Buffer
         cursor["lamps"].setBinding(lamps_.rhi());
         cursor["lampLight"].setBinding(counters_.rhi());
         cursor["lampLit"].setBinding(lamps_.rhi());
+        cursor["lampShine"].setBinding(spare_.rhi());
+        cursor["lampShone"].setBinding(lamps_.rhi());
         cursor["flags"].setBinding(plan.flags.rhi());
         cursor["places"].setBinding(plan.places.rhi());
         cursor["pbrOut"].setBinding(into.pbr.rhi());
@@ -178,6 +183,9 @@ Result<GlassSeen> SceneGlass::see(const Projection& projection, scene::GpuSplats
         cursor["params"]["linearCloud"].setData(uint32_t{cloud.linear ? 1u : 0u});
         cursor["params"]["lamps"].setData(lampCount_);
         cursor["params"]["lampsOnly"].setData(uint32_t{lampsOnly_ ? 1u : 0u});
+        cursor["params"]["eyeX"].setData(static_cast<float>(projection.eyeWorld.x));
+        cursor["params"]["eyeY"].setData(static_cast<float>(projection.eyeWorld.y));
+        cursor["params"]["eyeZ"].setData(static_cast<float>(projection.eyeWorld.z));
         cursor["params"]["shadowRays"].setData(shadowRays_);
         cursor["params"]["bounceRays"].setData(bounceRays_);
     };
@@ -187,11 +195,15 @@ Result<GlassSeen> SceneGlass::see(const Projection& projection, scene::GpuSplats
         auto light = zeroed(device, cloud.count, 16, "glass.lampLight");
         if (!light) return std::move(light).error();
         lampLight_ = *light;
+        auto shine = zeroed(device, cloud.count, 16, "glass.lampShine");
+        if (!shine) return std::move(shine).error();
         gpu::CommandBatch lighting(device);
         lit_.dispatch(lighting, {cloud.count, 1, 1}, [&](rhi::ShaderCursor cursor) {
             bindScene(cursor);
             cursor["lampLight"].setBinding(lampLight_.rhi());
             cursor["lampLit"].setBinding(lamps_.rhi());
+            cursor["lampShine"].setBinding(shine->rhi());
+            cursor["lampShone"].setBinding(lamps_.rhi());
         });
         ATHENEA_TRY(lighting.submit(true));
         result.litMs = msSince(traced);
@@ -201,6 +213,8 @@ Result<GlassSeen> SceneGlass::see(const Projection& projection, scene::GpuSplats
             bindScene(cursor);
             cursor["lampLight"].setBinding(counters_.rhi());
             cursor["lampLit"].setBinding(lampLight_.rhi());
+            cursor["lampShine"].setBinding(spare_.rhi());
+            cursor["lampShone"].setBinding(shine->rhi());
         });
         ATHENEA_TRY(showing.submit(true));
         std::array<uint32_t, 4> counted{};
@@ -226,6 +240,8 @@ Result<GlassSeen> SceneGlass::see(const Projection& projection, scene::GpuSplats
         cursor["lamps"].setBinding(lamps_.rhi());
         cursor["lampLight"].setBinding(counters_.rhi());
         cursor["lampLit"].setBinding(lamps_.rhi());
+        cursor["lampShine"].setBinding(spare_.rhi());
+        cursor["lampShone"].setBinding(lamps_.rhi());
         cursor["flags"].setBinding(cloud.pbr.rhi());
         cursor["places"].setBinding(cloud.pbr.rhi());
         cursor["pbrOut"].setBinding(counters_.rhi());

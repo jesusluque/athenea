@@ -55,6 +55,8 @@ StructuredBuffer<uint>     bvhLeaves;
 StructuredBuffer<float4>   lamps;        // sceneLit: three float4 a lamp (below)
 RWStructuredBuffer<float4> lampLight;    // sceneLit writes it: the lamps' light leaving each gaussian (rgb)
 StructuredBuffer<float4>   lampLit;      // sceneShown reads the same
+RWStructuredBuffer<float4> lampShine;    // sceneLit writes it: the lamps' highlight a gaussian, towards the eye
+StructuredBuffer<float4>   lampShone;    // sceneShown reads the same
 RWStructuredBuffer<uint>   counters;     // glass gaussians, rays behind that met the room, rays mirrored that did, mirrors
 // glassGather
 StructuredBuffer<uint>     flags;
@@ -249,8 +251,12 @@ void glassSeen(uint3 tid: SV_DispatchThreadID) {
 // direct light of the first gaussian it meets: one bounce of the lamps' light, off the scene itself -- and
 // writes the gaussian's colour: the light it was found under, the lamps' and their bounce.
 //
-// Matt only: a lamp leaves no highlight, and what a rough metal shows of it is its base colour's share, as
-// if matt. Glass and mirrors are left as they are: `glassSeen`, run after, shows them the room as now lit.
+// AND A HIGHLIGHT, towards the eye the scene is cut for: a GGX lobe at the gaussian's roughness, 0.04 of
+// reflectance head on for what is not metal and the base colour for what is (a rough metal is lit by its
+// highlight alone: it has no matt share). A sphere's highlight is widened by the angle the lamp shows, and
+// thinned to keep what it sends (Karis' roughness of a sphere light). It is not gathered: the bounce reads
+// the matt light alone. Glass and mirrors are left as they are: `glassSeen`, run after, shows them the room
+// as now lit.
 uint lampHash(uint x) {
     x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
     return x;
@@ -299,6 +305,7 @@ void sceneLit(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     lampLight[i] = float4(0.0);
+    lampShine[i] = float4(0.0);
     const LitGaussian g = litGaussian(i);
     if (!g.matt) {
         return;
@@ -306,7 +313,13 @@ void sceneLit(uint3 tid: SV_DispatchThreadID) {
     const float3 base = matter[i].rgb;
     const float step = max(g.widest, 1.0e-5);
     const uint rays = max(params.shadowRays, 1u);
+    const bool metal = pbrMetallic(pbr[i]) >= 0.5;
+    const float3 head = metal ? base : float3(0.04);
+    const float rough = clamp(pbrRoughness(pbr[i]), 0.03, 1.0);
+    const float3 eyeward = normalize(float3(params.eyeX, params.eyeY, params.eyeZ) - g.p);
+    const float facesEye = dot(g.n, eyeward);
     float3 added = float3(0.0);
+    float3 shine = float3(0.0);
     for (uint k = 0u; k < params.lamps; ++k) {
         const float4 where = lamps[k * 3u];
         const float4 axis = lamps[k * 3u + 1u];
@@ -354,9 +367,33 @@ void sceneLit(uint3 tid: SV_DispatchThreadID) {
                                                max(reach - step, 0.0), 0.5, g.p, facing, 4.0 * g.widest, hit);
             seen += met.found ? 0.0 : 1.0;
         }
-        added += arrives * cosine * (seen / float(rays));
+        const float reached = seen / float(rays);
+        if (!metal) {
+            added += arrives * cosine * reached;
+        }
+        if (facesEye > 1.0e-3 && reached > 0.0) {
+            // What arrives is E = arrives x pi x cosine; the lobe is D V F.
+            float alpha = rough * rough;
+            float kept = 1.0;
+            if (!distant) {
+                const float wider = saturate(alpha + where.w / (2.0 * max(far, 1.0e-6)));
+                kept = (alpha / wider) * (alpha / wider);
+                alpha = wider;
+            }
+            const float3 half = normalize(towards + eyeward);
+            const float nh = saturate(dot(g.n, half));
+            const float vh = saturate(dot(eyeward, half));
+            const float a2 = alpha * alpha;
+            const float bottom = nh * nh * (a2 - 1.0) + 1.0;
+            const float d = a2 / (3.14159265 * bottom * bottom);
+            const float v = 0.5 / max(cosine * sqrt(facesEye * facesEye * (1.0 - a2) + a2) +
+                                      facesEye * sqrt(cosine * cosine * (1.0 - a2) + a2), 1.0e-5);
+            const float3 f = head + (float3(1.0) - head) * pow(1.0 - vh, 5.0);
+            shine += f * (d * v * kept * 3.14159265 * cosine * reached) * arrives;
+        }
     }
     lampLight[i] = float4(base * added, 1.0);
+    lampShine[i] = float4(shine, 1.0);
     InterlockedAdd(counters[0], 1u);
 }
 
@@ -392,10 +429,11 @@ void sceneShown(uint3 tid: SV_DispatchThreadID) {
                 InterlockedAdd(counters[1], 1u);
             }
         }
-        gathered *= matter[i].rgb / float(params.bounceRays);
+        gathered *= (pbrMetallic(pbr[i]) >= 0.5 ? float3(0.0) : matter[i].rgb) / float(params.bounceRays);
     }
     const uint row = i * 4u;
-    const float3 lit = (params.lampsOnly != 0u ? float3(0.0) : lightOf(i)) + lampLit[i].rgb + gathered;
+    const float3 lit = (params.lampsOnly != 0u ? float3(0.0) : lightOf(i)) + lampLit[i].rgb + gathered +
+                       lampShone[i].rgb;
     const float3 put = params.linearCloud != 0u ? lit : linearToSrgb(lit);
     shape[row + 2u] = packHalves(lowHalf(shape[row + 2u]), put.r);
     shape[row + 3u] = packHalves(put.g, put.b);
