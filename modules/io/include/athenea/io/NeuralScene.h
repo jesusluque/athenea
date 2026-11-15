@@ -172,6 +172,11 @@ struct NeuralScene {
     std::string name;
     std::string upAxis = "Y";             ///< "Y" | "Z"
     double      metersPerUnit = 1.0;
+    /// How the scene's gaussians are drawn: with the Mip-Splatting 2D filter's
+    /// compensation (a gaussian spread a third of a pixel pays for it in
+    /// opacity), or without it (`false`: spread and as opaque as it was made,
+    /// which is what closes a surface of discs narrower than a pixel).
+    bool        antialiased = true;
     std::string source;                   ///< the stage the pieces were converted from
     std::string licence;                  ///< what the source asks of whoever uses it
     std::vector<NeuralScenePiece>  pieces;

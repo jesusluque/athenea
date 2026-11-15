@@ -115,6 +115,9 @@ struct SceneOptions {
     float                    growExposure = 0.0F;
     float                    morph = 0.0F;
     bool                     glass = false;
+    bool                     noAntialias = false;
+    bool                     antialias = false;       // shoot: a new scene drawn with the 2D filter's compensation
+    float                    shootSpread = 0.5F;      // shoot's own default: half a cell
     float                    exposure = 0.0F;
     // shoot
     std::string              stage;
@@ -147,6 +150,14 @@ bool sizeOf(const std::string& text, uint32_t& width, uint32_t& height) {
 bool renderRecordOf(uint32_t floats) {
     return floats == render::kRenderRecord || floats == render::kRenderRecordParent ||
            floats == render::kRenderRecordParentColour;
+}
+
+/// HOW THE SCENE AT HAND IS DRAWN (io::NeuralScene::antialiased), for every cloud this command loads or
+/// makes of it: unset, as the rasteriser's settings say; `false`, without the 2D filter's compensation.
+/// Set once the manifest is read; a cloud carries it from there (scene::GpuSplats::antialiased).
+std::optional<bool> drawnAs;
+void drawAs(const io::NeuralScene& scene) {
+    drawnAs = scene.antialiased ? std::optional<bool>{} : std::optional<bool>{false};
 }
 
 /// With `parent`, a render's piece also gives the width of what each gaussian was laid over (left
@@ -210,6 +221,7 @@ Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& l
         raw.encoding = render::Discovery::renderEncoding();
         raw.encoding.floatsPerRecord = held->floats;
         raw.records = std::move(held->records);
+        raw.antialiased = drawnAs;
         loader.keepFaint(true);   // a record of what is gone counts every gaussian the file holds
         auto cloud = loader.upload(raw, 0);
         loader.keepFaint(false);
@@ -475,6 +487,7 @@ int runAdd(const SceneOptions& o) {
         auto read = io::readNeuralScene(directory);
         if (!read) return report(read.error());
         scene = std::move(*read);
+        drawAs(scene);
     } else {
         scene.name = directory.stem().string();
     }
@@ -571,6 +584,7 @@ int runAdd(const SceneOptions& o) {
 int runCamera(const SceneOptions& o) {
     auto scene = io::readNeuralScene(o.directory);
     if (!scene) return report(scene.error());
+    drawAs(*scene);
     if (o.camera.empty() || o.eye.size() != 3 || o.target.size() != 3) {
         err("a camera wants --name, --eye x y z and --target x y z\n");
         return kExitFailure;
@@ -592,6 +606,7 @@ int runCamera(const SceneOptions& o) {
 int runInfo(const SceneOptions& o) {
     auto scene = io::readNeuralScene(o.directory);
     if (!scene) return report(scene.error());
+    drawAs(*scene);
     std::array<float, 3> min{};
     std::array<float, 3> max{};
     scene->bounds(min, max);
@@ -653,6 +668,7 @@ int runFit(const SceneOptions& o) {
     const std::filesystem::path directory = o.directory;
     auto scene = io::readNeuralScene(directory);
     if (!scene) return report(scene.error());
+    drawAs(*scene);
     auto device = gpu::Device::create();
     if (!device) return report(device.error());
     gpu::ShaderLibrary library(*device);
@@ -824,6 +840,7 @@ int runLook(const SceneOptions& o) {
     const std::filesystem::path directory = o.directory;
     auto scene = io::readNeuralScene(directory);
     if (!scene) return report(scene.error());
+    drawAs(*scene);
     if (o.camera.empty() || o.time < 0.0) {
         err("a look wants --camera, one of the manifest's, and --time\n");
         return kExitFailure;
@@ -958,6 +975,7 @@ int runDiscover(const SceneOptions& all) {
         auto read = io::readNeuralScene(directory);
         if (!read) return report(read.error());
         scene = std::move(*read);
+        drawAs(scene);
     }
     auto device = gpu::Device::create();
     if (!device) return report(device.error());
@@ -1346,7 +1364,7 @@ Result<uint64_t> writeSpzPart(gpu::Device& device, render::Discovery& discovery,
     // A gaussian a look made has one colour: no harmonics above the first are written.
     header.shDegree = 0;
     header.fractionalBits = stats->fractionalBits;
-    header.antialiased = render::RenderSettings{}.antialias;
+    header.antialiased = drawnAs.value_or(render::RenderSettings{}.antialias);
     streams->streams[5].clear();
     ATHENEA_TRY(io::writeSpz(path, header, streams->streams));
     for (size_t axis = 0; axis < 3; ++axis) {
@@ -1497,10 +1515,18 @@ int runShoot(const SceneOptions& all) {
     if (!sizeOf(all.size, width, height)) return kExitFailure;
     const std::filesystem::path directory = all.directory;
     io::NeuralScene scene;
+    // A NEW SCENE IS DRAWN WITHOUT THE 2D FILTER'S COMPENSATION, and its discs are half a cell wide. The
+    // compensation pays for a third of a pixel of spread in opacity, and a disc of a pixel or less pays
+    // most of what it has: at a cell wide the discs overlapped enough to close a surface all the same, and
+    // the frame was the scene low-passed (24 dB through its own camera); narrower, they were sharp and thin.
+    // Spread and not thinned, half a cell wide closes the surface and keeps the frame (29 dB). A scene that
+    // is there already is drawn as its manifest says.
+    scene.antialiased = all.antialias;
     if (std::filesystem::exists(directory / "scene.json")) {
         auto read = io::readNeuralScene(directory);
         if (!read) return report(read.error());
         scene = std::move(*read);
+        drawAs(scene);
     }
     std::error_code made;
     std::filesystem::create_directories(directory / "pieces", made);
@@ -1527,6 +1553,10 @@ int runShoot(const SceneOptions& all) {
     scene.upAxis = !all.upAxis.empty() ? all.upAxis : std::string(1, stage.upAxis());
     // The stage's own unit, as its up axis: a stage in centimetres left a scene that said metres.
     scene.metersPerUnit = all.metersPerUnit > 0.0 ? all.metersPerUnit : stage.metersPerUnit();
+    // Drawn without the 2D filter's compensation from here on, and by whoever draws the scene after: what
+    // the looks ask of the scene (is this pixel held?) and what a render shows are then the same picture.
+    if (all.noAntialias) scene.antialiased = false;
+    drawAs(scene);
     if (scene.source.empty()) scene.source = all.source.empty() ? all.stage : all.source;
     if (!all.licence.empty()) scene.licence = all.licence;
 
@@ -1722,7 +1752,7 @@ int runShoot(const SceneOptions& all) {
             return ok();
         };
         const render::Projection projection = render::projectionFor(camera, width, height);
-        const float disc = all.spread * static_cast<float>(footprint);
+        const float disc = all.shootSpread * static_cast<float>(footprint);
         uint32_t taken = 0;
         uint32_t refinedNow = 0;
         uint32_t firstThrough = 0;
@@ -1974,7 +2004,7 @@ int runShoot(const SceneOptions& all) {
         }
         render::RenderLookSettings how;
         how.tolerance = all.tolerance;
-        how.spread = all.spread;
+        how.spread = all.shootSpread;
         how.repaint = all.repaint;
         how.refine = all.refine;
         how.footprint = footprint;
@@ -2023,6 +2053,7 @@ int runShoot(const SceneOptions& all) {
                 auto cloud = loader->upload(cells->records, cells->made, render::Discovery::renderEncoding(), piece.cloud, 0);
                 loader->keepFaint(false);
                 if (!cloud) return report(cloud.error());
+                cloud->antialiased = drawnAs;
                 piece.prim = all.stage;
                 piece.gaussians = cloud->count;
                 piece.boundsMin = cloud->bounds.min;
@@ -2057,6 +2088,7 @@ int runShoot(const SceneOptions& all) {
             auto cloud = loader->upload(look->records, look->made, render::Discovery::renderEncoding(), kept, 0);
             loader->keepFaint(false);
             if (!cloud) return report(cloud.error());
+            cloud->antialiased = drawnAs;
             io::NeuralScenePiece piece;
             piece.id = id;
             piece.cloud = kept;
@@ -2412,6 +2444,7 @@ int runBake(const SceneOptions& o) {
     const std::filesystem::path directory = o.directory;
     auto scene = io::readNeuralScene(directory);
     if (!scene) return report(scene.error());
+    drawAs(*scene);
     if (o.output.empty() || !lod::isAthc(o.output)) {
         err("neural-scene bake wants -o a .athc\n");
         return kExitFailure;
@@ -2567,6 +2600,7 @@ int runExport(const SceneOptions& o) {
     const std::filesystem::path directory = o.directory;
     auto scene = io::readNeuralScene(directory);
     if (!scene) return report(scene.error());
+    drawAs(*scene);
     if (o.output.empty()) {
         err("neural-scene export wants -o a path with no extension: <stem>_NNN.spz and <stem>.json\n");
         return kExitFailure;
@@ -2971,6 +3005,7 @@ int runRender(const SceneOptions& given) {
     const std::filesystem::path directory = o.directory;
     auto scene = io::readNeuralScene(directory);
     if (!scene) return report(scene.error());
+    drawAs(*scene);
     if (o.storedFrames.size() == 2) {
         return runRenderStored(o, *scene);
     }
@@ -3125,6 +3160,7 @@ int runRender(const SceneOptions& given) {
         byLatents.push_back(instance);
     }
     render::RenderSettings settings;
+    if (o.noAntialias) settings.antialiasOverride = false;   // dilated and not thinned: a disc narrower than a pixel stays opaque
     settings.width = width;
     settings.height = height;
     render::RenderTargets plain;
@@ -3367,6 +3403,7 @@ void addNeuralScene(CLI::App& app) {
     render->add_option("--frame", o.storedFrame, "a frame the scene stored (neural-scene shoot), counted from one: its camera, its size, the scene as it stood then");
     render->add_option("--lod", o.lod, "levels of detail: a gaussian narrower than this many pixels on the screen is drawn in place of the finer ones laid over it (0: the finest everywhere)");
     render->add_option("--budget", o.budget, "levels of detail by a count: the finest threshold that draws no more than this many gaussians from the view, in place of --lod");
+    render->add_flag("--no-antialias", o.noAntialias, "no Mip-Splatting 2D filter compensation: a gaussian is spread a third of a pixel and keeps its opacity");
     render->add_flag("--glass", o.glass, "solid glass shows what it bends and mirrors of the scene from each view, worked out from what the glass is made of, in place of the picture the look that found it saw");
     render->add_option("--morph", o.morph, "--lod, --budget: a gaussian is moved towards what it was laid over across this share of the threshold before that is drawn in its place (0: a step)");
     render->add_option("--frames", o.storedFrames, "the stored frames FIRST to LAST as pictures, the scene read once: -o a prefix, written <stem>_NNNN.png or .exr")->expected(2);
@@ -3431,10 +3468,12 @@ void addNeuralScene(CLI::App& app) {
     shoot->add_flag("--denoise", o.denoise, "denoise the whole frame before its last look");
     shoot->add_option("--ray-margin", o.rayMargin, "athenea:rayMargin");
     shoot->add_option("--coarsest", o.coarsest, "pixels a side of the first look's cells (a power of two; 1: one look, when the frame is whole)");
-    shoot->add_option("--spread", o.spread, "a gaussian's standard deviation, in cells at its depth");
+    shoot->add_option("--spread", o.shootSpread, "a gaussian's standard deviation, in cells at its depth");
     shoot->add_option("--tolerance", o.tolerance, "a surface is already held where the scene's depth is within this share of the render's");
     shoot->add_option("--refine", o.refine, "a surface held with gaussians more than this many times as wide as this look's is made again, finer");
     shoot->add_option("--repaint", o.repaint, "a surface held whose colour is off the render's by more than this share is made again (0: held by its depth alone)");
+    shoot->add_flag("--antialias", o.antialias, "a new scene is drawn with the Mip-Splatting 2D filter's compensation, by the looks and by whoever draws it after (kept in its manifest); without it, the default, a disc narrower than a pixel stays opaque");
+    shoot->add_flag("--no-antialias", o.noAntialias, "the scene is drawn without the compensation from here on, whatever its manifest says");
     shoot->add_option("--turned", o.turned, "the least a disc's facing is taken as: it is stretched along the surface's fall by no more than 1 over this");
     shoot->add_option("--glass-opacity", o.glassOpacity, "the least a pane covers of what is behind it, however clear");
     shoot->add_option("--name", o.name, "the scene's name");

@@ -22956,3 +22956,56 @@ the scene holds something at the first and the third held view, and how much of 
 
 Not done: the same pass on a second stage; a patchwork that does not depend on the schedule (a gaussian's
 colour as what does not move with the eye, its highlight worked out a view: the lobes are in its record).
+
+## Discs half a cell wide, drawn without the 2D filter's compensation (15 Nov)
+
+**Why a narrow disc was thin.** The rasteriser spreads every gaussian a third of a pixel and, as Mip-Splatting
+does, pays for it in opacity: the square root of its footprint's determinant before over after. A disc made
+a pixel wide by a look keeps 0.77 of its opacity so, and one half a pixel wide 0.45: the narrow discs of the
+section above were sharp and thin for that, and at a pixel wide a frame was the scene low-passed. Drawn
+without the payment -- spread the same third of a pixel and as opaque as it was made -- a narrow disc closes
+the surface: the same five scenes through their own camera read 22.75, 25.57, 25.80, 28.18 and 30.42 dB with
+the frame's alpha at 0.999 to 1.000, where with the payment they read 24.25, 28.15, 28.13, 24.72 and 21.53
+at 0.996 down to 0.643.
+
+**It has to be the scene's, not the render's.** Shot with the payment and only drawn without it, discs of
+0.35 of a cell left 3.78 M gaussians where a walk leaves one: the looks ask the scene whether a pixel is held
+by drawing it, drew it thin, and made it again every frame. So how a scene is drawn is kept in its manifest
+(`antialiased`, absent for the payment) and every cloud a command loads or makes of it carries it
+(`scene::GpuSplats::antialiased`, which the rasteriser already followed for a file that says): the looks,
+`render`, `render --glass`, and the header an export writes. `shoot --antialias` makes a new scene with the
+payment as before; `--no-antialias` turns it off for one that is there, and `render --no-antialias` for one
+draw.
+
+**The width, measured both ways** (the materials stage from its four held views, dB and how much of the
+frame is held; and the stage that moves through its first frame's own camera):
+
+| `--spread`, `--turned`, no payment | gaussians | h0 | h1 | h2 | h3 | own camera |
+|---|---|---|---|---|---|---|
+| 1, 0.5, with the payment (as it was) | 1 033 606 | 24.29, 0.901 | 22.52, 0.997 | 24.11, 0.998 | 22.30, 0.950 | 24.25 |
+| 0.7, 0.5 | -- | 25.13, 0.900 | 23.46, 0.997 | 24.73, 0.997 | 22.71, 0.951 | 25.80 |
+| **0.5, 0.5** | 1 059 238 | 26.12, 0.894 | 24.62, 0.988 | 25.39, 0.987 | 23.33, 0.941 | 28.71 |
+| 0.5, 0.75 | 1 083 002 | 26.40, 0.890 | 25.08, 0.981 | 25.49, 0.976 | 23.68, 0.935 | 29.93 |
+| 0.7, 1 | 1 063 108 | 26.13, 0.896 | 24.77, 0.989 | 25.44, 0.984 | 23.43, 0.940 | 28.18 |
+| 0.5, 1 | 1 106 942 | 26.37, 0.886 | 25.18, 0.976 | 25.41, 0.967 | 23.85, 0.932 | 30.42 |
+
+Half a cell with the stretch left as it was is the default now: it keeps what closes a surface seen along
+itself and gives up a hundredth of the frame held for one to two dB from a view not taken and four and a half
+through the frame's own. Every stage of the QA shot again with it (`[scene]` passes, 238 assertions):
+
+| stage | before | now |
+|---|---|---|
+| the materials, four held views | 24.29, 22.52, 24.11, 22.30 dB | 26.12, 24.62, 25.39, 23.33 |
+| the kitchen, three | 23.86, 23.99, 23.50 | 25.94, 25.75, 24.68 |
+| the chess set, three | 22.16, 21.48, 21.11 | 23.38, 22.12, 21.50 |
+| balls and a cube over time, frames 1 to 24 | 24.25 to 24.72 | 28.71 down to 27.40 |
+| the Fox over time, frames 1 and 24 | 36.32, 34.29 | 37.35, 34.75 |
+
+The time and the gaussians are what they were (the materials walk 533 s, 1 059 238; the kitchen 40 s). A scene
+that is there keeps how it is drawn, so nothing published changes; what was shot before is `--spread 1
+--antialias`.
+
+Not done: Sponza and the other published scenes are not shot again, and **how a web viewer draws a scene
+without the payment is not looked at** (the SPZ's header says it; whether Spark follows it is not known) --
+nothing is published again before it is; the stage that moves falls 1.3 dB over its 24 frames now, where it
+did not fall before (more of what is left behind shows, sharper); `discover` keeps its own default of a pixel.
