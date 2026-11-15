@@ -23017,3 +23017,18 @@ did not fall before (more of what is left behind shows, sharper); `discover` kee
 (headless, the materials scene exported once and its index copied with the flag turned): solid with the flag
 followed, thin and dark without. The published page and its scenes are not touched: they are scenes shot
 before, drawn as before, and the page that is live does not read the flag yet.
+
+**Sponza with the two knights, both ways.** The stage shot twice at 960x540 through one camera in three of
+the published walk (20), with `--ray-margin 2e-5`, and drawn from two views of that walk and two it never
+took, against the references with the margin:
+
+| view | `--spread 1 --antialias` (as before): dB, SSIM, held | the defaults now |
+|---|---|---|
+| k10 | 30.68, 0.921, 0.992 | 31.65, 0.926, 0.984 |
+| k45 | 29.47, 0.829, 0.996 | 29.77, 0.840, 0.994 |
+| a (not taken) | 29.66, 0.905, 0.927 | 30.72, 0.917, 0.922 |
+| b (not taken) | 29.42, 0.867, 0.968 | 30.09, 0.883, 0.964 |
+
+560 s and 1 974 296 gaussians before, 552 s and 2 099 501 now. A third of a dB to one, for two to eight
+thousandths of the frame held: less than on the stages of a few metres, the same way. On Vulkan and CUDA
+`[scene]` (238 assertions) and the workflows (26 of 26 on Vulkan) pass with the defaults changed.
