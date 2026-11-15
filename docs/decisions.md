@@ -23089,3 +23089,47 @@ browser is still the nearest disc a pixel; a cloud does not carry the width (`Gp
 so two scenes made at different widths in one frame share one; CUDA and Vulkan are not run yet. Seen while
 running `[render]~[neural]` on Metal and not looked into (backlog NEU25): test_flatten.cpp:78 (roughness
 floor 1.0) and :185 (p99 5 for 4) fail, beside the refit case of NEU18; none of them sets a made width.
+
+## The options of shoot on Windows through Vulkan, the new commit on the three backends, four more stages (15 Nov)
+
+**`qa_options.py` on ixwin (RTX 3070 Laptop, Vulkan), the materials stage at 640x360**, 12 views of the walk,
+at the defaults of the section before last (no made width yet). All 26 rows end well. Those that say something:
+
+| option | seconds | gaussians | h0: dB, SSIM, held | h3: dB, SSIM, held |
+|---|---|---|---|---|
+| `the defaults` | 160 | 440900 | 25.42, 0.8975, 0.894 | 23.06, 0.8184, 0.938 |
+| `--samples 8` | 50 | 438893 | 24.44, 0.8754, 0.894 | 22.99, 0.8149, 0.938 |
+| `--samples 128` | 1748 | 442310 | 24.79, 0.8836, 0.894 | 22.79, 0.8097, 0.938 |
+| `--bounces 1` | 261 | 440900 | 24.66, 0.8954, 0.894 | 22.43, 0.8118, 0.938 |
+| `no --denoise` | 208 | 440900 | 25.06, 0.8454, 0.894 | 22.78, 0.7827, 0.938 |
+| `--spread 0.7` | 266 | 434131 | 24.28, 0.8735, 0.901 | 22.44, 0.8024, 0.950 |
+| `--spread 1.3` | 175 | 425596 | 20.51, 0.7347, 0.906 | 19.97, 0.6829, 0.954 |
+| `--turned 1` | 274 | 461340 | 25.76, 0.8965, 0.887 | 23.60, 0.8241, 0.927 |
+| `--refine 1` | 293 | 546766 | 23.37, 0.8698, 0.897 | 24.32, 0.8623, 0.947 |
+| `--refine 3` | 370 | 409690 | 26.68, 0.9094, 0.895 | 22.48, 0.8045, 0.935 |
+| `--repaint 0.3` | 202 | 409674 | 21.25, 0.8026, 0.888 | 25.08, 0.8638, 0.938 |
+| `--free-each-frame` | 282 | 440900 | 25.42, 0.8975, 0.894 | 23.06, 0.8184, 0.938 |
+
+`--coarsest`, `--pyramid`, `--covered-enough 0.98`, `--glass-opacity`, `--free-each-frame` and
+`--bounces 6` leave the same scene to the gaussian or within 0.02 dB, as on Metal. The paths a pixel move h0
+by a dB with no order (8: 24.44, 16: 24.92, 32: 25.42, 64: 24.12, 128: 24.79): the number of passes, not the
+noise, as on Metal (which frame each gaussian is left from). **The seconds are not the options'**: rows that
+make the same scene took 160 s at the start and 282 to 374 s later, and `--samples 128` 1748 s for 398 at
+64 -- the machine slows as the pass goes on (heat or memory, not looked into; backlog NEU16 is the same kind).
+
+**The made width on the three backends.** `[scene]` passes on Metal, on CUDA (WSL) and on Vulkan (Windows),
+238 assertions in 10 cases each; the new case of the made width passes on Metal and CUDA; the workflows end
+well 26 of 26 on Vulkan. `[render]~[neural]` on CUDA fails at the same two places as on Metal
+(test_flatten.cpp:78 and :185), so they are not Metal's and not this change's (NEU25).
+
+**Four stages more through `qa.py --frame`** (Metal, 640x360, 12 views, views not taken):
+
+| stage | gaussians | h0, h1, h2: dB where the scene holds | what the pictures show |
+|---|---|---|---|
+| Displaced/Cobbles.usda (a displaced floor and ball, textured) | 108 733 | 27.99, 27.20, 26.74 | as the reference |
+| Datsun240K (usdz unpacked) | 106 154 | 22.99, 22.52, 24.19 | the chrome brighter than the reference from a view not taken (another eye's highlights, NEU24); the panes leave holes in the roof |
+| CarConcept/CarLit.usda | 66 790 | 27.36, 25.66, 25.98 | **not a measure**: `--frame` frames a box far larger than the car (its lights), the car is a few pixels |
+| Buick/BuickLit.usda | 66 999 | 22.16, 20.12, 22.36 | the same |
+
+Not done: the two cars framed by a camera of their own; the Datsun's panes looked into; the options pass run
+again with the made width.
