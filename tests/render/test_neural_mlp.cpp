@@ -1672,6 +1672,22 @@ TEST_CASE("a frame's light is taken again by the gaussians it shows at their dep
     CHECK(after[0] == Catch::Approx(0.6).margin(0.03));
     CHECK(after[1] == Catch::Approx(0.3).margin(0.03));
     CHECK(after[2] == Catch::Approx(0.05).margin(0.02));
+    // A GROUP OF LIGHTS' LAYER: asked to keep, the frame's light is handed and the cloud left as it is; added
+    // at a level of a half and a tint, the wall is its own light and half the frame's, a channel at a time.
+    uint32_t kept = 0;
+    auto group = discovery->relight(*piece, *colour, *depth, settings.width, settings.height, projection, 0.06F, kept,
+                                    nullptr, true);
+    if (!group) FAIL(group.error().toString());
+    const std::array<double, 3> untouched = middle();
+    REQUIRE(discovery->addLight(*piece, *group, {0.5F, 0.5F, 1.0F}));
+    const std::array<double, 3> with = middle();
+    std::printf("  a layer kept for %u: the wall stays (%.3f %.3f %.3f) and with it at a half is (%.3f %.3f %.3f)\n", kept,
+                untouched[0], untouched[1], untouched[2], with[0], with[1], with[2]);
+    CHECK(kept == taken);
+    CHECK(untouched[0] == Catch::Approx(after[0]).margin(1.0e-3));
+    CHECK(with[0] == Catch::Approx(0.6 + 0.5 * 0.6).margin(0.04));
+    CHECK(with[1] == Catch::Approx(0.3 + 0.5 * 0.3).margin(0.03));
+    CHECK(with[2] == Catch::Approx(0.05 + 1.0 * 0.05).margin(0.02));
     // Asked again of a frame that shows nothing there, nothing is taken.
     const std::vector<float> nothing(pixels, 0.0F);
     auto empty = gpu::Buffer::fromSpan<float>(*gpu->device, std::span<const float>(nothing), "test.depth0");

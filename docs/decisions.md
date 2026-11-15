@@ -23370,3 +23370,42 @@ The found light (a tenth of the lamps' in the mean) stood in for some of the bou
 and read half a dB to 1.3 better than it should. The relit pass and the fresh shoot of that section are not
 touched by this: both are the stage with the lamps, as the reference is. The materials stage has lights of
 its own and its figures stand. `qa_relight.py` now tables the lamps alone beside the rest.
+
+## Groups of lights: a layer of light a group, and a level to draw it at (15 Nov)
+
+**What.** The whole of "what a gaussian is, apart from the light of each moment", for lights that stay
+where they are. A scene is shot once without the lamps. Then, a group of lamps at a time, the stage lit by
+that group *alone* is path traced through the same views (`shoot --light-group NAME`) and what every
+gaussian of the scene sends in each frame is kept as the group's layer: light, linear, a gaussian, with
+whatever it bounced off on the way. Nothing of the scene is touched and no look is taken
+(`Discovery::relight` with `keep`: the frame's light handed, the cloud left). The layer is gathered a piece
+over the run -- a later view's word of a gaussian stands -- and written once, a file a piece
+(`<cloud>.g.<name>.1`), of the gaussians that send any of it. Drawn, the scene is its own light and each
+group's times a level and a tint (`render --group NAME=LEVEL` or `=R,G,B`; `Discovery::addLight`, a kernel
+over the cloud as it is loaded): light is linear, so a level is exact and nothing is traced.
+
+**Sponza**, the scene found under the default lights (960x540, 20 cameras), a warm sphere and a cool spot
+as two groups; against the stage path traced (64 paths, 8 bounces) with the default lights written out and
+the lamps, in two states:
+
+| view | groups off, against the stage with both on | both at 1 | lamp at a half and the spot turned red, by levels alone, against that state path traced | levels left at 1, against that state |
+|---|---|---|---|---|
+| k10: dB, SSIM | 15.85, 0.208 | 27.80, 0.868 | 28.75, 0.886 | 23.75, 0.817 |
+| k45 | 14.90, 0.190 | 22.31, 0.768 | 23.56, 0.795 | 20.72, 0.719 |
+| a (not taken) | 15.23, 0.187 | 25.51, 0.841 | 26.61, 0.864 | 22.79, 0.792 |
+| b (not taken) | 14.97, 0.193 | 24.00, 0.812 | 25.26, 0.835 | 21.64, 0.759 |
+
+That is where a scene shot anew under the lamps stands (28.98, 23.57, 26.93, 24.77 in the section before
+last, against its own reference), and every other state of the two lamps comes from the same files. 543 s
+and 547 s a group (a walk path traced each); drawing at other levels costs what drawing the scene costs.
+The two layers are 93 MB over the scene's 399 MB (3.16 M gaussians each, in 122 pieces). The first cut of
+it wrote a file a frame a piece and left glass out: 1.2 GB, and 27.53, 21.52, 25.08, 23.44 with both on.
+The test (`[relight]`): a layer kept leaves the wall as it was, and added at a half and a tint makes it its
+own light and half the frame's, a channel at a time.
+
+Not done: a group whose lamps move (that is `render --lamps`); the views of a group's run must be the
+scene's own -- a gaussian no view of that run shows has none of the group's light; what a mirror or a lens
+shows is the picture the last view left of it, as the scene's own is; `export`, `bake` and the web player
+read the scene's own light and no group; the levels are a command line's, not a stage's states
+(usd/LightGroups.h has those for a car's lamps: not joined); with `--at` the groups are as they are now, a
+group has no time; CUDA and Vulkan not run.

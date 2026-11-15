@@ -33,7 +33,8 @@ struct RelightParams {
     float nearness;     // the share of its depth a surface may stand off the gaussian and be the gaussian's
     uint  hasPbr;
     uint  hasGone;      // `gone` says what stands; without it, a gaussian's opacity does
-    uint  pad1;
+    uint  keep;         // sceneRelight: 1 leaves the cloud's colours as they are and hands the frame's light as it is (rgb, linear)
+    float gainR; float gainG; float gainB; uint pad2;   // sceneAddLight: what the layer is multiplied by
 };
 
 StructuredBuffer<float4>   positions;    // xyz, opacity (0 and under: not standing)
@@ -43,6 +44,7 @@ StructuredBuffer<uint>     gone;         // the look a gaussian went at (0: it i
 StructuredBuffer<float4>   frameColour;  // the frame's light a pixel
 StructuredBuffer<float>    frameDepth;   // and its depth along the view (0: nothing)
 RWStructuredBuffer<float4> layer;        // the colour as a record keeps it, and whether it was said
+StructuredBuffer<float4>   added;        // sceneAddLight: light a gaussian (rgb, linear) and whether there is any (a)
 RWStructuredBuffer<uint>   counters;     // [0]: gaussians whose light was taken again
 ConstantBuffer<RelightParams> params;
 
@@ -64,7 +66,9 @@ void sceneRelight(uint3 tid: SV_DispatchThreadID) {
     if (params.hasGone != 0u ? gone[i] != 0u : positions[i].w <= 0.0) {
         return;
     }
-    if (params.hasPbr != 0u && pbrTransmission(pbr[i]) > 0.02) {
+    // What lets light through is not said anew (its picture is made of what is behind it); for a group's
+    // layer it is asked as the rest: what it shows under that group is the group's light it sends.
+    if (params.keep == 0u && params.hasPbr != 0u && pbrTransmission(pbr[i]) > 0.02) {
         return;
     }
     const float3 p = positions[i].xyz;
@@ -88,10 +92,38 @@ void sceneRelight(uint3 tid: SV_DispatchThreadID) {
     }
     const float3 light = max(pixel.rgb, float3(0.0));
     const float3 shown = float3(encodedLight(light.r), encodedLight(light.g), encodedLight(light.b));
+    InterlockedAdd(counters[0], 1u);
+    if (params.keep != 0u) {
+        // A GROUP OF LIGHTS' OWN LAYER: the frame was path traced under that group alone, and what each
+        // gaussian sends then is kept as light, to be added to the scene's by a level (sceneAddLight).
+        layer[i] = float4(light, 1.0);
+        return;
+    }
     const float3 put = params.linearCloud != 0u ? light : shown;
     const uint row = i * 4u;
     shape[row + 2u] = packHalves(lowHalf(shape[row + 2u]), put.r);
     shape[row + 3u] = packHalves(put.g, put.b);
     layer[i] = float4((shown - 0.5) / 0.28209479, 1.0);
-    InterlockedAdd(counters[0], 1u);
+}
+
+// LIGHT ADDED TO A CLOUD'S OWN, A GAUSSIAN: a group of lights' layer times its level and its tint. Light is
+// linear: the scene with a lamp at half is the scene without it and half the lamp's layer.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void sceneAddLight(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    const float4 more = added[i];
+    if (!(more.a > 0.5)) {
+        return;
+    }
+    const uint row = i * 4u;
+    const float3 base = float3(highHalf(shape[row + 2u]), lowHalf(shape[row + 3u]), highHalf(shape[row + 3u]));
+    const float3 lit = max(cloudLight(base, params.linearCloud != 0u) +
+                           more.rgb * float3(params.gainR, params.gainG, params.gainB), float3(0.0));
+    const float3 put = params.linearCloud != 0u ? lit : float3(encodedLight(lit.r), encodedLight(lit.g), encodedLight(lit.b));
+    shape[row + 2u] = packHalves(lowHalf(shape[row + 2u]), put.r);
+    shape[row + 3u] = packHalves(put.g, put.b);
 }

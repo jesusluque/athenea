@@ -240,7 +240,14 @@ public:
     [[nodiscard]] Result<gpu::Buffer> relight(scene::GpuSplats& cloud, const gpu::Buffer& frameColour,
                                               const gpu::Buffer& frameDepth, uint32_t width, uint32_t height,
                                               const Projection& projection, float nearness, uint32_t& taken,
-                                              const gpu::Buffer* gone = nullptr);
+                                              const gpu::Buffer* gone = nullptr, bool keep = false);
+
+    /// A layer of light (a float4 a gaussian: rgb, linear, and 1 where there
+    /// is any) added to `cloud`'s own colours, times `gain`: a group of
+    /// lights at a level and a tint. `relight` with `keep` is what makes such
+    /// a layer -- the cloud left as it is, the frame's light handed as it is.
+    [[nodiscard]] Result<void> addLight(scene::GpuSplats& cloud, const gpu::Buffer& layer,
+                                        const std::array<float, 3>& gain);
 
     [[nodiscard]] Result<uint32_t> markGone(const gpu::Buffer& lifted, uint32_t base, gpu::Buffer& gone,
                                             uint32_t count, uint32_t stamp, float threshold = 0.05F,
@@ -325,7 +332,7 @@ private:
     void bind(rhi::ShaderCursor cursor) const;
 
     gpu::ShaderLibrary* library_ = nullptr;
-    gpu::ComputeKernel  relight_;
+    gpu::ComputeKernel  relight_, addLight_;
     gpu::ComputeKernel  clear_, mark_, count_, mask_, gone_, sizes_, frameValid_, framePack_, frameThrough_;
     gpu::ComputeKernel  renderValid_, renderPack_, renderSpare_, cut_, cutFlags_, gather_, cutSpans_, exportFlat_, levelFlags_, levelGather_;
     std::optional<gpu::PrefixSum> prefix_;

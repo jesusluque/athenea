@@ -192,6 +192,12 @@ struct NeuralScene {
     /// from the light a look saw leave it (what is opaque: in the record's
     /// tint): what a lamp added after is multiplied by (`render --lamps`).
     bool        baseColour = false;
+    /// THE GROUPS OF LIGHTS IT KEEPS A LAYER OF (`shoot --light-group`): each
+    /// is light path traced under that group alone, a gaussian, in files
+    /// beside the pieces (`<cloud>.g.<group>.<frame>`: which gaussian of the
+    /// piece, and the light it sends, linear). The scene drawn is its own
+    /// light and each group's times a level (`render --group`).
+    std::vector<std::string> lightGroups;
     std::string source;                   ///< the stage the pieces were converted from
     std::string licence;                  ///< what the source asks of whoever uses it
     std::vector<NeuralScenePiece>  pieces;

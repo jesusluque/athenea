@@ -122,6 +122,8 @@ struct SceneOptions {
     bool                     noAntialias = false;
     float                    madeSpread = -1.0F;      // render: the width, in pixels, the scene's discs were made at
     bool                     relight = false;         // shoot: a frame takes the light of what the scene holds again
+    std::string              lightGroup;              // shoot: the frames are a group of lights' own, kept as its layer
+    std::vector<std::string> groups;                  // render: NAME=LEVEL or NAME=R,G,B, a group of lights' level
     bool                     antialias = false;       // shoot: a new scene drawn with the 2D filter's compensation
     float                    shootSpread = 0.5F;      // shoot's own default: half a cell
     float                    exposure = 0.0F;
@@ -168,6 +170,12 @@ float madeAs = 0.0F;
 /// THE TIME A PIECE'S LIGHT IS READ AT: the last snapshot whose layers of light are laid over a piece as it
 /// is loaded (io::NeuralScenePiece::lights); 0, every layer there is -- the scene as it stands.
 uint32_t lightAsOf = 0;
+/// THE GROUPS OF LIGHTS LAID OVER A PIECE AS IT IS LOADED (io::NeuralScene::lightGroups): each group's layer
+/// times its level and tint, added to the piece's own light by a kernel of `lightTool`'s. Unset (a command
+/// that sets no tool): the piece's own light alone, which is what a shoot and an export read.
+render::Discovery* lightTool = nullptr;
+std::map<std::string, std::array<float, 3>> groupGain;       // a group named on the command line
+std::array<float, 3> groupDefault{1.0F, 1.0F, 1.0F};         // every other group
 void drawAs(const io::NeuralScene& scene) {
     drawnAs = scene.antialiased ? std::optional<bool>{} : std::optional<bool>{false};
     madeAs = scene.spread;
@@ -283,6 +291,54 @@ Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& l
             // Read again under another light it may come back in the buffers the last reading left: its
             // revision says it is not what was drawn from them.
             cloud->revision += lightOf;
+        }
+        if (cloud && lightTool != nullptr) {
+            // ITS GROUPS OF LIGHTS: the layers beside the piece (`<piece>.g.<group>.<frame>`), a group's
+            // frames laid one over another in order (a later frame's word of a gaussian stands), and the
+            // group's light added to the piece's own, times its level, on the device.
+            std::map<std::string, std::vector<std::pair<uint32_t, std::filesystem::path>>> groups;
+            const std::string stem = path.filename().string() + ".g.";
+            std::error_code ignored;
+            for (const auto& entry : std::filesystem::directory_iterator(path.parent_path(), ignored)) {
+                const std::string name = entry.path().filename().string();
+                if (name.size() <= stem.size() || name.compare(0, stem.size(), stem) != 0) {
+                    continue;
+                }
+                const size_t dot = name.rfind('.');
+                if (dot == std::string::npos || dot <= stem.size() ||
+                    name.find_first_not_of("0123456789", dot + 1) != std::string::npos || dot + 1 == name.size()) {
+                    continue;
+                }
+                groups[name.substr(stem.size(), dot - stem.size())].emplace_back(
+                    static_cast<uint32_t>(std::stoul(name.substr(dot + 1))), entry.path());
+            }
+            for (auto& [group, files] : groups) {
+                const auto named = groupGain.find(group);
+                const std::array<float, 3> gain = named != groupGain.end() ? named->second : groupDefault;
+                if (gain[0] == 0.0F && gain[1] == 0.0F && gain[2] == 0.0F) {
+                    continue;
+                }
+                std::sort(files.begin(), files.end());
+                std::vector<std::array<float, 4>> dense(cloud->count, std::array<float, 4>{0.0F, 0.0F, 0.0F, 0.0F});
+                for (const auto& [frame, file] : files) {
+                    auto light = io::readGaussians(file);
+                    if (!light) return std::move(light).error();
+                    if (light->floats != 4) {
+                        return Error::make(ErrorCode::Unsupported, "{}: a group's layer is four floats a gaussian", file.string());
+                    }
+                    for (uint32_t k = 0; k < light->count; ++k) {
+                        const float* said = &light->records[size_t{k} * 4];
+                        const uint32_t which = static_cast<uint32_t>(said[0]);
+                        if (which < cloud->count) {
+                            dense[which] = {said[1], said[2], said[3], 1.0F};
+                        }
+                    }
+                }
+                auto laid = gpu::Buffer::fromSpan<std::array<float, 4>>(
+                    library.device(), std::span<const std::array<float, 4>>(dense), "piece.group");
+                if (!laid) return std::move(laid).error();
+                ATHENEA_TRY(lightTool->addLight(*cloud, *laid, gain));
+            }
         }
         return cloud;
     }
@@ -2272,10 +2328,86 @@ int runShoot(const SceneOptions& all) {
         return 0;
     };
 
+    uint32_t groupFrame = 0;   // --light-group: the frames of this run, counted from one
+    std::map<std::string, std::vector<float>> groupLayers;   // and what they said, a piece: four floats a gaussian
     // ONE VIEW AT ONE TIME: drawn a pass at a time, and looked at as it gathers.
     const auto shootView = [&](const render::Camera& camera, const std::string& name, double time) -> int {
         const auto began = std::chrono::steady_clock::now();
         if (auto brought = bringInView(camera); !brought) return report(brought.error());
+        if (!all.lightGroup.empty()) {
+            // A GROUP OF LIGHTS' OWN FRAME (--light-group). The stage handed is lit by that group alone;
+            // the frame is path traced whole and what each gaussian of the scene sends in it is kept as the
+            // group's layer. Nothing of the scene is made, taken out or said anew: no look is taken.
+            for (uint32_t pass = 0; pass < 65536; ++pass) {
+                if (auto drawn = stage.draw(camera, time, width, height, "rt"); !drawn) return report(drawn.error());
+                if (stage.pathConverged()) {
+                    break;
+                }
+            }
+            auto colourOf = stage.displaySource("color");
+            auto depthOf = stage.displaySource("depth");
+            if (!colourOf) return report(colourOf.error());
+            if (!depthOf) return report(depthOf.error());
+            if (colourOf->buffer == nullptr || depthOf->buffer == nullptr) {
+                err("the render left no colour or depth\n");
+                return kExitFailure;
+            }
+            const render::Projection projection = render::projectionFor(camera, width, height);
+            ++groupFrame;
+            uint32_t kept = 0;
+            const auto keepOf = [&](const io::NeuralScenePiece& piece, scene::GpuSplats& cloud) -> Result<void> {
+                if (piece.cloud.size() < 5 || piece.cloud.compare(piece.cloud.size() - 5, 5, ".athg") != 0 ||
+                    (piece.gaussians != 0 && piece.removed >= piece.gaussians)) {
+                    return ok();
+                }
+                std::vector<uint32_t> words;
+                if (!piece.gone.empty()) {
+                    auto read = io::readSeen(directory / piece.gone, cloud.count);
+                    if (!read) return std::move(read).error();
+                    words = std::move(*read);
+                }
+                auto record = discovery->record(cloud.count, words);
+                if (!record) return std::move(record).error();
+                uint32_t took = 0;
+                auto layer = discovery->relight(cloud, *colourOf->buffer, *depthOf->buffer, width, height, projection,
+                                                all.tolerance, took, &*record, true);
+                if (!layer) return std::move(layer).error();
+                if (took == 0) {
+                    return ok();
+                }
+                auto floats = layer->readAll<float>(device);
+                if (!floats) return std::move(floats).error();
+                // Gathered a piece over the run: a later frame's word of a gaussian stands over an earlier
+                // one's, and the piece's layer is written once, when every view is taken.
+                std::vector<float>& whole = groupLayers[piece.cloud];
+                whole.resize(size_t{cloud.count} * 4, 0.0F);
+                for (uint32_t g = 0; g < cloud.count; ++g) {
+                    const float* one = &(*floats)[size_t{g} * 4];
+                    if (one[3] > 0.5F) {
+                        std::copy(one, one + 4, &whole[size_t{g} * 4]);
+                    }
+                }
+                kept += took;
+                return ok();
+            };
+            for (size_t k = 0; k < clouds.size(); ++k) {
+                if (auto done = keepOf(scene.pieces[pieceOf[k]], *clouds[k]); !done) return report(done.error());
+            }
+            for (size_t k = 0; k < scene.pieces.size(); ++k) {
+                const io::NeuralScenePiece& piece = scene.pieces[k];
+                if (std::find(pieceOf.begin(), pieceOf.end(), k) != pieceOf.end() ||
+                    !boxInView(piece.boundsMin, piece.boundsMax, projection, width, height) || piece.cloud.size() < 5 ||
+                    piece.cloud.compare(piece.cloud.size() - 5, 5, ".athg") != 0) {
+                    continue;
+                }
+                auto cloud = load(library, *loader, directory / piece.cloud);
+                if (!cloud) return report(cloud.error());
+                if (auto done = keepOf(piece, *cloud); !done) return report(done.error());
+            }
+            out("%s at %g: the light of group %s kept for %u gaussians, in %.1f s\n", name.c_str(), time,
+                all.lightGroup.c_str(), kept, std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count());
+            return 0;
+        }
         const uint32_t read = piecesRead;
         const uint32_t left = piecesLeft;
         const size_t kept = instances.size() - read;
@@ -2433,6 +2565,48 @@ int runShoot(const SceneOptions& all) {
             return code;
         }
     }
+    if (!all.lightGroup.empty()) {
+        // THE GROUP'S LAYERS, WRITTEN: a file a piece, of the gaussians that send any of the group's light --
+        // which one, and the light. What an earlier run kept of the same group for the piece is replaced.
+        uint64_t lit = 0;
+        for (const auto& [cloud, whole] : groupLayers) {
+            std::vector<float> said;
+            for (size_t g = 0; g * 4 < whole.size(); ++g) {
+                const float* one = &whole[g * 4];
+                if (one[3] > 0.5F && (one[0] > 0.0F || one[1] > 0.0F || one[2] > 0.0F)) {
+                    said.insert(said.end(), {static_cast<float>(g), one[0], one[1], one[2]});
+                }
+            }
+            const std::filesystem::path file = directory / (cloud + ".g." + all.lightGroup + ".1");
+            const std::string stem = file.filename().string();
+            const std::string prefix = stem.substr(0, stem.size() - 1);
+            std::error_code ignored;
+            std::vector<std::filesystem::path> old;
+            for (const auto& entry : std::filesystem::directory_iterator(file.parent_path(), ignored)) {
+                const std::string name = entry.path().filename().string();
+                if (name.size() > prefix.size() && name.compare(0, prefix.size(), prefix) == 0 &&
+                    name.find_first_not_of("0123456789", prefix.size()) == std::string::npos) {
+                    old.push_back(entry.path());
+                }
+            }
+            for (const std::filesystem::path& gone : old) {
+                std::filesystem::remove(gone, ignored);
+            }
+            if (said.empty()) {
+                continue;
+            }
+            if (auto written = io::writeGaussians(file, static_cast<uint32_t>(said.size() / 4), 4, said); !written) {
+                return report(written.error());
+            }
+            lit += said.size() / 4;
+        }
+        if (std::find(scene.lightGroups.begin(), scene.lightGroups.end(), all.lightGroup) == scene.lightGroups.end()) {
+            scene.lightGroups.push_back(all.lightGroup);
+        }
+        if (auto written = io::writeNeuralScene(directory, scene); !written) return report(written.error());
+        out("group %s: its light kept for %llu gaussians in %zu pieces\n", all.lightGroup.c_str(),
+            static_cast<unsigned long long>(lit), groupLayers.size());
+    }
     // The file that grew is whole: its index says no more is coming.
     if (!all.grow.empty()) {
         if (auto closed = writeExportIndex(all.grow, scene, grown, grownLow, grownHigh, false); !closed) {
@@ -2446,6 +2620,43 @@ int runShoot(const SceneOptions& all) {
 /// through its camera at its size from the scene as it stood at its last look, written <stem>_NNNN.<ext>.
 /// A piece is read the first time a frame wants it and kept; what a frame draws of it is the piece less
 /// what had gone by then, which is a kernel over what is already on the device.
+/// The levels `--group` names, for the pieces this command loads from here on: `tool` adds them.
+bool setGroups(const SceneOptions& o, render::Discovery& tool) {
+    lightTool = &tool;
+    groupGain.clear();
+    groupDefault = {1.0F, 1.0F, 1.0F};
+    for (const std::string& said : o.groups) {
+        const size_t equals = said.find('=');
+        std::array<float, 3> gain{1.0F, 1.0F, 1.0F};
+        bool good = equals != std::string::npos && equals > 0;
+        if (good) {
+            std::string numbers = said.substr(equals + 1);
+            std::replace(numbers.begin(), numbers.end(), ',', ' ');
+            std::istringstream words(numbers);
+            std::vector<float> n;
+            for (float v = 0.0F; words >> v;) n.push_back(v);
+            if (n.size() == 1) {
+                gain = {n[0], n[0], n[0]};
+            } else if (n.size() == 3) {
+                gain = {n[0], n[1], n[2]};
+            } else {
+                good = false;
+            }
+        }
+        if (!good) {
+            err("--group wants NAME=LEVEL or NAME=R,G,B, not %s\n", said.c_str());
+            return false;
+        }
+        const std::string name = said.substr(0, equals);
+        if (name == "*") {
+            groupDefault = gain;
+        } else {
+            groupGain[name] = gain;
+        }
+    }
+    return true;
+}
+
 int runRenderStored(const SceneOptions& o, const io::NeuralScene& scene) {
     const std::filesystem::path directory = o.directory;
     const uint32_t first = o.storedFrames[0];
@@ -2464,6 +2675,7 @@ int runRenderStored(const SceneOptions& o, const io::NeuralScene& scene) {
     if (!raster) return report(raster.error());
     auto discovery = render::Discovery::create(library);
     if (!discovery) return report(discovery.error());
+    if (!setGroups(o, *discovery)) return kExitFailure;
     std::optional<render::SceneGlass> glass;
     if (o.glass) {
         auto made = render::SceneGlass::create(library);
@@ -3202,6 +3414,7 @@ int runRender(const SceneOptions& given) {
     if (!raster) return report(raster.error());
     auto discovery = render::Discovery::create(library);
     if (!discovery) return report(discovery.error());
+    if (!setGroups(o, *discovery)) return kExitFailure;
 
     // Every piece on the device, and its appearance where it has one.
     std::vector<std::unique_ptr<scene::GpuSplats>> clouds;
@@ -3664,6 +3877,7 @@ void addNeuralScene(CLI::App& app) {
     render->add_option("--budget", o.budget, "levels of detail by a count: the finest threshold that draws no more than this many gaussians from the view, in place of --lod");
     render->add_option("--made-spread", o.madeSpread, "a scene drawn without the compensation pays it under this width: the sigma in pixels its discs were made at (shoot's --spread)");
     render->add_flag("--no-antialias", o.noAntialias, "no Mip-Splatting 2D filter compensation: a gaussian is spread a third of a pixel and keeps its opacity");
+    render->add_option("--group", o.groups, "a group of lights' level (shoot --light-group): NAME=LEVEL, or NAME=R,G,B for a tint; * names every group not named. A group not named is at 1");
     render->add_option("--lamps", o.lamps, "a file of lamps added to the scene: each lights the gaussians it reaches by their surface's base colour, over the light the scene was found under (implies the cut --glass draws)");
     render->add_option("--lamp-shadow-rays", o.lampShadowRays, "--lamps: rays from a gaussian to each lamp, over the disc it shows (1: to its middle, a hard shadow)");
     render->add_option("--lamp-bounce", o.lampBounceRays, "--lamps: rays a gaussian gathers what the lamps' light bounces on to with, off the scene's own gaussians (0: the lamps' direct light alone)");
@@ -3736,6 +3950,7 @@ void addNeuralScene(CLI::App& app) {
     shoot->add_option("--tolerance", o.tolerance, "a surface is already held where the scene's depth is within this share of the render's");
     shoot->add_option("--refine", o.refine, "a surface held with gaussians more than this many times as wide as this look's is made again, finer");
     shoot->add_option("--repaint", o.repaint, "a surface held whose colour is off the render's by more than this share is made again (0: held by its depth alone)");
+    shoot->add_option("--light-group", o.lightGroup, "the stage handed is lit by one group of lights alone: each frame is path traced and what every gaussian of the scene sends in it is kept as that group's layer of light, by this name; the scene itself is not touched (render --group sets the group's level)");
     shoot->add_flag("--relight", o.relight, "each frame first takes again the light of what the scene holds and the frame shows: those gaussians keep their place and what they are made of, and a layer of light is kept for the time (a stage whose light changes)");
     shoot->add_flag("--antialias", o.antialias, "a new scene is drawn with the Mip-Splatting 2D filter's compensation, by the looks and by whoever draws it after (kept in its manifest); without it, the default, a disc narrower than a pixel stays opaque");
     shoot->add_flag("--no-antialias", o.noAntialias, "the scene is drawn without the compensation from here on, whatever its manifest says");
