@@ -258,8 +258,11 @@ cada una):
   Un cambio en cómo una mirada crea o retira gaussianas se califica con
   `scripts/examples/neural-scene-qa`: `make_materials_stage.py` (catorce
   bolas de un material cada una) con `qa.py`, y `make_animated_stage.py` (un
-  stage que se mueve) con `qa_time.py`. Ejecutan el motor y ponen en una tabla
-  lo que imprime; tanto los huecos del 14 nov como el path tracer que no se
+  stage que se mueve) con `qa_time.py`; `qa_options.py` toma un mismo recorrido
+  una vez por cada opción de `shoot`, y `qa.py --frame` admite cualquier stage,
+  encuadrado por el motor. Dos filas a un dB de distancia no se distinguen con
+  él: de qué frame del recorrido queda cada gaussiana mueve la cifra eso mismo.
+  Ejecutan el motor y ponen en una tabla lo que imprime; tanto los huecos del 14 nov como el path tracer que no se
   reiniciaba se encontraron mirando las imágenes que dejan, no por una cifra.
 
 Un kernel que añade algo a `shaders/athenea/neural/neural_appearance.slang` lo añade a

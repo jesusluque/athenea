@@ -251,8 +251,11 @@ each measured):
   A change to how a look makes or takes out gaussians is qualified with
   `scripts/examples/neural-scene-qa`: `make_materials_stage.py` (fourteen
   balls of one material each) with `qa.py`, and `make_animated_stage.py` (a
-  stage that moves) with `qa_time.py`. They run the engine and lay what it
-  prints in a table; both the holes of 14 Nov and the path tracer that did not
+  stage that moves) with `qa_time.py`; `qa_options.py` shoots one walk once
+  an option of `shoot`, and `qa.py --frame` takes any stage, framed by the
+  engine. Two rows a dB apart are not told apart by it: which frame of a walk
+  each gaussian is left from moves the figure that much. They run the engine
+  and lay what it prints in a table; both the holes of 14 Nov and the path tracer that did not
   restart were found by looking at the pictures they leave, not by a figure.
 
 A kernel that adds to `shaders/athenea/neural/neural_appearance.slang` adds to
