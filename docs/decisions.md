@@ -23692,3 +23692,24 @@ every gaussian still there is asked, by its piece's record of what is gone, as a
 the group's light is kept for 12 537 864 gaussians where it was for 9 818 743, the run takes 2195 s where it took
 2046 s, the four views not taken read the same (27.35, 22.91, 25.71, 24.20 dB: they draw the finest), and the level
 of detail the player draws first is lit as the whole scene is. Three passes at 1080p: 2339 + 2428 + about 2428 s.
+
+## A level of detail takes its groups' light, and the published page timed (16 Nov)
+
+`export_groups.py --levels` now hands on the levels of the scene with every group off, of each group alone and of
+the base colours: the same gaussians a level in the three (1 930 530 in parts of 1 188 223 and 638 776 for the 1080p
+Sponza, the same in the four indexes), so the page lays a group's part over a level's as it does over the whole
+scene's, and the panel's levels, tints and lamp work at a level of detail -- which is what a phone draws. The levels
+with the lamps on are kept beside them as `litLevels`: what is drawn first, with no group's part to wait for; the
+level a device rests at is then read behind it. Seen: level 1 with its lamps, and with both at nothing.
+
+**The published page, over the network** (neural.lucab.co.uk, version be7f26f5, headless Chrome on the Mac; the
+three runs one after another, so the later ones may have found the site's cache warm):
+
+| Sponza at 1080p, 8.4 M gaussians, 270 MB | first part | the whole scene, coarse | the whole scene |
+|---|---|---|---|
+| the page as it was (`?progressive=0`) | 4.0 s | -- | 27.7 s |
+| coarse first | 1.2 s | 1.9 s | 18.6 s |
+| the one file | 0.8 s | 1.3 s | 17.5 s |
+
+**Not done.** Glass and mirrors at a level still take no group's light. A level's parts for every group add 64 MB
+to the 270 MB of this scene. Not opened on a phone.

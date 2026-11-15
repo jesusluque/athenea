@@ -43,29 +43,31 @@ def export(stem, levels, options=None):
         sys.exit(done.returncode)
 
 
-# The scene with every group off: its own light alone (what glows is in it once).
-export(args.out, ["--group", "*=0"])
+levels = ["--levels", args.levels] if args.levels else []
+# The scene with every group off: its own light alone (what glows is in it once). Its levels of detail, and
+# each group's and the base colours' below, are the same gaussians in the same order a level, so a player
+# sets the lamps at a level as it does on the whole scene.
+export(args.out, ["--group", "*=0"] + levels)
 named = []
 for group in groups:
     stem = "%s_g_%s" % (args.out, group)
     # The group alone: no light of the scene's own, every other group off, and `dark` taken out of it as a
     # player's level will scale it (it is drawn at minus the levels drawn: one here).
-    export(stem, ["--own-light", "0", "--group", "*=0", "--group", "%s=1" % group])
+    export(stem, ["--own-light", "0", "--group", "*=0", "--group", "%s=1" % group] + levels)
     named.append({"name": group, "stem": os.path.basename(stem)})
 index_path = args.out + ".json"
 index = json.load(open(index_path))
 index["groups"] = named
-# LEVELS OF DETAIL WITH THE LAMPS ON. The scene's own parts hold its light alone -- the player adds each
-# group's at the level its panel sets -- but a level of detail is drawn as it is, and it is what a player draws
-# first: its levels are made of the scene with every group at one, so the picture does not go from unlit to
-# lit when the whole scene arrives. That export's own parts are not kept.
+# LEVELS OF DETAIL WITH THE LAMPS ON (`litLevels`): what a player draws first. A level of the scene's own
+# parts is unlit until its groups' parts are read; these are levels of the scene with every group at one, a
+# picture as the scene was found with nothing more to wait for. That export's own parts are not kept.
 if args.levels:
     lit = args.out + "_lit"
     export(lit, ["--group", "*=1", "--levels", args.levels])
     lit_index = json.load(open(lit + ".json"))
-    index["levels"] = lit_index.get("levels", [])
+    index["litLevels"] = lit_index.get("levels", [])
     kept = set()
-    for level in index["levels"]:
+    for level in index["litLevels"]:
         for part in level.get("parts", []):
             part = part if isinstance(part, dict) else {"file": part}
             kept.update(f for f in (part.get("file"), (part.get("glass") or {}).get("file"), (part.get("mirror") or {}).get("file")) if f)
@@ -76,7 +78,7 @@ if args.levels:
 # And, where the scene keeps them, its base colours: what the player's own lamp is multiplied by. No exposure:
 # a base colour is a share, not a light.
 if manifest.get("baseColour"):
-    export(args.out + "_base", ["--base-colour"], plain)
+    export(args.out + "_base", ["--base-colour"] + levels, plain)
     index["base"] = os.path.basename(args.out) + "_base"
     index["exposure"] = float(args.exposure) if args.exposure else 0.0
 json.dump(index, open(index_path, "w"), indent=1)

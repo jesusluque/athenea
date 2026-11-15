@@ -268,6 +268,10 @@
       const staging = new THREE.Group();
       let outgoing = [];
       let keeping = false;
+      // The level drawn first is, where the index has one, a level of the scene with its lamps on
+      // (`litLevels`): a picture as the scene is found, with no group's part to wait for.
+      const litLevels = index.litLevels ?? [];
+      let litFirst = false;
       const letGo = (list) => { for (const m of list) { m.mesh.parent?.remove(m.mesh); m.mesh.dispose?.(); } };
       let cameras = new Map((index.cameras ?? []).map((c) => [c.name, c]));
       let shown = 0;            // parts drawn: the scene as it stood after that many
@@ -348,7 +352,7 @@
       const lampGain = Math.pow(2, Number(index.exposure) || 0);
       const setLamp = () => lamp.sends.value.set(...lamp.tint.map((c) => (lamp.on ? lamp.level * lampGain * c : 0)));
       if (index.base) {
-        try { lamp.parts = (await (await fetch(urlOf(`${index.base}.json`), { cache: "no-store" })).json()).parts; }
+        try { const of = await (await fetch(urlOf(`${index.base}.json`), { cache: "no-store" })).json(); lamp.parts = of.parts; lamp.levels = of.levels ?? []; }
         catch (error) { lamp.parts = null; }
       }
       const groupLight = (textures, base) => dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
@@ -391,7 +395,7 @@
       });
       for (const g of groups) {
         // Each group's own index: its parts are the scene's, one for one.
-        try { g.parts = (await (await fetch(urlOf(`${g.stem}.json`), { cache: "no-store" })).json()).parts; }
+        try { const of = await (await fetch(urlOf(`${g.stem}.json`), { cache: "no-store" })).json(); g.parts = of.parts; g.levels = of.levels ?? []; }
         catch (error) { g.parts = null; }
       }
       // A row a group in the panel: its level, and a tint over the colour it was shot with.
@@ -661,11 +665,17 @@
               // gaussians a millimetre wide fell into rows with gaps between them, seen from near.
               const mesh = splatOf(span.file, { extSplats: true });
               await mesh.initialized;
-              const grouped = groups.length > 0 && groups.every((g) => g.parts?.[meshes.length]?.file);
-              const based = lamp.parts?.[meshes.length]?.file;
-              if (span === part && detail === 0 && (grouped || based)) {
+              // A GROUP'S LIGHT AT A LEVEL OF DETAIL: where each group was handed on with the same levels as
+              // the scene (the same gaussians in the same order, a level), the level takes its groups' light
+              // as the whole scene does. The level drawn first (`litFirst`) is the scene with its lamps on
+              // already, and takes none.
+              const of = (held) => (detail === 0 ? held.parts : held.levels?.[detail - 1]?.parts)?.[meshes.length];
+              const fileOf = (entry) => typeof entry === "string" ? entry : entry?.file;
+              const grouped = !litFirst && groups.length > 0 && groups.every((g) => fileOf(of(g)));
+              const based = litFirst ? undefined : fileOf(of(lamp));
+              if (span === part && (grouped || based)) {
                 const textures = [];
-                if (grouped) for (const g of groups) textures.push(await groupTexture(g.parts[meshes.length].file));
+                if (grouped) for (const g of groups) textures.push(await groupTexture(fileOf(of(g))));
                 const base = based ? await groupTexture(based) : null;
                 mesh.worldModifier = groupLight(textures, base);
                 mesh.updateGenerator();
@@ -712,7 +722,7 @@
             const next = window.__player.then;
             window.__player.then = undefined;
             window.__player.coarseMs = Math.round(performance.now() - began);
-            if (next !== detail) { setDetail(next, true); return; }
+            if (next !== detail || litFirst) { setDetail(next, true); return; }
           }
           window.__player.wholeMs = Math.round(performance.now() - began);
           // Spark's ray through the gaussians starts itself on the first one asked and answers from the
@@ -726,7 +736,7 @@
 
       // THE DETAIL DRAWN. The scene as it grew, or one of its levels of detail: what was drawn is let go and
       // the other read in its place. The timeline is the grown scene's; a level is the scene whole.
-      const setDetail = (wanted, keep = false) => {
+      const setDetail = (wanted, keep = false, first = false) => {
         const next = Math.max(0, Math.min(wanted, levels.length));
         generation += 1;
         loading = false;
@@ -743,7 +753,8 @@
         atEnd = true;
         setPlaying(false);
         detail = next;
-        parts = (detail === 0 ? index.parts : levels[detail - 1].parts).map(partOf);
+        litFirst = first && detail > 0 && litLevels.length >= detail;
+        parts = (detail === 0 ? index.parts : (litFirst ? litLevels : levels)[detail - 1].parts).map(partOf);
         window.__scene.loaded = false;
         window.__scene.parts = 0;
         window.__player.detail = detail;
@@ -1014,9 +1025,9 @@
         // being rendered -- the coarsest first (?progressive=0: the detail asked for, as it comes).
         const wanted = settings.detail === "auto" ? autoDetail() : settings.detail === "full" ? 0 : Number(settings.detail) || 0;
         const coarse = levels.length;
-        if (coarse > 0 && wanted !== coarse && !index.growing && params.get("progressive") !== "0") {
+        if (coarse > 0 && (wanted !== coarse || litLevels.length >= coarse) && !index.growing && params.get("progressive") !== "0") {
           window.__player.then = wanted;
-          setDetail(coarse);
+          setDetail(coarse, false, true);
         } else {
           setDetail(wanted);
         }
