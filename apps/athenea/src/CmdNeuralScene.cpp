@@ -124,6 +124,8 @@ struct SceneOptions {
     bool                     relight = false;         // shoot: a frame takes the light of what the scene holds again
     std::string              lightGroup;              // shoot: the frames are a group of lights' own, kept as its layer
     std::vector<std::string> groups;                  // render: NAME=LEVEL or NAME=R,G,B, a group of lights' level
+    std::vector<std::string> lightsOn;                // shoot: the stage's lights left on (the rest switched off)
+    std::vector<std::string> lightsOff;               // shoot: the stage's lights switched off
     bool                     antialias = false;       // shoot: a new scene drawn with the 2D filter's compensation
     float                    shootSpread = 0.5F;      // shoot's own default: half a cell
     float                    exposure = 0.0F;
@@ -1654,6 +1656,24 @@ int runShoot(const SceneOptions& all) {
     auto renderer = usd::StageRenderer::open(all.stage);
     if (!renderer) return report(renderer.error());
     usd::StageRenderer& stage = **renderer;
+    if (!all.lightsOn.empty() || !all.lightsOff.empty()) {
+        // WHICH OF THE STAGE'S LIGHTS LIGHT IT: with --lights-on only those named, with --lights-off all but
+        // those. A light is named by its prim's path, or by a path above it (a scope of lamps).
+        const auto under = [](const std::string& prim, const std::vector<std::string>& named) {
+            return std::any_of(named.begin(), named.end(), [&](const std::string& n) {
+                return prim == n || (prim.size() > n.size() && prim.compare(0, n.size(), n) == 0 && prim[n.size()] == '/');
+            });
+        };
+        uint32_t on = 0;
+        uint32_t off = 0;
+        for (const usd::StageLight& light : stage.lights()) {
+            const bool lit = (all.lightsOn.empty() || under(light.prim, all.lightsOn)) && !under(light.prim, all.lightsOff);
+            if (auto set = stage.setLightOn(light.prim, lit); !set) return report(set.error());
+            ++(lit ? on : off);
+        }
+        out("lights: %u of the stage's on, %u off%s\n", on, off,
+            on == 0 ? "; none is left on, and a stage with no light is lit by the engine's default ones" : "");
+    }
     stage.setPathSamples(std::max(all.passSamples, 1u));
     stage.setPathTotal(std::max(all.samples, 1u));
     stage.setPathBounces(all.bounces);
@@ -3950,6 +3970,8 @@ void addNeuralScene(CLI::App& app) {
     shoot->add_option("--tolerance", o.tolerance, "a surface is already held where the scene's depth is within this share of the render's");
     shoot->add_option("--refine", o.refine, "a surface held with gaussians more than this many times as wide as this look's is made again, finer");
     shoot->add_option("--repaint", o.repaint, "a surface held whose colour is off the render's by more than this share is made again (0: held by its depth alone)");
+    shoot->add_option("--lights-on", o.lightsOn, "only these lights of the stage light it (prim paths, comma separated or repeated): every other light the stage authors is switched off -- a group's lamps for --light-group")->delimiter(',');
+    shoot->add_option("--lights-off", o.lightsOff, "these lights of the stage are switched off (prim paths): the scene shot without the lamps that are groups")->delimiter(',');
     shoot->add_option("--light-group", o.lightGroup, "the stage handed is lit by one group of lights alone: each frame is path traced and what every gaussian of the scene sends in it is kept as that group's layer of light, by this name; the scene itself is not touched (render --group sets the group's level)");
     shoot->add_flag("--relight", o.relight, "each frame first takes again the light of what the scene holds and the frame shows: those gaussians keep their place and what they are made of, and a layer of light is kept for the time (a stage whose light changes)");
     shoot->add_flag("--antialias", o.antialias, "a new scene is drawn with the Mip-Splatting 2D filter's compensation, by the looks and by whoever draws it after (kept in its manifest); without it, the default, a disc narrower than a pixel stays opaque");

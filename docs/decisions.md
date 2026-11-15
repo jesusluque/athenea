@@ -23409,3 +23409,10 @@ shows is the picture the last view left of it, as the scene's own is; `export`, 
 read the scene's own light and no group; the levels are a command line's, not a stage's states
 (usd/LightGroups.h has those for a car's lamps: not joined); with `--at` the groups are as they are now, a
 group has no time; CUDA and Vulkan not run.
+
+**One stage for the scene and its groups** (15 Nov). `shoot --lights-on PATHS` and `--lights-off PATHS`
+switch the stage's own lights (`StageRenderer::setLightOn`: the prim deactivated in the session layer), so
+a group needs no stage of its own: the scene is shot with the lamps off, each group with its lamps alone
+on. `qa_flows.py` does that on the materials stage with its sun as the group, and draws the scene with the
+group at a half and at a tint: 35 of 35 end well on Metal. Windows through Vulkan passes `[scene]` (295
+assertions with the group's case) and its 31 workflows of before; CUDA is being run.

@@ -26,6 +26,7 @@ parser.add_argument("--walk", default="")
 parser.add_argument("--size", default="640x360")
 parser.add_argument("--focal", default="24")
 parser.add_argument("--rotate-x", default="")
+parser.add_argument("--group-light", default="", help="the prim path of the stage's light the group workflows switch")
 args = parser.parse_args()
 
 out = os.path.abspath(args.out)
@@ -154,6 +155,21 @@ if args.stage and args.walk:
             os.path.join(out, "relit.png")], [os.path.join(out, "relit_*.png")])
         run("render --snapshot 1, before it was", ["neural-scene", "render", shot, "--snapshot", "1"] + view + common +
             ["-o", os.path.join(out, "before.exr")], [os.path.join(out, "before.exr")])
+    # A GROUP OF LIGHTS: the scene shot without one of the stage's lights, that light's own layer kept by a
+    # second pass under it alone, and the scene drawn with the group at a level.
+    lamp = args.group_light
+    if lamp:
+        based = os.path.join(out, "based.aths")
+        run("shoot --lights-off", ["neural-scene", "shoot", os.path.basename(args.stage), based, "--views", short,
+            "--samples", "8", "--pass-samples", "8", "--bounces", "2", "--lights-off", lamp] + common,
+            [os.path.join(based, "scene.json")], cwd=stage_dir)
+        run("shoot --light-group --lights-on", ["neural-scene", "shoot", os.path.basename(args.stage), based, "--views", short,
+            "--samples", "8", "--pass-samples", "8", "--bounces", "2", "--light-group", "lamp", "--lights-on", lamp] + common,
+            [os.path.join(based, "pieces", "*.g.lamp.1")], cwd=stage_dir)
+        run("render --group lamp=0.5", ["neural-scene", "render", based, "--views", views, "--group", "lamp=0.5"] + common +
+            ["-o", os.path.join(out, "group")], [os.path.join(out, "group_*.exr")])
+        run("render --group lamp=1,0.2,0.2 --frames", ["neural-scene", "render", based, "--frames", "1", "3", "--group",
+            "lamp=1,0.2,0.2", "-o", os.path.join(out, "grouped.png")], [os.path.join(out, "grouped_*.png")])
     run("shoot --time-step --repaint --free-each-frame", ["neural-scene", "shoot", os.path.basename(args.stage),
         os.path.join(out, "timed.aths"), "--views", short, "--time", "0", "--time-step", "1", "--repaint", "0.3",
         "--free-each-frame", "--samples", "8", "--pass-samples", "8", "--bounces", "2"] + common,
