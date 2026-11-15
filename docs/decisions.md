@@ -20496,7 +20496,7 @@ Vulkan's own and are fixed:
   need CUDA, which `athenea video` asks for (`DevicePurpose::Shared`) and the
   tests did not: on Windows their device became Vulkan and NVDEC's textures
   refused it (#244). They take `ATHENEA_REQUIRE_SHARED_GPU` now. All 11 video
-  cases pass with the default backend on ixwin.
+  cases pass with the default backend on the RTX 3070 under Windows.
 
 ## Lights from Blender: the spot's cone, and the sun's factor of four (12 Nov)
 
