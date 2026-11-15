@@ -23528,3 +23528,11 @@ with the sun of the materials stage as a group (`--group-light /World/Sun`) -- t
 its layer, the scene drawn and handed on at a level, and the group handed on alone -- ends well 37 of 37 on
 Metal and on Vulkan. (A run of CUDA in between had tested the code of the step before: the copy kept the
 Mac's file times and nothing was rebuilt; the copy now sets them.)
+
+**Published** (15 Nov, by sysop at the user's word over Telegram -- "an index on that neural, what has been
+applied with its history"): https://neural.lucab.co.uk/ is now the index (`applied.html` reading
+`history.json`: what was added and when, with sysop's own entries of what was deployed), the player is at
+`/player.html`, and Sponza with its two lamps as groups (960x540) is `/player.html?scene=lamps`. The page
+and its data are in `scripts/examples/neural-scene-viewer` (`applied.html`, `history.json`); sysop
+assembles the site from `build/web` (`player.html`, `applied.html`, `history.json`, `scenes/` with
+`scenes.json`). Not tried on a phone.

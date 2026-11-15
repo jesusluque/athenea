@@ -1,0 +1,15 @@
+{
+ "title": "neural athenea: what has been applied, and when",
+ "note": "Engine side (branch neural of athenea). Each entry: the date, what was added, and the scene that shows it where there is one. Entries for what was published on the site and when are sysop's to add from its own record of deploys.",
+ "entries": [
+  {"date": "2026-11-12", "what": "A render's result is gaussians: neural-scene shoot path traces a USD stage and leaves a scene of gaussians, found a frame at a time, with time references; pictures are a post-process."},
+  {"date": "2026-11-13", "what": "A file that grows while it renders, and a player for it on the web: the scene seen being made, a frame at a time, and played back."},
+  {"date": "2026-11-14", "what": "Glass and chrome keep their own material and are shaded by where the eye is, in the engine (render --glass) and in the player; levels of detail and the scene's history handed on; QA of materials, time, textures, formats and workflows on Metal, CUDA and Vulkan."},
+  {"date": "2026-11-15", "what": "Sharper scenes: discs half a cell wide, paying the 2D filter only under the width they were made at; the player keeps a gaussian's centre whole (Spark's extended splats)."},
+  {"date": "2026-11-15", "what": "Material apart from light: every gaussian keeps its surface's base colour apart from the light it was found under."},
+  {"date": "2026-11-15", "what": "Lamps added to a found scene with no path traced (render --lamps): direct light with soft shadows through the scene's own gaussians, one bounce, a highlight. Sponza with two lamps: 0.4 s where the path traced stage took 954 s for four views."},
+  {"date": "2026-11-15", "what": "A scene's light taken again a frame (shoot --relight): the gaussians keep their place and material, the light is kept as a layer a time."},
+  {"date": "2026-11-15", "what": "Groups of lights (shoot --light-group, render --group): a layer of path traced light a group of lamps; a lamp dimmed, tinted or put out is exact and nothing is traced. Sponza: 28.8 dB at a changed state against that state path traced.", "scene": "lamps"},
+  {"date": "2026-11-15", "what": "The player sets the lamps: a level and a tint a group in Options, and a lamp of its own that rides with the eye (no shadow).", "scene": "lamps"}
+ ]
+}
