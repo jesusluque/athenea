@@ -23751,3 +23751,37 @@ page): 60 for the whole scene and 60 for the level, both at the display's rate.
 
 **Not done.** `--groups-only` at 1080p. More groups than two. A lamp moved is its group shot again: there is no
 way to move a lamp short of a walk's path tracing but `render --lamps`, which is no path tracer's light.
+
+## The path tracer's time is its paths', and not its materials' (16 Nov)
+
+More of the profile of 15 Nov, the same view of Sponza with two lamps (`athenea stage --technique rt`, Metal, M5 Pro;
+seconds of the whole command, of which about 44 are the stage loaded):
+
+| what | seconds |
+|---|---|
+| 1920x1080, 32 paths in passes of 1, 3 bounces | 149.2 |
+| the same in passes of 8 (15 Nov) | 147.9 |
+| the same in one pass of 32 (15 Nov) | 148.6 |
+| 960x540, one path, no bounce (the stage loaded) | 43.9 |
+| 960x540, 32 paths, 3 bounces | 68.2 |
+| 960x540, 128 paths, 3 bounces (as many paths as 1080p at 32) | 148.5 |
+| 1920x1080, 32 paths, 3 bounces, every mesh under one flat grey material | 125.4 |
+| the same with no bounce | 58.5 |
+
+- *The time is the number of paths and nothing else*: 16.6 M paths in 24 s, 66 M in 104--105 s, whether they are
+  32 a pixel at 1080p or 128 at 540p, in one pass or thirty-two. 1.6 microseconds a path of three bounces; no cost
+  a pass, a pixel or a frame.
+- *Materials are at most a fifth of a bounce.* With every mesh bound to one flat material (a layer over the stage,
+  `bindMaterialAs = "strongerThanDescendants"`; the picture is grey and brighter, so it took) three bounces cost
+  66.9 s where they cost 81.6 s with Sponza's own textures: 22 s a bounce against 27 s.
+- *Nor is it the shadow ray's walk.* That flat stage has no glass and no cut-out, so its shadow rays take the
+  any-hit route (`shadowWalk`'s first branch), and it is the same 22 s a bounce: 66 M nearest rays and 66 M shadow
+  rays in 22 s, 6 M rays a second.
+
+So what is slow is tracing itself inside this kernel, by a factor of ten or more for the hardware: not the
+materials, not the textures' mips, not the shadow walk, not the passes. What that leaves is the kernel's own shape
+(one kernel that loops over samples and bounces with everything in it) or how the scene's acceleration structure is
+built for Metal (how many bottom-level structures, how they overlap) -- neither measured, and a capture of the
+kernel on the device is what tells them apart. Athenea-research's proposal 117 names the same first step.
+
+**Not done.** The capture. Anything to make it faster: this section only rules causes out.
