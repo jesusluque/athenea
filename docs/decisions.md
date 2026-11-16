@@ -24654,3 +24654,38 @@ taken for the cause. The table above is from cuts that stand alone.
 Not done: what is left between 7.9 s and the 4.2 s of the stage without the knights -- not looked for (their
 glass makes every shadow ray walk rather than stop at the first hit, which is a guess); the other kernels that
 assign a stack (the raster's shading) left as they were; CUDA and Vulkan; `shoot`'s time with this.
+
+## What a glass material costs a stage's bounces: narrowed, not settled (16 Nov)
+
+After the stacks copied by their count, flat Sponza (every mesh under one flat UsdPreviewSurface) from the
+frame-12 view of the walk, 1920x1080, 66 M paths, the build as committed; seconds:
+
+| the knights | first hit and its light | a bounce |
+|---|---|---|
+| not in the stage | 1.6 | 2.8 |
+| there, under the flat material | 1.8 | 3.3 |
+| the chrome one alone, its own material | 2.1 | 3.6 |
+| the glass one alone, its own material | 4.1 | 7.4 |
+| both, their own materials | 3.5 | 7.9 |
+| both, from the walk's first view, where they are far | 1.7 | 4.9 (2.7 under the flat material) |
+
+It is the glass knight's material, not the knights' geometry and not the chrome. What was tried and ruled
+out, each timed and each leaving the picture bit for bit:
+
+- *The shadow ray.* With glass or a cut-out in a frame a shadow ray looks for its nearest hit and walks face by
+  face. Asking a face's material row before rebuilding the hit, and letting the first hit found answer when it
+  is a whole opaque face, changed nothing (9.7-9.8 s a bounce in Sponza where 10.3, 7.6-7.9 in the flat
+  stage) -- as the earlier table already said, the light sampled being under a second of a bounce. Taken back
+  out: code for no gain.
+- *The stacks' size.* The flat stage without glass with its stacks forced to the glass material's (11 built, 8
+  kept): 2.8 s a bounce against 2.6. Not the sizes any more.
+
+What is left is the material itself where it is evaluated: a path that enters the glass knight takes a step a
+face (crossings are not bounces) and evaluates OpenPBR at each, and the generated graph for it declares 45 BSDF
+values, each as wide as the stack is built (the UsdPreviewSurface graph did the same before it was made one
+node, `athenea_preview_bsdf`). How much of the 4.6 s is those paths' own work -- the knights fill much of that
+view, and less of the first -- and how much is a cost to every surface is **not separated**: from the far view
+the difference is 2.2 s where it is 4.6 s from the near one, which says most of it is the knight's own pixels
+and does not say all. Said because the user was first told every surface pays it.
+
+Not done: OpenPBR as one node (NEU36), which is where this points; a view with no glass in sight at all.
