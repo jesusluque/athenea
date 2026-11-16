@@ -24068,3 +24068,47 @@ On CUDA and Vulkan this change has not been run.
 
 **Not done.** The page as published was not looked at by me after db95db61 (an agent checks it from Chrome on
 ixwin). A part's history in one file.
+
+## The player: its chrome from near, a bar while it reads, its view in its address (16 Nov)
+
+Three changes to the viewer page, each made and seen by an agent of this session in headless Chrome beside the page
+as it was at the same camera (commits 2d117708, a68f22b5, 318488ff); the first I looked at again in its pictures.
+
+**The player's chrome, from near.** The chrome knight showed black facets from near. The normal was not the cause
+first: the cube a kind reads was drawn from the middle of the box of its gaussians, and a few strays stretched that
+box, so sponza_lamps' mirror cube was drawn from (12.07, 0.63, 0.05) m, 1.4 m from the chrome knight and beside the
+glass one. A kind's room is now drawn from where its gaussians are (a median a mesh, weighed by gaussians: (11.37,
+0.91, -1.22)). The black itself is what the scene does not hold -- behind the render cameras, and the sky -- read by
+one flat disc while its neighbour reads a wall. A mirror now reads the cube at thirteen rays in a cone of 0.25 about
+the mirrored one, and the cube is drawn over nothing so its alpha says where the room is empty: there a gaussian
+keeps the colour it was found with. Seen at full detail from 1 m and 2 m and ridden at camera 11: the mosaic of
+black and white blocks is gone from both knights, and the glass's base loses its black stripes; the glass body is
+unchanged. A radial normal blended with the disc's axis was tried and made larger dark patches. The Sky option no
+longer shows in mirrors. Not done: a normal smoothed over a gaussian's neighbours; a cube an object where a scene
+has several chrome objects apart; the softening for the glass's own mirrored term; the levels of detail were not
+looked at side by side.
+
+**The player says how far its reading is.** While parts are read the status line carries a bar: parts read of the
+parts there are, and gaussians of theirs -- the index gives a part's gaussians, not its bytes -- counted a file at
+a time, a part's history and its glass and mirrors with it. It measures the load at hand: the coarse level drawn
+first fills it once, and the detail read behind it ("refining…") fills it again while the coarse scene is drawn and
+moved in. sponza_lamps at full detail went 0 to 20 parts and 0 to 9.89 M gaussians (history counted; the scene at
+its end is 8.37 M); on a phone the folded text keeps its status line while there is a bar. Not done: bytes; the
+groups' light files, during which the bar stands still; a scene still growing, and the page driven while it loads,
+were not exercised.
+
+**The player keeps its view in its address.** The scene, the detail, where the timeline is (`frame`), whether the
+render camera is ridden (`ride=1`) and each group's level where it is not the one it was shot at
+(`light.<group>=<level>`) are written to the page's query in place, a quarter of a second after the last change,
+and read back when the page is; `base`, `unit`, `progressive` and `glass` stay as they came. A frame asked for is
+shown as the parts that reach it are read, through the coarse level and the detail behind it. Opened with
+`detail=1&frame=6&ride=1&light.warm=0.3&light.spot=0`, sponza_lamps drew the same picture as the page set so by
+hand, whose address had become that one. Not done: the free camera's own place and aim, a group's tint, the
+player's lamp; Safari and Firefox, and the one-file player, were not opened with it.
+
+**The published page from Chrome on ixwin** (RTX 3070, version db95db61, by another agent): the four scenes with
+history load with no error; ridden at frames 2, 6 and 11 the frame is whole in `sponza_lamps`, `sponza_lights` and
+`lamps`, the knights not black; `sponza_lights` has its day as a group and at nothing the sun leaves the floor;
+`sponza_lamps` at rest is 48 frames a second whole (8.37 M) and 60 at its level of detail (1.93 M). `sponza_chrome`
+as I exported it again is very dark and nearly grey: not right, being looked into. On CUDA (WSL) and Vulkan
+(Windows) at 4e25aaf6 the scene tests pass, 295 assertions each, and the QA flows on Vulkan, 41 of 41.
