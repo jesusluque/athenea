@@ -9,7 +9,10 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <filesystem>
 #include <string>
+#include <vector>
 
 #include "athenea/gpu/Buffer.h"
 #include "athenea/gpu/CommandBatch.h"
@@ -706,4 +709,398 @@ TEST_CASE("a UsdPreviewSurface's opacity is coverage: no transmission lobe, and 
     std::printf("  coverage graph: %zu lines; MaterialX's: %zu lines\n",
                 static_cast<size_t>(std::count(compiled->source.begin(), compiled->source.end(), '\n')),
                 static_cast<size_t>(std::count(reference->source.begin(), reference->source.end(), '\n')));
+}
+
+namespace {
+
+/// The stacks two compiled materials leave at the same shading points, word
+/// by word: both evaluated in one thread, the second against the first.
+const char* kStackCompare = R"(
+import athenea.material.material_runtime;
+import NODE_MODULE;
+import GRAPH_MODULE;
+export static const bool kAtheneaMarkLobes = MARK_LOBES;
+// Every lobe OpenPBR can push kept (eleven), so none is dropped as the
+// lightest and the stack's order is the order they were pushed in; a device
+// that gives a thread less stack keeps its own counts.
+#ifndef ATHENEA_MAX_LOBES
+export static const uint kBuildLobes = 16;
+export static const uint kMaxLobes = 12;
+#endif
+
+struct StackCompareParams {
+    uint  count;
+    uint  graphBlob;
+    uint  seed;
+    float tolerance;
+};
+
+// [points, stacks of another count, lobes compared, kind/flags/scatter words that differ, floats beyond the
+//  tolerance, marks beyond it, emission components beyond it, opacities beyond it, the worst relative
+//  difference (a float's bits), floats that differ at all, the kinds seen (a bit each), the deepest stack]
+RWStructuredBuffer<uint>           counts;
+ConstantBuffer<StackCompareParams> params;
+
+static uint gBeyond;
+static uint gBits;
+static float gWorst;
+
+void differ(float a, float b) {
+    const float error = abs(a - b) / max(max(abs(a), abs(b)), 1.0e-3);
+    // Written so that a NaN on either side counts.
+    if (!(error <= params.tolerance)) {
+        gBeyond += 1;
+    }
+    if (asuint(a) != asuint(b)) {
+        gBits += 1;
+    }
+    gWorst = max(gWorst, error);
+}
+void differ(float2 a, float2 b) { differ(a.x, b.x); differ(a.y, b.y); }
+void differ(float3 a, float3 b) { differ(a.x, b.x); differ(a.y, b.y); differ(a.z, b.z); }
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void stackCompare(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    Rng rng = Rng(i, params.seed);
+    const float3 n = normalize(sampleUniformSphere(float2(rng.next(), rng.next())));
+    const Frame frame = Frame(n, float3(0.3, 0.9, 0.1));
+    float3 v = frame.toWorld(sampleCosineHemisphere(float2(rng.next(), rng.next())));
+    // A quarter of the points seen from inside, a quarter from behind.
+    if ((i & 3) == 3) {
+        v = -v;
+    }
+    MaterialInputs inputs;
+    inputs.positionWorld = float3(0.0);
+    inputs.normalWorld = n;
+    inputs.tangentWorld = frame.x;
+    inputs.bitangentWorld = frame.y;
+    inputs.positionObject = float3(0.0);
+    inputs.normalObject = n;
+    inputs.tangentObject = frame.x;
+    inputs.bitangentObject = frame.y;
+    inputs.viewPosition = v * 4.0;
+    inputs.uvDx = float2(0.0);
+    inputs.uvDy = float2(0.0);
+    inputs.frame = 0.0;
+    inputs.time = 0.0;
+    inputs.inside = (i & 3) == 2;
+    inputs.worldFromObject0 = float4(1.0, 0.0, 0.0, 0.0);
+    inputs.worldFromObject1 = float4(0.0, 1.0, 0.0, 0.0);
+    inputs.worldFromObject2 = float4(0.0, 0.0, 1.0, 0.0);
+    inputs.mesh.firstPoint = 0;
+    inputs.mesh.points = 0;
+    inputs.mesh.firstTriangle = 0;
+    inputs.mesh.triangles = 0;
+    inputs.mesh.hasNormals = 0;
+    inputs.mesh.nodeBase = 0;
+    inputs.mesh.slotBase = 0;
+    inputs.mesh.subsetBase = 0;
+    inputs.mesh.boundsLo = float4(0.0);
+    inputs.mesh.boundsHi = float4(0.0);
+    inputs.triangle = 0;
+    inputs.points = uint3(0);
+    inputs.weights = float3(1.0, 0.0, 0.0);
+    inputs.displayColor = float4(0.18, 0.18, 0.18, 1.0);
+    NODE_FUNCTION(inputs, 0);
+    LobeStack node;
+    copyStack(node, gAtheneaResult);
+    GRAPH_FUNCTION(inputs, params.graphBlob);
+
+    InterlockedAdd(counts[0], 1u);
+    if (node.count != gAtheneaResult.count) {
+        InterlockedAdd(counts[1], 1u);
+    }
+    const uint lobes = min(node.count, gAtheneaResult.count);
+    uint words = 0;
+    uint kinds = 0;
+    gBeyond = 0;
+    gBits = 0;
+    gWorst = 0.0;
+    uint marks = 0;
+    for (uint k = 0; k < lobes; ++k) {
+        const Lobe a = node.lobes[k];
+        const Lobe b = gAtheneaResult.lobes[k];
+        words += (a.kind != b.kind ? 1u : 0u) + (a.flags != b.flags ? 1u : 0u) + (a.scatter != b.scatter ? 1u : 0u) +
+                 (a.pad0 != b.pad0 ? 1u : 0u);
+        kinds |= 1u << min(a.kind, 31u);
+        differ(a.weight, b.weight);
+        differ(a.roughness, b.roughness);
+        differ(a.colour0, b.colour0);
+        differ(a.ior, b.ior);
+        differ(a.colour1, b.colour1);
+        differ(a.exponent, b.exponent);
+        differ(a.colour2, b.colour2);
+        differ(a.alpha, b.alpha);
+        differ(a.normal, b.normal);
+        differ(a.tangent, b.tangent);
+        // The marks a conversion reads: the tint (pad1, pad2) and the layers over (pad3); pad4 with them.
+        const uint before = gBeyond;
+        differ(a.pad1, b.pad1);
+        differ(a.pad2, b.pad2);
+        differ(a.pad3, b.pad3);
+        differ(a.pad4, b.pad4);
+        marks += gBeyond - before;
+    }
+    InterlockedAdd(counts[2], lobes);
+    InterlockedAdd(counts[3], words);
+    InterlockedAdd(counts[4], gBeyond - marks);
+    InterlockedAdd(counts[5], marks);
+    const uint lobeBeyond = gBeyond;
+    differ(node.emission, gAtheneaResult.emission);
+    InterlockedAdd(counts[6], gBeyond - lobeBeyond);
+    const uint emissionBeyond = gBeyond;
+    differ(node.opacity, gAtheneaResult.opacity);
+    InterlockedAdd(counts[7], gBeyond - emissionBeyond);
+    InterlockedMax(counts[8], asuint(gWorst));
+    InterlockedAdd(counts[9], gBits);
+    InterlockedOr(counts[10], kinds);
+    InterlockedMax(counts[11], lobes);
+    if (any(node.emission != float3(0.0))) {
+        InterlockedAdd(counts[12], 1u);
+    }
+    if (node.opacity != 1.0) {
+        InterlockedAdd(counts[13], 1u);
+    }
+}
+)";
+
+}   // namespace
+
+// THE ONE NODE HELD TO MATERIALX'S GRAPH. OpenPBR Surface's lobes are built
+// by athenea_open_pbr_bsdf, written from MaterialX 1.39.5's nodegraph
+// (docs/decisions.md, 16 Nov); a MaterialX whose graph changed would leave
+// the node as it is, and nothing else compares the two. Both are compiled
+// here (MaterialCompilerOptions::openPbr) and evaluated in one thread at the
+// same shading points, and the stacks compared word by word: the count, each
+// lobe's kind, flags and scatter, its weight and every parameter, the
+// emission and the opacity -- without the marks and with them
+// (kAtheneaMarkLobes, as a bake builds its stacks), which adds the tint and
+// the layers over. Nineteen parameter sets, each reaching a part of the
+// graph: the same the two routes were first compared on as pictures.
+TEST_CASE("OpenPBR's one node builds the stack MaterialX's graph builds", "[material][materialx][openpbr]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    std::vector<std::filesystem::path> shaders;
+    for (const std::string& path : gpu->device->shaderSearchPaths()) {
+        shaders.emplace_back(path);
+    }
+    const auto route = [&](material::OpenPbrRoute openPbr) {
+        material::MaterialCompilerOptions options;
+        options.openPbr = openPbr;
+        auto made = material::MaterialCompiler::create({ATHENEA_MATERIALX_ROOT}, shaders, options);
+        if (!made) FAIL(made.error().toString());
+        return std::move(*made);
+    };
+    auto nodeCompiler = route(material::OpenPbrRoute::Node);
+    auto graphCompiler = route(material::OpenPbrRoute::Graph);
+    auto textures = material::TextureStore::create(*gpu->library);
+    if (!textures) FAIL(textures.error().toString());
+    struct Input {
+        const char* name;
+        const char* type;
+        const char* value;
+    };
+    struct Case {
+        const char*        name;
+        std::vector<Input> inputs;
+    };
+    const std::vector<Case> cases{
+        {"a tinted coat with darkening and its own index",
+         {{"base_color", "color3", "0.6, 0.03, 0.03"}, {"specular_roughness", "float", "0.5"},
+          {"coat_weight", "float", "1"}, {"coat_color", "color3", "0.9, 0.6, 0.2"},
+          {"coat_darkening", "float", "1"}, {"coat_roughness", "float", "0.1"}, {"coat_ior", "float", "1.6"}}},
+        {"half a coat, anisotropic, over half a metal",
+         {{"base_color", "color3", "0.1, 0.4, 0.7"}, {"base_metalness", "float", "0.5"},
+          {"coat_weight", "float", "0.5"}, {"coat_roughness", "float", "0.2"},
+          {"coat_roughness_anisotropy", "float", "0.7"}, {"coat_darkening", "float", "0.5"},
+          {"coat_color", "color3", "0.7, 0.9, 0.8"}}},
+        {"fuzz",
+         {{"base_color", "color3", "0.15, 0.05, 0.2"}, {"specular_roughness", "float", "0.7"},
+          {"fuzz_weight", "float", "1"}, {"fuzz_color", "color3", "0.9, 0.8, 1"},
+          {"fuzz_roughness", "float", "0.5"}}},
+        {"fuzz over a coat",
+         {{"base_color", "color3", "0.2, 0.5, 0.1"}, {"fuzz_weight", "float", "0.6"},
+          {"fuzz_color", "color3", "1, 0.9, 0.6"}, {"fuzz_roughness", "float", "0.3"},
+          {"coat_weight", "float", "0.8"}, {"coat_roughness", "float", "0.05"}}},
+        {"a thin film over a metal",
+         {{"base_color", "color3", "0.9, 0.9, 0.9"}, {"base_metalness", "float", "1"},
+          {"specular_roughness", "float", "0.15"}, {"thin_film_weight", "float", "0.6"},
+          {"thin_film_thickness", "float", "0.5"}, {"thin_film_ior", "float", "1.4"}}},
+        {"a thin film of weight one over a plastic",
+         {{"base_color", "color3", "0.05, 0.05, 0.05"}, {"specular_roughness", "float", "0.1"},
+          {"thin_film_weight", "float", "1"}, {"thin_film_thickness", "float", "0.4"},
+          {"thin_film_ior", "float", "1.3"}}},
+        {"a thin film over glass",
+         {{"base_color", "color3", "1, 1, 1"}, {"transmission_weight", "float", "1"},
+          {"specular_roughness", "float", "0"}, {"thin_film_weight", "float", "0.5"},
+          {"thin_film_thickness", "float", "0.6"}}},
+        {"subsurface 1",
+         {{"base_color", "color3", "0.8, 0.8, 0.8"}, {"subsurface_weight", "float", "1"},
+          {"subsurface_color", "color3", "0.9, 0.5, 0.4"}, {"subsurface_radius", "float", "0.1"},
+          {"subsurface_radius_scale", "color3", "1, 0.5, 0.25"}}},
+        {"subsurface 0.5",
+         {{"base_color", "color3", "0.2, 0.6, 0.8"}, {"subsurface_weight", "float", "0.5"},
+          {"subsurface_color", "color3", "0.9, 0.8, 0.3"}, {"subsurface_scatter_anisotropy", "float", "0.3"}}},
+        {"a thin wall's subsurface",
+         {{"base_color", "color3", "0.8, 0.8, 0.8"}, {"subsurface_weight", "float", "1"},
+          {"subsurface_color", "color3", "0.4, 0.8, 0.3"}, {"subsurface_scatter_anisotropy", "float", "0.4"},
+          {"geometry_thin_walled", "boolean", "true"}}},
+        {"a thin wall's glass",
+         {{"base_color", "color3", "1, 1, 1"}, {"transmission_weight", "float", "1"},
+          {"transmission_color", "color3", "0.9, 0.7, 0.9"}, {"specular_roughness", "float", "0"},
+          {"geometry_thin_walled", "boolean", "true"}}},
+        {"transmission with dispersion",
+         {{"base_color", "color3", "1, 1, 1"}, {"transmission_weight", "float", "1"},
+          {"specular_roughness", "float", "0"}, {"specular_ior", "float", "1.6"},
+          {"transmission_dispersion_scale", "float", "1"},
+          {"transmission_dispersion_abbe_number", "float", "20"}}},
+        {"transmission with depth and scatter",
+         {{"base_color", "color3", "1, 1, 1"}, {"transmission_weight", "float", "1"},
+          {"transmission_color", "color3", "0.4, 0.7, 0.9"}, {"transmission_depth", "float", "0.2"},
+          {"transmission_scatter", "color3", "0.3, 0.2, 0.1"},
+          {"transmission_scatter_anisotropy", "float", "0.2"}, {"specular_roughness", "float", "0.05"}}},
+        {"half transmission",
+         {{"base_color", "color3", "0.8, 0.3, 0.1"}, {"transmission_weight", "float", "0.5"},
+          {"specular_roughness", "float", "0.1"}}},
+        {"emission under a tinted coat",
+         {{"base_color", "color3", "0.1, 0.1, 0.1"}, {"emission_luminance", "float", "3"},
+          {"emission_color", "color3", "0.3, 0.6, 1"}, {"coat_weight", "float", "1"},
+          {"coat_color", "color3", "1, 0.5, 0.5"}, {"coat_roughness", "float", "0.1"}}},
+        {"opacity 0.5",
+         {{"base_color", "color3", "0.7, 0.7, 0.1"}, {"geometry_opacity", "float", "0.5"}}},
+        {"an anisotropic metal",
+         {{"base_color", "color3", "0.95, 0.8, 0.5"}, {"base_metalness", "float", "1"},
+          {"specular_roughness", "float", "0.3"}, {"specular_roughness_anisotropy", "float", "0.8"}}},
+        {"half metal with a specular colour and weight",
+         {{"base_color", "color3", "0.8, 0.5, 0.3"}, {"base_weight", "float", "0.7"},
+          {"base_metalness", "float", "0.5"}, {"specular_weight", "float", "0.5"},
+          {"specular_color", "color3", "0.6, 0.8, 1"}, {"specular_roughness", "float", "0.25"},
+          {"base_diffuse_roughness", "float", "0.6"}}},
+        {"every weight fractional",
+         {{"base_color", "color3", "0.6, 0.4, 0.5"}, {"base_weight", "float", "0.9"},
+          {"base_metalness", "float", "0.3"}, {"base_diffuse_roughness", "float", "0.4"},
+          {"specular_weight", "float", "0.8"}, {"specular_color", "color3", "0.9, 1, 0.8"},
+          {"specular_roughness", "float", "0.2"}, {"specular_roughness_anisotropy", "float", "0.3"},
+          {"transmission_weight", "float", "0.3"}, {"transmission_color", "color3", "0.8, 0.9, 0.6"},
+          {"subsurface_weight", "float", "0.3"}, {"subsurface_color", "color3", "0.9, 0.4, 0.4"},
+          {"fuzz_weight", "float", "0.5"}, {"fuzz_color", "color3", "0.8, 0.8, 1"},
+          {"fuzz_roughness", "float", "0.4"}, {"coat_weight", "float", "0.7"},
+          {"coat_color", "color3", "0.9, 0.8, 0.7"}, {"coat_roughness", "float", "0.1"},
+          {"coat_darkening", "float", "0.8"}, {"thin_film_weight", "float", "0.4"},
+          {"thin_film_thickness", "float", "0.5"}, {"emission_luminance", "float", "0.5"},
+          {"emission_color", "color3", "1, 0.8, 0.6"}, {"geometry_opacity", "float", "0.9"}}},
+    };
+    constexpr uint32_t kPoints = 1u << 14;
+    constexpr float kTolerance = 1e-5F;
+    constexpr uint32_t kCounters = 14;
+    uint32_t kindsSeen = 0;
+    uint32_t deepest = 0;
+    uint32_t emitting = 0;
+    uint32_t cut = 0;
+    for (const Case& c : cases) {
+        std::string inputs;
+        for (const Input& input : c.inputs) {
+            inputs += std::string("    <input name=\"") + input.name + "\" type=\"" + input.type + "\" value=\"" +
+                      input.value + "\" />\n";
+        }
+        const std::string xml = surface("open_pbr_surface", inputs);
+        auto node = nodeCompiler->compileXml(xml);
+        auto graph = graphCompiler->compileXml(xml);
+        if (!node) FAIL(node.error().toString());
+        if (!graph) FAIL(graph.error().toString());
+        // Each route is the route it says: one call of the node and no layer
+        // on one, layers and no node on the other.
+        REQUIRE(node->source.find("athenea_open_pbr_bsdf(") != std::string::npos);
+        REQUIRE(node->source.find("athenea_layer_bsdf(") == std::string::npos);
+        REQUIRE(graph->source.find("athenea_open_pbr_bsdf(") == std::string::npos);
+        REQUIRE(graph->source.find("athenea_layer_bsdf(") != std::string::npos);
+        REQUIRE(node->module != graph->module);
+        REQUIRE(gpu->library->loadSource(node->module, node->source, {}));
+        REQUIRE(gpu->library->loadSource(graph->module, graph->source, {}));
+        const auto noSlot = [](const std::string&) { return uint32_t{0xFFFFFFFF}; };
+        std::vector<float> blob = material::MaterialCompiler::parameters(*node, **textures, noSlot);
+        const std::vector<float> graphBlob = material::MaterialCompiler::parameters(*graph, **textures, noSlot);
+        const uint32_t graphAt = static_cast<uint32_t>(blob.size());
+        blob.insert(blob.end(), graphBlob.begin(), graphBlob.end());
+        REQUIRE((*textures)->commit());
+        gpu::BufferDesc desc;
+        desc.bytes = std::max<uint64_t>(blob.size(), 1) * 4;
+        desc.elementBytes = 4;
+        desc.label = "stacks.blob";
+        auto blobBuffer = gpu::Buffer::create(*gpu->device, desc, blob.data());
+        REQUIRE(blobBuffer);
+        desc.bytes = 16;
+        desc.elementBytes = 16;
+        desc.label = "stacks.placeholder4";
+        auto placeholder4 = gpu::Buffer::create(*gpu->device, desc);
+        REQUIRE(placeholder4);
+        gpu::Buffer placeholder = test::uintBuffer(*gpu->device, 4, "stacks.placeholder");
+        for (const bool marks : {false, true}) {
+            std::string source = replaceAll(kStackCompare, "NODE_MODULE", node->module);
+            source = replaceAll(source, "GRAPH_MODULE", graph->module);
+            source = replaceAll(source, "NODE_FUNCTION", node->function);
+            source = replaceAll(source, "GRAPH_FUNCTION", graph->function);
+            source = replaceAll(source, "MARK_LOBES", marks ? "true" : "false");
+            const std::string name = "athenea_stacks_" + node->module.substr(8) + "_" + graph->module.substr(8) +
+                                     (marks ? "_marks" : "");
+            if (auto loaded = gpu->library->loadSource(name, source, {"stackCompare"}); !loaded) {
+                FAIL(loaded.error().toString());
+            }
+            auto kernel = gpu::ComputeKernel::create(*gpu->library, name, "stackCompare");
+            if (!kernel) FAIL(kernel.error().toString());
+            gpu::Buffer counts = test::uintBuffer(*gpu->device, kCounters, "stacks.counts");
+            {
+                gpu::CommandBatch batch(*gpu->device);
+                kernel->dispatch(batch, {kPoints, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                    cursor["gMaterialBlob"].setBinding(blobBuffer->rhi());
+                    (*textures)->bind(cursor["gTextures"]);
+                    cursor["primvarRecords"].setBinding(placeholder.rhi());
+                    cursor["primvarValues"].setBinding(placeholder4->rhi());
+                    cursor["primvarSlots"].setBinding(placeholder.rhi());
+                    cursor["triangleCorners"].setBinding(placeholder.rhi());
+                    cursor["triangleFaces"].setBinding(placeholder.rhi());
+                    cursor["counts"].setBinding(counts.rhi());
+                    cursor["params"]["count"].setData(kPoints);
+                    cursor["params"]["graphBlob"].setData(graphAt);
+                    cursor["params"]["seed"].setData(uint32_t{53});
+                    cursor["params"]["tolerance"].setData(kTolerance);
+                });
+                REQUIRE(batch.submit(true));
+            }
+            uint32_t n[kCounters] = {};
+            REQUIRE(counts.read(*gpu->device, 0, sizeof(n), n));
+            float worst = 0.0F;
+            std::memcpy(&worst, &n[8], sizeof(worst));
+            std::printf("  %s%s: %u points, %u lobes (at most %u a stack, kinds 0x%x); %u counts, %u words, %u floats, "
+                        "%u marks, %u emission and %u opacity values off; %u floats differ at all, the worst by %.2e\n",
+                        c.name, marks ? ", marked" : "", n[0], n[2], n[11], n[10], n[1], n[3], n[4], n[5], n[6], n[7],
+                        n[9], double(worst));
+            INFO(c.name << (marks ? ", marked" : ""));
+            CHECK(n[0] == kPoints);
+            CHECK(n[2] >= kPoints);   // a lobe at least at every point
+            CHECK(n[1] == 0);
+            CHECK(n[3] == 0);
+            CHECK(n[4] == 0);
+            CHECK(n[5] == 0);
+            CHECK(n[6] == 0);
+            CHECK(n[7] == 0);
+            kindsSeen |= n[10];
+            deepest = std::max(deepest, n[11]);
+            emitting += n[12];
+            cut += n[13];
+        }
+    }
+    // That the sets reached the graph's parts: a diffuse, a translucent, a
+    // dielectric, a Schlick metal and a sheen among the lobes, a stack of
+    // nine at least, a surface that emits and one that is not opaque.
+    std::printf("  over the %zu sets: kinds 0x%x, the deepest stack %u lobes, %u points emitting, %u not opaque\n",
+                cases.size(), kindsSeen, deepest, emitting, cut);
+    CHECK((kindsSeen & 0xDAu) == 0xDAu);   // kLobeOrenNayar, Translucent, Dielectric, Schlick, Sheen
+    CHECK(deepest >= 9);
+    CHECK(emitting > 0);
+    CHECK(cut > 0);
 }

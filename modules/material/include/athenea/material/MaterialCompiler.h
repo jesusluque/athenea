@@ -92,17 +92,31 @@ struct Transmission {
 /// 9e-4.
 inline constexpr float kGlassShadowRoughness = 0.03F;
 
+/// What OpenPBR Surface's lobes are built by.
+enum class OpenPbrRoute : uint8_t {
+    /// The environment says: MaterialX's graph where `ATHENEA_OPENPBR_GRAPH`
+    /// is set to anything, the engine's node otherwise.
+    Environment,
+    Node,    ///< the engine's one node, `athenea_open_pbr_bsdf` (athenea_open_pbr_surface.mtlx)
+    Graph,   ///< MaterialX's own nodegraph of BSDF nodes, which the node is held to (the material tests)
+};
+
+struct MaterialCompilerOptions {
+    OpenPbrRoute openPbr = OpenPbrRoute::Environment;
+};
+
 class MaterialCompiler {
 public:
     /// `searchPaths`: where MaterialX's libraries are (a folder holding
     /// "libraries"), then the engine's shader directories.
     [[nodiscard]] static Result<std::unique_ptr<MaterialCompiler>> create(
-        const std::vector<std::filesystem::path>& materialxRoots, const std::vector<std::filesystem::path>& shaderPaths);
+        const std::vector<std::filesystem::path>& materialxRoots, const std::vector<std::filesystem::path>& shaderPaths,
+        const MaterialCompilerOptions& options = {});
     /// The same with libraries already loaded (hdMtlx's HdMtlxStdLibraries(), a
     /// MaterialX::DocumentPtr) and the folders their source files are found in.
     [[nodiscard]] static Result<std::unique_ptr<MaterialCompiler>> create(
         const std::shared_ptr<void>& libraries, const std::vector<std::filesystem::path>& librarySearchPaths,
-        const std::vector<std::filesystem::path>& shaderPaths);
+        const std::vector<std::filesystem::path>& shaderPaths, const MaterialCompilerOptions& options = {});
     ~MaterialCompiler();
 
     /// The renderable element `element` (a material or shader node) of a

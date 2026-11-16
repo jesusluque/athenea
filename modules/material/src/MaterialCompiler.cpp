@@ -665,7 +665,8 @@ struct MaterialCompiler::Impl {
 MaterialCompiler::~MaterialCompiler() = default;
 
 Result<std::unique_ptr<MaterialCompiler>> MaterialCompiler::create(
-    const std::vector<std::filesystem::path>& materialxRoots, const std::vector<std::filesystem::path>& shaderPaths) {
+    const std::vector<std::filesystem::path>& materialxRoots, const std::vector<std::filesystem::path>& shaderPaths,
+    const MaterialCompilerOptions& options) {
     try {
         mx::FileSearchPath libraryPaths;
         std::vector<std::filesystem::path> searchPaths;
@@ -676,7 +677,7 @@ Result<std::unique_ptr<MaterialCompiler>> MaterialCompiler::create(
         }
         mx::DocumentPtr standard = mx::createDocument();
         mx::loadLibraries({"libraries"}, libraryPaths, standard);
-        return create(std::shared_ptr<void>(standard), searchPaths, shaderPaths);
+        return create(std::shared_ptr<void>(standard), searchPaths, shaderPaths, options);
     } catch (const std::exception& e) {
         return Error::make(ErrorCode::InternalError, "materials: MaterialX: {}", e.what());
     }
@@ -684,7 +685,10 @@ Result<std::unique_ptr<MaterialCompiler>> MaterialCompiler::create(
 
 Result<std::unique_ptr<MaterialCompiler>> MaterialCompiler::create(
     const std::shared_ptr<void>& libraries, const std::vector<std::filesystem::path>& librarySearchPaths,
-    const std::vector<std::filesystem::path>& shaderPaths) {
+    const std::vector<std::filesystem::path>& shaderPaths, const MaterialCompilerOptions& options) {
+    const bool openPbrGraph = options.openPbr == OpenPbrRoute::Environment
+                                  ? !platform::env("ATHENEA_OPENPBR_GRAPH").empty()
+                                  : options.openPbr == OpenPbrRoute::Graph;
     auto compiler = std::unique_ptr<MaterialCompiler>(new MaterialCompiler());
     compiler->impl_ = std::make_unique<Impl>();
     Impl& impl = *compiler->impl_;
@@ -724,11 +728,13 @@ Result<std::unique_ptr<MaterialCompiler>> MaterialCompiler::create(
                 }
                 // OpenPBR Surface with its lobes built by one node, in place
                 // of MaterialX's graph of thirty BSDF nodes (the file says
-                // why). ATHENEA_OPENPBR_GRAPH in the environment keeps the
-                // graph, to compare the two routes in one build; the
-                // reference keeps it always.
+                // why). MaterialCompilerOptions::openPbr, or
+                // ATHENEA_OPENPBR_GRAPH in the environment where it leaves
+                // it to that, keeps the graph: the material tests compile
+                // both in one process and hold the node's stack to the
+                // graph's. The reference keeps the graph always.
                 const std::filesystem::path openPbr = shaders / "athenea/material/mx/athenea_open_pbr_surface.mtlx";
-                if (std::filesystem::exists(openPbr) && platform::env("ATHENEA_OPENPBR_GRAPH").empty()) {
+                if (std::filesystem::exists(openPbr) && !openPbrGraph) {
                     if (impl.libraries->getNodeGraph(kOpenPbrGraph)) {
                         impl.libraries->removeNodeGraph(kOpenPbrGraph);
                     }
