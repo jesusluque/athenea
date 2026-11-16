@@ -24876,3 +24876,113 @@ count); scripts and outputs in `build/night/agent-ixwin3`.
 Not done: CUDA's bounces (no OptiX in WSL), so the path tracing kernel with these changes is unverified on
 CUDA past the first hit; D3D12; the web player's reading of a one-file history on Windows; OpenPBR as one node
 and what came after 35c47360.
+
+## OpenPBR's one node held to MaterialX's graph by a test; textures and the marks, route against route (NEU36, 17 Nov)
+
+The one node that builds OpenPBR Surface's lobes (16 Nov) was checked against MaterialX's graph by pictures
+only, so a MaterialX whose graph changed would have left it behind with nothing to say so.
+
+**The switch is reachable from code.** `MaterialCompiler::create` takes `MaterialCompilerOptions`, whose
+`openPbr` is `Environment` (the default: `ATHENEA_OPENPBR_GRAPH` decides, as before), `Node` or `Graph`. Two
+compilers in one process give the two routes; their modules are named by a hash of their source, so both load
+in one kernel.
+
+**The test** (`athenea_material_tests "[openpbr]"`, `tests/material/test_material_compiler.cpp`): one kernel
+imports the material compiled by each route, evaluates both in the same thread at 16 384 shading points (a
+random normal and view; a quarter seen from inside, a quarter from behind) and compares the two lobe stacks
+*themselves*, not what they evaluate to: the count; lobe by lobe, in order, the kind, flags, scatter and
+`pad0`; the weight and every parameter (roughness, three colours, index, exponent, alpha, normal, tangent);
+the marks (the tint in `pad1`/`pad2`, the layers over in `pad3`); the emission and the opacity. A float counts
+where it is more than 1e-5 off relative to the larger of the two (to 1e-3 at least), a NaN always. Only
+counters are read back, one of them the worst difference's bits (`InterlockedMax` on a float that is not
+negative). The kernel keeps twelve lobes (`kMaxLobes`), so none of OpenPBR's eleven is dropped as the lightest
+and the stack's order is the order they were pushed in. Each parameter set runs twice: as shading builds its
+stacks, and with `kAtheneaMarkLobes` exported true, as a bake does. The sets are the nineteen features the
+routes were first compared on as pictures. The stacks are compared rather than `stackEval`'s response
+because a response sums the lobes: two wrong weights can cancel in it, a flag or a mark does not reach it at
+all, and a tolerance on a response has to be loose where a lobe is sharp.
+
+What it measured (Metal, M5 Pro, `build/pt-exp`): in all 38 runs no count, word, value, mark, emission or
+opacity off; the floats that differ at all are 0 to 3 % of those compared (none in the six sets that are
+metal or glass alone, 93 882 of 4.1 M in the set with every weight fractional, unmarked), the worst by
+3.9e-7 relative -- three or four units in the last place, the two functions' multiplies joined differently.
+Over the sets: every kind of lobe OpenPBR pushes (Oren-Nayar, translucent, dielectric, Schlick, sheen), a
+stack of nine, emission and an opacity under one. 631 assertions, about ten seconds with its two kernels'
+compile.
+
+**That it fails when the node is wrong** -- the build's copy of `athenea_open_pbr_bsdf.slang` edited, the test
+run, the copy restored and compared with the source (`cmp`: equal), the test passing again:
+
+| the edit | what the test said |
+|---|---|
+| the diffuse at half its weight | fails: 49 152 floats off (three a point) in each of 11 sets, the worst by 0.5 |
+| the coat's weight by 0.999 | fails: 49 152 floats off in each of the 5 sets with a coat, the worst by 1.0e-3 |
+| a layer over counted as two (`pad3 += 2`) | fails in the marked runs alone, all 19: 16 384 to 131 072 marks off |
+| the transmission's own-Fresnel flag not set | fails: 16 384 words off in each of the 6 sets that transmit, no float |
+
+**Deriving the graph again.** `scripts/materialx/make_open_pbr_mtlx.py <MaterialX libraries>` writes
+`athenea_open_pbr_surface.mtlx` from MaterialX's `bxdf/open_pbr_surface.mtlx` (27 closure nodes taken out, the
+one node put in); run against `~/tools/usd-26.08-mx/libraries` it gives the file in the repository byte for
+byte. `docs/development.md` (1.5) says the order: the script, a build, the test.
+
+**Inputs driven by textures** (not compared on 16 Nov). Six balls on the materials stage's floor, OpenPBR,
+their `base_color` (sRGB), `specular_roughness`, `base_metalness`, `coat_weight` and `geometry_normal` (an
+image through `<normalmap>`) from images -- Sponza's stone, brick, plaster and column maps, and a map of
+squares of 0, 1/3, 2/3, 1 and ramps for the weights -- in six combinations, one with fuzz, transmission,
+subsurface and a thin film over them (five material modules; the stage and its generator are in
+`build/night/agent-openpbr2`, not in the repository). `athenea stage --technique rt`, 1920x1080, 32 paths,
+`--path-samples 8`, the node against the graph by `athenea compare`:
+
+| bounces | relMSE | 8-bit p99 / max | PSNR | the largest relative difference |
+|---|---|---|---|---|
+| 0 | 4.0e-13 | 0 / 0 | 134.3 dB | 0.00098 |
+| 3 | 4.6e-13 | 0 / 0 | 133.8 dB | 0.00098 |
+
+The same as with constants: the last bit of a half float in a few pixels. (For scale, no bounce against three
+is relMSE 0.24.) Each route's dumped modules hold the node and no layer, or layers and no node. One run each,
+so no time is given: the first of each route compiled its kernels (48 s and 62 s whole, 28 s and 38 s the
+second, with three bounces; no stop of the thermal guard fell inside).
+
+**The marks, through a conversion.** `kAtheneaMarkLobes` is true in one kernel, the path tracer's bake, and
+what reads the marks is a TX bake's read back of a material whose fields the stage reader cannot say
+(`StageMaterial::sampled`). The smallest command that reaches it on an OpenPBR:
+`athenea mesh2splat ball.usda --transfer --bake-samples 256 --bake-extra 0 --prim /World/Ball --no-camera
+--resolution 192` on the tests' ball and ground (`tests/data/lobes/sphere.usda`, `tx/ground.usda`) with a
+material that asks for the read back -- it says `the material read back on the device into 96118 gaussians`.
+Three: a red dielectric under a coat of colour (0.9, 0.6, 0.2); a metal under the same coat; and one whose
+base colour, roughness, coat roughness and metalness are each a `multiply` node, under a tinted coat and
+fuzz. Converted by each route, both clouds drawn by the default route (`athenea stage --default-lights`,
+1024x1024, raster, and rt with 16 paths) and compared:
+
+| ball | drawn by | relMSE, node's cloud against graph's | 8-bit p99 / max | the node's cloud against the node's again |
+|---|---|---|---|---|
+| tinted coat over a dielectric | raster | 2.1e-12 | 0 / 1 | 2.7e-12, 0 / 1 |
+| | rt | 2.5e-12 | 0 / 1 | |
+| tinted coat over a metal | raster | 3.1e-12 | 0 / 1 | |
+| | rt | 3.3e-12 | 0 / 1 | |
+| four inputs computed | raster | 1.7e-12 | 0 / 1 | 1.0e-12, 0 / 1 |
+| | rt | 9.8e-13 | 0 / 0 | |
+
+The two routes' clouds differ by what two conversions by one route differ by (a bake is not repeated bit for
+bit): no pixel over two codes, the largest relative difference 0.00098. For scale, the dielectric ball against
+the metal one is relMSE 0.049. With the node's **tint mark halved** in the build's copy the node's cloud
+leaves the graph's: relMSE 0.039 (8-bit p99 57) on the first ball, 0.10 (p99 89) on the third. With **a layer
+over counted as two** it does not: 1.4e-12 and 2.8e-12, the repeat's level -- these conversions read whether
+a lobe lies under a layer, not under how many, so a conversion's picture does not hold that mark and the
+stack test (above, its third row) is what does.
+
+Tests, Metal, the node the default: `athenea_material_tests` (1224 assertions in 13 cases) and
+`athenea_technique_tests` (2862 in 64) pass; the new case passes the same with `ATHENEA_OPENPBR_GRAPH` set
+(the option picks each route, not the environment); of ctest, the twenty whose names begin `material`, `lobes`,
+`mesh2splat_lobes`, `mesh2splat_tx_paint`, `mesh2splat_tx_rubber` or `a_map_on_a_layer` pass. The whole suite
+was not run.
+
+Not done: the test on CUDA and Vulkan (it was run on Metal alone; `InterlockedMax` and the twelve-lobe stack
+are untried there, and a device that sets `ATHENEA_MAX_LOBES` keeps its own count, where a lobe dropped as
+the lightest could differ between the routes by a tie); texture-driven inputs inside the test (its nineteen
+sets are constants; maps were compared as pictures only); `geometry_coat_normal` and the tangents driven by
+a map on a stage; the textured stage on the raster's shading; a time for the textured stage (one run a
+route); `standard_surface` and `gltf_pbr`, still graphs and so with nothing to be held to; a baked (not
+`--transfer`) conversion compared route against route -- it builds its stacks in the same marked kernel, and
+the three balls here are all the read back was tried on; the stage that makes the textured balls kept in the
+repository.
