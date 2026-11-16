@@ -2,6 +2,7 @@
 #include "athenea/material/MaterialCompiler.h"
 
 #include "athenea/core/Log.h"
+#include "athenea/core/Platform.h"
 
 #include <algorithm>
 #include <cctype>
@@ -54,6 +55,7 @@ std::string quadDerivatives(std::string text) {
 const std::string kFunctionPlaceholder = "ATHENEA_MATERIAL_FUNCTION";
 /// MaterialX's UsdPreviewSurface nodegraph, replaced by the engine's own.
 const std::string kPreviewSurfaceGraph = "IMP_UsdPreviewSurface_surfaceshader";
+const std::string kOpenPbrGraph = "NG_open_pbr_surface_surfaceshader";
 
 /// The surface node: no light loop. Its BSDF graph runs once, pushing lobes;
 /// what it weights them by becomes the material's lobe stack.
@@ -719,6 +721,20 @@ Result<std::unique_ptr<MaterialCompiler>> MaterialCompiler::create(
                     mx::DocumentPtr previewDoc = mx::createDocument();
                     mx::readFromXmlFile(previewDoc, mx::FilePath(preview.string()));
                     impl.libraries->importLibrary(previewDoc);
+                }
+                // OpenPBR Surface with its lobes built by one node, in place
+                // of MaterialX's graph of thirty BSDF nodes (the file says
+                // why). ATHENEA_OPENPBR_GRAPH in the environment keeps the
+                // graph, to compare the two routes in one build; the
+                // reference keeps it always.
+                const std::filesystem::path openPbr = shaders / "athenea/material/mx/athenea_open_pbr_surface.mtlx";
+                if (std::filesystem::exists(openPbr) && platform::env("ATHENEA_OPENPBR_GRAPH").empty()) {
+                    if (impl.libraries->getNodeGraph(kOpenPbrGraph)) {
+                        impl.libraries->removeNodeGraph(kOpenPbrGraph);
+                    }
+                    mx::DocumentPtr openPbrDoc = mx::createDocument();
+                    mx::readFromXmlFile(openPbrDoc, mx::FilePath(openPbr.string()));
+                    impl.libraries->importLibrary(openPbrDoc);
                 }
                 found = true;
             }

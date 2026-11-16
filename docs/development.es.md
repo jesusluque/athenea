@@ -511,6 +511,7 @@ fuera del proceso.
 |---|---|
 | `ATHENEA_SHADER_DUMP` | escribe cada módulo Slang generado en ese directorio |
 | `ATHENEA_MTLX_DUMP` | escribe el documento MaterialX que se le da al generador, uno por material |
+| `ATHENEA_OPENPBR_GRAPH` | con cualquier valor: OpenPBR Surface se compila desde el grafo de nodos BSDF del propio MaterialX en vez de desde el nodo único del motor (`athenea_open_pbr_bsdf`), para comparar las dos rutas en una misma compilación |
 | `ATHENEA_SHADOW_DEBUG` | loguea los mapas de sombra de nube: emisores, luces, texels, transmitancia media |
 | `ATHENEA_VISIBILITY_DEBUG` | loguea los factores de visibilidad por partes |
 | `ATHENEA_CUDA_LDG` | `=1` deja en su sitio el camino de caché de solo lectura de CUDA, reproduciendo un defecto que el prelude normalmente esquiva |

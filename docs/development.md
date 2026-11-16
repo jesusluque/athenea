@@ -491,6 +491,7 @@ written out by `ATHENEA_SHADER_DUMP=<dir>`, and compile with `slangc -I shaders 
 |---|---|
 | `ATHENEA_SHADER_DUMP` | write every generated Slang module to this directory |
 | `ATHENEA_MTLX_DUMP` | write the MaterialX document handed to the generator, one per material |
+| `ATHENEA_OPENPBR_GRAPH` | set to anything: OpenPBR Surface is compiled from MaterialX's own graph of BSDF nodes instead of the engine's one node (`athenea_open_pbr_bsdf`), to compare the two routes in one build |
 | `ATHENEA_SHADOW_DEBUG` | log the cloud shadow maps: casters, lights, texels, mean transmittance |
 | `ATHENEA_VISIBILITY_DEBUG` | log the per-part visibility factors |
 | `ATHENEA_CUDA_LDG` | `=1` leaves CUDA's read-only cache path in place, reproducing a defect the prelude otherwise works around |
