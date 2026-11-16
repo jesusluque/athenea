@@ -23981,3 +23981,20 @@ rather than kept from the frame that made it is what is left unlooked at.
 
 The commit before this one (23a1f103) says in its message that this section was written with it: it was not, the
 script that wrote it having stopped early; the manuals' "held to twice" and the kernel's 2 were in it.
+
+## The unlit scene's dB: two more causes ruled out, and what is left (16 Nov)
+
+- *Gaussians left without light*: the day's layer is kept for 3 254 245 of the 3 258 249 gaussians the scene still
+  holds. Not it.
+- *The ratio of base colours itself*: the lights from the scene's own 960x540 with no `--light-over-base` read 27.06,
+  22.56, 25.34, 24.13 dB (SSIM 0.882, 0.792, 0.860, 0.836), as with it (27.03, 22.54, 25.30, 24.11). Not it. The
+  brightest gaussian of a view is 27.8 there too, so the spikes are the light frames' own and the ratio held to 2
+  only happened to cut them.
+
+What differs from the scene found lit, and is left: the day's light is read from the nearest view's frame where
+the lit scene keeps what the frame that made a gaussian saw; and the gaussians themselves are not the same ones
+(2 181 715 stand where the lit scene has 2 112 637), a look's choices -- what a frame sees through, what is repainted
+-- being made on colours, which an unlit frame does not have. Neither was separated.
+
+On CUDA (WSL) and Vulkan (Windows) at c6991619: the scene tests pass, 295 assertions each, and the QA flows on
+Vulkan, 41 of 41.
