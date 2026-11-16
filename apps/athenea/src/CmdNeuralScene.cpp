@@ -3383,28 +3383,12 @@ int runExport(const SceneOptions& o) {
         }
         return matter;
     };
-    const auto takePiece = [&](const io::NeuralScenePiece& piece, float width) -> Result<uint32_t> {
-        if (std::filesystem::path(piece.cloud).extension() != ".athg") {
-            return Error::make(ErrorCode::Unsupported, "piece {} is not a render's (.athg)", piece.id);
-        }
-        auto forCut = loadForCut(library, *loader, *discovery, directory, piece);
-        if (!forCut) return std::move(forCut).error();
-        auto read = io::readGaussians(directory / piece.cloud);
-        if (!read) return std::move(read).error();
-        if (!renderRecordOf(read->floats) || (floats != 0 && read->floats != floats)) {
-            return Error::make(ErrorCode::Unsupported, "piece {}: records of {} floats among records of {}", piece.id,
-                               read->floats, floats);
-        }
-        floats = read->floats;
-        auto plan = discovery->planCut(forCut->cloud, forCut->gone.valid() ? &forCut->gone : nullptr,
-                                       forCut->refined.valid() ? &forCut->refined : nullptr,
-                                       forCut->parent.valid() ? &forCut->parent : nullptr, units, width, asOf);
-        if (!plan) return std::move(plan).error();
-        if (plan->drawn == 0) {
-            return uint32_t{0};
-        }
-        // THE PIECE'S LIGHT AS IT IS HANDED ON: the layers of light it took again laid over its records, and
-        // its groups of lights added at their levels, on the device (`--group`, `--own-light`).
+    // THE PIECE'S LIGHT AS IT IS HANDED ON: the layers of light it took again laid over its records, and its
+    // groups of lights added at their levels, on the device (`--group`, `--own-light`, `--base-colour`). One
+    // place for it: a piece handed on whole, and one handed on by what of it stood until a frame (--history),
+    // are lit the same.
+    const auto litOnDevice = [&](const io::NeuralScenePiece& piece, io::GaussianRecords& held) -> Result<gpu::Buffer> {
+        io::GaussianRecords* read = &held;
         if (auto laid = layLightOver(directory / piece.cloud, read->records, read->floats, read->count); !laid) {
             return std::move(laid).error();
         }
@@ -3434,6 +3418,31 @@ int runExport(const SceneOptions& o) {
             if (!layer) return std::move(layer).error();
             ATHENEA_TRY(discovery->addLightToRecords(*onDevice, read->count, read->floats, *layer, {0.0F, 0.0F, 0.0F}, own));
         }
+        return *onDevice;
+    };
+    const auto takePiece = [&](const io::NeuralScenePiece& piece, float width) -> Result<uint32_t> {
+        if (std::filesystem::path(piece.cloud).extension() != ".athg") {
+            return Error::make(ErrorCode::Unsupported, "piece {} is not a render's (.athg)", piece.id);
+        }
+        auto forCut = loadForCut(library, *loader, *discovery, directory, piece);
+        if (!forCut) return std::move(forCut).error();
+        auto read = io::readGaussians(directory / piece.cloud);
+        if (!read) return std::move(read).error();
+        if (!renderRecordOf(read->floats) || (floats != 0 && read->floats != floats)) {
+            return Error::make(ErrorCode::Unsupported, "piece {}: records of {} floats among records of {}", piece.id,
+                               read->floats, floats);
+        }
+        floats = read->floats;
+        auto plan = discovery->planCut(forCut->cloud, forCut->gone.valid() ? &forCut->gone : nullptr,
+                                       forCut->refined.valid() ? &forCut->refined : nullptr,
+                                       forCut->parent.valid() ? &forCut->parent : nullptr, units, width, asOf);
+        if (!plan) return std::move(plan).error();
+        if (plan->drawn == 0) {
+            return uint32_t{0};
+        }
+        auto lit = litOnDevice(piece, *read);
+        if (!lit) return std::move(lit).error();
+        gpu::Buffer* onDevice = &*lit;
         return gatherKinds(*onDevice, read->count, plan->flags);
     };
     // A piece's gaussians by the frame from which each no longer stands (0: it stands to the end): read off
@@ -3473,8 +3482,9 @@ int runExport(const SceneOptions& o) {
                                read->floats, floats);
         }
         floats = read->floats;
-        auto onDevice = gpu::Buffer::fromSpan<float>(**device, std::span<const float>(read->records), "export.piece");
-        if (!onDevice) return std::move(onDevice).error();
+        auto lit = litOnDevice(piece, *read);
+        if (!lit) return std::move(lit).error();
+        gpu::Buffer* onDevice = &*lit;
         auto drawn = gpu::Buffer::fromSpan<uint32_t>(**device, std::span<const uint32_t>(flags), "export.flags");
         if (!drawn) return std::move(drawn).error();
         return gatherKinds(*onDevice, read->count, *drawn);

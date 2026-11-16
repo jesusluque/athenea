@@ -24031,3 +24031,22 @@ site are still without history. The user has not yet said that this is what they
 then fell out of the session's own context when it went on in a new transcript; finding it on the disk, I took it
 for another session's and asked the user. The transcript (40c7c81c, 07:14:40Z, a tool call of the assistant's)
 says it was this one.
+
+## `export --history` handed the history on unlit: the fault behind the holes filled dark (16 Nov)
+
+The user, asked which: it is riding the render's camera -- the frame does not come up clean. Ridden at frames 2 and
+6 of the published 1080p Sponza scene the page shows large black holes: the export has no history. With
+`export_groups.py --history` the holes were filled, but dark, beside the same frame drawn by the engine
+(`render --frames 6 6`), which is whole and lit by its lamps. The fault was the engine's: with `--history` every
+piece, standing or not, was gathered by a path of its own (`takeFlagged`) that laid neither the layers of light the
+scene took again nor its groups over the records -- `--group`, `--own-light` and `--base-colour` did nothing to an
+export with history. One helper lights a piece now (`litOnDevice`), for a piece handed on whole and for one handed
+on by what stood until a frame. Ridden again at frames 2 and 6: the frame whole and lit, as the engine draws it.
+
+The scene tests (295 assertions) and the QA flows (41 of 41) pass on Metal. The two scenes of lamps are exported
+again with their history: `sponza_lamps` 774 files and 348 MB, `sponza_lights` 857 files and 428 MB, the largest
+file 10.6 MB.
+
+**Not done.** In the page the knights of glass and of chrome are black at those earlier frames, where the engine
+draws them: not looked into. The three older scenes on the site (chrome, knight, growth) are still without history.
+On CUDA and Vulkan this change has not been run.
