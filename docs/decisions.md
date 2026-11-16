@@ -23785,3 +23785,28 @@ built for Metal (how many bottom-level structures, how they overlap) -- neither 
 kernel on the device is what tells them apart. Athenea-research's proposal 117 names the same first step.
 
 **Not done.** The capture. Anything to make it faster: this section only rules causes out.
+
+## The path tracer's bounce, taken apart: it is the kernel, not the scene (16 Nov)
+
+The same profile on the materials QA stage, which is a floor and a few spheres (21 prims), 1920x1080, 32 paths:
+the stage loaded 14.6 s, no bounce 25.4 s, three bounces 91.7 s. A bounce of 66 M paths costs 22 s there as in
+Sponza under a flat material (22 s) and near what it costs in Sponza textured (27 s). The scene's geometry and its
+acceleration structure are not what a bounce's time is made of.
+
+Then the kernel with parts of its bounce step taken out, one more each time, on that stage (changes made to time
+them and taken back; seconds of three bounces, a bounce):
+
+| the bounce step | three bounces | a bounce |
+|---|---|---|
+| whole | 66.3 | 22.1 |
+| no light sampled at a bounce's vertex (next event estimation and its shadow ray) | 45.0 | 15.0 |
+| and no light met by the bounce's ray weighed (the loop over the lights) | 45.4 | 15.1 |
+| and the vertex not shaded (the first hit's material stood in) | 32.0 | 10.7 |
+
+A bounce of 66 M paths: 7 s the light sampled, 4 to 5 s the material, nothing the lights met, and 11 s for what is
+left -- a nearest-hit ray in a scene of 21 prims, the hit rebuilt, a direction drawn. No one part is the cost:
+each is some ten times what the hardware does it in elsewhere, the bare ray most plainly (6 M a second). That
+points at the kernel as a whole -- one compute kernel holding every material, the media, the bake and the loop
+over samples and bounces -- rather than at any of its steps, and at many small kernels (a bounce a dispatch, the
+live paths compacted) as the change that would matter. It is not measured which property of the kernel it is: a
+capture on the device is still the next step, and now the only one left.
