@@ -327,6 +327,20 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
   dropped, and nothing says so. A surface whose graph is one node
   (`athenea_preview_bsdf`, five; `athenea_open_pbr_bsdf`, eleven) is listed with
   all it pushes.
+- OpenPBR Surface's one node is written by hand from MaterialX's nodegraph,
+  and a MaterialX whose graph has changed leaves it as it was. When MaterialX
+  is updated: (1) `python3 scripts/materialx/make_open_pbr_mtlx.py
+  <root>/libraries` writes `shaders/athenea/material/mx/athenea_open_pbr_surface.mtlx`
+  again -- MaterialX's graph with its BSDF and VDF nodes taken out and the
+  one node put in -- and its diff shows a node the closures read that has
+  changed; (2) build, so the shaders are copied; (3) `athenea_material_tests
+  "[openpbr]"` compiles OpenPBR by both routes
+  (`MaterialCompilerOptions::openPbr`) and compares, on the device, the lobe
+  stacks they build over nineteen parameter sets, with and without the marks
+  a bake asks for (`kAtheneaMarkLobes`). That test is what says whether
+  `athenea_open_pbr_bsdf.slang` still matches: a count, a kind, a flag or a
+  value beyond 1e-5 off fails it, and the line it prints says which set and
+  which of them.
 
 ## 2. The rules, and what each is there to prevent
 
@@ -493,7 +507,7 @@ written out by `ATHENEA_SHADER_DUMP=<dir>`, and compile with `slangc -I shaders 
 |---|---|
 | `ATHENEA_SHADER_DUMP` | write every generated Slang module to this directory |
 | `ATHENEA_MTLX_DUMP` | write the MaterialX document handed to the generator, one per material |
-| `ATHENEA_OPENPBR_GRAPH` | set to anything: OpenPBR Surface is compiled from MaterialX's own graph of BSDF nodes instead of the engine's one node (`athenea_open_pbr_bsdf`), to compare the two routes in one build |
+| `ATHENEA_OPENPBR_GRAPH` | set to anything: OpenPBR Surface is compiled from MaterialX's own graph of BSDF nodes instead of the engine's one node (`athenea_open_pbr_bsdf`), to compare the two routes in one build (pictures and timings; `athenea_material_tests "[openpbr]"` compares their lobe stacks without it, through `MaterialCompilerOptions::openPbr`, which it sets where the caller leaves the choice to the environment) |
 | `ATHENEA_SHADOW_DEBUG` | log the cloud shadow maps: casters, lights, texels, mean transmittance |
 | `ATHENEA_VISIBILITY_DEBUG` | log the per-part visibility factors |
 | `ATHENEA_CUDA_LDG` | `=1` leaves CUDA's read-only cache path in place, reproducing a defect the prelude otherwise works around |
