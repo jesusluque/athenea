@@ -23893,3 +23893,36 @@ reads up to 0.55 dB under on one view) and 7195 s for a pass a lamp. And a lamp 
 small pass again: three minutes at 1080p where it was forty.
 
 **Not done.** The views not taken were not drawn at 1080p (there is no reference at that size).
+
+## The scene found unlit, and every light a group from small frames (16 Nov)
+
+With `--light-over-base` nothing of a gaussian's light has to come from the frame that found it. So the scene is
+found with every light off and little path tracing -- where a surface is, what it is made of and its base colour
+do not wait for light -- and all its light, the sky and the sun as the lamps, is added by one small pass:
+
+    shoot stage.usda scene.aths --views walk.txt --size 960x540 --samples 4 --pass-samples 4 --bounces 0 --lights-on /None
+    shoot stage.usda scene.aths --views walk.txt --size 480x270 --samples 32 --bounces 3 --denoise \
+          --light-groups day=/Lights --light-groups day=/QaLights/Sky --light-groups day=/QaLights/Sun \
+          --light-groups warm=/QaLights/Warm --light-groups spot=/QaLights/Lamp2 --groups-only --light-over-base
+
+(`--lights-on` of a path that is no light's leaves every light off.) No code is new. Sponza with two lamps, a
+scene at 960x540, 20 views; four views not taken against the stage path traced, dB and SSIM:
+
+| how | seconds | lamps on: k10, k45, a, b |
+|---|---|---|
+| the scene lit, a pass a lamp (15 Nov) | 548 + 566 + 702 = 1816 | 27.94, 22.76, 25.81, 24.24; SSIM 0.877, 0.766, 0.847, 0.815 |
+| the scene and its lamps by the same paths | 584 | 27.44, 22.86, 25.59, 23.99 |
+| unlit, then every light from frames of 480x270 | 78 + 177 = 255 | 27.06, 22.48, 25.18, 24.21; SSIM 0.877, 0.773, 0.850, 0.818 |
+| unlit, then every light from frames of 240x135 | 78 + 85 = 163 | 26.88, 22.42, 25.03, 24.00; SSIM 0.848, 0.754, 0.822, 0.790 |
+
+A seventh of the time of the three passes for the same SSIM and 0.3 to 0.9 dB less; and the sky and the sun are a
+group as the lamps are, to be dimmed or tinted with nothing traced. With the lamps changed (warm at half, the spot
+tinted): 27.72, 23.57, 25.92, 25.34 dB against 28.78, 24.00, 26.77, 25.42 for the three passes.
+
+Where the dB go is not found. Seen: the pictures are alike, the knights of glass and chrome a little coarser (what
+they show is a frame's of 480x270), the walls' texture as sharp or sharper.
+
+**Not done.** Why it reads up to 0.9 dB under: the light's edges at the small frames' size, the ratio held to four,
+the gaussians made from four paths and no denoiser (their base colours are four paths' too) are the candidates,
+none measured. What glows: a stage's emission stays in the scene's own light, found by the first pass's four
+paths. At 1080p. The web player with a group for the day.
