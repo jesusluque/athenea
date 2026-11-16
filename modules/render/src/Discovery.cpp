@@ -83,6 +83,12 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
             if (!made) return std::move(made).error();
             *kernel = std::move(*made);
         }
+        for (const auto& [kernel, entry] : {std::pair{&d.mattePrims_, "mattePrims"}, std::pair{&d.matteGather_, "matteGather"},
+                                            std::pair{&d.matteOf_, "matteOf"}}) {
+            auto made = gpu::ComputeKernel::create(library, "athenea/neural/scene_matte", entry);
+            if (!made) return std::move(made).error();
+            *kernel = std::move(*made);
+        }
         auto exportFlat = gpu::ComputeKernel::create(library, "athenea/neural/scene_export", "exportFlat");
         if (!exportFlat) return std::move(exportFlat).error();
         d.exportFlat_ = std::move(*exportFlat);
@@ -102,6 +108,13 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
     auto spare = words(library.device(), 16, 4, "discover.spare");
     if (!spare) return std::move(spare).error();
     d.spareWords_ = *spare;
+    // Two of their own for scene_matte.slang's outputs: a buffer is not bound to be read and written at once.
+    auto matteSpare = words(library.device(), 16, 4, "discover.matteSpare");
+    if (!matteSpare) return std::move(matteSpare).error();
+    d.matteSpare_ = *matteSpare;
+    auto matteSpareOut = words(library.device(), 16, 16, "discover.matteSpareOut");
+    if (!matteSpareOut) return std::move(matteSpareOut).error();
+    d.matteSpareOut_ = *matteSpareOut;
     auto floats = words(library.device(), 16, 16, "discover.spareFloats");
     if (!floats) return std::move(floats).error();
     d.spareFloats_ = *floats;
@@ -413,7 +426,8 @@ io::SplatEncoding Discovery::renderEncoding() {
 
 Result<RenderLook> Discovery::fromRender(const gpu::Buffer& colour, const gpu::Buffer& depth, const gpu::Buffer& aux,
                                          uint32_t width, uint32_t height, const Projection& projection,
-                                         const KnownScene& known, const RenderLookSettings& settings) {
+                                         const KnownScene& known, const RenderLookSettings& settings,
+                                         const gpu::Buffer* frameIds, uint32_t idsAt) {
     gpu::Device& device = library_->device();
     const uint32_t footprint = std::max<uint32_t>(settings.footprint, 1);
     const uint32_t cellsX = (width + footprint - 1) / footprint;
@@ -524,7 +538,92 @@ Result<RenderLook> Discovery::fromRender(const gpu::Buffer& colour, const gpu::B
         ATHENEA_TRY(batch.submit(true));
     }
     look.records = std::move(records);
+    if (frameIds != nullptr) {
+        // Which prim each was made from: the frame's first rank at its cell's middle (scene_matte.slang).
+        auto prims = words(device, look.made, 4, "render.prims");
+        if (!prims) return std::move(prims).error();
+        gpu::CommandBatch batch(device);
+        mattePrims_.dispatch(batch, {cellsX, cellsY, 1}, [&](rhi::ShaderCursor cursor) {
+            bindMatte(cursor);
+            cursor["frameIds"].setBinding(frameIds->rhi());
+            cursor["which"].setBinding(which->rhi());
+            cursor["dest"].setBinding(dest->rhi());
+            cursor["prims"].setBinding(prims->rhi());
+            cursor["params"]["width"].setData(width);
+            cursor["params"]["height"].setData(height);
+            cursor["params"]["footprint"].setData(footprint);
+            cursor["params"]["at"].setData(idsAt);
+        });
+        ATHENEA_TRY(batch.submit(true));
+        look.prims = std::move(*prims);
+    }
     return look;
+}
+
+/// Every name scene_matte.slang declares, bound; a dispatch names its own after.
+void Discovery::bindMatte(rhi::ShaderCursor cursor) const {
+    cursor["frameIds"].setBinding(spareFloats_.rhi());
+    cursor["which"].setBinding(spareWords_.rhi());
+    cursor["dest"].setBinding(spareWords_.rhi());
+    cursor["drawn"].setBinding(spareWords_.rhi());
+    cursor["primsRead"].setBinding(spareWords_.rhi());
+    cursor["prims"].setBinding(matteSpare_.rhi());
+    cursor["crypto"].setBinding(spareFloats_.rhi());
+    cursor["wanted"].setBinding(spareWords_.rhi());
+    cursor["matte"].setBinding(matteSpareOut_.rhi());
+}
+
+Result<gpu::Buffer> Discovery::primsOfCut(uint32_t count) {
+    return words(library_->device(), count, 4, "discover.cut.prims");
+}
+
+Result<void> Discovery::gatherPrims(const gpu::Buffer& prims, uint32_t count, const CutPlan& plan, gpu::Buffer& into,
+                                    uint32_t base) {
+    if (plan.drawn == 0) {
+        return ok();
+    }
+    gpu::CommandBatch batch(library_->device());
+    matteGather_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        bindMatte(cursor);
+        cursor["drawn"].setBinding(plan.flags.rhi());
+        cursor["dest"].setBinding(plan.places.rhi());
+        cursor["primsRead"].setBinding(prims.rhi());
+        cursor["prims"].setBinding(into.rhi());
+        cursor["params"]["count"].setData(count);
+        cursor["params"]["base"].setData(base);
+    });
+    return batch.submit(true);
+}
+
+Result<gpu::Buffer> Discovery::matte(const gpu::Buffer& crypto, uint32_t width, uint32_t height,
+                                     std::span<const uint32_t> ids) {
+    gpu::Device& device = library_->device();
+    // The ids in ascending order, which is how the kernel looks one up: a list put in order, nothing computed.
+    std::vector<uint32_t> sorted(ids.begin(), ids.end());
+    std::sort(sorted.begin(), sorted.end());
+    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+    const uint32_t asked = static_cast<uint32_t>(sorted.size());
+    sorted.resize(std::max<size_t>(sorted.size(), 4), 0xFFFFFFFFu);
+    auto wanted = gpu::Buffer::fromSpan<uint32_t>(device, std::span<const uint32_t>(sorted), "matte.wanted");
+    if (!wanted) return std::move(wanted).error();
+    gpu::BufferDesc desc;
+    desc.bytes = std::max<uint64_t>(uint64_t{width} * height, 1) * 16;
+    desc.elementBytes = 16;
+    desc.label = "matte.cover";
+    auto out = gpu::Buffer::create(device, desc);
+    if (!out) return std::move(out).error();
+    gpu::CommandBatch batch(device);
+    matteOf_.dispatch(batch, {width, height, 1}, [&](rhi::ShaderCursor cursor) {
+        bindMatte(cursor);
+        cursor["crypto"].setBinding(crypto.rhi());
+        cursor["wanted"].setBinding(wanted->rhi());
+        cursor["matte"].setBinding(out->rhi());
+        cursor["params"]["width"].setData(width);
+        cursor["params"]["height"].setData(height);
+        cursor["params"]["count"].setData(asked);
+    });
+    ATHENEA_TRY(batch.submit(true));
+    return out;
 }
 
 Result<gpu::Buffer> Discovery::seenThrough(const gpu::Buffer& colour, const gpu::Buffer& depth, uint32_t width,

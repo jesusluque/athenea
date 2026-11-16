@@ -8,7 +8,7 @@
 # report: a workflow that broke is a row that says so.
 #
 #   qa_flows.py --athenea <binary> --scene <dir>.aths --out <dir> [--stage <file> --walk <file>]
-#               [--size 640x360] [--compare-backend cuda]
+#               [--size 640x360] [--compare-backend cuda] [--group-light <prim>] [--matte-prim <prim>]
 import argparse
 import glob
 import json
@@ -27,6 +27,7 @@ parser.add_argument("--size", default="640x360")
 parser.add_argument("--focal", default="24")
 parser.add_argument("--rotate-x", default="")
 parser.add_argument("--group-light", default="", help="the prim path of the stage's light the group workflows switch")
+parser.add_argument("--matte-prim", default="", help="the prim path the matte workflows ask for (default: the first the scene shot names)")
 args = parser.parse_args()
 
 out = os.path.abspath(args.out)
@@ -155,6 +156,36 @@ if args.stage and args.walk:
             os.path.join(out, "relit.png")], [os.path.join(out, "relit_*.png")])
         run("render --snapshot 1, before it was", ["neural-scene", "render", shot, "--snapshot", "1"] + view + common +
             ["-o", os.path.join(out, "before.exr")], [os.path.join(out, "before.exr")])
+    # A MATTE BY PRIM: the scene shot now keeps which prim each gaussian was made from. A matte of one of them
+    # (--matte-prim, or the first the scene names) from a view, through the walk with glass, and the stage's
+    # own matte of the same prim from the same view (its Cryptomatte), the two measured against each other.
+    named = json.load(open(os.path.join(shot, "scene.json"))).get("prims", {}) if os.path.exists(
+        os.path.join(shot, "scene.json")) else {}
+    prim = args.matte_prim or (sorted(named)[0] if named else "")
+    if cameras and prim:
+        matte = os.path.join(out, "matte.exr")
+        run("render --matte", ["neural-scene", "render", shot, "--matte", "one=" + prim] + view + common + ["-o", matte],
+            [os.path.join(out, "matte_matte_one.exr")])
+        run("render --matte --views --glass", ["neural-scene", "render", shot, "--views", views, "--glass", "--matte",
+            "one=" + prim, "--matte", "all=/"] + common + ["-o", os.path.join(out, "mglass")],
+            [os.path.join(out, "mglass_*_matte_one.exr"), os.path.join(out, "mglass_*_matte_all.exr")])
+        run("render --matte, as a picture", ["neural-scene", "render", shot, "--matte", "one=" + prim] + view + common +
+            ["-o", os.path.join(out, "mattepic.png")], [os.path.join(out, "mattepic_matte_one.png")])
+        c = cameras[0]
+        run("stage --matte, the stage's own", ["stage", os.path.basename(args.stage), "--eye"] + [str(v) for v in c["eye"]] +
+            ["--target"] + [str(v) for v in c["target"]] + ["--up"] + [str(v) for v in c.get("up", [0, 1, 0])] +
+            common + ["--matte", "one=" + prim, "-o", os.path.join(out, "stagematte.exr")],
+            [os.path.join(out, "stagematte_matte_one.exr")], cwd=stage_dir)
+        if os.path.exists(os.path.join(out, "stagematte_matte_one.exr")) and os.path.exists(
+                os.path.join(out, "matte_matte_one.exr")):
+            run("compare, the scene's matte against the stage's", ["compare", os.path.join(out, "matte_matte_one.exr"),
+                os.path.join(out, "stagematte_matte_one.exr")], [])
+        run("render --matte of a prim the scene does not name (refused)", ["neural-scene", "render", shot, "--matte",
+            "none=/No/Such/Prim"] + view + common + ["-o", os.path.join(out, "nomatte.exr")], [])
+        if rows[-1][1].startswith("FAILED"):
+            rows[-1] = (rows[-1][0], "ok (refused)") + rows[-1][2:]
+        else:
+            rows[-1] = (rows[-1][0], "FAILED (not refused)") + rows[-1][2:]
     # A GROUP OF LIGHTS: the scene shot without one of the stage's lights, that light's own layer kept by a
     # second pass under it alone, and the scene drawn with the group at a level.
     lamp = args.group_light

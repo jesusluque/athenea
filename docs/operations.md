@@ -434,6 +434,7 @@ athenea neural-scene render hall.aths --camera door --at 0 -o then.png   # the s
 | `--lamps` | `render` | file | none | lamps added to the scene with no path traced: a line a lamp, in the scene's units and UsdLux's radiometry (intensity times colour is the radiance, not normalised) -- `sphere x y z radius intensity r g b`, `spot x y z tx ty tz half-angle radius intensity r g b` (a sphere within a cone of that half angle, in degrees, about the line to `t`), `distant tx ty tz irradiance r g b` (`t` points towards it). Or a USD file (`.usd`, `.usda`, `.usdc`, `.usdz`): its `SphereLight`s (radius, intensity, exposure, colour, the cone of a `ShapingAPI`, placed by the prim's transform) and its `DistantLight`s (the irradiance its radiance lays over its angle), in the scene's own space; a light of another kind or a normalised one is left out, and the line printed says how many. Each gaussian that is neither glass nor a polished metal gains its surface's base colour times what the lamp sends there, where rays to the lamp meet nothing of the scene, and what that light bounces on to once, gathered off the scene's own gaussians; a highlight towards the view's eye (GGX at the gaussian's roughness: 0.04 head on for what is not metal, the base colour for a rough metal, which has no matt share); glass and mirrors then show the room so lit. Wants a scene that keeps base colours (`baseColour` in its manifest: shot from 15 Nov 2026 on); draws the cut `--glass` draws |
 | `--lamps-only` | `render` | flag | off | with `--lamps`: without the light the scene was found under |
 | `--group` | `render` | `NAME=LEVEL` or `NAME=R,G,B`, repeatable | every group at 1 | the level of a group of lights the scene keeps a layer of (`shoot --light-group`): the scene drawn is its own light and each group's times its level, a channel at a time with three numbers. `*` names every group not named (`--group "*=0"`: the scene's own light alone). Light is linear, so a level is exact: nothing is traced. `render`, `--frame`, `--frames`, and `export` (its own `--group`); not `bake`, which reads the scene's own light |
+| `--matte` | `render` | `NAME=PRIMPATH`, repeatable | none | beside the picture, a matte by object: what the gaussians made from the stage's prims at or under the path cover of each pixel, by the picture's own blend -- soft at an edge, and less by what stands in front. Written as `<picture's stem>_matte_NAME` with the picture's extension (with `--views`, `<prefix>_VIEW_matte_NAME`): an EXR holds the coverage, 0 to 1, in R, G, B and A, with the frame's depth as `Z`; a `.png` is the picture of it, display-encoded. A name said twice is the paths together; `/` is every prim the scene names. Wants `-o` and a scene that keeps its gaussians' prims (`prims` in its manifest: shot from 16 Nov 2026 on) and fails on a path that names none of them. What was seen through a pane of glass is named by no prim, and a pane covers what its own opacity is. With `--glass`, `--lamps`, `--lod`, `--budget`, `--snapshot`, `--at`; not with `--frames` |
 | `--lamp-shadow-rays` | `render` | count | `8` | with `--lamps`: rays from a gaussian to each lamp, to points over the disc the lamp shows it; `1` is one ray to its middle, a hard shadow. 1 to 32 |
 | `--lamp-bounce` | `render` | count | `16` | with `--lamps`: rays a gaussian gathers the lamps' light off the scene with, by the cosine about its normal, each reading the lamps' direct light on the first gaussian it meets: one bounce. `0`: the direct light alone |
 | `--no-antialias` | `render` | flag | off | the scene drawn without the 2D filter's compensation whatever its manifest says. A scene shot with discs a cell wide reads worse so (22.8 dB for 24.3 through its own camera); it is for looking at what the compensation takes |
@@ -702,6 +703,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--no-readback` | flag | off | with `--frames`: every frame but the last is drawn and waited for, not read back -- what a host that keeps the image on the device pays; the last is read for `-o` |
 | `--drift` | number | `0` | with `--frames` and a camera of its own (`--eye`, `--frame-all`): scene units it moves along its own x axis every frame, one way and back, to time a moving camera |
 | `--cameras` | path | none | a file of views, one a line: `NAME EX EY EZ TX TY TZ [UX UY UZ]` (`#` starts a comment; the up vector is `--up` where a line gives none). The stage is loaded once and each view written to `-o`'s directory as `NAME.exr`, with this command's lens, size and technique; `-o` is a directory, or a file whose directory is taken |
+| `--matte` | `NAME=PRIMPATH` ‹repeatable› | none | beside each image written, the matte of the prims at or under the path from the frame's Cryptomatte: what they cover of each pixel (the ranks of the three `CryptoObject` layers whose id is one of theirs, summed on the device), in R, G, B and A, with the frame's depth as `Z` -- `<image's stem>_matte_NAME.exr`. The ids are one sample a pixel, so a mesh's edge is a step. The same form `neural-scene render --matte` gives of a found scene. Wants `-o`; fails on a path that names no prim of the frame |
 | `--turntable` | integer | `0` | that many views around `--target`, the first from `--eye`, each turned 360/N degrees about `--up`, written to `-o`'s directory as `f_0000.exr`, `f_0001.exr`, ... from one load of the stage. Prints each view's time and, at the end, the first and the median of the rest |
 
 ```sh
@@ -3498,6 +3500,7 @@ look adds files and stamps, and nothing is taken off the disk.
   pieces/<id>.athg         a piece's gaussians, as a render left them (neural-scene shoot)
   pieces/<id>.gone         a stamp a gaussian: the look that found it gone
   pieces/<id>.refined      a stamp a gaussian: the look that laid finer gaussians over it
+  pieces/<id>.prims        an id a gaussian: the prim it was made from (neural-scene shoot)
   pieces/<id>.usda|.ply|…  a piece's gaussians converted or brought in (add, discover)
   pieces/<id>.seen         a stamp a gaussian: the look that first saw it (look)
   pieces/<id>.athn         a piece's neural appearance, once fitted (fit)
@@ -3541,6 +3544,13 @@ or 0. Three things are stamped, and they are different things:
 | gone | `.gone`, a gaussian | the world changed: a later look saw through where it stood, or found nothing, or another colour |
 | refined | `.refined`, a gaussian | a nearer look or a longer lens laid narrower gaussians over it. It is not gone: it is their parent, and from far it is still the one to draw |
 
+*An id file* (`.prims`) is laid out as a stamp file is, a uint32 a gaussian,
+and holds something else: the Cryptomatte id of the prim the gaussian was made
+from -- the hash of the prim's path, the id `athenea stage` writes in its
+`CryptoObject` layers -- or 0 where the frame named none (what was seen through
+a pane of glass). `prims` in the manifest says which path each id is. A
+gaussian takes the id of the pixel at the middle of its cell.
+
 *How it is read.* With S a snapshot (the last one, for the scene as it is now;
 `--at` a time or `--snapshot` for as it stood):
 
@@ -3561,12 +3571,14 @@ walked, and each gaussian is chosen from its own record and its two stamps.
 | `spread` | the standard deviation its discs were made with, in pixels of the eye that found each (`shoot --spread` when the scene was begun). Drawn without the compensation, a disc pays it only where it projects narrower (absent: it never pays) |
 | `baseColour` | `true`: every gaussian of what is opaque keeps its surface's base colour apart from the light it was found under, in the record's tint (which for glass is what one crossing lets through, and for a metal what it reflects head on). What `render --lamps` multiplies a lamp's light by (absent: the scene was shot before it did, and has none) |
 | `lightGroups` | the names of the groups of lights the scene keeps a layer of (`shoot --light-group`). A group's layer is a file beside each piece, `<cloud>.g.<name>.1`, laid out as an `.athg` of four floats a record: which gaussian of the piece, and the light it sends under that group alone (linear rgb). Absent: none |
+| `prims` | what the ids its gaussians keep are called, as a Cryptomatte manifest is written: the path of each prim a frame of `shoot` drew, to the eight hex digits of its id. What `render --matte` reads a path by (absent: the scene was shot before it kept any, and has no matte to give) |
 | `source` | `stage`: what the pieces were made from; `licence`: what it asks of whoever uses it |
 | `bounds` | `min`, `max`: the box round every piece's, written and not read |
 | `pieces[]` | `id`; `prim` (where it came from); `cloud` (its file); `gaussians`; `bounds` (what a view is culled by); `transform` (object to world, sixteen numbers row major); `revision`, `movedAt`, `paintedAt`; `static`; `origin`; and, once fitted, `appearance` |
 | `pieces[].origin` | `kind`: `"converted"` (from geometry, whole), `"discovered"` (what a camera saw) or `"generated"` (filled in by another system); `camera` and `time`: what found it and when; `snapshot`: the snapshot it came in at, counted from one (absent: it was there before any look); `footprint`: the side in pixels of the cell each of its gaussians was made of (a render's) |
 | `pieces[].gone`, `removed` | its `.gone` and how many gaussians it stamps; absent until one is. Taking gaussians out raises the piece's `revision` and `movedAt` |
 | `pieces[].refined`, `refinedCount` | its `.refined` and how many gaussians it stamps; absent until one is |
+| `pieces[].prims` | its `.prims`; absent where the piece keeps no ids |
 | `pieces[].lights` | the snapshots at which a frame said the light of the piece's gaussians anew (`shoot --relight`), in order. Each is a file beside the piece, `<cloud>.l<snapshot>`, laid out as an `.athg` of four floats a record: which gaussian of the piece, and its colour as a record keeps one. Absent until a frame does |
 | `pieces[].seen`, `discovered` | its `.seen` and how many gaussians the looks have found; absent until a look is taken |
 | `pieces[].appearance` | `file` (its `.athn`); `lit`; `split`; `fit`: `steps`, `against` (`"harmonics"`), `relMSE`, `p99`, `max` as the device measured them from the held-out cameras |

@@ -131,6 +131,7 @@ struct SceneOptions {
     std::vector<std::string> groups;                  // render, export: NAME=LEVEL or NAME=R,G,B, a group of lights' level
     float                    ownLight = 1.0F;         // export: what the scene's own light is multiplied by
     bool                     baseColour = false;      // export: each gaussian's base colour as its colour
+    std::vector<std::string> mattes;                  // render: NAME=PRIMPATH, the matte of the gaussians made from the prims at or under a path
     bool                     noHeadlight = false;     // shoot: a stage with no light is not lit from the eye
     std::vector<std::string> lightsOn;                // shoot: the stage's lights left on (the rest switched off)
     std::vector<std::string> lightsOff;               // shoot: the stage's lights switched off
@@ -184,6 +185,10 @@ uint32_t lightAsOf = 0;
 /// times its level and tint, added to the piece's own light by a kernel of `lightTool`'s. Unset (a command
 /// that sets no tool): the piece's own light alone, which is what a shoot and an export read.
 render::Discovery* lightTool = nullptr;
+/// A PIECE IS LOADED WITH WHICH PRIM EACH GAUSSIAN WAS MADE FROM (io::NeuralScenePiece::prims): its ids as the
+/// cloud's own (scene::GpuSplats::crypto), which the blend then names each pixel's coverage by. Set by a
+/// render that was asked for a matte; otherwise the file is not read.
+bool withPrims = false;
 std::map<std::string, std::array<float, 3>> groupGain;       // a group named on the command line
 std::array<float, 3> groupDefault{1.0F, 1.0F, 1.0F};         // every other group
 void drawAs(const io::NeuralScene& scene) {
@@ -396,6 +401,21 @@ Result<scene::GpuSplats> load(gpu::ShaderLibrary& library, scene::CloudLoader& l
     return scene::loadSplatFile(loader, path.string(), 3);
 }
 
+/// The ids a piece keeps beside its records, as the cloud's own: a file laid on the device, nothing computed.
+/// A piece without them (a scene shot before one kept any) is left as it is, and no matte names it.
+Result<void> namePrims(gpu::ShaderLibrary& library, const std::filesystem::path& directory,
+                       const io::NeuralScenePiece& piece, scene::GpuSplats& cloud) {
+    if (!withPrims || piece.prims.empty() || cloud.count == 0) {
+        return ok();
+    }
+    auto ids = io::readSeen(directory / piece.prims, cloud.count);
+    if (!ids) return std::move(ids).error();
+    auto laid = gpu::Buffer::fromSpan<uint32_t>(library.device(), std::span<const uint32_t>(*ids), "piece.prims");
+    if (!laid) return std::move(laid).error();
+    cloud.crypto = *laid;
+    return ok();
+}
+
 /// A piece as it is drawn: its gaussians, less those a later look found gone.
 /// With `upTo`, as it stood at that snapshot: less only what had gone by then.
 Result<scene::GpuSplats> loadPiece(gpu::ShaderLibrary& library, scene::CloudLoader& loader, render::Discovery& discovery,
@@ -405,6 +425,7 @@ Result<scene::GpuSplats> loadPiece(gpu::ShaderLibrary& library, scene::CloudLoad
     if (!cloud) {
         return cloud;
     }
+    ATHENEA_TRY(namePrims(library, directory, piece, *cloud));
     // The finest there is: less what is gone, and less what finer looks were laid over.
     for (const std::string* file : {&piece.gone, &piece.refined}) {
         if (file->empty()) {
@@ -440,6 +461,7 @@ Result<PieceForCut> loadForCut(gpu::ShaderLibrary& library, scene::CloudLoader& 
     auto cloud = load(library, loader, directory / piece.cloud, &held.parent, withMatter ? &held.matter : nullptr);
     if (!cloud) return std::move(cloud).error();
     held.cloud = std::move(*cloud);
+    ATHENEA_TRY(namePrims(library, directory, piece, held.cloud));
     const std::string* files[2] = {&piece.gone, &piece.refined};
     for (int k = 0; k < 2; ++k) {
         if (files[k]->empty()) {
@@ -517,10 +539,20 @@ Result<scene::GpuSplats> cutScene(gpu::ShaderLibrary& library, scene::CloudLoade
         if (!room) return std::move(room).error();
         matter = *room;
     }
+    gpu::Buffer prims;   // which prim each gaussian of the cut was made from, where a matte was asked for
+    if (withPrims) {
+        auto room = discovery.primsOfCut(total);
+        if (!room) return std::move(room).error();
+        prims = *room;
+        cloud->crypto = prims;
+    }
     uint32_t base = 0;
     for (size_t k = 0; k < held.size(); ++k) {
         ATHENEA_TRY(discovery.gatherCut(held[k].cloud, held[k].parent.valid() ? &held[k].parent : nullptr, plans[k],
                                         projection, threshold, morph, *cloud, base));
+        if (withPrims && held[k].cloud.hasCrypto()) {
+            ATHENEA_TRY(discovery.gatherPrims(held[k].cloud.crypto, held[k].cloud.count, plans[k], prims, base));
+        }
         if (glass != nullptr) {
             ATHENEA_TRY(glass->gather(held[k].cloud, held[k].matter, plans[k], *cloud, matter, base));
         }
@@ -1810,6 +1842,11 @@ int runShoot(const SceneOptions& all) {
     // The path tracer's planes beside the picture: what each pixel's surface is made of.
     std::vector<std::string> outputs{"material"};
     for (const std::string& group : withinNames) outputs.push_back("lightGroup:" + group);
+    // And which prim each pixel shows -- the engine's Cryptomatte, whose ids are the hashes of the prims'
+    // paths: what a gaussian made from the pixel keeps as its own (render --matte). A pass that makes no
+    // gaussian asks for none.
+    const bool namesPrims = !all.groupsOnly && all.lightGroup.empty();
+    if (namesPrims) outputs.push_back("CryptoObject00");
     stage.requestOutputs(outputs);
     gpu::Device& device = stage.device();
     gpu::ShaderLibrary& library = stage.library();
@@ -2001,6 +2038,29 @@ int runShoot(const SceneOptions& all) {
         const gpu::Buffer& frameColour = withinNames.empty() ? *colourOf->buffer : ownFrame;
         const gpu::Buffer& frameDepth = *depthOf->buffer;
         const gpu::Buffer& planes = *planesOf->buffer;
+        // WHICH PRIM EACH PIXEL SHOWS: the first layer of the frame's Cryptomatte, where the engine kept one.
+        const gpu::Buffer* frameIds = nullptr;
+        uint32_t idsAt = 0;
+        if (namesPrims) {
+            auto idsOf = stage.displaySource("CryptoObject00");
+            if (!idsOf) return report(idsOf.error());
+            frameIds = idsOf->buffer;
+            idsAt = idsOf->offset;
+            for (const auto& [path, id] : stage.cryptoManifest()) {
+                scene.prims[path] = id;
+            }
+        }
+        // A piece's ids beside its records, in their order (io::NeuralScenePiece::prims).
+        const auto keepPrims = [&](const gpu::Buffer& prims, uint32_t count, io::NeuralScenePiece& piece) -> Result<void> {
+            if (!prims.valid()) {
+                return ok();
+            }
+            auto ids = prims.readAll<uint32_t>(device);
+            if (!ids) return std::move(ids).error();
+            ids->resize(count);
+            piece.prims = "pieces/" + piece.id + ".prims";
+            return io::writeSeen(directory / piece.prims, *ids);
+        };
         scene.snapshots.push_back({time, name, {}, samples, footprint, clock()});
         const uint32_t stamp = static_cast<uint32_t>(scene.snapshots.size());
 
@@ -2380,7 +2440,8 @@ int runShoot(const SceneOptions& all) {
         // Glass is made as glass by the view's last look; the coarse ones before it carry its picture.
         how.panes = last;
         how.pyramid = last && all.pyramid > 1;
-        auto look = discovery->fromRender(frameColour, frameDepth, planes, width, height, projection, held, how);
+        auto look = discovery->fromRender(frameColour, frameDepth, planes, width, height, projection, held, how,
+                                          frameIds, idsAt);
         if (!look) return report(look.error());
         // THE FRAME'S PYRAMID. Where the whole frame found surface the scene did not hold, it also leaves
         // the levels above: cells of 2, 4, 8... pixels of the same frame, each the mean of its pixels that
@@ -2400,7 +2461,8 @@ int runShoot(const SceneOptions& all) {
                 above.repaint = 0.0F;
                 above.panes = false;
                 above.pyramid = level * 2 <= all.pyramid;
-                auto cells = discovery->fromRender(frameColour, frameDepth, planes, width, height, projection, under, above);
+                auto cells = discovery->fromRender(frameColour, frameDepth, planes, width, height, projection, under, above,
+                                                   frameIds, idsAt);
                 if (!cells) return report(cells.error());
                 if (cells->made == 0) {
                     continue;
@@ -2432,6 +2494,7 @@ int runShoot(const SceneOptions& all) {
                 piece.footprint = level;
                 piece.refined = "pieces/" + piece.id + ".refined";
                 piece.refinedCount = cloud->count;
+                if (auto kept = keepPrims(cells->prims, cells->made, piece); !kept) return report(kept.error());
                 const std::vector<uint32_t> born(cloud->count, stamp);
                 if (auto written = io::writeSeen(directory / piece.refined, born); !written) return report(written.error());
                 scene.pieces.push_back(piece);
@@ -2468,6 +2531,7 @@ int runShoot(const SceneOptions& all) {
             piece.foundAt = time;
             piece.foundIn = stamp;
             piece.footprint = footprint;
+            if (auto named = keepPrims(look->prims, look->made, piece); !named) return report(named.error());
             scene.pieces.push_back(piece);
             scene.snapshots.back().pieces.push_back(id);
             clouds.push_back(std::make_unique<scene::GpuSplats>(std::move(*cloud)));
@@ -3803,6 +3867,10 @@ int runRender(const SceneOptions& given) {
     if (!scene) return report(scene.error());
     drawAs(*scene);
     if (o.storedFrames.size() == 2) {
+        if (!o.mattes.empty()) {
+            err("--matte is of a view drawn from the scene's pieces, not of --frames\n");
+            return kExitFailure;
+        }
         return runRenderStored(o, *scene);
     }
     if (o.storedFrame != 0) {
@@ -3835,6 +3903,77 @@ int runRender(const SceneOptions& given) {
     auto discovery = render::Discovery::create(library);
     if (!discovery) return report(discovery.error());
     if (!setGroups(o, *discovery)) return kExitFailure;
+    // THE MATTES ASKED FOR (--matte NAME=PRIMPATH): each the ids of the prims at or under a path, as the scene's
+    // manifest names them. A name said twice is the two paths together.
+    std::vector<std::pair<std::string, std::vector<uint32_t>>> mattes;
+    for (const std::string& said : o.mattes) {
+        const size_t eq = said.find('=');
+        if (eq == std::string::npos || eq == 0 || eq + 1 >= said.size()) {
+            err("--matte takes NAME=PRIMPATH, not '%s'\n", said.c_str());
+            return kExitFailure;
+        }
+        if (scene->prims.empty()) {
+            err("%s does not keep which prim each gaussian was made from (it was shot before a scene did): there "
+                "is no matte to give; shoot it again\n", directory.string().c_str());
+            return kExitFailure;
+        }
+        if (o.output.empty()) {
+            err("--matte writes its mattes beside the picture: say where with -o\n");
+            return kExitFailure;
+        }
+        const std::string name = said.substr(0, eq);
+        std::string path = said.substr(eq + 1);
+        while (path.size() > 1 && path.back() == '/') path.pop_back();
+        std::vector<uint32_t> ids;
+        for (const auto& [prim, id] : scene->prims) {
+            if (path == "/" || prim == path ||
+                (prim.size() > path.size() && prim.compare(0, path.size(), path) == 0 && prim[path.size()] == '/')) {
+                ids.push_back(id);
+            }
+        }
+        if (ids.empty()) {
+            err("--matte %s: the scene names no prim at or under %s\n", said.c_str(), path.c_str());
+            return kExitFailure;
+        }
+        out("matte %s: %zu of the scene's prims at %s\n", name.c_str(), ids.size(), path.c_str());
+        const auto before = std::find_if(mattes.begin(), mattes.end(), [&](const auto& m) { return m.first == name; });
+        if (before != mattes.end()) {
+            before->second.insert(before->second.end(), ids.begin(), ids.end());
+        } else {
+            mattes.emplace_back(name, std::move(ids));
+        }
+    }
+    withPrims = !mattes.empty();
+    // A VIEW'S MATTES, written beside its picture (`<picture's stem>_matte_<NAME>.<its extension>`): the scene
+    // drawn once more by its gaussians' own blend with the rasteriser's Cryptomatte on -- each pixel's
+    // coverage by the id of the prim the gaussian was made from -- and, a matte, the coverage of its ids
+    // summed (render::Discovery::matte). The value is in every channel, alpha too: what the prims' gaussians
+    // gave the pixel, behind whatever stands in front.
+    const auto writeMattes = [&](const render::Camera& from, const std::vector<render::SplatInstance>& instances,
+                                 const render::RenderSettings& drawn, const std::string& picture) -> Result<void> {
+        render::RenderSettings named = drawn;
+        named.cryptomatte = true;
+        render::RenderTargets frame;
+        auto stats = raster->render(from, instances, named, frame);
+        if (!stats) return std::move(stats).error();
+        if (!frame.crypto.valid()) {
+            return Error(ErrorCode::InternalError, "the frame kept no Cryptomatte");
+        }
+        const std::filesystem::path given = picture;
+        const std::string stem = (given.parent_path() / given.stem()).string();
+        for (const auto& [name, ids] : mattes) {
+            auto cover = discovery->matte(frame.crypto, drawn.width, drawn.height, ids);
+            if (!cover) return std::move(cover).error();
+            render::RenderTargets matte = frame;
+            matte.colour = *cover;
+            auto covered = render::imageStats(library, matte.colour, drawn.width, drawn.height);
+            if (!covered) return std::move(covered).error();
+            const std::string to = stem + "_matte_" + name + given.extension().string();
+            ATHENEA_TRY(writeFrame(library, **device, matte, drawn.width, drawn.height, to, 0.0F));
+            out("matte %s: covers %.3f%% of the view; wrote %s\n", name.c_str(), 100.0 * covered->mean[3], to.c_str());
+        }
+        return ok();
+    };
 
     // Every piece on the device, and its appearance where it has one.
     std::vector<std::unique_ptr<scene::GpuSplats>> clouds;
@@ -4154,6 +4293,11 @@ int runRender(const SceneOptions& given) {
                 if (auto w = writeFrame(library, **device, frame, width, height, to, o.exposure); !w) {
                     return report(w.error());
                 }
+                if (!mattes.empty()) {
+                    if (auto w = writeMattes(view, lod > 0.0F || shaded ? cutInstances : byHarmonics, settings, to); !w) {
+                        return report(w.error());
+                    }
+                }
             }
         }
         uint64_t held = 0;
@@ -4221,6 +4365,9 @@ int runRender(const SceneOptions& given) {
             if (auto w = write(learnt, stem + "_latents.exr"); !w) return report(w.error());
         } else if (auto w = write(o.harmonics ? plain : learnt, o.output); !w) {
             return report(w.error());
+        }
+        if (!mattes.empty()) {
+            if (auto w = writeMattes(camera, byHarmonics, settings, o.output); !w) return report(w.error());
         }
     }
     return 0;
@@ -4408,6 +4555,7 @@ void addNeuralScene(CLI::App& app) {
     exported->add_flag("--by-frame", o.byFrame, "a part a rendered frame, holding what that frame found: the scene in the order it grew");
     exported->add_option("--exposure", o.exposure, "stops on the scene's light before it is encoded");
     exported->add_option("--group", o.groups, "a group of lights' level in what is handed on (shoot --light-group): NAME=LEVEL or NAME=R,G,B; * names every group not named. A group not named is at 1");
+    render->add_option("--matte", o.mattes, "NAME=PRIMPATH (repeatable): beside the picture, the matte of the gaussians made from the stage's prims at or under PRIMPATH -- what they cover of each pixel, by the picture's own blend, behind whatever stands in front -- written as <picture>_matte_NAME; a scene shot before it kept its gaussians' prims has none");
     exported->add_flag("--base-colour", o.baseColour, "each gaussian is handed on with its surface's base colour as its colour, in place of its light (glass black): for a viewer that lights the scene with a lamp of its own. The same parts as the scene's own export; --exposure would scale it, and is left out");
     exported->add_option("--own-light", o.ownLight, "what the scene's own light is multiplied by: 0 hands on the groups' light alone (a group by itself, with --group)");
     exported->add_option("-o,--output", o.output, "a path with no extension: <stem>_NNN.spz and <stem>.json")->required();

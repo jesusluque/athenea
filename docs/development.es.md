@@ -255,6 +255,14 @@ cada una):
   por clase -- lente, espejo, el resto -- donde un corte los dibuja, y
   `Discovery::worldWidths` es la proyección bajo la cual ese corte es un level
   of detail en las unidades de la escena, sea cual sea el ojo.
+  De qué prim se hizo una gaussiana (`scene_matte.slang`) es el id Cryptomatte
+  del motor en el píxel del centro de su celda, guardado junto a los registros
+  de la pieza y cargado como el `crypto` de la nube: un matte por objeto es
+  entonces el propio Cryptomatte del rasterizador de la escena dibujada, sumado
+  sobre los ids pedidos (`Discovery::matte`). Lo que reúne las gaussianas de un
+  corte reúne sus ids (`gatherPrims`); un array por gaussiana añadido a una
+  escena encontrada va por el mismo camino, un fichero índice a índice y un
+  gather junto a `gatherCut`.
   Un cambio en cómo una mirada crea o retira gaussianas se califica con
   `scripts/examples/neural-scene-qa`: `make_materials_stage.py` (catorce
   bolas de un material cada una) con `qa.py`, y `make_animated_stage.py` (un

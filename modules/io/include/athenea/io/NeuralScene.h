@@ -16,6 +16,9 @@
 //                                endian, the snapshot's place in `snapshots` counted from one, 0 for none
 //     pieces/<id>.gone           which look found each gaussian gone, the same way
 //     pieces/<id>.refined        which look laid finer gaussians over each, the same way
+//     pieces/<id>.prims          which prim each gaussian was made from: a uint32 a gaussian, little
+//                                endian, the Cryptomatte id of the prim's path (`prims` in the
+//                                manifest says which path an id is), 0 where the frame named none
 //     pieces/<id>.athg           the gaussians a render of the engine's own left (`neural-scene shoot`):
 //                                "ATHG", a version, how many and how many floats each (four uint32,
 //                                little endian), then the records as render::Discovery lays them out
@@ -51,6 +54,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -117,6 +121,11 @@ struct NeuralScenePiece {
     /// the piece at a time is its records with the layers up to that time
     /// laid over them.
     std::vector<uint32_t>  lights;
+    /// WHICH PRIM EACH GAUSSIAN WAS MADE FROM: its `.prims`, relative to the
+    /// scene (empty: the piece keeps none -- it was shot before a scene did,
+    /// or by a frame that named nothing). A uint32 a gaussian, as a `.seen`
+    /// is laid out: the Cryptomatte id of the prim's path (NeuralScene::prims).
+    std::string            prims;
     /// The snapshot the piece came in at, counted from one (0: it was there
     /// before any look), and the side in pixels of the cell each of its
     /// gaussians was made of (0: not a render's).
@@ -198,6 +207,12 @@ struct NeuralScene {
     /// piece, and the light it sends, linear). The scene drawn is its own
     /// light and each group's times a level (`render --group`).
     std::vector<std::string> lightGroups;
+    /// WHAT THE IDS ITS GAUSSIANS KEEP ARE CALLED (a piece's `.prims`): the
+    /// stage's prim paths, each with its Cryptomatte id -- the hash of the
+    /// path (athenea::core::cryptomatteId), so a stage shot again names its
+    /// prims the same. Written as a Cryptomatte manifest is: path to eight
+    /// hex digits. Empty: the scene keeps no identity (`render --matte` says so).
+    std::map<std::string, uint32_t> prims;
     std::string source;                   ///< the stage the pieces were converted from
     std::string licence;                  ///< what the source asks of whoever uses it
     std::vector<NeuralScenePiece>  pieces;

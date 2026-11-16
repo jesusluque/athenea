@@ -248,6 +248,13 @@ each measured):
   kind -- lens, mirror, the rest -- where a cut draws them, and
   `Discovery::worldWidths` is the projection under which that cut is a level
   of detail in the scene's own units, whatever the eye.
+  Which prim a gaussian was made from (`scene_matte.slang`) is the engine's
+  Cryptomatte id at its cell's middle pixel, kept beside the piece's records
+  and loaded as the cloud's `crypto`: a matte by object is then the
+  rasteriser's own Cryptomatte of the scene drawn, summed over the ids asked
+  for (`Discovery::matte`). What gathers a cut's gaussians gathers their ids
+  (`gatherPrims`); a per-gaussian array added to a found scene goes the same
+  way, a file index by index and a gather beside `gatherCut`.
   A change to how a look makes or takes out gaussians is qualified with
   `scripts/examples/neural-scene-qa`: `make_materials_stage.py` (fourteen
   balls of one material each) with `qa.py`, and `make_animated_stage.py` (a

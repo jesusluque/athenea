@@ -22,6 +22,7 @@
 #include "athenea/io/Exr.h"
 #include "athenea/io/Readers.h"
 #include "athenea/lod/Athc.h"
+#include "athenea/render/Discovery.h"
 #include "athenea/scene/Asg.h"
 #include "athenea/scene/GpuClouds.h"
 #include "athenea/usd/Export.h"
@@ -204,6 +205,7 @@ void addStage(CLI::App& app) {
         std::vector<std::string> lightLevels;   ///< group=level
         std::string cameras;                    ///< a file of views, one a line
         uint32_t turntable = 0;                 ///< views around --target
+        std::vector<std::string> mattes;        ///< NAME=PRIMPATH: a matte of the prims at or under a path
     };
     auto o = std::make_shared<Options>();
     auto* cmd = app.add_subcommand("stage", "render a USD stage through the engine's Hydra delegate");
@@ -297,6 +299,10 @@ void addStage(CLI::App& app) {
     cmd->add_option("--near", o->nearZ, "its near clipping distance");
     cmd->add_option("--far", o->farZ, "its far clipping distance");
     cmd->add_option("-o,--output", o->output, "EXR path");
+    cmd->add_option("--matte", o->mattes,
+                    "NAME=PRIMPATH (repeatable): beside each image written, the matte of the prims at or under "
+                    "PRIMPATH from the frame's Cryptomatte -- what they cover of each pixel, in every channel -- as "
+                    "<image>_matte_NAME.exr");
     cmd->add_option("--render-settings", o->renderSettings,
                     "a UsdRenderSettings prim: render its products, each var a layer of its EXR, and stop");
     cmd->add_option("--frames", o->frames,
@@ -486,6 +492,77 @@ void addStage(CLI::App& app) {
                 }
             }
         }
+        // THE MATTES ASKED FOR (--matte NAME=PRIMPATH): the frames keep their
+        // Cryptomatte, and after each a matte is the coverage of the ids whose
+        // prims are at or under the path, summed on the device
+        // (render::Discovery::matte) -- the same form `neural-scene render
+        // --matte` gives of a found scene, so the two are compared as they are.
+        std::optional<render::Discovery> matteTool;
+        if (!o->mattes.empty()) {
+            for (const std::string& said : o->mattes) {
+                const size_t eq = said.find('=');
+                if (eq == std::string::npos || eq == 0 || eq + 1 >= said.size()) {
+                    std::fprintf(stderr, "--matte takes NAME=PRIMPATH, not '%s'\n", said.c_str());
+                    throw CLI::RuntimeError(kExitFailure);
+                }
+            }
+            if (o->output.empty()) {
+                std::fprintf(stderr, "--matte writes its mattes beside the image: say where with -o\n");
+                throw CLI::RuntimeError(kExitFailure);
+            }
+            (*renderer)->requestOutputs({"CryptoObject00"});
+            auto made = render::Discovery::create((*renderer)->library());
+            if (!made) cli::fail(made.error());
+            matteTool.emplace(std::move(*made));
+        }
+        const auto writeMattes = [&](const std::string& image, const std::vector<float>& depth) {
+            if (!matteTool) {
+                return;
+            }
+            auto layers = (*renderer)->displaySource("CryptoObject00");
+            if (!layers) cli::fail(layers.error());
+            if (layers->buffer == nullptr) {
+                cli::fail(Error(ErrorCode::InvalidArgument, "the frame kept no Cryptomatte"));
+            }
+            const std::map<std::string, uint32_t> manifest = (*renderer)->cryptoManifest();
+            const std::filesystem::path given = image;
+            const std::string stem = (given.parent_path() / given.stem()).string();
+            std::vector<std::pair<std::string, std::vector<uint32_t>>> mattes;
+            for (const std::string& said : o->mattes) {
+                const size_t eq = said.find('=');
+                const std::string name = said.substr(0, eq);
+                std::string path = said.substr(eq + 1);
+                while (path.size() > 1 && path.back() == '/') path.pop_back();
+                std::vector<uint32_t> ids;
+                for (const auto& [prim, id] : manifest) {
+                    if (path == "/" || prim == path ||
+                        (prim.size() > path.size() && prim.compare(0, path.size(), path) == 0 && prim[path.size()] == '/')) {
+                        ids.push_back(id);
+                    }
+                }
+                if (ids.empty()) {
+                    std::fprintf(stderr, "--matte %s: the frame names no prim at or under %s\n", said.c_str(), path.c_str());
+                    throw CLI::RuntimeError(kExitFailure);
+                }
+                const auto before = std::find_if(mattes.begin(), mattes.end(), [&](const auto& m) { return m.first == name; });
+                if (before != mattes.end()) {
+                    before->second.insert(before->second.end(), ids.begin(), ids.end());
+                } else {
+                    mattes.emplace_back(name, std::move(ids));
+                }
+            }
+            for (const auto& [name, ids] : mattes) {
+                auto cover = matteTool->matte(*layers->buffer, width, height, ids);
+                if (!cover) cli::fail(cover.error());
+                auto floats = cover->readAll<float>((*renderer)->device());
+                if (!floats) cli::fail(floats.error());
+                const std::string to = stem + "_matte_" + name + ".exr";
+                if (auto written = io::writeExr(to, width, height, *floats, depth); !written) {
+                    cli::fail(written.error());
+                }
+                std::printf("matte %s: %zu prims; wrote %s\n", name.c_str(), ids.size(), to.c_str());
+            }
+        };
         // Several views from one load: the stage, its textures, its kernels
         // and its acceleration structures are made by the first and reused by
         // the rest, so a view after the first costs its drawing.
@@ -589,6 +666,7 @@ void addStage(CLI::App& app) {
                 }
                 took.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
                 std::printf("wrote %s (%.0f ms)\n", file.string().c_str(), took.back());
+                writeMattes(file.string(), view->depth);
             }
             if (took.size() > 1) {
                 // The first view loads the stage and compiles; the rest are drawing.
@@ -652,6 +730,7 @@ void addStage(CLI::App& app) {
             cli::fail(written.error());
         }
         std::printf("wrote %s\n", o->output.c_str());
+        writeMattes(o->output, image->depth);
     });
 }
 

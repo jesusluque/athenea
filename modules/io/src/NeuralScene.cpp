@@ -2,6 +2,7 @@
 #include "athenea/io/NeuralScene.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <fstream>
 #include <system_error>
 
@@ -143,6 +144,15 @@ Result<NeuralScene> readNeuralScene(const std::filesystem::path& directory) {
     scene.spread = root.value("spread", 0.0f);
     scene.baseColour = root.value("baseColour", false);
     scene.lightGroups = root.value("lightGroups", std::vector<std::string>{});
+    if (const auto prims = root.find("prims"); prims != root.end() && prims->is_object()) {
+        // A Cryptomatte manifest: a path to eight hex digits. One that is not is skipped.
+        for (const auto& [path, id] : prims->items()) {
+            if (!id.is_string()) continue;
+            const std::string hex = id.get<std::string>();
+            if (hex.size() != 8 || hex.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) continue;
+            scene.prims[path] = static_cast<uint32_t>(std::stoul(hex, nullptr, 16));
+        }
+    }
     if (const auto source = root.find("source"); source != root.end() && source->is_object()) {
         scene.source = source->value("stage", std::string{});
         scene.licence = source->value("licence", std::string{});
@@ -162,6 +172,7 @@ Result<NeuralScene> readNeuralScene(const std::filesystem::path& directory) {
             p.revision = from.value("revision", 1u);
             p.isStatic = from.value("static", true);
             p.gone = from.value("gone", std::string{});
+            p.prims = from.value("prims", std::string{});
             p.removed = from.value("removed", 0u);
             p.refined = from.value("refined", std::string{});
             p.refinedCount = from.value("refinedCount", 0u);
@@ -268,6 +279,15 @@ Result<void> writeNeuralScene(const std::filesystem::path& directory, const Neur
     if (scene.spread > 0.0f) root["spread"] = scene.spread;
     if (scene.baseColour) root["baseColour"] = true;
     if (!scene.lightGroups.empty()) root["lightGroups"] = scene.lightGroups;
+    if (!scene.prims.empty()) {
+        Json prims = Json::object();
+        for (const auto& [path, id] : scene.prims) {
+            char hex[9];
+            std::snprintf(hex, sizeof(hex), "%08x", id);
+            prims[path] = hex;
+        }
+        root["prims"] = std::move(prims);
+    }
     root["source"] = {{"stage", scene.source}, {"licence", scene.licence}};
     std::array<float, 3> min{};
     std::array<float, 3> max{};
@@ -289,6 +309,7 @@ Result<void> writeNeuralScene(const std::filesystem::path& directory, const Neur
             piece["refinedCount"] = p.refinedCount;
         }
         if (!p.lights.empty()) piece["lights"] = p.lights;
+        if (!p.prims.empty()) piece["prims"] = p.prims;
         if (!p.gone.empty()) {
             piece["gone"] = p.gone;
             piece["removed"] = p.removed;

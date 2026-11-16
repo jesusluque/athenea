@@ -105,6 +105,10 @@ struct RenderLook {
     uint32_t    behind = 0;     ///< gaussians made of what stands behind one
     uint32_t    made = 0;       ///< gaussians made, in all
     gpu::Buffer records;        ///< `made` records of kRenderRecord floats, on the device
+    /// Which prim each was made from, where the frame said (`fromRender`'s
+    /// `frameIds`): `made` uints in the records' order, a Cryptomatte id
+    /// each, 0 for what was seen through a pane or what the frame did not name.
+    gpu::Buffer prims;
 };
 
 class Discovery {
@@ -152,10 +156,24 @@ public:
     /// scene does not hold, of its surface's material; and where the surface
     /// is a pane, the pane and what is seen through it apart. The records
     /// stay on the device (`renderEncoding` says how they are laid out).
+    /// With `frameIds` (the frame's Cryptomatte, a float4 a pixel whose first
+    /// two floats are the first rank's id and coverage, from pixel `idsAt`:
+    /// StageRenderer::displaySource("CryptoObject00")) each gaussian also
+    /// takes the id of the prim its cell's middle pixel shows (`RenderLook::prims`).
     [[nodiscard]] Result<RenderLook> fromRender(const gpu::Buffer& colour, const gpu::Buffer& depth,
                                                 const gpu::Buffer& aux, uint32_t width, uint32_t height,
                                                 const Projection& projection, const KnownScene& known,
-                                                const RenderLookSettings& settings);
+                                                const RenderLookSettings& settings,
+                                                const gpu::Buffer* frameIds = nullptr, uint32_t idsAt = 0);
+
+    /// THE MATTE OF SOME PRIMS: what the gaussians made from them cover of
+    /// each pixel of a frame drawn with `RenderSettings::cryptomatte` from
+    /// clouds that carry their ids -- `crypto` is that frame's
+    /// (`RenderTargets::crypto`), `ids` the Cryptomatte ids asked for. A
+    /// float4 a pixel, the coverage in every channel: the share of the pixel
+    /// those gaussians gave the blend, behind whatever stood in front.
+    [[nodiscard]] Result<gpu::Buffer> matte(const gpu::Buffer& crypto, uint32_t width, uint32_t height,
+                                            std::span<const uint32_t> ids);
 
     /// `mask` (seenThrough's, width x height) struck where the render's
     /// surface lets the eye through (`aux`'s planes): nothing is taken out of
@@ -342,6 +360,14 @@ public:
                                          const Projection& projection, float threshold, float morph,
                                          scene::GpuSplats& into, uint32_t base);
 
+    /// WHICH PRIM EACH GAUSSIAN WAS MADE FROM, CARRIED TO A CUT
+    /// (scene_matte.slang): a piece's ids (`prims`, a uint a gaussian) copied
+    /// to where `gatherCut` put its gaussians, in `into` -- a buffer of a uint
+    /// a gaussian of the cut (`primsOfCut`), zeros where a piece keeps none.
+    [[nodiscard]] Result<gpu::Buffer> primsOfCut(uint32_t count);
+    [[nodiscard]] Result<void> gatherPrims(const gpu::Buffer& prims, uint32_t count, const CutPlan& plan,
+                                           gpu::Buffer& into, uint32_t base);
+
     /// HOW MANY GAUSSIANS EVERY THRESHOLD DRAWS (discoverCutSpans): a piece's
     /// gaussians each added into `histogram` (made by `cutHistogram`, shared
     /// by a scene's pieces) where the span of thresholds it is drawn between
@@ -371,6 +397,7 @@ public:
 
 private:
     void bind(rhi::ShaderCursor cursor) const;
+    void bindMatte(rhi::ShaderCursor cursor) const;
 
     gpu::ShaderLibrary* library_ = nullptr;
     gpu::ComputeKernel  relight_, addLight_, recordsLight_, recordsBase_, framePlane_;
@@ -382,9 +409,10 @@ private:
     uint32_t            cachePlanes_ = 0;
     gpu::Buffer         ownFrame_;   ///< framePlane's result, kept between calls
     gpu::ComputeKernel  clear_, mark_, count_, mask_, gone_, sizes_, frameValid_, framePack_, frameThrough_;
+    gpu::ComputeKernel  mattePrims_, matteGather_, matteOf_;
     gpu::ComputeKernel  renderValid_, renderPack_, renderSpare_, cut_, cutFlags_, gather_, cutSpans_, exportFlat_, levelFlags_, levelGather_;
     std::optional<gpu::PrefixSum> prefix_;
-    gpu::Buffer         counters_, spareWords_, spareFloats_;
+    gpu::Buffer         counters_, spareWords_, spareFloats_, matteSpare_, matteSpareOut_;
 };
 
 }   // namespace athenea::render

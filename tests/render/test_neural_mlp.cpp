@@ -1229,7 +1229,11 @@ TEST_CASE("a piece's gaussians are written and read as they are, and a scene say
     piece.origin = "discovered";
     piece.foundIn = 2;
     piece.footprint = 4;
+    piece.prims = "pieces/a.prims";
     scene.pieces.push_back(piece);
+    // What the ids its gaussians keep are called: a Cryptomatte manifest, a path to eight hex digits.
+    scene.prims["/World/Knight"] = 0x0badf00du;
+    scene.prims["/World/Floor"] = 0xc0ffee01u;
     scene.snapshots.push_back({0.0, "camera", {}, 4, 8, "2026-11-12T12:00:00Z"});
     scene.snapshots.push_back({0.0, "camera", {"a"}, 16, 4, "2026-11-12T12:00:05Z"});
     REQUIRE(io::writeNeuralScene(directory, scene));
@@ -1238,11 +1242,210 @@ TEST_CASE("a piece's gaussians are written and read as they are, and a scene say
     REQUIRE(back->pieces.size() == 1);
     CHECK(back->pieces[0].foundIn == 2);
     CHECK(back->pieces[0].footprint == 4);
+    CHECK(back->pieces[0].prims == "pieces/a.prims");
+    CHECK(back->prims == scene.prims);
     REQUIRE(back->snapshots.size() == 2);
     CHECK(back->snapshots[0].samples == 4);
     CHECK(back->snapshots[0].footprint == 8);
     CHECK(back->snapshots[1].taken == "2026-11-12T12:00:05Z");
     CHECK(back->snapshots[1].pieces == std::vector<std::string>{"a"});
+}
+
+TEST_CASE("a found scene's gaussians keep the prim they were made from, and a matte of one prim covers it and not the other",
+          "[render][gpu][neural][scene][shoot][matte]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto discovery = render::Discovery::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!discovery) FAIL(discovery.error().toString());
+    // TWO OBJECTS, each a cloud that names its prim (as a frame of the stage names a mesh's): one to the
+    // left, one to the right. The frame drawn of them holds the engine's Cryptomatte, and that is the frame
+    // a look is taken of.
+    const uint32_t left = 0x0badf00du;
+    const uint32_t right = 0xc0ffee01u;
+    const uint32_t count = 6000;
+    const auto object = [&](uint64_t seed, uint32_t id, const char* source) {
+        test::CloudBuilder builder = test::randomCloud(count, seed, 0.05F, 0.2F);
+        builder.raw.source = source;
+        auto cloud = loader->upload(builder.raw, 3);
+        if (!cloud) FAIL(cloud.error().toString());
+        const std::vector<uint32_t> ids(cloud->count, id);
+        auto named = gpu::Buffer::fromSpan<uint32_t>(*gpu->device, std::span<const uint32_t>(ids), "test.prims");
+        REQUIRE(named);
+        cloud->crypto = *named;
+        return std::move(*cloud);
+    };
+    const scene::GpuSplats leftCloud = object(31, left, "matte.left");
+    const scene::GpuSplats rightCloud = object(32, right, "matte.right");
+    const auto placed = [](double x) {
+        render::Mat4 m = render::Mat4::identity();
+        m.at(0, 3) = x;
+        return m;
+    };
+    const std::array<render::SplatInstance, 2> stage{render::SplatInstance{&leftCloud, placed(-3.0)},
+                                                     render::SplatInstance{&rightCloud, placed(3.0)}};
+    render::RenderSettings settings;
+    settings.width = 320;
+    settings.height = 240;
+    settings.depth = render::RenderSettings::Depth::Threshold;
+    settings.depthThreshold = 0.5F;
+    render::RenderSettings named = settings;
+    named.cryptomatte = true;
+    const uint32_t pixels = settings.width * settings.height;
+    const gpu::Buffer matt = planesOf(*gpu->device, pixels, false);
+    const render::Camera front = render::Camera::lookingAt({0.0, 0.0, 16.0}, {0.0, 0.0, 0.0});
+    const render::Camera side = render::Camera::lookingAt({16.0, 0.0, 0.0}, {0.0, 0.0, 0.0});
+    const std::array<render::Camera, 2> cameras{front, side};
+
+    // THE SCENE FOUND: a look from the front and one from the side, each gaussian with its cell's prim.
+    std::vector<scene::GpuSplats> pieces;
+    std::vector<render::RenderLook> looks;
+    for (const render::Camera& camera : cameras) {
+        render::RenderTargets frame;
+        REQUIRE(raster->render(camera, stage, named, frame));
+        REQUIRE(frame.crypto.valid());
+        // What the scene holds already, drawn from here: the second look makes only what the first did not see.
+        std::vector<render::SplatInstance> held;
+        for (const scene::GpuSplats& piece : pieces) held.push_back({&piece, render::Mat4::identity()});
+        render::RenderTargets knownFrame;
+        render::KnownScene known;
+        if (!held.empty()) {
+            REQUIRE(raster->render(camera, held, settings, knownFrame));
+            known.colour = &knownFrame.colour;
+            known.depth = &knownFrame.depth;
+        }
+        auto look = discovery->fromRender(frame.colour, frame.depth, matt, settings.width, settings.height,
+                                          render::projectionFor(camera, settings.width, settings.height), known, {},
+                                          &frame.crypto, 0);
+        if (!look) FAIL(look.error().toString());
+        REQUIRE(look->made > 0);
+        REQUIRE(look->prims.valid());
+        loader->keepFaint(true);
+        auto made = loader->upload(look->records, look->made, render::Discovery::renderEncoding(),
+                                   pieces.empty() ? "matte.front" : "matte.side", 0);
+        loader->keepFaint(false);
+        if (!made) FAIL(made.error().toString());
+        REQUIRE(made->count == look->made);
+        made->crypto = look->prims;
+        pieces.push_back(std::move(*made));
+        looks.push_back(std::move(*look));
+    }
+    std::vector<render::SplatInstance> found;
+    for (const scene::GpuSplats& piece : pieces) found.push_back({&piece, render::Mat4::identity()});
+
+    // The share of a window a float4 image's alpha covers.
+    const auto cover = [&](const gpu::Buffer& image, uint32_t x0, uint32_t x1) {
+        auto stats = render::imageStats(*gpu->library, image, settings.width, settings.height, x0, 0, x1, settings.height);
+        REQUIRE(stats);
+        return stats->mean[3];
+    };
+    const uint32_t half = settings.width / 2;
+    const std::array<uint32_t, 1> onlyLeft{left};
+    const std::array<uint32_t, 1> onlyRight{right};
+    const std::array<uint32_t, 2> both{left, right};
+
+    // FROM THE FRONT the two stand apart: the left one's matte is the stage's left object drawn alone -- the
+    // reference, by the same rasteriser -- and holds nothing of the right half; the two mattes are the frame's
+    // own cover between them.
+    render::RenderTargets drawn;
+    REQUIRE(raster->render(front, found, named, drawn));
+    REQUIRE(drawn.crypto.valid());
+    auto leftMatte = discovery->matte(drawn.crypto, settings.width, settings.height, onlyLeft);
+    auto rightMatte = discovery->matte(drawn.crypto, settings.width, settings.height, onlyRight);
+    auto bothMatte = discovery->matte(drawn.crypto, settings.width, settings.height, both);
+    if (!leftMatte) FAIL(leftMatte.error().toString());
+    REQUIRE(rightMatte);
+    REQUIRE(bothMatte);
+    render::RenderTargets leftAlone;
+    render::RenderTargets rightAlone;
+    REQUIRE(raster->render(front, std::span<const render::SplatInstance>(&stage[0], 1), settings, leftAlone));
+    REQUIRE(raster->render(front, std::span<const render::SplatInstance>(&stage[1], 1), settings, rightAlone));
+    const double leftIn = cover(*leftMatte, 0, half);
+    const double leftOut = cover(*leftMatte, half, settings.width);
+    const double rightIn = cover(*rightMatte, half, settings.width);
+    const double rightOut = cover(*rightMatte, 0, half);
+    const double leftWants = cover(leftAlone.colour, 0, half);
+    const double rightWants = cover(rightAlone.colour, half, settings.width);
+    const double frameCover = cover(drawn.colour, 0, settings.width);
+    const double bothCover = cover(*bothMatte, 0, settings.width);
+    std::printf("  from the front: the left prim's matte covers %.4f of the left half (the object alone %.4f) and %.6f "
+                "of the right; the right prim's %.4f of the right (alone %.4f) and %.6f of the left; the two together "
+                "%.4f of the frame, whose own cover is %.4f\n",
+                leftIn, leftWants, leftOut, rightIn, rightWants, rightOut, bothCover, frameCover);
+    CHECK(leftIn > 0.85 * leftWants);
+    CHECK(leftIn < 1.15 * leftWants);
+    CHECK(rightIn > 0.85 * rightWants);
+    CHECK(rightIn < 1.15 * rightWants);
+    CHECK(leftOut < 1.0e-4);
+    CHECK(rightOut < 1.0e-4);
+    CHECK(bothCover > 0.98 * frameCover);
+    CHECK(bothCover <= frameCover + 1.0e-4);
+    // A matte is a picture of its coverage: every channel the same, so its red is its alpha.
+    auto leftStats = render::imageStats(*gpu->library, *leftMatte, settings.width, settings.height);
+    REQUIRE(leftStats);
+    CHECK(leftStats->mean[0] == leftStats->mean[3]);
+    CHECK(leftStats->max[3] <= 1.0F);
+
+    // FROM THE SIDE the right object stands in front of the left: its matte is what it covers, and the left
+    // one's is only what shows past it -- less than the left object drawn alone from there.
+    render::RenderTargets sideDrawn;
+    REQUIRE(raster->render(side, found, named, sideDrawn));
+    auto sideLeft = discovery->matte(sideDrawn.crypto, settings.width, settings.height, onlyLeft);
+    auto sideRight = discovery->matte(sideDrawn.crypto, settings.width, settings.height, onlyRight);
+    REQUIRE(sideLeft);
+    REQUIRE(sideRight);
+    render::RenderTargets sideLeftAlone;
+    render::RenderTargets sideRightAlone;
+    REQUIRE(raster->render(side, std::span<const render::SplatInstance>(&stage[0], 1), settings, sideLeftAlone));
+    REQUIRE(raster->render(side, std::span<const render::SplatInstance>(&stage[1], 1), settings, sideRightAlone));
+    const double behind = cover(*sideLeft, 0, settings.width);
+    const double behindAlone = cover(sideLeftAlone.colour, 0, settings.width);
+    const double before = cover(*sideRight, 0, settings.width);
+    const double beforeAlone = cover(sideRightAlone.colour, 0, settings.width);
+    const double sideCover = cover(sideDrawn.colour, 0, settings.width);
+    std::printf("  from the side, the right prim in front: its matte covers %.4f of the frame (alone %.4f), the left "
+                "prim's behind it %.4f (alone %.4f); together %.4f of a frame that covers %.4f\n",
+                before, beforeAlone, behind, behindAlone, before + behind, sideCover);
+    CHECK(before > 0.85 * beforeAlone);
+    CHECK(before < 1.15 * beforeAlone);
+    CHECK(behind < 0.6 * behindAlone);
+    CHECK(before + behind > 0.98 * sideCover);
+    CHECK(before + behind <= sideCover + 1.0e-4);
+
+    // CUT FOR A VIEW, the ids go where the gaussians go: the scene gathered into one cloud draws the same matte.
+    const render::Projection projection = render::projectionFor(front, settings.width, settings.height);
+    std::vector<render::Discovery::CutPlan> plans;
+    uint32_t total = 0;
+    for (const scene::GpuSplats& piece : pieces) {
+        auto plan = discovery->planCut(piece, nullptr, nullptr, nullptr, projection, 0.0F);
+        if (!plan) FAIL(plan.error().toString());
+        total += plan->drawn;
+        plans.push_back(std::move(*plan));
+    }
+    auto cut = discovery->cutCloud(pieces.front(), total);
+    if (!cut) FAIL(cut.error().toString());
+    auto prims = discovery->primsOfCut(total);
+    REQUIRE(prims);
+    uint32_t base = 0;
+    for (size_t k = 0; k < pieces.size(); ++k) {
+        REQUIRE(discovery->gatherCut(pieces[k], nullptr, plans[k], projection, 0.0F, 0.0F, *cut, base));
+        REQUIRE(discovery->gatherPrims(pieces[k].crypto, pieces[k].count, plans[k], *prims, base));
+        base += plans[k].drawn;
+    }
+    cut->crypto = *prims;
+    const render::SplatInstance whole{&*cut, render::Mat4::identity()};
+    render::RenderTargets cutDrawn;
+    REQUIRE(raster->render(front, std::span<const render::SplatInstance>(&whole, 1), named, cutDrawn));
+    auto cutMatte = discovery->matte(cutDrawn.crypto, settings.width, settings.height, onlyLeft);
+    REQUIRE(cutMatte);
+    auto same = render::compareImages(*gpu->library, *cutMatte, *leftMatte, settings.width, settings.height);
+    REQUIRE(same);
+    std::printf("  the scene cut into one cloud, %u gaussians: its left matte against the pieces' -- p99 %u, max %u\n",
+                total, same->p99, same->max);
+    CHECK(same->p99 <= 1);
+    CHECK(same->max <= 2);
 }
 
 TEST_CASE("a scene cut for a view draws a coarse look's gaussians from far and the finer ones laid over them from near",
