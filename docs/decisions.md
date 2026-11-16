@@ -24837,3 +24837,42 @@ are of this kind and were not looked up one by one.
 
 Flat Sponza after OpenPBR as one node, the frame-12 view, 66 M paths: 2.2 s the first hit and 5.5 s a bounce
 with the knights' own materials (3.5 s and 7.9 s before), 1.8 s and 3.0 s without the knights.
+
+## The afternoon's commits on ixwin: CUDA and Vulkan at 35c47360 (16 Nov)
+
+A subagent, RTX 3070 Laptop, both trees brought from 52e7b23a to 35c47360 (the shading state written in place,
+a part's history in one file, a layer's view, the test's `far`, mattes by object, stacks copied by their
+count); scripts and outputs in `build/night/agent-ixwin3`.
+
+- **Builds**: both, no error; `athenea_usd_tests` now compiles under MSVC.
+- **Tests, all passing**: the scene tests 361 assertions in 13 cases on each (with `[matte]`);
+  `athenea_material_tests` 593 (CUDA) / 695 (Vulkan); `athenea_technique_tests` 917 with 35 cases skipped (CUDA,
+  as before these commits) / 2862; `athenea_usd_tests "[path],[glass],[lights],[emissive]"` 170 with 55 skipped /
+  1020. The QA flows: 47 of 47 on CUDA, 46 of 47 on Vulkan -- the one that fails is the new flow that compares
+  the scene's matte with the stage's, by `athenea compare`, which has no device on Windows/Vulkan (NEU17).
+- **Pictures against 52e7b23a** (1280x720, 16 paths): bit for bit on Vulkan, the materials stage and Sponza,
+  without bounces and with three; bit for bit on CUDA on the materials stage. **On CUDA Sponza's first hit
+  differs** (relMSE 3.4e-11, the largest relative difference 0.0066, one code of eight bits at most, no pixel
+  over two), every run repeating itself exactly: it comes from 8934e212 (`shadeSurface` and `shadeFound`
+  writing their caller's state), not from the stacks' copy, which is bit for bit there. Not looked into: a
+  field of the state left unwritten on some route would read what the caller's held, and that is the first
+  thing to check.
+- **The path tracer's time on Vulkan**, the materials stage, 16 paths in passes of 2, frame time:
+
+| | first hit | a bounce |
+|---|---|---|
+| 52e7b23a | 2.97 s | 1.33 s |
+| the shading state written in place (8934e212) | 2.51 s | 1.09 s |
+| stacks copied by their count (35c47360) | 1.30 s | 0.46 s |
+
+  2.3 times the first hit and 2.9 times a bounce over the two commits, the same picture: where passing structs
+  by reference gave Vulkan a fifth to a third, copying fewer lobes gives it more than it gave Metal. Sponza on
+  Vulkan says little (its frame there is 19-20 s without bounces and 20 s with three: not shading).
+- **Mattes**: the materials stage's `/World/Bumped` from the scene against the stage's: 36.61 dB, SSIM 0.9977
+  on CUDA and on Vulkan, the Mac's figures; the stage's matte bit for bit between the two backends, the
+  scene's to one code of eight bits. On CUDA without OptiX `shoot` runs and names its prims; whether it traced
+  its bounces was not checked (the stage command there traces none).
+
+Not done: CUDA's bounces (no OptiX in WSL), so the path tracing kernel with these changes is unverified on
+CUDA past the first hit; D3D12; the web player's reading of a one-file history on Windows; OpenPBR as one node
+and what came after 35c47360.
