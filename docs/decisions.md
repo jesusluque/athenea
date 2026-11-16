@@ -24491,3 +24491,118 @@ the WSL build.
 
 Not done: the full usd suite there (62 of about 195 cases by tag); D3D12; the later commits of the day (a
 part's history in one file, a layer's view) on ixwin.
+
+## A found scene's mattes by object: each gaussian keeps its prim (16 Nov)
+
+A found scene kept, a gaussian, its colour, what it is made of, its base colour, layers of light and its
+stamps -- and nothing of which object it was. So a render of it could not say "the matte of this prim from
+this camera", which is what a stage with no chroma behind its actors is keyed by.
+
+**The id is the engine's Cryptomatte id, and it was already there.** A path traced frame of the stage carries
+the mesh layer's ids one sample a pixel, as its depth is, and `CryptoObject00`'s first rank is the prim the
+pixel shows: the hash of the prim's path, so a stage shot again, or in another run, names its prims the same
+and no table of the scene's own is needed. `shoot` asks for that output beside the path tracer's planes, and a
+gaussian takes the id at its cell's middle pixel -- the pixel that stands for the cell in everything else a
+look makes (`mattePrims`, `scene_matte.slang`, run by `Discovery::fromRender` over the same `which` and `dest`
+the records were packed by). What stands behind a pane was seen through it, and the frame names the pane
+there: it is left 0, named by nothing.
+
+**Kept beside the piece, not in the record.** `pieces/<id>.prims`, a uint32 a gaussian in the records' order,
+as `.gone` and `.refined` are; the manifest's `prims` is a Cryptomatte manifest (path to eight hex digits),
+merged from every frame's. The record stays 30 floats: nothing that reads records changes, and a scene
+without the files loads and draws as before (`clean.aths`, shot before: its four held views drawn, and
+`--matte` refused with a line that says why). The earlier Cryptomatte section says an id beside the cloud
+comes apart when the loader drops a gaussian; a found scene's pieces are loaded with every gaussian kept and
+never reordered, which is what its stamp files already rest on.
+
+**The matte is the rasteriser's own Cryptomatte, summed.** A piece loaded for a matte carries its ids as
+`scene::GpuSplats::crypto`, so the blend that draws the picture names each pixel's coverage by id
+(`RenderSettings::cryptomatte`: `transmittance * alpha` a gaussian, six ranks kept) with no kernel of this
+change in the blend. A matte is then the coverage of the ranks whose id is one of those asked for
+(`matteOf`, a binary search in the ids put in order), written in every channel: soft where the discs are,
+and less by what stands in front, since the blend already took that share. The scene cut for a view (`--lod`,
+`--glass`, `--lamps`) gathers the ids where it gathers the gaussians (`gatherPrims`). The mattes are a draw of
+their own, by the gaussians' own blend, after the picture: a piece with a neural appearance is drawn by
+another kernel when the matte is on, and the picture is not to change for having asked.
+
+`neural-scene render --matte NAME=PRIMPATH` (a prefix, as `--light-groups` reads a path; repeatable; a name
+twice is the paths together) writes `<picture>_matte_NAME` beside the picture. `athenea stage --matte` writes
+the stage's own in the same form, from the frame's Cryptomatte through the same kernel: the reference below.
+
+**Measured**, Metal (M5 Pro), binaries of `build/pt-exp`, scripts and outputs in `build/night/agent-matte`.
+
+- `athenea_render_tests "[matte]"`: two objects that name their prims, found by a look from the front and one
+  from the side. From the front the left prim's matte covers 0.4797 of the left half where the object drawn
+  alone covers 0.4677, and 0.000000 of the right half (the right prim's: 0.4873 against 0.4755, and
+  0.000000); the two together 0.4835 of the frame, whose own cover is 0.4835. From the side, one in front of
+  the other: the front one's 0.5810 (alone 0.5689), the hidden one's 0.0000 where alone it covers 0.2417. The
+  scene cut into one cloud of 79 258 gaussians gives the pieces' matte, p99 0 and max 0. `"[scene]"` whole:
+  361 assertions in 13 cases pass.
+- The QA flows on the materials stage: 47 of 47 (six new: a matte from a view, through `--views --glass`, as
+  a picture, the stage's own, the two compared -- PSNR 36.61 dB, SSIM 0.9977 for one ball -- and a prim the
+  scene does not name refused).
+- **Sponza with the two knights** (`sponza_lamps.usda`, the walk's twenty views at 960x540, 32 paths in
+  passes of 8, three bounces, denoised: 300 s, 2 112 486 gaussians standing, 117 prims named), a matte of
+  `/GlassKnight` and of `/ChromeKnight` from the four held views against the stage's (`athenea stage
+  --technique raster --matte`, one sample a pixel). The means are the share of the frame covered; IoU is
+  (a + b - d) / (a + b + d) of the two means and the mean absolute difference, each a kernel's
+  (`athenea compare`, and `compare` of its `--heatmap --show difference`):
+
+| view, knight | the scene's | the stage's | mean abs difference | IoU | 8-bit p99 | pixels over 2 |
+|---|---|---|---|---|---|---|
+| k10, glass | 0.0191 | 0.0189 | 0.00121 | 0.938 | 5 | 6 629 |
+| k10, chrome | 0.0195 | 0.0194 | 0.00130 | 0.935 | 4 | 6 211 |
+| k45, glass | 0.1584 | 0.1609 | 0.00597 | 0.963 | 34 | 42 138 |
+| k45, chrome | 0.1864 | 0.1849 | 0.00282 | 0.985 | 7 | 8 728 |
+| a, glass | 0.0381 | 0.0399 | 0.00306 | 0.924 | 5 | 11 293 |
+| a, chrome | 0.0361 | 0.0372 | 0.00233 | 0.938 | 4 | 10 374 |
+| b, glass | 0.0716 | 0.0713 | 0.00213 | 0.971 | 8 | 11 850 |
+| b, chrome | 0.0910 | 0.0910 | 0.00276 | 0.970 | 5 | 8 841 |
+
+  The same figures to the last digit with and without `--glass`: the matte is coverage, and what a glass
+  gaussian shows is its colour. Cut at `--lod 2` the far views are closer to the stage's step (k10: IoU 0.955
+  and 0.953, p99 0) and the near one further (k45: 0.892 and 0.905, p99 139 and 116; b: 0.939 and 0.950): a
+  coarser gaussian is a softer edge.
+- What a baseline of the reference is: the stage's matte from a path traced frame against its raster one
+  differs in 166 to 375 pixels of 518 400 a view (the edge pixels), p99 0.
+- **Asking for the ids costs a path traced frame nothing measurable**: `athenea stage --technique rt` on the
+  same stage and options, the three views after the first, 12.5 / 10.9 / 12.0 s and 12.7 / 11.2 / 12.1 s
+  without the matte in two runs, 12.7 / 11.2 / 12.0 s and 12.7 / 11.0 / 12.1 s with it.
+- **The picture does not change for having asked.** Drawn flat, the four views with `--matte` against without:
+  no pixel differs. With `--glass`, 159 to 338 pixels over 2 codes -- and two renders without `--matte`
+  differ from each other in 209 to 325: what glass shows is not the same from run to run, with or without
+  this.
+
+**Looked at** (`p_<view>_matte_<knight>.png`, `ref_<view>_<knight>.png`, `diff_<view>_<knight>.png` there).
+The two knights are whole silhouettes, one each, with nothing of the other or of the room in them: a solid of
+glass is made as opaque gaussians that keep their picture, and a polished metal as any surface, so neither is
+a faint matte. What is wrong:
+
+- **An edge is a soft band where the stage's is a step**, a gaussian wide: most of the pixels over 2 codes
+  and the whole of the difference from far (k10).
+- **The inside is not everywhere 1 from nearer than the walk came.** From k45 the glass knight's body shows a
+  grain of coverage under 1 (p99 34, 42 138 pixels over 2): discs made a pixel wide from further off do not
+  close the surface from here, and where the scene holds less than the whole pixel the matte holds that. The
+  chrome one beside it, found from nearer, does not (p99 7).
+- **What no view saw is not in the matte.** From `a`, to one side of the walk, the front of the glass knight's
+  head is missing where the stage has it: the scene has no gaussian there, and its picture has a hole in the
+  same place.
+- **Glass in sheets.** A pane is made as a gaussian of the opacity its tint takes (0.05 at least), so its
+  matte is that and not 1, and what was seen through it is named by no prim: an object found only through a
+  window is in no matte. Not measured here -- Sponza's two knights are a lens and a mirror, and neither is a
+  sheet.
+- **A mirror's matte is the mirror**, not what it reflects, as the stage's is.
+
+Not done:
+
+- Instances. The id is the Hydra prim's, as `athenea stage` names it: instances of one prototype, and a point
+  instancer's, are one name. No instance id is kept.
+- The id of what a pane shows (the path tracer keeps the place and the tint of what is behind, not its prim).
+- A matte from `render --frames` (refused), from `bake`, or in what `export` hands on: the web player has no
+  ids, and an `.athc` baked from the scene none.
+- Cryptomatte layers in the scene's own EXR (`CryptoObject00..02` with their manifest), for a compositor that
+  picks ids itself: the frame holds them on the device and only the mattes asked for are written.
+- More than six ranks a pixel: past that the lightest id is dropped, as the format does.
+- An antialiased reference: the stage's ids are one sample a pixel, so the figures above hold an edge's
+  aliasing on the reference's side as well.
+- CUDA and Vulkan: run on Metal only.
