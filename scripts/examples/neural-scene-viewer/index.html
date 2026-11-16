@@ -33,6 +33,14 @@
     .short { display: none; }
     @media (pointer: coarse) { .keys { display: none; } .touch { display: inline; } }
 
+    /* WHAT IS BEING READ: a bar under the status line while parts come in, which nothing waits on. A folded
+       text keeps its status line while there is a bar to show. */
+    .progress { height: 4px; margin-top: 6px; border-radius: 2px; background: rgba(255, 255, 255, 0.14); overflow: hidden;
+      pointer-events: none; }
+    .progress[hidden] { display: none; }
+    .progress > div { height: 100%; width: 0; background: var(--accent); border-radius: 2px; transition: width 0.25s ease-out; }
+    .hud.folded .stats.reading { display: block; }
+
     /* THE OPTIONS: a panel at the right, opened by the button in the bar. */
     .options { position: fixed; top: 10px; right: 10px; width: 300px; max-height: calc(100dvh - 110px); overflow-y: auto;
       background: var(--panel); padding: 10px 12px 12px; border-radius: 8px; backdrop-filter: blur(6px); z-index: 4;
@@ -155,6 +163,28 @@
     const name = (params.get("scene") ?? window.__sceneName ?? "sponza_growth").replace(/[^\w-]/g, "");
     const $ = (id) => document.getElementById(id);
     const status = $("stats");
+    // The status area is a line of text and, while parts are being read, a bar under it.
+    const statusLine = document.createElement("span");
+    statusLine.textContent = status.textContent;
+    const progressBar = document.createElement("div");
+    progressBar.className = "progress";
+    progressBar.setAttribute("role", "progressbar");
+    progressBar.setAttribute("aria-label", "Reading the scene");
+    progressBar.setAttribute("aria-valuemin", "0");
+    progressBar.setAttribute("aria-valuemax", "100");
+    progressBar.hidden = true;
+    progressBar.append(document.createElement("div"));
+    status.replaceChildren(statusLine, progressBar);
+    // How much is read, from nothing to one; null when nothing is being read.
+    const setProgress = (fraction) => {
+      const reading = fraction !== null;
+      progressBar.hidden = !reading;
+      status.classList.toggle("reading", reading);
+      if (!reading) { progressBar.firstChild.style.width = "0"; progressBar.removeAttribute("aria-valuenow"); return; }
+      const percent = Math.round(Math.max(0, Math.min(fraction, 1)) * 100);
+      progressBar.firstChild.style.width = `${percent}%`;
+      progressBar.setAttribute("aria-valuenow", String(percent));
+    };
     const slider = $("frame");
     const where = $("where");
     const playButton = $("play");
@@ -688,7 +718,7 @@
                (frames > 0 ? ` · ${frames} rendered frames` : "") + (seconds > 0 ? ` · ${Math.round(seconds)} s of rendering` : "");
       };
       let fpsText = "";
-      const say = (text) => { status.textContent = text + (settings.fps && fpsText ? ` · ${fpsText}` : ""); };
+      const say = (text) => { statusLine.textContent = text + (settings.fps && fpsText ? ` · ${fpsText}` : ""); };
       let said = "loading…";
       const report = (text) => { said = text; say(text); };
 
@@ -697,10 +727,26 @@
         if (loading) return;
         loading = true;
         const mine = generation;
+        // HOW FAR THE READING IS, said and drawn as a bar: parts read of the parts there are, and gaussians
+        // of theirs -- the index gives a part's gaussians, not its bytes -- counted a file at a time, a part's
+        // history and its glass and mirrors with it. It is the load at hand that is measured: the coarse
+        // level drawn first fills the bar once, and the detail read behind it ("refining") fills it again.
+        const weigh = (p) => [p, ...(p.history ?? [])].reduce((sum, span) => sum + countOf({ gaussians: 0, ...span }), 0);
+        let readHere = 0;         // gaussians read of the part being read
+        const tell = () => {
+          if (mine !== generation) return;
+          const total = parts.reduce((sum, p) => sum + weigh(p), 0);
+          const read = parts.slice(0, meshes.length).reduce((sum, p) => sum + weigh(p), 0) + readHere;
+          const counted = total > 0 ? ` · ${(read / 1e6).toFixed(2)} of ${(total / 1e6).toFixed(2)} M gaussians` : "";
+          report(`${keeping ? "refining" : "loading"}… ${meshes.length} of ${parts.length} parts${counted}`);
+          setProgress(total > 0 ? read / total : meshes.length / Math.max(parts.length, 1));
+        };
+        if (meshes.length < parts.length) tell();
         while (meshes.length < parts.length && mine === generation) {
           const part = parts[meshes.length];
           const own = [];
           const beside = [];
+          readHere = 0;
           // The part itself and, where the scene was handed on with its history, what the part's frame found
           // that stood only for a while: each a file, with its glass and its mirrors beside it.
           for (const span of [part, ...(part.history ?? [])]) {
@@ -733,6 +779,8 @@
                 mesh.updateGenerator();
               }
               own.push({ mesh, until, gaussians: span.gaussians ?? 0 });
+              readHere += span.gaussians ?? 0;
+              tell();
             }
             for (const [which, made] of [["glass", span.glass], ["mirror", span.mirror]]) {
               if (!made) continue;
@@ -740,6 +788,8 @@
               await other.initialized;
               beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0, heart: heartOf(other, made.gaussians ?? 0),
                             shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1])) });
+              readHere += made.gaussians ?? 0;
+              tell();
             }
           }
           if (mine !== generation) { for (const m of [...own, ...beside]) m.mesh.dispose?.(); break; }
@@ -748,8 +798,9 @@
           shaded.push(beside);
           applyShading();
           window.__scene.parts = meshes.length;
-          report(meshes.length < parts.length
-                 ? `${keeping ? "refining" : "loading"}… ${meshes.length} of ${parts.length} parts` : summary());
+          readHere = 0;
+          if (meshes.length < parts.length) tell();
+          else { report(summary()); setProgress(null); }
           if (!keeping) {
             if (detail === 0 && atEnd && !playing) show(meshes.length, true);
             else show(cursor, false);
@@ -1182,7 +1233,8 @@
       });
     } catch (error) {
       window.__scene.error = String(error);
-      status.textContent = `could not load the scene: ${error}`;
+      setProgress(null);
+      statusLine.textContent = `could not load the scene: ${error}`;
     }
   </script>
 </body>
