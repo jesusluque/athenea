@@ -99,6 +99,17 @@ void sceneRelight(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const float4 pixel = frameColour[params.colourBase + at];
+    // OF THE VIEWS THAT SEE A GAUSSIAN, THE ONE THAT SEES IT A PIXEL WIDE is the one whose word is kept
+    // (score: how far from a pixel its width is in this frame, the smaller the better). A gaussian keeps
+    // its own colour from the frame that made it, where it was a pixel wide; the nearest eye holds it over
+    // many pixels and its middle's is one sample of them, and a far one holds many gaussians in a pixel.
+    // (The mean over the pixels it covers was tried in the nearest view and lost detail for no gain.)
+    float score = z;
+    if (params.keep != 0u) {
+        const uint row = i * 4u;
+        const float wide = exp(max(lowHalf(shape[row + 1u]), max(highHalf(shape[row + 1u]), lowHalf(shape[row + 2u]))));
+        score = 1.0e-3 + abs(log(max(wide * params.lensX / z, 1.0e-4)));
+    }
     // A frame's colour says where it holds a surface by its alpha; a light group's plane does not (its alpha
     // is the path tracer's own count, not a coverage), and there the depth above is what says so.
     if (params.keep == 0u && !(pixel.a > 0.5)) {
@@ -110,8 +121,7 @@ void sceneRelight(uint3 tid: SV_DispatchThreadID) {
     if (params.keep != 0u) {
         // A GROUP OF LIGHTS' OWN LAYER: the frame was path traced under that group alone, and what each
         // gaussian sends then is kept as light, to be added to the scene's by a level (sceneAddLight).
-        // And how far the eye was (a): of the views that show a gaussian, the nearest is the one that sees
-        // it largest -- as the look that made it did -- and its word is the one kept.
+        // And how well the view saw it (a, the score above): the best of a run's views is the one kept.
         // THE LIGHT CARRIED FROM THE PIXEL'S BASE COLOUR TO THE GAUSSIAN'S OWN (overBase). A frame smaller than
         // the ones the scene was found from says a surface's texture coarsely, and the gaussian keeps its own
         // base colour at the scene's detail: what the pixel sends over its base colour is the light on the
@@ -125,9 +135,9 @@ void sceneRelight(uint3 tid: SV_DispatchThreadID) {
                 sent = light * min(own / of, float3(2.0));
             }
         }
-        // Over a run (merge) the layer holds what the views before said, and a farther view leaves it.
-        if (params.merge == 0u || !(layer[i].a > 0.0) || z < layer[i].a) {
-            layer[i] = float4(sent, z);
+        // Over a run (merge) the layer holds what the views before said, and a view that sees it worse leaves it.
+        if (params.merge == 0u || !(layer[i].a > 0.0) || score < layer[i].a) {
+            layer[i] = float4(sent, score);
         }
         return;
     }

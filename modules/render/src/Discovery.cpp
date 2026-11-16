@@ -1,6 +1,7 @@
 // Copyright (c) 2026 jesus luque.
 #include "athenea/render/Discovery.h"
 
+#include <cstdlib>
 #include <algorithm>
 #include <array>
 #include <cmath>

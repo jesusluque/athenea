@@ -24380,3 +24380,42 @@ picture to the eye.
 Not done: the scenes on the site handed on again in this form (`sponza_chrome` is the one with 3868 files);
 frame rate with a history drawn this way against meshes switched off -- a gaussian without opacity is still
 sorted -- not measured; a real Chrome on ixwin and a phone.
+
+## A layer's word from the view that sees the gaussian a pixel wide (16 Nov)
+
+What a layer costs against light kept by the frame that made the gaussian (the two sections before) was put
+down to how a layer is read: a pixel at the gaussian's middle, from the nearest of the views that see it.
+Tried, apart, on the unlit workflow with its lights' pass at full size (Sponza, 960x540, the four views not
+taken, dB / SSIM against the reference):
+
+| a layer's word | k10 | k45 | a | b |
+|---|---|---|---|---|
+| the nearest view's (as it was) | 27.56 / 0.885 | 22.55 / 0.789 | 25.63 / 0.858 | 24.11 / 0.834 |
+| the view that sees it nearest a pixel wide | 27.82 / 0.891 | 22.97 / 0.781 | 25.91 / 0.861 | 24.38 / 0.834 |
+| the nearest view's, the mean over the pixels it covers | 27.58 / 0.875 | 22.40 / 0.784 | 25.57 / 0.850 | 24.00 / 0.827 |
+| both | 28.07 / 0.881 | 22.85 / 0.775 | 25.89 / 0.852 | 24.26 / 0.824 |
+
+The view is what gains (0.26 to 0.42 dB, SSIM up in two views, the same in one, 0.008 down at k45); the mean
+gains nothing and loses detail, and is not kept. So `sceneRelight` scores a view by how far the gaussian's
+width in that frame is from a pixel (`|log(width in pixels)|`) and a run keeps the best view's word, where it
+kept the nearest eye's. The reason as understood: a gaussian's own colour is from the frame that made it,
+where it was a pixel wide; the nearest eye holds it over many pixels and reads one of them.
+
+The other two ways a layer is made, each beside its own baseline the same afternoon:
+
+| | k10 | k45 | a | b |
+|---|---|---|---|---|
+| every light a group in the shoot itself, before | 27.78 / 0.889 | 22.51 / 0.791 | 25.64 / 0.864 | 24.08 / 0.836 |
+| the same, now (304 s; 320 s before) | 27.99 / 0.896 | 22.82 / 0.782 | 25.95 / 0.867 | 24.31 / 0.836 |
+| the unlit workflow, its lights' pass a quarter of the pixels, before | 27.61 / 0.880 | 22.49 / 0.774 | 25.45 / 0.851 | 24.21 / 0.818 |
+| the same, now | 27.62 / 0.880 | 22.57 / 0.773 | 25.47 / 0.851 | 24.24 / 0.818 |
+
+At a quarter of the pixels it changes nothing to speak of: no view sees a gaussian a pixel wide there. With
+every light a group the scene is now at the lit baseline's dB (27.95 / 22.76 / 25.81 / 24.24) and over its
+SSIM, and 0.35 to 0.6 dB under the scene with no group at all (28.34 / 23.44 / 26.41 / 24.47). (One run of the
+experiment took 448 s where its baseline took 320; run again as built it is 304 s -- that run's, not the
+change's.) Tests, Metal: the scene tests (295 assertions) and the 41 QA flows pass.
+
+Not done: a scene continued from one found before this keeps in its layers the depth the old rule stored,
+which the new score is compared with (a layer said anew over the whole run is not affected); k45's SSIM,
+which goes down 0.008 each time and is not looked into; CUDA and Vulkan.
