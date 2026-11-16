@@ -181,7 +181,8 @@ if args.stage and args.walk:
             [os.path.join(once, "scene.json"), os.path.join(once, "pieces", "*.g.lamp.1")], cwd=stage_dir)
         # AND ADDED TO A SCENE ALREADY FOUND, by their planes of one path tracing of each view.
         run("shoot --light-groups --groups-only", ["neural-scene", "shoot", os.path.basename(args.stage), based, "--views", short,
-            "--samples", "8", "--pass-samples", "8", "--bounces", "2", "--light-groups", "added=" + lamp, "--groups-only"] + common,
+            "--samples", "8", "--pass-samples", "8", "--bounces", "2", "--light-groups", "added=" + lamp, "--groups-only",
+            "--light-over-base"] + common,
             [os.path.join(based, "pieces", "*.g.added.1")], cwd=stage_dir)
         run("render --group lamp=0, a scene shot with its groups", ["neural-scene", "render", once, "--views", views,
             "--group", "lamp=0"] + common + ["-o", os.path.join(out, "once")], [os.path.join(out, "once_*.exr")])

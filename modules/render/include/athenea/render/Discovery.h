@@ -240,12 +240,18 @@ public:
     /// for this cloud) the layer is a run's: a gaussian keeps the word of
     /// the view that saw it from nearest, and `into` is what is returned.
     /// `colourBase`: where in `frameColour` the frame starts, in pixels (a
-    /// light group's plane in a buffer of several).
+    /// light group's plane in a buffer of several). With `frameBase` (the
+    /// frame's base colours, a float4 a pixel from `baseAt`) and `matter`
+    /// (the cloud's own, a float4 a gaussian), a kept light is carried from
+    /// its pixel's base colour to the gaussian's: for frames smaller than
+    /// the ones the scene was found from.
     [[nodiscard]] Result<gpu::Buffer> relight(scene::GpuSplats& cloud, const gpu::Buffer& frameColour,
                                               const gpu::Buffer& frameDepth, uint32_t width, uint32_t height,
                                               const Projection& projection, float nearness, uint32_t& taken,
                                               const gpu::Buffer* gone = nullptr, bool keep = false,
-                                              const gpu::Buffer* into = nullptr, uint32_t colourBase = 0);
+                                              const gpu::Buffer* into = nullptr, uint32_t colourBase = 0,
+                                              const gpu::Buffer* frameBase = nullptr, uint32_t baseAt = 0,
+                                              const gpu::Buffer* matter = nullptr);
 
     /// A layer of light (a float4 a gaussian: rgb, linear, and 1 where there
     /// is any) added to `cloud`'s own colours, times `gain`: a group of

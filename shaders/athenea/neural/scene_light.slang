@@ -39,7 +39,9 @@ struct RelightParams {
     uint  floats;       // recordsAddLight: floats a record
     float own;          // recordsAddLight: what the record's own light is multiplied by
     uint  colourBase;   // sceneRelight: where in `frameColour` the frame starts (a light group's plane in a buffer of several)
-    uint  pad4;
+    uint  overBase;     // sceneRelight with keep: 1, the frame's light is carried from its pixel's base colour to the gaussian's own
+    uint  baseAt;       // and where in `frameBase` the frame's base colours start
+    uint  pad5; uint pad6; uint pad7;
 };
 
 StructuredBuffer<float4>   positions;    // xyz, opacity (0 and under: not standing)
@@ -49,6 +51,8 @@ StructuredBuffer<uint>     gone;         // the look a gaussian went at (0: it i
 StructuredBuffer<float4>   frameColour;  // the frame's light a pixel
 StructuredBuffer<float>    frameDepth;   // and its depth along the view (0: nothing)
 RWStructuredBuffer<float4> layer;        // the colour as a record keeps it, and whether it was said
+StructuredBuffer<float4>   frameBase;    // sceneRelight, overBase: the base colour of each pixel's surface (the path tracer's plane)
+StructuredBuffer<float4>   matter;       // and each gaussian's own (rgb)
 StructuredBuffer<float4>   added;        // sceneAddLight: light a gaussian (rgb, linear) and whether there is any (a)
 RWStructuredBuffer<float>  records;      // recordsAddLight: a render's records, their colours written
 RWStructuredBuffer<uint>   counters;     // [0]: gaussians whose light was taken again
@@ -108,9 +112,22 @@ void sceneRelight(uint3 tid: SV_DispatchThreadID) {
         // gaussian sends then is kept as light, to be added to the scene's by a level (sceneAddLight).
         // And how far the eye was (a): of the views that show a gaussian, the nearest is the one that sees
         // it largest -- as the look that made it did -- and its word is the one kept.
+        // THE LIGHT CARRIED FROM THE PIXEL'S BASE COLOUR TO THE GAUSSIAN'S OWN (overBase). A frame smaller than
+        // the ones the scene was found from says a surface's texture coarsely, and the gaussian keeps its own
+        // base colour at the scene's detail: what the pixel sends over its base colour is the light on the
+        // surface, and times the gaussian's base colour it is what that gaussian sends. Only where the pixel
+        // has a base colour to speak of and the gaussian lets no light through; held to four times.
+        float3 sent = light;
+        if (params.overBase != 0u && !(params.hasPbr != 0u && pbrTransmission(pbr[i]) > 0.02)) {
+            const float3 of = frameBase[params.baseAt + at].rgb;
+            const float3 own = saturate(matter[i].rgb);
+            if (all(of > float3(0.02)) && any(own > float3(0.0))) {
+                sent = light * min(own / of, float3(4.0));
+            }
+        }
         // Over a run (merge) the layer holds what the views before said, and a farther view leaves it.
         if (params.merge == 0u || !(layer[i].a > 0.0) || z < layer[i].a) {
-            layer[i] = float4(light, z);
+            layer[i] = float4(sent, z);
         }
         return;
     }

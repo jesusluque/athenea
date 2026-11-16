@@ -125,6 +125,7 @@ struct SceneOptions {
     bool                     relight = false;         // shoot: a frame takes the light of what the scene holds again
     std::string              lightGroup;              // shoot: the frames are a group of lights' own, kept as its layer
     uint32_t                 sceneCache = 0;          // shoot: cells an axis of the scene's light kept for the paths' bounces (0: none)
+    bool                     lightOverBase = false;   // shoot, a pass of groups: a kept light is carried from its pixel's base colour to the gaussian's own
     bool                     groupsOnly = false;      // shoot: --light-groups as a pass over a scene found: the groups' layers and no more
     std::vector<std::string> lightGroups;             // shoot: NAME=PATH, lights whose share of each frame is kept as a group's layer
     std::vector<std::string> groups;                  // render, export: NAME=LEVEL or NAME=R,G,B, a group of lights' level
@@ -2482,6 +2483,7 @@ int runShoot(const SceneOptions& all) {
     std::map<std::string, gpu::Buffer> groupLayers;         // and what they said, a piece: on the device, four floats a gaussian
     std::map<std::string, uint32_t> groupCounts;            // and how many gaussians each is of
     std::map<std::string, gpu::Buffer> groupGone;            // a piece's record of what is gone, read once
+    std::map<std::string, gpu::Buffer> groupMatter;          // --light-over-base: a piece's own base colours, read once
     std::map<size_t, std::unique_ptr<scene::GpuSplats>> groupCoarse;   // the pieces read for a group alone, kept
     // ONE VIEW AT ONE TIME: drawn a pass at a time, and looked at as it gathers.
     const auto shootView = [&](const render::Camera& camera, const std::string& name, double time) -> int {
@@ -2515,6 +2517,19 @@ int runShoot(const SceneOptions& all) {
             std::string groupName;
             const gpu::Buffer* groupColour = colourOf->buffer;
             uint32_t groupBase = 0;
+            // --light-over-base: the frame's base colours, a pixel (the path tracer's plane of them).
+            const gpu::Buffer* frameBase = nullptr;
+            uint32_t frameBaseAt = 0;
+            if (all.lightOverBase) {
+                auto baseOf = stage.displaySource("transmissionColour");
+                if (!baseOf) return report(baseOf.error());
+                if (baseOf->buffer == nullptr) {
+                    err("the render left no plane of base colours: --light-over-base wants a path traced stage of meshes\n");
+                    return kExitFailure;
+                }
+                frameBase = baseOf->buffer;
+                frameBaseAt = baseOf->offset;
+            }
             const auto keepOf = [&](const io::NeuralScenePiece& piece, scene::GpuSplats& cloud) -> Result<void> {
                 if (piece.cloud.size() < 5 || piece.cloud.compare(piece.cloud.size() - 5, 5, ".athg") != 0 ||
                     (piece.gaussians != 0 && piece.removed >= piece.gaussians)) {
@@ -2540,9 +2555,21 @@ int runShoot(const SceneOptions& all) {
                 uint32_t took = 0;
                 const std::string key = groupName + "\t" + piece.cloud;
                 auto whole = groupLayers.find(key);
+                const gpu::Buffer* own = nullptr;
+                if (frameBase != nullptr) {
+                    auto matter = groupMatter.find(piece.cloud);
+                    if (matter == groupMatter.end()) {
+                        gpu::Buffer read;
+                        auto again = load(library, *loader, directory / piece.cloud, nullptr, &read);
+                        if (!again) return std::move(again).error();
+                        matter = groupMatter.emplace(piece.cloud, read).first;
+                    }
+                    own = &matter->second;
+                }
                 auto layer = discovery->relight(cloud, *groupColour, *depthOf->buffer, width, height, projection,
                                                 all.tolerance, took, &found->second, true,
-                                                whole != groupLayers.end() ? &whole->second : nullptr, groupBase);
+                                                whole != groupLayers.end() ? &whole->second : nullptr, groupBase,
+                                                frameBase, frameBaseAt, own);
                 if (!layer) return std::move(layer).error();
                 if (whole == groupLayers.end()) {
                     groupLayers.emplace(key, *layer);
@@ -4304,6 +4331,7 @@ void addNeuralScene(CLI::App& app) {
     shoot->add_option("--lights-off", o.lightsOff, "these lights of the stage are switched off (prim paths): the scene shot without the lamps that are groups")->delimiter(',');
     shoot->add_option("--scene-cache", o.sceneCache, "the found scene is what a path's bounce meets: the light of the gaussians found so far is kept in a cube of this many cells an axis over the stage's bounds, and a path that bounces off a surface by a broad lobe and lands in a cell that holds light takes it and ends there, unshaded. 0: every path goes its bounces")->check(CLI::Range(0, 512));
     shoot->add_option("--light-groups", o.lightGroups, "NAME=PATH (repeatable): the stage's lights at or under PATH are the group NAME, and what they put in each frame is kept as that group's layer of light, from the same paths that find the scene -- no pass of its own. The scene's own light is the frame less its groups, as a scene shot with --lights-off and a --light-group pass a group");
+    shoot->add_flag("--light-over-base", o.lightOverBase, "in a pass of groups over a scene found (--groups-only, --light-group): what a pixel sends is carried from that pixel's base colour to the gaussian's own, which the scene keeps at its own detail -- so the pass's frames can be much smaller than the scene's and the surfaces' texture stays in the lamps' light");
     shoot->add_flag("--groups-only", o.groupsOnly, "with --light-groups, over a scene already found: the stage is lit by the named groups' lights alone, each view is path traced once and every group's share of it is kept as that group's layer; nothing of the scene is made, taken out or said anew. Several lamps added to a scene for the path tracing of one");
     shoot->add_option("--light-group", o.lightGroup, "the stage handed is lit by one group of lights alone: each frame is path traced and what every gaussian of the scene sends in it is kept as that group's layer of light, by this name; the scene itself is not touched (render --group sets the group's level)");
     shoot->add_flag("--relight", o.relight, "each frame first takes again the light of what the scene holds and the frame shows: those gaussians keep their place and what they are made of, and a layer of light is kept for the time (a stage whose light changes)");

@@ -23850,3 +23850,31 @@ frame are not better than more pixels (480x270 at 128 paths is the time of the f
 
 **Not done.** A layer kept as the light over the surface's base colour -- the gaussian keeps its base colour, at
 the scene's own detail -- would let the pass's frames be smaller still without the texture going; not built.
+
+## A lamp's light carried to the gaussian's own base colour (`shoot --light-over-base`, 16 Nov)
+
+The user's direction: what a gaussian is made of is kept apart from the light of a moment. A found gaussian keeps
+its surface's base colour, at the scene's own detail; a pass of lamps reads, at the gaussian's middle, what a pixel
+of the pass's frame sends. With `--light-over-base` that is divided by the pixel's base colour (the path tracer's
+plane of them, the same quantity a gaussian's record keeps) and multiplied by the gaussian's own: the light is the
+frame's, the texture the gaussian's. Where the pixel's base colour is under 0.02, or the gaussian lets light
+through, the pixel's word stands; the ratio is held to four.
+
+Sponza found at 960x540, its two lamps added by `--groups-only`, 20 views; four views not taken, lamps on:
+
+| the pass's frames | seconds | dB: k10, k45, a, b | SSIM | SSIM without `--light-over-base` |
+|---|---|---|---|---|
+| 960x540 | 557 | 27.99, 22.81, 25.84, 24.27 | 0.874, 0.765, 0.846, 0.814 | 0.877, 0.766, 0.847, 0.815 (562 s) |
+| 480x270 | 178 | 28.05, 22.86, 25.97, 24.38 | 0.872, 0.767, 0.849, 0.816 | 0.866, 0.766, 0.844, 0.814 |
+| 240x135 | 83 | 28.07, 23.01, 26.09, 24.52 | 0.860, 0.759, 0.841, 0.808 | 0.835, 0.749, 0.819, 0.794 |
+| 120x68 | 60 | 27.79, 23.16, 26.01, 24.44 | 0.838, 0.743, 0.824, 0.784 | not taken |
+
+At a sixteenth of the pixels the pass takes 83 s where the scene's size takes 562 s, and reads within 0.017 of its
+SSIM (0.042 without) with the dB no lower. At the scene's own size it changes nothing to speak of. What is left to
+lose under that is a shadow's edge, which is the frame's: at 120x68 the SSIM is where 240x135 was without. Under
+100 s the time is no longer the paths: the stage loaded is 40 s of it.
+
+The layer is the same file and every reader of it is as it was; the scene tests and the QA flows pass on Metal.
+
+**Not done.** The same for groups found with the scene (`--light-groups` alone), whose frames are the scene's own.
+A level between the frame's shadow and the gaussian's (a shadow's edge kept finer than the light). At 1080p.

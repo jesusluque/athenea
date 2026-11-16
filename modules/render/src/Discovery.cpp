@@ -583,7 +583,8 @@ Result<gpu::Buffer> Discovery::relight(scene::GpuSplats& cloud, const gpu::Buffe
                                        const gpu::Buffer& frameDepth, uint32_t width, uint32_t height,
                                        const Projection& projection, float nearness, uint32_t& taken,
                                        const gpu::Buffer* gone, bool keep, const gpu::Buffer* into,
-                                       uint32_t colourBase) {
+                                       uint32_t colourBase, const gpu::Buffer* frameBase, uint32_t baseAt,
+                                       const gpu::Buffer* matter) {
     gpu::Device& device = library_->device();
     taken = 0;
     const bool merge = keep && into != nullptr && into->valid();
@@ -613,6 +614,11 @@ Result<gpu::Buffer> Discovery::relight(scene::GpuSplats& cloud, const gpu::Buffe
         cursor["params"]["keep"].setData(uint32_t{keep ? 1u : 0u});
         cursor["params"]["merge"].setData(uint32_t{merge ? 1u : 0u});
         cursor["params"]["colourBase"].setData(colourBase);
+        const bool over = keep && frameBase != nullptr && frameBase->valid() && matter != nullptr && matter->valid();
+        cursor["frameBase"].setBinding(over ? frameBase->rhi() : frameColour.rhi());
+        cursor["matter"].setBinding(over ? matter->rhi() : frameColour.rhi());
+        cursor["params"]["overBase"].setData(uint32_t{over ? 1u : 0u});
+        cursor["params"]["baseAt"].setData(over ? baseAt : 0u);
         cursor["counters"].setBinding(counters_.rhi());
         const auto rowOf = [&](int r) {
             return std::array<float, 4>{static_cast<float>(projection.worldToView.at(r, 0)),
@@ -659,6 +665,8 @@ Result<void> Discovery::addLight(scene::GpuSplats& cloud, const gpu::Buffer& lay
         cursor["frameDepth"].setBinding(spareFloats_.rhi());
         cursor["layer"].setBinding(spareFloats_.rhi());
         cursor["added"].setBinding(layer.rhi());
+        cursor["frameBase"].setBinding(layer.rhi());
+        cursor["matter"].setBinding(layer.rhi());
         cursor["records"].setBinding(spareFloats_.rhi());
         cursor["counters"].setBinding(counters_.rhi());
         cursor["params"]["count"].setData(cloud.count);
@@ -688,6 +696,8 @@ Result<void> Discovery::addLightToRecords(gpu::Buffer& records, uint32_t count, 
         cursor["frameDepth"].setBinding(spareFloats_.rhi());
         cursor["layer"].setBinding(spareFloats_.rhi());
         cursor["added"].setBinding(layer.rhi());
+        cursor["frameBase"].setBinding(layer.rhi());
+        cursor["matter"].setBinding(layer.rhi());
         cursor["records"].setBinding(records.rhi());
         cursor["counters"].setBinding(counters_.rhi());
         cursor["params"]["count"].setData(count);
@@ -806,6 +816,8 @@ Result<gpu::Buffer> Discovery::framePlane(const gpu::Buffer& planes, uint32_t ba
         cursor["frameDepth"].setBinding(spareFloats_.rhi());
         cursor["layer"].setBinding(ownFrame_.rhi());
         cursor["added"].setBinding(planes.rhi());
+        cursor["frameBase"].setBinding(planes.rhi());
+        cursor["matter"].setBinding(planes.rhi());
         cursor["records"].setBinding(spareFloats_.rhi());
         cursor["counters"].setBinding(counters_.rhi());
         cursor["params"]["count"].setData(pixels);
@@ -830,6 +842,8 @@ Result<void> Discovery::baseColourOfRecords(gpu::Buffer& records, uint32_t count
         cursor["frameDepth"].setBinding(spareFloats_.rhi());
         cursor["layer"].setBinding(spareFloats_.rhi());
         cursor["added"].setBinding(counters_.rhi());
+        cursor["frameBase"].setBinding(counters_.rhi());
+        cursor["matter"].setBinding(counters_.rhi());
         cursor["records"].setBinding(records.rhi());
         cursor["counters"].setBinding(counters_.rhi());
         cursor["params"]["count"].setData(count);
