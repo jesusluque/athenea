@@ -114,7 +114,7 @@
     <div class="row"><span>Field of view</span><input type="range" id="optFov" min="20" max="100" step="1"><output id="outFov"></output></div>
     <div class="row"><span>Glass and chrome</span><input type="checkbox" id="optGlass"><span class="note">shaded by where the eye is</span></div>
     <div id="optGroups"></div>
-    <div class="row"><span>Sky</span><input type="color" id="optSky"><span class="note">behind the scene, and in what mirrors it</span></div>
+    <div class="row"><span>Sky</span><input type="color" id="optSky"><span class="note">behind the scene</span></div>
     <div class="row"><span>Reflections</span><select id="optCube"><option value="256">256</option><option value="512">512</option><option value="1024">1024</option></select></div>
     <h3>Camera</h3>
     <div class="row"><span>Move speed</span><input type="range" id="optSpeed" min="0.25" max="10" step="0.25"><output id="outSpeed"></output></div>
@@ -302,7 +302,8 @@
       // mirrored at its disc and, for glass, along it bent in -- so the room turns as the camera does. Each
       // kind has its cube, drawn with the other kind in it: the chrome shows the glass and the glass the
       // chrome. One bend at the face the eye meets and a room read from one point: a lens's far face and
-      // whatever stands near are not there.
+      // whatever stands near are not there. Where the room holds nothing a gaussian keeps the colour it was
+      // found with.
       const kindOf = (which) => ({
         which, eye: dyno.dynoVec3(new THREE.Vector3()), middle: dyno.dynoVec3(new THREE.Vector3()),
         reach: dyno.dynoFloat(1.0), room: dyno.dynoSamplerCube(new THREE.WebGLCubeRenderTarget(1).texture),
@@ -462,6 +463,19 @@
       let shadeStale = false;   // what is shown changed: the cubes are drawn again
       let shadeBusy = false;
       let shadeFresh = false;   // a cube was just drawn: the gaussians are shaded from it
+      // WHERE A KIND'S ROOM IS DRAWN FROM: the middle of where its gaussians are, not of the box that holds
+      // them all. A few gaussians found far from the object (a part's strays) stretch the box, and its middle
+      // was then a metre and more from the chrome knight -- beside the glass one, whose cube the chrome read.
+      // A mesh's middle is the median of one gaussian in so many, an axis at a time, in the mesh's own space;
+      // a kind's is its meshes' by how many gaussians each holds.
+      const heartOf = (mesh, count) => {
+        const step = Math.max(1, Math.floor(count / 4096));
+        const xs = [], ys = [], zs = [];
+        mesh.forEachSplat((at, centre) => { if (at % step === 0) { xs.push(centre.x); ys.push(centre.y); zs.push(centre.z); } });
+        if (xs.length === 0) return null;
+        const median = (list) => list.sort((a, b) => a - b)[list.length >> 1];
+        return { at: new THREE.Vector3(median(xs), median(ys), median(zs)), count: Math.max(count, xs.length) };
+      };
       const shadingOf = (kind, ior, tint) => {
         const index = dyno.dynoFloat(ior);
         const through = dyno.dynoVec3(new THREE.Vector3(tint[0], tint[1], tint[2]));
@@ -488,6 +502,26 @@
               }
               // The cube is read as light; a gaussian's colour is kept as a display shows it.
               vec3 lensEncoded(vec3 light) { return pow(max(light, vec3(0.0)), vec3(1.0 / 2.2)); }
+              // A mirror's look, softened: each gaussian is one flat disc with one colour, and discs side by
+              // side whose axes differ a little read the room far apart -- one the wall, the next nothing --
+              // which from near was a mosaic of black and bright facets. The room is read at thirteen rays in
+              // a cone about the mirrored one and averaged, so neighbours share most of what they read.
+              vec4 lensSoft(samplerCube room, vec3 p, vec3 r, vec3 middle, float reach, float spread) {
+                vec4 sum = texture(room, lensLook(p, r, middle, reach));
+                if (spread <= 0.0) { return sum; }
+                vec3 t = normalize(cross(r, abs(r.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+                vec3 b = cross(r, t);
+                sum *= 2.0;
+                for (int k = 0; k < 6; ++k) {
+                  float a = float(k) * 1.0471976;
+                  sum += texture(room, lensLook(p, normalize(r + spread * (cos(a) * t + sin(a) * b)), middle, reach));
+                }
+                for (int k = 0; k < 6; ++k) {
+                  float a = (float(k) + 0.5) * 1.0471976;
+                  sum += texture(room, lensLook(p, normalize(r + 0.5 * spread * (cos(a) * t + sin(a) * b)), middle, reach));
+                }
+                return sum / 14.0;
+              }
             `)],
             statements: ({ inputs, outputs }) => dyno.unindentLines(`
               ${outputs.gsplat} = ${inputs.gsplat};
@@ -496,7 +530,12 @@
                 vec3 v = normalize(p - ${inputs.eye});
                 vec3 n = lensAxis(${inputs.gsplat}.quaternion, ${inputs.gsplat}.scales);
                 if (dot(n, v) > 0.0) { n = -n; }
-                vec3 seenMirrored = texture(${inputs.room}, lensLook(p, reflect(v, n), ${inputs.middle}, ${inputs.reach})).rgb;
+                // Where the room holds nothing along a ray -- what no camera saw, and the sky a found scene
+                // does not have -- the cube's alpha says so, and the gaussian shows there the colour it was
+                // found with, not black.
+                vec3 found = pow(max(${inputs.gsplat}.rgba.rgb, vec3(0.0)), vec3(2.2));
+                vec4 mirrored4 = lensSoft(${inputs.room}, p, reflect(v, n), ${inputs.middle}, ${inputs.reach}, ${mirror ? "0.25" : "0.0"});
+                vec3 seenMirrored = mirrored4.rgb + (1.0 - mirrored4.a) * found;
                 ${mirror ? `
                 vec3 light = ${inputs.through} * seenMirrored;` : `
                 float cosine = clamp(-dot(n, v), 0.0, 1.0);
@@ -505,7 +544,8 @@
                 float mirrored = f0 + (1.0 - f0) * pow(1.0 - cosine, 5.0);
                 vec3 bent = refract(v, n, 1.0 / ${inputs.index});
                 if (dot(bent, bent) < 1.0e-6) { bent = v; }
-                vec3 seenBehind = texture(${inputs.room}, lensLook(p, bent, ${inputs.middle}, ${inputs.reach})).rgb;
+                vec4 behind4 = texture(${inputs.room}, lensLook(p, bent, ${inputs.middle}, ${inputs.reach}));
+                vec3 seenBehind = behind4.rgb + (1.0 - behind4.a) * found;
                 vec3 light = mirrored * seenMirrored + (1.0 - mirrored) * ${inputs.through} * ${inputs.through} * seenBehind;`}
                 ${outputs.gsplat}.rgba.rgb = lensEncoded(light);
               }
@@ -698,7 +738,7 @@
               if (!made) continue;
               const other = await splatOf(made.file, { extSplats: true });
               await other.initialized;
-              beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0,
+              beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0, heart: heartOf(other, made.gaussians ?? 0),
                             shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1])) });
             }
           }
@@ -792,6 +832,8 @@
       window.__player.shading = () => ({ stale: shadeStale, busy: shadeBusy, loading, step: window.__player.step, glass: kinds.glass.ready, mirror: kinds.mirror.ready,
         meshes: shaded.flat().map((s) => ({ kind: s.kind, shaded: Boolean(s.applied), shown: s.mesh.visible, n: s.gaussians })) });
 
+      window.__player.kinds = kinds;   // where the glass and the chrome are, for whoever drives the page
+
       // TOO SLOW: a coarser level. Once the scene is in, the frames of a few seconds are counted; under
       // fifteen a second with a coarser level to go to, that one is drawn instead, and it is said.
       const slow = { since: 0, frames: 0 };
@@ -875,9 +917,9 @@
         bindCheck("optLoop", "loop", () => {}),
         bindCheck("optFps", "fps", () => say(said)),
       ];
-      // THE SKY. A found scene holds none: what is behind it is a colour, the option's, and since the cubes
-      // glass and chrome read are drawn over it, it is what a mirror shows where it looks past the scene.
-      const applySky = () => { scene.background = new THREE.Color(settings.sky); shadeStale = true; };
+      // THE SKY. A found scene holds none: what is behind it is a colour, the option's. The cubes glass and
+      // chrome read are not drawn over it: where a mirror looks past the scene it keeps the colour it was found with.
+      const applySky = () => { scene.background = new THREE.Color(settings.sky); };
       $("optSky").value = settings.sky;
       $("optSky").addEventListener("input", () => { settings.sky = $("optSky").value; remember(); applySky(); });
       applySky();
@@ -911,6 +953,10 @@
             const box = new THREE.Box3();
             for (const s of seen) box.union(s.mesh.getBoundingBox(true).clone().applyMatrix4(s.mesh.matrixWorld));
             const middle = box.getCenter(new THREE.Vector3());
+            const sum = new THREE.Vector3();
+            let weight = 0;
+            for (const s of seen) if (s.heart) { sum.addScaledVector(s.heart.at.clone().applyMatrix4(s.mesh.matrixWorld), s.heart.count); weight += s.heart.count; }
+            if (weight > 0) middle.copy(sum.divideScalar(weight));
             const size = box.getSize(new THREE.Vector3()).length();
             const hidden = [...shaded.flat().filter((s) => s.kind === kind.which).map((s) => s.mesh), frustum, path, marker];
             // Spark keeps one cube, on its class, and would draw every kind into it: each kind's own is put
@@ -925,10 +971,17 @@
             roomPass = true;
             for (const [m] of was) m.mesh.visible = m.until === 0;
             let texture;
+            // The cube is drawn over nothing, not over the sky's colour: its alpha is then how much of the
+            // room there is along a ray, which is what the shading asks.
+            const behindWas = scene.background, alphaWas = renderer.getClearAlpha();
+            scene.background = null;
+            renderer.setClearAlpha(0);
             try {
               texture = await spark.renderCubeMap({ scene, worldCenter: middle, size: settings.cube, near: 0.02,
                                                     far: Math.max(across * unit * 2, 10), hideObjects: hidden });
             } finally {
+              scene.background = behindWas;
+              renderer.setClearAlpha(alphaWas);
               for (const [m, shownBefore] of was) m.mesh.visible = shownBefore;
               roomPass = false;
             }
