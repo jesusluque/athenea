@@ -11,6 +11,11 @@
     ?detail=<n>      full, auto, or a level counted from one
     ?unit=<metres>   the scene's unit, where its index does not say
     ?glass=0         glass and mirrors drawn as the pictures they were found with
+  The page keeps what is being looked at in its address, so that a view can be handed on: the scene and
+  the detail, and
+    ?frame=<n>       where the timeline is: so many frames of the scene as it grew, or a camera of the walk
+    ?ride=1          riding the render camera
+    ?light.<group>=<level>   a group of lights at a level other than the one it was shot at (0 to 2)
 -->
 <head>
   <meta charset="utf-8">
@@ -435,6 +440,38 @@
         try { const of = await (await fetch(urlOf(`${g.stem}.json`), { cache: "no-store" })).json(); g.parts = of.parts; g.levels = of.levels ?? []; }
         catch (error) { g.parts = null; }
       }
+      // THE VIEW IN THE ADDRESS. The scene, the detail, where the timeline is, whether the render camera is
+      // ridden and each group's level are kept in the page's query, in place (no entry in the history), and
+      // read back when the page is: an address copied is the view handed on. What else the query says
+      // (?base=, ?unit=, ?progressive=, ?glass=) stays as it came. It is written a moment after the last
+      // change, not at each: a browser allows only so many a second, and a timeline dragged makes many.
+      // A scene read from a folder on the disk has no address to hand on, and writes none.
+      const asked = {
+        frame: /^\d+$/.test(params.get("frame") ?? "") ? Number(params.get("frame")) : null,   // until it is shown
+        ride: params.get("ride") === "1",
+      };
+      let addressTimer = 0;
+      const writeAddress = () => {
+        if (window.__sceneFiles) return;
+        const to = new URLSearchParams(location.search);
+        to.set("scene", name);
+        to.set("detail", String(settings.detail));
+        // The timeline's place where it is not where the scene opens by itself: the end of the scene as it
+        // grew, the first of a level's walk.
+        const frame = asked.frame ?? (detail === 0 ? (atEnd ? null : cursor) : (cursor > 0 ? cursor : null));
+        if (frame === null) to.delete("frame"); else to.set("frame", String(frame));
+        if (follow.checked) to.set("ride", "1"); else to.delete("ride");
+        for (const g of groups) {
+          const key = `light.${g.name}`;
+          if (Math.abs(g.level - 1) < 1e-6) to.delete(key); else to.set(key, String(Number(g.level.toFixed(2))));
+        }
+        const query = to.toString();
+        if (query === location.search.replace(/^\?/, "")) return;
+        try { history.replaceState(history.state, "", `${location.pathname}?${query}${location.hash}`); }
+        catch (error) { /* a browser that will not: the view is only not kept */ }
+      };
+      const keepAddress = () => { clearTimeout(addressTimer); addressTimer = setTimeout(writeAddress, 250); };
+
       // A row a group in the panel: its level, and a tint over the colour it was shot with.
       for (const g of groups) {
         const row = document.createElement("div");
@@ -454,9 +491,11 @@
           said.textContent = g.level.toFixed(2);
           setGroup(g);
           shadeStale = true;   // what the glass and the chrome show changed with it
+          keepAddress();
         };
         level.addEventListener("input", changed);
         tint.addEventListener("input", changed);
+        g.set = (to) => { level.value = String(to); changed(); };   // as the address says
         row.append(label, level, tint, said);
         document.getElementById("optGroups").append(row);
       }
@@ -697,6 +736,17 @@
         drawFrustum(part && cameras.has(part.camera) ? cameras.get(part.camera) : null);
         showLines();
         if (moveCamera && follow.checked && part && cameras.has(part.camera)) aim(cameras.get(part.camera));
+        keepAddress();
+      };
+      // Where the timeline stands as parts come in: at the frame the address asked for, as far as what is
+      // read reaches it; else at the end of a scene that is growing, or where it was.
+      const stand = () => {
+        if (asked.frame !== null) {
+          const to = Math.min(asked.frame, steps());
+          show(to, to !== cursor || shown === 0);
+          atEnd = detail === 0 && asked.frame >= parts.length;
+        } else if (detail === 0 && atEnd && !playing) show(meshes.length, true);
+        else show(cursor, false);
       };
       // From outside and above, the whole of what the frames reached in view: where the frustum is seen at work.
       const overview = () => {
@@ -802,8 +852,7 @@
           if (meshes.length < parts.length) tell();
           else { report(summary()); setProgress(null); }
           if (!keeping) {
-            if (detail === 0 && atEnd && !playing) show(meshes.length, true);
-            else show(cursor, false);
+            stand();
             if (window.__player.firstMs === undefined) window.__player.firstMs = Math.round(performance.now() - began);
           }
         }
@@ -815,8 +864,7 @@
             outgoing = [];
             keeping = false;
             applyShading();
-            if (detail === 0 && atEnd && !playing) show(meshes.length, true);
-            else show(cursor, false);
+            stand();
           }
           loading = false;
           window.__scene.loaded = true;
@@ -828,6 +876,7 @@
             if (next !== detail || litFirst) { setDetail(next, true); return; }
           }
           window.__player.wholeMs = Math.round(performance.now() - began);
+          asked.frame = null;   // the frame the address asked for is shown: the timeline is the reader's
           // Spark's ray through the gaussians starts itself on the first one asked and answers from the
           // second: one is asked here, so that the first finger laid on the scene finds what is under it.
           const first = meshes.flat()[0];
@@ -863,6 +912,7 @@
         window.__player.detail = detail;
         $("optDetail").value = settings.detail === "auto" ? "auto" : String(detail);
         if (!keeping) show(0, false);
+        keepAddress();
         loadMore();
       };
       // WHAT THE DEVICE CAN HOLD: gaussians it is trusted to draw at a frame rate worth having. A phone a
@@ -937,7 +987,8 @@
       sceneSelect.addEventListener("change", () => {
         const to = new URLSearchParams(location.search);
         to.set("scene", sceneSelect.value);
-        to.delete("detail");
+        // Another scene: its own detail, timeline and lights.
+        for (const key of [...to.keys()]) if (key === "detail" || key === "frame" || key === "ride" || key.startsWith("light.")) to.delete(key);
         location.search = to.toString();
       });
       const controls = new SparkControls({ canvas });
@@ -1151,6 +1202,13 @@
 
       overview();
       drawPath();
+      // What the address asked for: the camera ridden and each group's level; its frame is shown as the
+      // parts that reach it are read.
+      follow.checked = asked.ride;
+      for (const g of groups) {
+        const level = params.get(`light.${g.name}`);
+        if (level !== null && level !== "" && Number.isFinite(Number(level))) g.set(Math.max(0, Math.min(Number(level), 2)));
+      }
       {
         // The detail to end at, and -- where there is a coarser level than that, and the scene is not still
         // being rendered -- the coarsest first (?progressive=0: the detail asked for, as it comes).
@@ -1163,7 +1221,7 @@
           setDetail(wanted);
         }
       }
-      $("overview").addEventListener("click", () => { follow.checked = false; overview(); show(cursor, false); });
+      $("overview").addEventListener("click", () => { asked.frame = null; follow.checked = false; overview(); show(cursor, false); });
       follow.addEventListener("change", () => show(cursor, true));
 
       // A SCENE STILL BEING RENDERED: its index is read again every two seconds for the parts that came.
@@ -1183,11 +1241,13 @@
       }, 2000);
 
       slider.addEventListener("input", () => {
+        asked.frame = null;
         setPlaying(false);
         show(Number(slider.value), true);
         atEnd = cursor >= steps();
       });
       playButton.addEventListener("click", () => {
+        asked.frame = null;
         setPlaying(!playing);
         if (!playing) return;
         // A level of detail is the scene whole: what plays is the walk, and it is ridden to be seen.
