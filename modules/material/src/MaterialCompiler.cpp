@@ -414,7 +414,7 @@ private:
         _tokenSubstitutions[mx::HW::T_TEX_SAMPLER_SIGNATURE] = "SamplerTexture2D tex_sampler";
         emitFunctionDefinitions(graph, context, stage);
 
-        emitLine("public void " + kFunctionPlaceholder + "(MaterialInputs inputs, uint blob)", stage, false);
+        emitLine("public void " + kFunctionPlaceholder + "(__constref MaterialInputs inputs, uint blob)", stage, false);
         emitFunctionBodyBegin(graph, context, stage);
         // The opacity alone leaves the lobe stack as it was: a kernel may be
         // in the middle of reading one when a shadow ray asks.

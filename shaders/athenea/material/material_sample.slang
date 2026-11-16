@@ -68,9 +68,9 @@ float3 conductorReflectivity(float3 n, float3 k) {
     return ((n - 1.0) * (n - 1.0) + k2) / max((n + 1.0) * (n + 1.0) + k2, float3(1.0e-6));
 }
 
-bool sampleIsDiffuse(Lobe lobe) { return lobe.kind == kLobeOrenNayar || lobe.kind == kLobeBurley; }
+bool sampleIsDiffuse(__constref Lobe lobe) { return lobe.kind == kLobeOrenNayar || lobe.kind == kLobeBurley; }
 
-bool sampleIsMetal(Lobe lobe, bool saidMetal, bool conductor) {
+bool sampleIsMetal(__constref Lobe lobe, bool saidMetal, bool conductor) {
     if (lobe.kind == kLobeConductor) {
         return true;
     }
@@ -78,13 +78,13 @@ bool sampleIsMetal(Lobe lobe, bool saidMetal, bool conductor) {
     return lobe.kind == kLobeSchlick && (f0 > 0.2 || (saidMetal && !conductor));
 }
 
-bool sampleReflects(Lobe lobe) {
+bool sampleReflects(__constref Lobe lobe) {
     return (lobe.kind == kLobeDielectric || lobe.kind == kLobeSchlick) && lobe.scatter != kScatterTransmit;
 }
 
 /// The stack at one point, reduced. `saidMetal`: the conversion read the
 /// material as metal at all (the bake's `bakeMetalness`).
-public MaterialSample materialSampleOf(LobeStack stack, bool saidMetal) {
+public MaterialSample materialSampleOf(__constref LobeStack stack, bool saidMetal) {
     MaterialSample out;
     out.albedo = float3(0.0);
     out.albedoSeen = 0.0;

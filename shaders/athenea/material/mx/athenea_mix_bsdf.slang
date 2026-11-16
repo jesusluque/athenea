@@ -3,7 +3,7 @@
 // <mix>
 #include "pbrlib/genglsl/lib/mx_closure_type.glsl"
 
-void athenea_mix_bsdf(ClosureData closureData, BSDF fg, BSDF bg, float mixValue, out BSDF result)
+void athenea_mix_bsdf(ClosureData closureData, __constref BSDF fg, __constref BSDF bg, float mixValue, out BSDF result)
 {
     result = athenea_bsdf_zero();
     for (uint k = 0; k < kBuildLobes; ++k)

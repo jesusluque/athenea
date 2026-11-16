@@ -203,7 +203,7 @@ Result<void> MaterialPrograms::setModules(std::span<const material::CompiledMate
             source += "import " + m.module + ";\n";
         }
     }
-    source += "\npublic void evaluateMaterial(uint function, MaterialInputs inputs, uint blob) {\n    switch (function) {\n";
+    source += "\npublic void evaluateMaterial(uint function, __constref MaterialInputs inputs, uint blob) {\n    switch (function) {\n";
     for (size_t k = 0; k < modules.size(); ++k) {
         source += "    case " + std::to_string(k + 1) + ": " + modules[k].function + "(inputs, blob); break;\n";
     }
@@ -230,7 +230,7 @@ Result<void> MaterialPrograms::setModules(std::span<const material::CompiledMate
     // compiled without the BSDF (ClosureVariant::Opacity), so asking costs
     // the compiler a small function a cut-out and not a second copy of every
     // material. A module no cut-out uses has none, and is opaque.
-    source += "\npublic float evaluateOpacity(uint function, MaterialInputs inputs, uint blob) {\n    switch (function) {\n";
+    source += "\npublic float evaluateOpacity(uint function, __constref MaterialInputs inputs, uint blob) {\n    switch (function) {\n";
     for (size_t k = 0; k < opacities.size() && k < modules.size(); ++k) {
         if (!opacities[k].module.empty()) {
             source += "    case " + std::to_string(k + 1) + ": " + opacities[k].function +

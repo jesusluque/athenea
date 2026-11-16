@@ -64,7 +64,7 @@ public static const uint kNoNode = 0xFFFFFFFF;
 static const float kBvhPi = 3.14159265358979;
 
 /// A bounded light's box and cone from its record.
-public void lightBounds(LightRecord l, out float3 lo, out float3 hi, out float3 axis, out float cosThetaO,
+public void lightBounds(__constref LightRecord l, out float3 lo, out float3 hi, out float3 axis, out float cosThetaO,
                  out float cosThetaE) {
     const float3 o = lightOrigin(l);
     const float3 az = lightAxisZ(l);

@@ -35,7 +35,7 @@ float2 planeBarycentrics(float3 origin, float3 direction, float3 a, float3 b, fl
 /// from the neighbouring pixels' rays met on the triangle's plane: what a
 /// texture footprint is made of, with no other thread asked (a quad's
 /// neighbour may be another surface, another atlas island, or nothing).
-void pixelSteps(CameraParams camera, uint px, uint py, Surface s, float3 va, float3 vb, float3 vc,
+void pixelSteps(CameraParams camera, uint px, uint py, __constref Surface s, float3 va, float3 vb, float3 vc,
                 out float2 stepX, out float2 stepY) {
     float3 origin;
     float3 direction;
@@ -50,7 +50,7 @@ void pixelSteps(CameraParams camera, uint px, uint py, Surface s, float3 va, flo
 /// A two-component primvar (`record`, primvarRecordOf's) at the pixel, and
 /// its footprint across the pixel and down it: what a texture read by that
 /// primvar takes its level from. kNoPrimvar: 0 and no footprint.
-public float2 primvarFootprint(CameraParams camera, uint px, uint py, Surface s, uint record, out float2 dx,
+public float2 primvarFootprint(CameraParams camera, uint px, uint py, __constref Surface s, uint record, out float2 dx,
                                out float2 dy) {
     dx = float2(0.0);
     dy = float2(0.0);
@@ -82,12 +82,12 @@ public float2 primvarFootprint(CameraParams camera, uint px, uint py, Surface s,
 /// conversion that had sampled the right texture all along. A bake asks for
 /// no footprint and reads the top level, which is what the conversion's own
 /// sampling does.
-public MaterialInputs materialInputsAt(CameraParams camera, ViewToWorld toWorld, uint px, uint py, Surface s,
+public MaterialInputs materialInputsAt(CameraParams camera, ViewToWorld toWorld, uint px, uint py, __constref Surface s,
                                       float time) {
     return materialInputsAt(camera, toWorld, px, py, s, time, true);
 }
 
-public MaterialInputs materialInputsAt(CameraParams camera, ViewToWorld toWorld, uint px, uint py, Surface s,
+public MaterialInputs materialInputsAt(CameraParams camera, ViewToWorld toWorld, uint px, uint py, __constref Surface s,
                                       float time, bool cameraFootprint) {
     MaterialInputs inputs;
     const InstanceRecord r = s.instance;

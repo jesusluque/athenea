@@ -10,7 +10,7 @@
 // lobes.slang): the reflection layered straight over it -- a dielectric that
 // reflects at the same index, OpenPBR's and standard_surface's specular --
 // passes it whole, once; a layer further out (a coat) charges it as any.
-void athenea_layer_bsdf(ClosureData closureData, BSDF top, BSDF base, out BSDF result)
+void athenea_layer_bsdf(ClosureData closureData, __constref BSDF top, __constref BSDF base, out BSDF result)
 {
     result = athenea_bsdf_zero();
     // The index of the dielectric reflection the top holds, if it holds one.

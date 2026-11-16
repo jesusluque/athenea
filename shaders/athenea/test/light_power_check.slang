@@ -19,7 +19,7 @@ ConstantBuffer<PowerCheck>    check;
 RWStructuredBuffer<uint>      counts;   // [shares off, lights]
 RWStructuredBuffer<float>     worst;    // [largest relative difference]
 
-float expectedPower(LightRecord l) {
+float expectedPower(__constref LightRecord l) {
     const float luminance = max(0.2126 * l.colour.x + 0.7152 * l.colour.y + 0.0722 * l.colour.z, 0.0) * exp2(l.exposure);
     const float pi = 3.14159265358979;
     // A dome ignores normalize; a sun's normalize divides out its disc's

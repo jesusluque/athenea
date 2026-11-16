@@ -24240,3 +24240,43 @@ colour and the groups are both weighed by the first hit's opacity, so that facto
 groups keeping that plane; a layer read over a gaussian's footprint rather than at its middle, which is the
 suspect for a layer's general cost and is a guess, not measured. Not measured: 1080p, CUDA, Vulkan, the lamps
 dimmed or tinted.
+
+## The path tracer 2.4 times faster: structs a function reads, taken by constant reference (16 Nov)
+
+What the section above pointed at, done. Slang passes a struct parameter by copy -- in the Metal it writes, a
+`thread T _S = value;` before each call, though the callee takes a pointer to a constant -- and returns one by
+copy too. A parameter marked `__constref` is handed over as the pointer alone (checked on a small kernel, and it
+compiles for Metal, SPIR-V and CUDA). So every large struct a function only reads is now `__constref`: in the
+path tracer's kernel the shading state, the lobe stack, the surface and the hit of the functions that gather
+light and ask about glass; in the lobe library the stack's four functions and every function of one lobe; and
+then the rest across the shaders and the generated material code -- a material's inputs, a light's record, a
+MaterialX BSDF node's operands (126 parameters in 29 files). Nothing a kernel computes changes.
+
+The materials stage, 1920x1080, 32 paths in passes of 8, the second build folder, seconds (the stage loaded
+taken off):
+
+| | first hit and its light | a bounce of 66 M paths | kernels compiled and stage loaded, first run |
+|---|---|---|---|
+| before | 10.4 | 17.1 | 89.7 |
+| the kernel's and the lobes' parameters | 4.1 | 7.3 | 45.1 |
+| every shader's | 4.7 | 7.1 | 56.3 |
+
+The picture against the unchanged main build's, same command: the same means and maxima, relMSE 1e-12. Nearly
+all of it is the kernel and the lobes; the rest of the shaders add nothing measurable on this stage and are kept
+for being the same rule.
+
+One function changes its parameter as a working copy (`atheneaPushLobe`) and stays plain: marked, Slang said
+nothing and Metal's compiler refused the kernel -- a backend that does not refuse would write through to the
+caller's lobe. Every marked function was then searched for a write to its marked parameter (none), and the rule
+is in the development manual.
+
+Tests, Metal, the second build: 568 run of the suite (the first 545, then 547 to 565 less the ones marked
+slow), eleven not passing -- eight failed (77, 128, 129, 361, 409, 487, and the two glass sheets of mesh2splat,
+552 `sheet_glass_draws_whole` and 562 `tx_conversions_render_like_the_mesh`, at the same assertions) and three
+skipped (34, 263, 469) -- and every one of the eleven with the same result on the unchanged main build. They are
+not this change's and are not looked into here. `tx_gate_corvette` was stopped after 20 minutes holding the GPU
+queue, and the tests marked slow were not run.
+
+Not done: the shading functions still return their state by value and the loop still assigns it (the copies
+that are left; at 7 s a bounce the kernel is at 19 M rays a second); a lobe made smaller; a stack sized to what a
+frame's materials keep; CUDA and Vulkan, and a stage other than the materials one, not yet timed.

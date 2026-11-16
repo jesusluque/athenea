@@ -348,6 +348,16 @@ slots, y contar slots es como salieron los bugs de la D30 de openFXplayer: un
 parámetro añadido en medio de una estructura mueve a todos los de después, y
 nada deja de compilar. `cursor["nombre"].setBinding(...)` falla en voz alta.
 
+**Un struct que una función de shader solo lee se recibe `__constref`.** Slang
+entrega un parámetro normal por copia: el struct entero se copia a una local
+antes de cada llamada, y un kernel que lleva uno grande -- una pila de
+lóbulos, un estado de shading, las entradas de un material, el registro de
+una luz -- gasta su tiempo copiándolo (el path tracer: de 17,1 s por rebote a
+7,1 s, la misma imagen). Una función que cambia su parámetro como copia de
+trabajo lo deja normal (`atheneaPushLobe`): Slang no rechaza una escritura en
+un parámetro `__constref`, el compilador de Metal sí, y otro backend puede
+escribir en la variable del llamador.
+
 **`Result<T>` y `ATHENEA_TRY`, sin excepciones.** Un renderer que lanza a través
 de un command buffer deja el dispositivo en un estado que nadie sabe
 describir. Donde una dependencia lanza — OpenUSD lo hace — la excepción se

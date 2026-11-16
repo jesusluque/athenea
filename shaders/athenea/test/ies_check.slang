@@ -34,7 +34,7 @@ static const float kIesPi = 3.14159265358979;
 
 /// A direction from a point to the light such that the light's emission
 /// towards the point makes `theta` with its -Z axis, in its xz plane.
-float3 towardsLightAt(LightRecord l, float theta) {
+float3 towardsLightAt(__constref LightRecord l, float theta) {
     const float3 e = lightAxisX(l) * sin(theta) - lightAxisZ(l) * cos(theta);   // emission, theta from -Z
     return -e;
 }

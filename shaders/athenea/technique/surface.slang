@@ -130,6 +130,6 @@ public Surface surfaceAt(CameraParams camera, uint px, uint py, uint4 seen) {
 }
 
 /// A primvar of the surface by slot.
-public float4 surfacePrimvar(Surface s, uint slot, float4 fallback) {
+public float4 surfacePrimvar(__constref Surface s, uint slot, float4 fallback) {
     return primvarAt(primvarRecordOf(s.mesh, slot), s.mesh, s.triangle, s.points, s.weights, fallback);
 }

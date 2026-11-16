@@ -101,7 +101,7 @@ float cellSolidAngle(float2 uv) {
 }
 
 /// The sky along `dir`, at the level the caller chose.
-float3 skyAlong(LightRecord light, float3 dir, uint level) {
+float3 skyAlong(__constref LightRecord light, float3 dir, uint level) {
     const TextureRecord record = gTextures.records[light.texture];
     return gTextures.textures[record.slot]
         .SampleLevel(gTextures.samplers[light.sampler], domeUv(light, dir), float(level))
@@ -127,7 +127,7 @@ public struct SunRegion {
     public float  threshold;   ///< luminance at and above which a texel is the sun
 };
 
-public SunRegion sunRegionOf(LightRecord light, uint level) {
+public SunRegion sunRegionOf(__constref LightRecord light, uint level) {
     SunRegion region;
     region.found = false;
     region.axis = float3(0.0, 1.0, 0.0);

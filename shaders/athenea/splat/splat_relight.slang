@@ -1376,7 +1376,7 @@ public SplatSlope noSlope() {
     return g;
 }
 
-float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord light, uint dome,
+float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, __constref LightRecord light, uint dome,
                    StructuredBuffer<uint> envTexels, StructuredBuffer<float4> envSh, uint envBaseSide,
                    StructuredBuffer<float4> envSun, StructuredBuffer<uint> transfer,
                    StructuredBuffer<uint> cellBits, bool withIndirect, inout SplatSlope slope) {
@@ -1691,7 +1691,7 @@ float3 relitByDome<let kTransfer : int>(SplatSurface s, float3 wo, LightRecord l
 /// facing away -- which is the translucent half, and is why a light behind a
 /// glass splat lights it instead of leaving it black -- and the reflection,
 /// which is on the lit side only.
-public float3 relitByOne(SplatSurface s, float3 wo, LightSample ls, float3 through) {
+public float3 relitByOne(SplatSurface s, float3 wo, __constref LightSample ls, float3 through) {
     if (ls.pdf <= 0.0) {
         return float3(0.0);
     }
@@ -1721,7 +1721,7 @@ public float3 relitByOne(SplatSurface s, float3 wo, LightSample ls, float3 throu
 /// THE ANGLE A LIGHT SUBTENDS FROM A GAUSSIAN, half of it: a sphere's or a
 /// disk's radius over the distance, half a rect's larger side, half a
 /// distant light's angular diameter. What its shadow is soft over.
-public float lightHalfAngle(LightRecord light, float distance) {
+public float lightHalfAngle(__constref LightRecord light, float distance) {
     if (light.kind == kLightDistant) {
         return 0.5 * light.sizeX;
     }
@@ -1735,7 +1735,7 @@ public float lightHalfAngle(LightRecord light, float distance) {
 /// scaled to it, which is what a reflection shows where its lobe is closed --
 /// the floor a lamp lights, seen in the paint. The same terms a dome's sun
 /// gets, from one sample of the light: `radiance / pdf` is what it delivers.
-public float3 splatLightBounce(SplatSurface s, float3 wo, LightSample ls, StructuredBuffer<uint> transfer,
+public float3 splatLightBounce(SplatSurface s, float3 wo, __constref LightSample ls, StructuredBuffer<uint> transfer,
                                StructuredBuffer<uint> cellBits) {
     if (ls.pdf <= 0.0 || transferIndirectCount(s.transferCount) == 0u) {
         return float3(0.0);

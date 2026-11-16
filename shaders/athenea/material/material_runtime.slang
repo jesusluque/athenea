@@ -127,7 +127,7 @@ public BSDF atheneaBsdfOf(uint index, float3 weight, float3 throughput) {
 /// weighted by `bsdf`, those that carry nothing dropped, the heaviest
 /// kMaxLobes kept. Its emission stays what it was. Written in place: a stack
 /// returned and assigned was one more copy of it in thread memory.
-public void atheneaFinishStack(BSDF bsdf, float opacity) {
+public void atheneaFinishStack(__constref BSDF bsdf, float opacity) {
     // THE WEIGHTS ARE COPIED OUT FIRST, before a lobe is written to the stack.
     // On CUDA the BSDF arrives as a pointer to the caller's temporary, and
     // nvcc laid this stack over that temporary's memory: each lobe kept
@@ -177,7 +177,7 @@ public void atheneaFinishStack(BSDF bsdf, float opacity) {
 // Where the material function leaves its result.
 public static LobeStack gAtheneaResult;
 
-public void atheneaBeginMaterial(MaterialInputs inputs, uint blob) {
+public void atheneaBeginMaterial(__constref MaterialInputs inputs, uint blob) {
     atheneaBeginInputs(inputs, blob);
     gAtheneaLobeCount = 0;
     gAtheneaThinWalled = false;
@@ -186,7 +186,7 @@ public void atheneaBeginMaterial(MaterialInputs inputs, uint blob) {
 
 /// What a mesh with no material shows: its displayColor, diffusely, with its
 /// displayOpacity -- as Storm draws it.
-public void atheneaFallbackMaterial(MaterialInputs inputs) {
+public void atheneaFallbackMaterial(__constref MaterialInputs inputs) {
     atheneaBeginMaterial(inputs, 0);
     const float3 colour = atheneaPrimvar(kSlotDisplayColor, inputs.displayColor).rgb;
     const float opacity = saturate(atheneaPrimvar(kSlotDisplayOpacity, float4(inputs.displayColor.w)).x);

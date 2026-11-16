@@ -118,7 +118,7 @@ float3 domeShIrradiance(uint row, float3 n) {
 /// The sky along `dir` as a lobe of GGX roughness `alpha` sees it: the
 /// dome's own image at the mip whose texels are as wide as the lobe
 /// (4 pi alpha^2 of solid angle against 4 pi / (w h) a texel).
-float3 domeSkyBlurred(LightRecord l, float3 dir, float alpha) {
+float3 domeSkyBlurred(__constref LightRecord l, float3 dir, float alpha) {
     if (l.texture == 0xFFFFFFFFu) {
         return lightEmission(l);
     }

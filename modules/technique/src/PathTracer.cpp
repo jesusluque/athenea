@@ -656,7 +656,7 @@ float bakeMetalness(uint at) {
 
 /// THE MATERIAL AT THE FIRST VERTEX, read back (BakePoints::material): one
 /// sample of it into the point's sums, before the bake keeps only its body.
-void bakeMaterialAdd(inout MaterialSums sums, LobeStack stack, uint at) {
+void bakeMaterialAdd(inout MaterialSums sums, __constref LobeStack stack, uint at) {
     materialSumsAdd(sums, materialSampleOf(stack, bakeMetalness(at) > 0.0));
 }
 
@@ -681,7 +681,7 @@ float3 bakeFacing(uint at) {
 /// gold black. What it drops is the dielectric polish and the sheen, which
 /// `splat_relight` puts back at render time, from the metallic and roughness
 /// the gaussian carries, and puts back *with a direction in it*.
-LobeStack bakeBody(LobeStack stack, uint at) {
+LobeStack bakeBody(__constref LobeStack stack, uint at) {
     LobeStack body = stack;
     body.count = 0;
     // A METAL IS WHAT THE MATERIAL SAYS IS ONE, not only what reflects like
@@ -968,8 +968,8 @@ const char* kNoBake = R"(
 static const bool kBake = false;
 static const uint kCellOrigins = 4u;
 Found foundBaked(uint at, uint sample, uint mask) { return foundNothing(); }
-LobeStack bakeBody(LobeStack stack, uint at) { return stack; }
-void bakeMaterialAdd(inout MaterialSums sums, LobeStack stack, uint at) {}
+LobeStack bakeBody(__constref LobeStack stack, uint at) { return stack; }
+void bakeMaterialAdd(inout MaterialSums sums, __constref LobeStack stack, uint at) {}
 bool bakeTowardFaces(uint at) { return false; }
 float3 bakeDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
 float3 bakeSphereDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
@@ -1136,7 +1136,7 @@ const char* kBody = R"(
 /// cent each. The sparrow's belly is dozens of feather cards, transparent by
 /// default and a quarter metallic: under a dome of radiance one it read 7.
 /// A clear glass sheet passes 1 - F, and so does this.
-float3 transparentPasses(LobeStack stack, float3 toEye) {
+float3 transparentPasses(__constref LobeStack stack, float3 toEye) {
     float3 reflected = float3(0.0);
     for (uint k = 0; k < stack.count; ++k) {
         const uint kind = stack.lobes[k].kind;
@@ -1167,7 +1167,7 @@ struct Shaded {
 /// Evaluates whatever material a surface wears. `pixel` is only the uv
 /// footprint's: materialInputsAt takes it from the neighbouring pixels' rays,
 /// which is right for the camera's hit and an approximation for a bounce's.
-Shaded shadeSurface(uint2 pixel, Surface s) {
+Shaded shadeSurface(uint2 pixel, __constref Surface s) {
     Shaded out;
     out.categoriesLo = s.instance.categoriesLo;
     out.categoriesHi = s.instance.categoriesHi;
@@ -1333,7 +1333,7 @@ float3 glassPasses(PathHit hit, float3 from, float3 direction) {
 /// Through, not off it: `wi` leaves on the other side of the surface from
 /// the eye -- a reflection inside a solid stays in the glass, and no straight
 /// shadow ray follows it.
-bool glassCarriesWeight(Shaded sh, float3 wi) {
+bool glassCarriesWeight(__constref Shaded sh, float3 wi) {
     if (path.glassShadows == 0 || !sh.valid || (sh.rowFlags & kMaterialGlassShadow) == 0u) {
         return false;
     }
@@ -1392,7 +1392,7 @@ float pathThrough(float3 p, float3 n, float3 wi, uint mask) {
 
 /// Whether a point's own surface lets light through: a transmitting lobe
 /// with any weight.
-bool stackTransmits(LobeStack stack) {
+bool stackTransmits(__constref LobeStack stack) {
     for (uint k = 0; k < stack.count; ++k) {
         if (stack.lobes[k].scatter != kScatterReflect && any(stack.lobes[k].weight > float3(0.0))) {
             return true;
@@ -1430,7 +1430,7 @@ R"(float cellThrough(float3 p, float3 n, float3 wi, uint mask, bool selfTransmit
 }
 
 /// What was found, its material evaluated: the kernel's one call of it.
-Shaded shadeFound(uint2 pixel, Found f) {
+Shaded shadeFound(uint2 pixel, __constref Found f) {
     Shaded out;
     out.valid = false;
     out.coverage = false;
@@ -1630,7 +1630,7 @@ float emissiveShare() {
 }
 
 /// A surface's triangle in world space, as the record that drew it holds it.
-void worldTriangle(InstanceRecord r, MeshRecord m, uint triangle, out float3 a, out float3 b, out float3 c) {
+void worldTriangle(__constref InstanceRecord r, __constref MeshRecord m, uint triangle, out float3 a, out float3 b, out float3 c) {
     const uint t = m.firstTriangle + triangle;
     const uint base = m.firstPoint + r.pointsOffset;
     a = rowsApply(r.world0, r.world1, r.world2, positions[base + indices[t * 3]].xyz, 1.0);
@@ -1641,7 +1641,7 @@ void worldTriangle(InstanceRecord r, MeshRecord m, uint triangle, out float3 a, 
 /// The density, per solid angle at `from`, that next event estimation gives
 /// the direction that met surface s at `at` -- by the table's own weights
 /// (area times the row's luminance), so the two strategies' weights sum to one.
-float emissivePdfAt(Surface s, float3 at, float3 from, float3 fromNormal) {
+float emissivePdfAt(__constref Surface s, float3 at, float3 from, float3 fromNormal) {
     const float share = emissiveShare();
     if (!(share > 0.0)) {
         return 0.0;
@@ -1834,7 +1834,7 @@ static const uint kMisLightLimit = 64;
 /// material's ray is stopped by any surface, so the two strategies would
 /// see different visibilities. Not through media: a volume between would
 /// have to dim the material's ray as it dims the shadow ray.
-bool misWeighs(LightRecord l) {
+bool misWeighs(__constref LightRecord l) {
     return path.mis != 0 && !kVolumes && lightCount <= kMisLightLimit && (l.flags & kLightShadow) != 0 &&
            l.shadowCategory == kLightUnlinked;
 }
@@ -1854,7 +1854,7 @@ float3 refractInto(float3 wi, float3 n, float ior) {
 /// (`kFlagInside`) and a reflection stays in the glass. A back face of
 /// anything else, a room seen from inside its walls, is a surface like any
 /// other: the closed furnace is one, and counted its bounces free.
-bool throughGlass(Shaded sh, float3 wi) {
+bool throughGlass(__constref Shaded sh, float3 wi) {
     const bool crosses = dot(sh.inputs.normalWorld, wi) < 0.0;
     for (uint k = 0; k < sh.stack.count; ++k) {
         const Lobe lobe = sh.stack.lobes[k];
@@ -1874,7 +1874,7 @@ bool throughGlass(Shaded sh, float3 wi) {
 /// the lens it said did not cross left by the millimetre, past the far face
 /// 1.1 mm in -- the tail lamps' lens gaussians baked one tint, B/R 0.146
 /// where the frame reads 0.0149.
-bool entersGlass(Shaded sh, float3 wi) {
+bool entersGlass(__constref Shaded sh, float3 wi) {
     if (dot(sh.geometricNormal, wi) * dot(sh.geometricNormal, sh.toEye) >= 0.0) {
         return false;
     }
@@ -1891,14 +1891,14 @@ bool entersGlass(Shaded sh, float3 wi) {
 /// and through a glass while free crossings are (`kFreeCrossings`).
 /// `charged` is the bounces spent, `crossed` the crossings that were not
 /// charged.
-bool pathGoesOn(uint charged, uint crossed, Shaded sh, float3 wi) {
+bool pathGoesOn(uint charged, uint crossed, __constref Shaded sh, float3 wi) {
     if (!kTraces) {
         return false;
     }
     return charged < path.bounces || (crossed < kFreeCrossings && throughGlass(sh, wi));
 }
 
-float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crossed, uint mask, out uint group) {
+float3 gatherLight(__constref Shaded sh, uint2 pixel, uint sample, uint bounce, uint crossed, uint mask, out uint group) {
     group = 0;
     if (lightCount == 0) {
         // A stage without lights is lit as the raster lights it, when the

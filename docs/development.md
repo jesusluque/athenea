@@ -337,6 +337,16 @@ and counting slots is how openFXplayer's D30 bugs happened: a parameter added
 in the middle of a structure moves every one after it, and nothing fails to
 compile. `cursor["name"].setBinding(...)` fails loudly instead.
 
+**A struct a shader function only reads is taken `__constref`.** Slang hands a
+plain parameter over by copy: the whole struct is copied into a local before
+each call, and a kernel that carries a large one -- a lobe stack, a shading
+state, a material's inputs, a light's record -- spends its time copying it
+(the path tracer: 17.1 s a bounce down to 7.1 s, the same picture). A
+function that changes its parameter as a working copy keeps it plain
+(`atheneaPushLobe`): Slang does not refuse a write to a `__constref`
+parameter, Metal's compiler does, and another backend may write through to
+the caller's variable instead.
+
 **`Result<T>` and `ATHENEA_TRY`, no exceptions.** A renderer that throws through a
 command buffer leaves the device in a state nobody can describe. Where a
 dependency throws — OpenUSD does — the exception is caught at that module's

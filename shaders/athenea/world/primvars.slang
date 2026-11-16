@@ -35,13 +35,13 @@ public StructuredBuffer<uint>          primvarSlots;      // per mesh, per slot:
 public StructuredBuffer<uint>          triangleCorners;   // pool, 3 per triangle
 public StructuredBuffer<uint>          triangleFaces;     // pool, 1 per triangle
 
-public uint primvarRecordOf(MeshRecord mesh, uint slot) {
+public uint primvarRecordOf(__constref MeshRecord mesh, uint slot) {
     return primvarSlots[mesh.slotBase + slot];
 }
 
 /// `points` are the triangle's three point indices (mesh-local); `weights`
 /// its barycentrics (w0, w1, w2).
-public float4 primvarAt(uint record, MeshRecord mesh, uint triangle, uint3 points, float3 weights,
+public float4 primvarAt(uint record, __constref MeshRecord mesh, uint triangle, uint3 points, float3 weights,
                         float4 fallback) {
     if (record == kNoPrimvar) {
         return fallback;
