@@ -23926,3 +23926,25 @@ they show is a frame's of 480x270), the walls' texture as sharp or sharper.
 the gaussians made from four paths and no denoiser (their base colours are four paths' too) are the candidates,
 none measured. What glows: a stage's emission stays in the scene's own light, found by the first pass's four
 paths. At 1080p. The web player with a group for the day.
+
+## The unlit scene and every light a group, at 1080p (16 Nov)
+
+Sponza with two lamps at 1920x1080, 20 views (8 639 341 gaussians); the four views not taken drawn at 960x540, the
+reference's size, dB and SSIM:
+
+| how | seconds | lamps on: k10, k45, a, b | SSIM |
+|---|---|---|---|
+| the scene lit, a pass a lamp (15 Nov) | 2339 + 2428 + about 2428 = 7195 | not measured whole | -- |
+| the scene and its lamps by the same paths | 2195 | 27.35, 22.92, 25.72, 24.21 | 0.856, 0.755, 0.832, 0.806 |
+| unlit (150 s), then every light from frames of 960x540 (547 s) | 697 | 27.30, 22.64, 25.63, 24.63 | 0.894, 0.793, 0.865, 0.842 |
+| unlit (150 s), then every light from frames of 480x270 (230 s) | 380 | 27.30, 22.56, 25.57, 24.61 | 0.886, 0.772, 0.855, 0.822 |
+
+Against the scene found with its lamps by the same paths: a sixth of the time, the dB within 0.4 either way, the
+SSIM 0.017 to 0.030 over. The geometry's pass is 7.5 s a view at 1080p where a lit view was 110.
+
+**In the web player this scene is not right yet**, and it is not published. Exported with its three groups it
+draws whole and lit, the day a group with the lamps; but (a) the scene as it stood at an earlier frame is mostly
+black, a part's history -- what a later frame took out or refined -- being handed on with no group's light, which
+a scene whose own light is nothing shows; and (b) the knights of glass and of chrome are black, the page's glass
+and mirrors taking no group's light (NEU28). Neither showed while the scene's own light held the day. The engine
+draws both (`render --glass`, the figures above).
