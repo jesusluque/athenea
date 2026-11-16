@@ -897,6 +897,7 @@
 
       // The cubes, drawn again when what is shown changed: the room as it stands from the middle of each
       // kind that is shown, without that kind or the lines this page draws over the scene.
+      let roomPass = false;   // a cube is being drawn with the whole scene shown: the page's own frame waits
       const drawRooms = async () => {
         if (shadeBusy || !settings.glass) { shadeStale = false; return; }
         shadeBusy = true;
@@ -915,8 +916,22 @@
             // Spark keeps one cube, on its class, and would draw every kind into it: each kind's own is put
             // there for its turn and taken back after.
             SparkRenderer.cubeRender = kind.target ?? undefined;
-            const texture = await spark.renderCubeMap({ scene, worldCenter: middle, size: settings.cube, near: 0.02,
-                                                        far: Math.max(across * unit * 2, 10), hideObjects: hidden });
+            // THE ROOM A GLASS OR A MIRROR SHOWS IS THE SCENE WHOLE, whatever frame the timeline is at. At an
+            // earlier frame most of the room about it had not been found yet, and a room drawn as the scene
+            // stood then was black: the knights went black ridden from the walk's first cameras. Every part
+            // that stands to the end is shown for the cube and what was shown is put back; the page's own
+            // frames wait meanwhile (`roomPass`), so the whole scene is not flashed on the screen.
+            const was = meshes.flat().map((m) => [m, m.mesh.visible]);
+            roomPass = true;
+            for (const [m] of was) m.mesh.visible = m.until === 0;
+            let texture;
+            try {
+              texture = await spark.renderCubeMap({ scene, worldCenter: middle, size: settings.cube, near: 0.02,
+                                                    far: Math.max(across * unit * 2, 10), hideObjects: hidden });
+            } finally {
+              for (const [m, shownBefore] of was) m.mesh.visible = shownBefore;
+              roomPass = false;
+            }
             window.__player.step = `${kind.which}: cube drawn`;
             kind.target = SparkRenderer.cubeRender;
             kind.room.value = texture;
@@ -1109,7 +1124,7 @@
           for (const s of shaded.flat()) if (s.mesh.visible && s.applied) s.mesh.updateVersion();
         }
         if (shadeStale && !loading) drawRooms();
-        renderer.render(scene, camera);
+        if (!roomPass) renderer.render(scene, camera);
         if (!loading && window.__scene.loaded) judge(now);
       });
     } catch (error) {
