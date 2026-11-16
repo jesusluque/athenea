@@ -1167,8 +1167,9 @@ struct Shaded {
 /// Evaluates whatever material a surface wears. `pixel` is only the uv
 /// footprint's: materialInputsAt takes it from the neighbouring pixels' rays,
 /// which is right for the camera's hit and an approximation for a bounce's.
-Shaded shadeSurface(uint2 pixel, __constref Surface s) {
-    Shaded out;
+// Written where it is kept: a shading state returned by value is copied whole,
+// and again where it is assigned.
+void shadeSurface(uint2 pixel, __constref Surface s, out Shaded out) {
     out.categoriesLo = s.instance.categoriesLo;
     out.categoriesHi = s.instance.categoriesHi;
     // A bake takes no footprint from the camera it does not have.
@@ -1188,7 +1189,6 @@ Shaded shadeSurface(uint2 pixel, __constref Surface s) {
     out.rayOrigin = out.inputs.viewPosition;
     out.rayT = length(out.inputs.positionWorld - out.inputs.viewPosition);
     out.geometricNormal = normalize(applyRows(toWorld, s.geometricNormal, 0.0));
-    return out;
 }
 
 /// A surface a ray found, before its material is evaluated. Finding and
@@ -1430,8 +1430,7 @@ R"(float cellThrough(float3 p, float3 n, float3 wi, uint mask, bool selfTransmit
 }
 
 /// What was found, its material evaluated: the kernel's one call of it.
-Shaded shadeFound(uint2 pixel, __constref Found f) {
-    Shaded out;
+void shadeFound(uint2 pixel, __constref Found f, out Shaded out) {
     out.valid = false;
     out.coverage = false;
     out.transparent = false;
@@ -1439,13 +1438,12 @@ Shaded shadeFound(uint2 pixel, __constref Found f) {
     out.depth = 0.0;
     out.geometricNormal = float3(0.0, 0.0, 1.0);
     if (!f.valid) {
-        return out;
+        return;
     }
-    out = shadeSurface(pixel, f.s);
+    shadeSurface(pixel, f.s, out);
     out.toEye = normalize(f.eye - out.inputs.positionWorld);
     out.rayOrigin = f.rayOrigin;
     out.rayT = f.rayT;
-    return out;
 }
 
 /// The camera's hit found by a ray of the tracer's own, for a lens with a
@@ -2430,7 +2428,7 @@ R"(                    }
             if (cameraHit && firstShaded) {
                 shaded = first;
             } else {
-                shaded = shadeFound(tid, target);
+                shadeFound(tid, target, shaded);
                 if (cameraHit) {
                     first = shaded;
                     firstShaded = true;
@@ -3223,7 +3221,8 @@ void pathGuides(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
     const uint4 seen = visibility.Load(int3(int(tid.x), int(camera.height - 1 - tid.y), 0));
     const bool ownRays = kTraces && path.ownRays != 0;
     const Found found = ownRays ? foundLensSample(tid, 0u, sampleMask(tid, 0u)) : foundAt(tid, seen);
-    Shaded sh = shadeFound(tid, found);
+    Shaded sh;
+    shadeFound(tid, found, sh);
     float4 albedo = float4(0.0);
     float4 normal = float4(0.0);
     if (sh.valid) {

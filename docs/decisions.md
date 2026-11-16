@@ -24327,3 +24327,34 @@ stages with the pane in view have no control that says what their frame should b
 pane and a wall behind it is not met by a bounce's ray at all (read by the agent, not measured); cut-outs
 proper (`opacityThreshold`) take the same block and were not measured apart; a bake with `groupsIndirect`;
 CUDA and Vulkan.
+
+## After the two fixes: the unlit workflow's dB again, and the copies that were left (16 Nov)
+
+**The unlit workflow with light through a pane in its group.** Sponza, 960x540, the four views not taken, the
+same commands as the section on its dB, the main build with the day's two changes; dB against the reference:
+
+| | k10 | k45 | a | b |
+|---|---|---|---|---|
+| the unlit workflow before | 27.05 | 22.49 | 25.17 | 24.20 |
+| the unlit workflow now | 27.61 | 22.49 | 25.45 | 24.21 |
+| the lit baseline (`clean.aths`, shot before) | 27.95 | 22.76 | 25.81 | 24.24 |
+
+It gives back what the pictures added by hand had said (27.66 / 22.49 / 25.51 / 24.21). What is left to the lit
+baseline, 0.34 / 0.27 / 0.36 / 0.03, is a layer's cost. The reference path traced again with the fix is the
+old one to 76 dB -- a bounce that sees a light through a pane is rare in this scene -- so the figures above
+hold against either. The workflow's time: 65 s its geometry and 130 s its lights (255 s before the path
+tracer's parameters were taken by reference). What the unlit scene now keeps as its own light is 3.5e-5 at k10
+(maximum 0.9) and 4e-6 to 7e-6 at the others.
+
+**The shading state written in place.** `shadeSurface` and `shadeFound` returned a `Shaded` by value; they now
+write the caller's (`out`). Measured on the materials stage as before: 2.0 s the first hit and 7.5 s a bounce
+against 4.7 and 7.1 -- the bounce no faster (the stage's load varied 3 s between the runs, which is all the
+first hit's difference can be trusted for), the picture bit for bit the main build's (relMSE 0). Kept as the
+same rule, not as a gain. The kernel as Slang writes it for Metal now has no temporary copy of a shading
+state, a stack, a surface or a material's inputs left; what it copies is single lobes (17 places, the lobe
+functions' working copies) and MaterialX closures. So what remains of a bounce, 7 s for 66 M paths, is no
+longer copies of state Slang makes: it is the work of a stack of eight lobes itself, each evaluated, weighed
+and sampled at every vertex and every light.
+
+Not done: a stack that keeps fewer lobes where a frame's materials need fewer (the morning's table: 4.9 s a
+bounce at one lobe before any of this); the lit baseline shot again with the fix.
