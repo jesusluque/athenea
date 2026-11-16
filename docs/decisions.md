@@ -24112,3 +24112,13 @@ history load with no error; ridden at frames 2, 6 and 11 the frame is whole in `
 `sponza_lamps` at rest is 48 frames a second whole (8.37 M) and 60 at its level of detail (1.93 M). `sponza_chrome`
 as I exported it again is very dark and nearly grey: not right, being looked into. On CUDA (WSL) and Vulkan
 (Windows) at 4e25aaf6 the scene tests pass, 295 assertions each, and the QA flows on Vulkan, 41 of 41.
+
+## `sponza_chrome` dark on the site: the scene's own light, as far as can be told (16 Nov)
+
+Exported again with its history at exposure 3, `sponza_chrome` is very dark and nearly grey on the site. Looked
+into: the engine draws the same scene so at that exposure (`render --frames 30 30 --exposure 3`: a dim grey nave, the
+knights dark; at exposure 6 brighter and as grey), and its first part exported with and without `--history` is the
+same file to the byte (8 710 465 bytes): the export with history does not darken it. The scene is one shot before
+the stage had its lamps, under the sky alone. Whether the site showed it brighter before cannot be checked: the
+earlier export was replaced and the options it was made with were not kept; the other chrome scene exported that
+week (`chrome2`, `gpu_exp3.sh`) was at exposure 3 too and looked as dark in the pictures taken of it. Left as it is.
