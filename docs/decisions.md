@@ -23827,3 +23827,26 @@ The engine's path tracer stops a pixel whose mean has settled (`athenea:pathAdap
 the same to the second as without (562 s), and the same pictures to 0.02 dB (28.03, 22.82, 25.86, 24.27). The pixels
 a lamp does not reach are where it was to gain, and they do not stop: a pixel of no light has no relative error
 to fall under a threshold. The option is not kept.
+
+## The lamps' pass at less than the scene's size (16 Nov)
+
+A gaussian reads a group's frame at its own middle, so the frames of a pass of lamps need not be as large as the
+ones the scene was found from. Sponza found at 960x540, its two lamps added by `--groups-only` at five sizes, 20
+views; four views not taken, lamps on, against the stage path traced:
+
+| the pass's frames | seconds | dB: k10, k45, a, b | SSIM: k10, k45, a, b |
+|---|---|---|---|
+| 960x540, 32 paths | 562 | 28.03, 22.82, 25.86, 24.28 | 0.877, 0.766, 0.847, 0.815 |
+| 640x360, 64 paths | 512 | 28.03, 22.81, 25.94, 24.27 | -- |
+| 480x270, 32 paths | 177 | 28.07, 22.88, 25.98, 24.41 | 0.866, 0.766, 0.844, 0.814 |
+| 480x270, 128 paths | 572 | 27.97, 22.67, 25.85, 24.20 | -- |
+| 320x180, 32 paths | 105 | 28.10, 23.14, 26.08, 24.60 | 0.849, 0.758, 0.832, 0.804 |
+| 240x135, 32 paths | 81 | 27.99, 23.02, 26.05, 24.54 | 0.835, 0.749, 0.819, 0.794 |
+
+Half the scene's size a side is the same picture for a third of the time (SSIM within 0.011, dB up to 0.13 over).
+Under that the dB keeps rising and the SSIM falls: the layer is the light a surface sends, its texture in it, and
+a frame of a ninth of the pixels says a brick's texture coarsely; what a dB gains is noise. More paths in a small
+frame are not better than more pixels (480x270 at 128 paths is the time of the full size and reads under it).
+
+**Not done.** A layer kept as the light over the surface's base colour -- the gaussian keeps its base colour, at
+the scene's own detail -- would let the pass's frames be smaller still without the texture going; not built.
