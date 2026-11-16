@@ -24986,3 +24986,26 @@ route); `standard_surface` and `gltf_pbr`, still graphs and so with nothing to b
 `--transfer`) conversion compared route against route -- it builds its stacks in the same marked kernel, and
 the three balls here are all the read back was tried on; the stage that makes the textured balls kept in the
 repository.
+
+## The eight tests that fail on Metal are the trunk's, not this branch's (NEU34, 17 Nov)
+
+A subagent built `neural` (67326e42) and the trunk the branch stands on (`origin/main` cf3ab5f1, 8 Nov) in a
+clone of its own and ran each of the eight several times; logs, the bisect and the experiments are in
+`build/night/agent-neu34`. All eight fail on the trunk with the same numbers, run to run, so none was bisected
+on this branch and nothing was changed. The trunk's own CHANGELOG (0.5.0, "Known") lists them as failing on
+Metal.
+
+| test | what fails | what it is |
+|---|---|---|
+| a posed cloud refits its ray tracing structure... | one pixel of 25 600 is 3 and 16 codes apart between a refitted and a rebuilt tree (bound: 1), the compute BVH route only | a trunk regression of 9 Oct (f15429a5, `surfelSafeScale` in `rt_frames.slang`: it changes no value for this cloud, the generated code rounds differently); a stale tree would be p99 255 |
+| flatten's fit gives back degree 3 harmonics... | the roughness floor comes back 1.0 where under 1 is asked | `lobeShareAbove3` passes no candidate (the smallest share 0.0538 against 0.05, worked out off the device); never passed. `athenea flatten` gets that floor of 1.0 on Metal |
+| a flattened cloud written as PLY and as SPZ... | p99 5 codes at degree 0 where 4 is the bound | a bound one code tight; never passed on Metal (the kernel did not compile there when the test was written) |
+| a skinned cloud's zonal transfer turns with it... | relMSE 1.7e-2 where 1e-4 | the test's cloud carries harmonics, which a prim's transform turns and a joint does not; with them zeroed the test passes (1e-7). The transfer is right |
+| a floor four texels a pixel from the map... | p99 26 codes where 8 | the bound was an expectation written before the run and never set from a measure |
+| a zonal transfer is fitted in the gaussian's frame... | 769 lobe cases off by more than 0.5 % where none is asked | the test asks an exactness the greedy fit does not reach, with 32 rounds either |
+| `sheet_glass_draws_whole` | the sheet's frame is 0.43 of the path traced pane's mean | not diagnosed; never passed |
+| `tx_conversions_render_like_the_mesh` | two of 86 bounds, chrome under a pale sky and glass under a lamp (ratio 1.068 where 1.05) | the chrome bound a placeholder never met; the glass one drifted on the trunk, not bisected |
+
+Not done here: any of them mended -- they are the trunk's areas (the ray tracer, flatten, the transfers,
+mesh2splat), and the two with an engine consequence (flatten's floor; a skinned gaussian's harmonics not
+turned by its joint) are for whoever owns those. The slow `tx_gate_*` tests were not run.
