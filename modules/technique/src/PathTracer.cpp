@@ -2500,6 +2500,13 @@ R"(                    }
                         // sky is gathered here -- the lights the ray meets
                         // at infinity, as a bounce that escapes gathers
                         // them, at a weight of one since no lobe drew it.
+                        // The sample's opacity first: a group's share is
+                        // weighed by it as it is added, the colour at the end.
+                        if (!vertexSeen) {
+                            vertexSeen = true;
+                            opacity = 1.0;
+                            depthHere = target.depth;
+                        }
                         if (lightCount <= kMisLightLimit) {
                             for (uint k = 0; k < lightCount; ++k) {
                                 const LightRecord light = lightFor(k, tid, sample);
@@ -2508,14 +2515,30 @@ R"(                    }
                                 }
                                 const LightHit lh = lightHitImaged(light, o, d);
                                 if (lh.valid) {
-                                    carried += throughput * lh.radiance;
+                                    // A bounce's ray that went on through is
+                                    // still the draw of the vertex before
+                                    // it, whose next event estimation reached
+                                    // this light through the same surface
+                                    // (shadowPassesThrough): weighed against
+                                    // it, as a ray that escapes is below. The
+                                    // camera's own ray keeps a weight of one.
+                                    float weight = 1.0;
+                                    if (previousWeighs && misWeighs(light)) {
+                                        const float other = lightChoiceProbability(k, previousFrom, previousNormal) *
+                                                            lightPdfImaged(light, previousFrom, previousNormal, d);
+                                        weight = previousPdf * previousPdf / (previousPdf * previousPdf + other * other);
+                                    }
+                                    const float3 reachedLight = throughput * lh.radiance * weight;
+                                    carried += reachedLight;
+                                    // Into the light's group, as the light a
+                                    // material's ray meets is (below): this
+                                    // was the one gathering of a light's
+                                    // radiance that no group took.
+                                    if (kLightGroups) {
+                                        addGroup(groups, light.group, reachedLight * opacity);
+                                    }
                                 }
                             }
-                        }
-                        if (!vertexSeen) {
-                            vertexSeen = true;
-                            opacity = 1.0;
-                            depthHere = target.depth;
                         }
                         break;
                     }

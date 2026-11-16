@@ -24280,3 +24280,50 @@ queue, and the tests marked slow were not run.
 Not done: the shading functions still return their state by value and the loop still assigns it (the copies
 that are left; at 7 s a bounce the kernel is at 19 M rays a second); a lobe made smaller; a stack sized to what a
 frame's materials keep; CUDA and Vulkan, and a stage other than the materials one, not yet timed.
+
+## Light through a transparent surface: into its light's group, and counted once (16 Nov)
+
+The route of the light no group held (the section on the unlit workflow's dB), found by a subagent on small
+stages and on Sponza (`build/night/agent-rest`, not in the repository), and mended. A surface of opacity under
+one is passed by lot; where the ray that went on meets nothing, the path tracer gathers the lights it meets at
+infinity or before it ("Nothing behind", `PathTracer.cpp`). That gathering did two things wrong:
+
+- **It added the light to the colour and to no group** -- the one `carried +=` of a light's radiance without its
+  `addGroup`. In Sponza the panes of the studded doors (`glass`, opacity 0.05) and the lantern's glass (0.6): a
+  bounce off a stud crosses a pane, leaves the building and meets the sky.
+- **It took the light at a weight of one whatever ray it was.** For the camera's ray that is right; for a
+  bounce's ray the vertex before had already reached the same light through the same surface by next event
+  estimation, so the light was counted twice. Now weighed against that vertex's light sampling, as a ray that
+  escapes without crossing anything already is.
+
+240x135, 16 paths, 3 bounces, every light in a group; means, the frame and what `--group "*=0"` leaves:
+
+| stage | frame before | frame now | outside the groups before | now |
+|---|---|---|---|---|
+| sun, a chrome ball, no pane (control) | 0.1789 | 0.1789 | 0 | 0 |
+| the same under a pane of opacity 0.05, out of view | 0.3217 | 0.1721 | 0.1612 | 0 |
+| dome, a diffuse ball, no pane (control, the agent's run) | 0.1708 | -- | 1e-10 | -- |
+| the same under the pane | 0.2173 | 0.1676 | 0.0968 | 1e-10 |
+| the camera through the pane, sun, chrome | 0.3015 | 0.1844 | 0.1334 | 2e-10 |
+| the camera through the pane, dome, diffuse | 0.4738 | 0.4500 | 0.3058 | 3e-10 |
+| a sphere light on the camera's side of the pane, metal | 0.1415 | 0.0776 | 0.0674 | 1e-10 |
+| a sheet of opacity 0.3 in view, dome | 0.2956 | 0.2906 | 0.1055 | 2e-10 |
+| no transparent surface (a sphere light, a diffuse ball) | 0.1107 | 0.1107 | 2e-12 | 2e-12 |
+| Sponza, k10, 480x270, the five lights in three groups | 0.036613 | 0.036613 | 8.4e-5 | 2.2e-5 |
+
+Under the pane the frame is now a little under its control, as a pane that passes 95 % asks. With the groups
+alone mended and the weight left (measured apart) every frame was the same to six figures and the groups
+already whole, so the two are separate: the first changes no picture, the second does wherever a bounce looks
+at a light through a transparent surface. What Sponza still leaves outside its groups (2.2e-5, maximum 0.21,
+grey) is what the agent measured with the door panes made opaque: the lantern's bulb, which emits and belongs
+there -- not separated from a leak through the lantern's own glass.
+
+Tests, Metal, second build: the hundred not marked slow whose names speak of opacity, transparency, coverage,
+glass, panes, domes, sky, light groups or path tracing -- 99 pass, and the one that does not
+(`sheet_glass_draws_whole`) fails on the unchanged build too.
+
+Not done: the unlit workflow's dB measured again with this (the 0.6 dB at k10 it should give back); the three
+stages with the pane in view have no control that says what their frame should be; a light standing between a
+pane and a wall behind it is not met by a bounce's ray at all (read by the agent, not measured); cut-outs
+proper (`opacityThreshold`) take the same block and were not measured apart; a bake with `groupsIndirect`;
+CUDA and Vulkan.
