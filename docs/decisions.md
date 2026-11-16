@@ -24007,3 +24007,27 @@ groups is next to nothing in a pass's time, a path going to one light whichever 
 12.6 M gaussians. Seen from two views not taken: the six on, and two of them alone with the rest at nothing, the
 scene lit by those two colours. No reference was path traced for it: this is the time and that it draws, not a dB.
 With six lamps sharing 32 paths a pixel each has a sixth of them; what that costs in noise was not measured.
+
+## The player's earlier frames show holes: the published scenes carry no history (16 Nov)
+
+The user: the scene on the web "loads and goes on to the next, and looks as if pieces were missing". Reproduced on
+the published page (Chrome on ixwin, pictures a second apart): loading is whole from the overview -- the coarse
+level, then the scene -- but the scene as it stood at an earlier frame, which is what Play and the timeline show,
+has holes in its floor and walls. Every published scene was exported with `--by-frame` and no `--history`: a part
+holds what its frame found *that still stands*, and what a later frame refined is in no part, so at that earlier
+frame nothing is there to draw.
+
+`export_groups.py --history` hands the history on from the export with the lamps on (the page lays a group's part
+over the scene's standing parts alone, so a span of history is handed on lit as it was found). The 1080p Sponza
+scene at frame 3 of 20: 2.37 M gaussians drawn where 1.62 M were, and the holes are filled; the export goes from
+250-odd files to 774 and 346 MB. The page also lays a group's part over a span of history where a group is handed
+on with one (none is yet).
+
+**Not done.** What fills a hole is the coarser gaussians of the frames that first saw it, and from the overview
+they read as dotted and darker than what stands beside them: filled, not clean. Not published: the scenes on the
+site are still without history. The user has not yet said that this is what they meant.
+
+**A note on how this was written.** The exporter's change was made by this session at 08:14, in a stretch that
+then fell out of the session's own context when it went on in a new transcript; finding it on the disk, I took it
+for another session's and asked the user. The transcript (40c7c81c, 07:14:40Z, a tool call of the assistant's)
+says it was this one.

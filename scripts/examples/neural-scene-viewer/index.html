@@ -675,11 +675,17 @@
               // the scene (the same gaussians in the same order, a level), the level takes its groups' light
               // as the whole scene does. The level drawn first (`litFirst`) is the scene with its lamps on
               // already, and takes none.
-              const of = (held) => (detail === 0 ? held.parts : held.levels?.[detail - 1]?.parts)?.[meshes.length];
+              // A part's history -- what its frame found that stood only for a while -- takes the groups' light as
+              // the part does, where each group was handed on with its history too (the same spans, in order).
+              const spanAt = part.history ? part.history.indexOf(span) : -1;
+              const of = (held) => {
+                const entry = (detail === 0 ? held.parts : held.levels?.[detail - 1]?.parts)?.[meshes.length];
+                return span === part ? entry : entry?.history?.[spanAt];
+              };
               const fileOf = (entry) => typeof entry === "string" ? entry : entry?.file;
               const grouped = !litFirst && groups.length > 0 && groups.every((g) => fileOf(of(g)));
               const based = litFirst ? undefined : fileOf(of(lamp));
-              if (span === part && (grouped || based)) {
+              if (grouped || based) {
                 const textures = [];
                 if (grouped) for (const g of groups) textures.push(await groupTexture(fileOf(of(g))));
                 const base = based ? await groupTexture(based) : null;

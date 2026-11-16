@@ -23,6 +23,7 @@ parser.add_argument("--athenea", required=True)
 parser.add_argument("--scene", required=True)
 parser.add_argument("--out", required=True)
 parser.add_argument("--exposure", default="")
+parser.add_argument("--history", action="store_true", help="the scene itself with its history (export --history): what each frame found that a later one took out or refined, so that a player shows the scene whole as it stood at every frame")
 parser.add_argument("--levels", default="", help="budgets of gaussians for levels of detail of the scene itself (export --levels): what a player draws first")
 parser.add_argument("more", nargs="*", help="more options for export, after --")
 args = parser.parse_args()
@@ -58,19 +59,37 @@ for group in groups:
 index_path = args.out + ".json"
 index = json.load(open(index_path))
 index["groups"] = named
-# LEVELS OF DETAIL WITH THE LAMPS ON (`litLevels`): what a player draws first. A level of the scene's own
-# parts is unlit until its groups' parts are read; these are levels of the scene with every group at one, a
-# picture as the scene was found with nothing more to wait for. That export's own parts are not kept.
-if args.levels:
+# WITH THE LAMPS ON: the levels a player draws first (`litLevels`), and the scene's history (`--history`).
+# A level of the scene's own parts is unlit until its groups' parts are read; these are levels of the scene with
+# every group at one, a picture as the scene was found with nothing more to wait for. And what a frame found
+# that a later one took out or refined is drawn only while the timeline is before that frame: it is handed on
+# as it was found, its lamps in it, since a player lays a group's part over the scene's standing parts alone --
+# without it an earlier frame shows holes where the scene was later made finer. That export's own parts are
+# not kept; its levels and its history are.
+if args.levels or args.history:
     lit = args.out + "_lit"
-    export(lit, ["--group", "*=1", "--levels", args.levels])
+    export(lit, ["--group", "*=1"] + levels + (["--history"] if args.history else []))
     lit_index = json.load(open(lit + ".json"))
-    index["litLevels"] = lit_index.get("levels", [])
     kept = set()
-    for level in index["litLevels"]:
-        for part in level.get("parts", []):
-            part = part if isinstance(part, dict) else {"file": part}
-            kept.update(f for f in (part.get("file"), (part.get("glass") or {}).get("file"), (part.get("mirror") or {}).get("file")) if f)
+
+    def files_of(part):
+        part = part if isinstance(part, dict) else {"file": part}
+        return [f for f in (part.get("file"), (part.get("glass") or {}).get("file"), (part.get("mirror") or {}).get("file")) if f]
+
+    if args.levels:
+        index["litLevels"] = lit_index.get("levels", [])
+        for level in index["litLevels"]:
+            for part in level.get("parts", []):
+                kept.update(files_of(part))
+    if args.history:
+        spans = 0
+        for own, lit_part in zip(index["parts"], lit_index["parts"]):
+            if isinstance(own, dict) and isinstance(lit_part, dict) and lit_part.get("history"):
+                own["history"] = lit_part["history"]
+                for span in lit_part["history"]:
+                    kept.update(files_of(span))
+                    spans += 1
+        print("history: %d spans, as found" % spans)
     folder = os.path.dirname(os.path.abspath(lit))
     for name in os.listdir(folder):
         if name.startswith(os.path.basename(lit)) and name not in kept:
