@@ -23819,3 +23819,11 @@ lamp took 2428 s as a pass of its own (two: about 4856 s). The four views not ta
 27.35, 22.91, 25.71, 24.20. So at 1080p a scene with two lamps is 2195 s by the same paths, or 2339 + 2058 = 4397 s
 shot without them and the lamps added, up to 0.55 dB better on one view and within 0.2 dB on the others; a pass a
 lamp was 7195 s.
+
+## Adaptive sampling in a shoot: tried, nothing gained, not kept (16 Nov)
+
+The engine's path tracer stops a pixel whose mean has settled (`athenea:pathAdaptive`, a relative standard error);
+`shoot` was given it as `--path-error 0.05` and the pass of two lamps over the 960x540 Sponza scene run again: 562 s,
+the same to the second as without (562 s), and the same pictures to 0.02 dB (28.03, 22.82, 25.86, 24.27). The pixels
+a lamp does not reach are where it was to gain, and they do not stop: a pixel of no light has no relative error
+to fall under a threshold. The option is not kept.
