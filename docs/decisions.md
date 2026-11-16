@@ -23948,3 +23948,13 @@ black, a part's history -- what a later frame took out or refined -- being hande
 a scene whose own light is nothing shows; and (b) the knights of glass and of chrome are black, the page's glass
 and mirrors taking no group's light (NEU28). Neither showed while the scene's own light held the day. The engine
 draws both (`render --glass`, the figures above).
+
+## Corrected: the unlit scene in the web player is as the lit one (16 Nov)
+
+The section above says the web player draws the unlit scene wrongly in two ways. Looked at again beside the
+published scene of the lamps (`sponza_lamps`, whose own light holds the day), at the same frames: neither is the
+unlit scene's. (a) The scene as it stood at an earlier frame is sparse in both: these exports carry no history, so
+what a later frame refined is not there to draw at that frame, and what shows black is nothing, not gaussians
+without light. (b) The chrome knight seen from a hand away is black facets in both: the page's chrome, the facets
+NEU28 already names. The glass and mirrors are shaded in both (40 of 40 meshes). I took the first picture of the
+new scene for a fault of it without the other beside it. The scene is put with the site's.

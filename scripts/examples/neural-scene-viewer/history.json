@@ -38,6 +38,13 @@
   {"date": "2026-11-15",
    "what": "The player draws a coarse level of the whole scene first and the full detail behind it: Sponza at 1080p (8.4 M gaussians) is drawn whole after 0.8 s where it took 14 s, read from a server on the same machine; and the player as one file to open from a disk.",
    "scene": "sponza_lamps"
+  },
+  {"date": "2026-11-16",
+   "what": "Lamps added to a scene already found, all at once and from small frames (shoot --groups-only --light-over-base): the light is the small frame's, the texture the gaussian's own base colour. Two lamps on the 1080p Sponza scene: 182 s where a lamp took 2428 s."
+  },
+  {"date": "2026-11-16",
+   "what": "The scene found unlit and every light a group: where a surface is and what it is made of do not wait for light, so the sky and the sun are set in the player as the lamps are. Sponza at 1080p: 380 s where it took 2195 s.",
+   "scene": "sponza_lights"
   }
  ]
 }
