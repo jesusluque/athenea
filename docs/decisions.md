@@ -24435,3 +24435,20 @@ taken at 960x540, against the reference, dB / SSIM:
 Handed on with a level and its history in one file a part: 397 files where 857, 8.64 M gaussians as before.
 In Chrome on the Mac riding the render camera, frames 4, 12 and 20 draw the same counts as the published one.
 Not done: the other published scenes with groups (`lamps`, `sponza_lamps`) found again; a phone.
+
+## Sponza at 1080p with two lamps in one render: 1160 s where 2195 s (16 Nov)
+
+The published `sponza_lamps`, found again by the same command (`shoot --size 1920x1080 --samples 32
+--pass-samples 8 --bounces 3 --denoise --light-groups warm=... --light-groups spot=...`, twenty views) with the
+day's changes: **1160 s where it took 2195 s**, the same 8 365 438 gaussians. The path tracer's bounce is 2.4
+times faster and the run 1.9: the rest of a view (the scene's pieces, the denoiser, what is kept) is as it was.
+The four views not taken at 960x540 against the reference, dB / SSIM:
+
+| | k10 | k45 | a | b |
+|---|---|---|---|---|
+| as published | 27.35 / 0.856 | 22.91 / 0.755 | 25.71 / 0.832 | 24.20 / 0.806 |
+| found again | 27.43 / 0.863 | 23.04 / 0.758 | 25.83 / 0.836 | 24.25 / 0.811 |
+
+Handed on with its history in one file a part: 330 files where 774. In Chrome on the Mac, riding the render
+camera, frames 4, 12 and 20 draw the same counts as the published one. Not done: `lamps` (the 960x540 scene)
+found again; where the other half of a view's time goes at 1080p, now that the paths are not most of it.
