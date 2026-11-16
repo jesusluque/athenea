@@ -24689,3 +24689,11 @@ the difference is 2.2 s where it is 4.6 s from the near one, which says most of 
 and does not say all. Said because the user was first told every surface pays it.
 
 Not done: OpenPBR as one node (NEU36), which is where this points; a view with no glass in sight at all.
+
+## The 1080p shoot with the stacks copied by their count: 1069 s (16 Nov)
+
+Sponza at 1080p with two lamps as groups, twenty views, the same command as the afternoon's: **1069 s where
+1160 s** (2195 s the day before), the same 8 365 438 gaussians, the four views not taken the same to 0.02 dB
+(27.41 / 23.04 / 25.83 / 24.25). A view is about 53 s; by the stage command's figures from one of its views
+(3.8 s the first hit, 10.3 s a bounce) some 35 s of it are paths, and the rest -- the planes denoised, the
+scene's pieces, what is kept -- is not taken apart here.
