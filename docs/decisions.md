@@ -24050,3 +24050,21 @@ file 10.6 MB.
 **Not done.** In the page the knights of glass and of chrome are black at those earlier frames, where the engine
 draws them: not looked into. The three older scenes on the site (chrome, knight, growth) are still without history.
 On CUDA and Vulkan this change has not been run.
+
+## The room a glass shows at an earlier frame, the scenes republished with history, and what history costs in files (16 Nov)
+
+- *The knights black at an earlier frame.* Ridden from the walk's first cameras the knights of glass and chrome
+  were black in the page and not in the engine. The page draws, for each kind, a cube of the room about it and
+  shades the kind by it; it drew the cube of the scene as it stood at the timeline's frame, when most of the room
+  about the knights had not been found. The cube is now drawn with every part that stands to the end shown, and
+  what was shown is put back; the page's own frames wait while it is drawn. Seen at frames 2, 6, 11 and 16 of the
+  1080p Sponza scene: the chrome shows the room, the glass is grey-blue. The chrome's facets from near are as before.
+- *Published* (sysop, version db95db61): the page, and four scenes exported again with their history --
+  `sponza_lamps`, `sponza_lights`, `sponza_chrome` (from its scene, exposure 3: the options it was first exported
+  with were not kept, so its brightness on the site may differ from before) and `lamps`. `sponza_knight` and
+  `sponza_growth` are as they were, without history: their scenes are no longer on the disk.
+- *What history costs in files.* A file a span: `sponza_chrome` is 3868 files where it was 124, `lamps` 723,
+  `sponza_lamps` 774, `sponza_lights` 857. The site holds 6477 of the 20 000 a version of its host admits (NEU33).
+
+**Not done.** The page as published was not looked at by me after db95db61 (an agent checks it from Chrome on
+ixwin). A part's history in one file.
