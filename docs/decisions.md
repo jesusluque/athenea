@@ -23998,3 +23998,12 @@ the lit scene keeps what the frame that made a gaussian saw; and the gaussians t
 
 On CUDA (WSL) and Vulkan (Windows) at c6991619: the scene tests pass, 295 assertions each, and the QA flows on
 Vulkan, 41 of 41.
+
+## Six lamps added at once (16 Nov)
+
+The 1080p Sponza scene shot without lamps, six sphere lights of different colours added as six groups by one pass
+of `--groups-only --light-over-base` from frames of 480x270: 193 s, where the two lamps took 182 s -- the number of
+groups is next to nothing in a pass's time, a path going to one light whichever it is. Each layer is kept for about
+12.6 M gaussians. Seen from two views not taken: the six on, and two of them alone with the rest at nothing, the
+scene lit by those two colours. No reference was path traced for it: this is the time and that it draws, not a dB.
+With six lamps sharing 32 paths a pixel each has a sixth of them; what that costs in noise was not measured.
