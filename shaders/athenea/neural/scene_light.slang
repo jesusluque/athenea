@@ -122,7 +122,7 @@ void sceneRelight(uint3 tid: SV_DispatchThreadID) {
             const float3 of = frameBase[params.baseAt + at].rgb;
             const float3 own = saturate(matter[i].rgb);
             if (all(of > float3(0.02)) && any(own > float3(0.0))) {
-                sent = light * min(own / of, float3(4.0));
+                sent = light * min(own / of, float3(2.0));
             }
         }
         // Over a run (merge) the layer holds what the views before said, and a farther view leaves it.
