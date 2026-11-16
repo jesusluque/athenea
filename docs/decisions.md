@@ -23878,3 +23878,18 @@ The layer is the same file and every reader of it is as it was; the scene tests 
 
 **Not done.** The same for groups found with the scene (`--light-groups` alone), whose frames are the scene's own.
 A level between the frame's shadow and the gaussian's (a shadow's edge kept finer than the light). At 1080p.
+
+## `--light-over-base` on the 1080p scene: two lamps in 182 s (16 Nov)
+
+The 1080p Sponza scene (8 366 012 gaussians, shot without its lamps), its two lamps added by `--groups-only
+--light-over-base` from frames of 480x270 -- a sixteenth of the scene's pixels: 182 s, where the same pass at the
+scene's size took 2058 s and a pass a lamp 2428 s each. The four views not taken, lamps on, drawn at 960x540 (the
+size of the reference): 28.01, 22.86, 26.01, 24.45 dB and SSIM 0.841, 0.740, 0.817, 0.792, against 27.90, 22.82,
+25.90, 24.22 and 0.849, 0.738, 0.818, 0.792 for the pass at the scene's size.
+
+What this makes the way to a scene with lamps one can set: the scene shot with the lamps off, then the lamps by a
+small pass -- at 1080p 2339 + 182 s, against 2195 s for the scene found with its lamps by the same paths (which
+reads up to 0.55 dB under on one view) and 7195 s for a pass a lamp. And a lamp added later, or moved, is that
+small pass again: three minutes at 1080p where it was forty.
+
+**Not done.** The views not taken were not drawn at 1080p (there is no reference at that size).
