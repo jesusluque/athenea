@@ -24358,3 +24358,25 @@ and sampled at every vertex and every light.
 
 Not done: a stack that keeps fewer lobes where a frame's materials need fewer (the morning's table: 4.9 s a
 bounce at one lobe before any of this); the lit baseline shot again with the fix.
+
+## A part's history in one file (NEU33, 16 Nov)
+
+`export --history` wrote a file for each (part, frame until which a span of it stood), and its glass and its
+mirrors beside each: 3868 files for the sixty-frame chrome scene, against the 20 000 a version of the site
+admits. Now a part's history is one file (and one for its glass, one for its mirrors): the spans one after
+another in the order of the frames they stand until, and the index gives each span's counts
+(`"spans": [[until, gaussians, glass, mirrors], ...]`). Since the order is by that frame, what stands at a
+frame is the file's end from a count on -- the player sets one number a mesh (an object modifier that takes the
+opacity of the gaussians before it) and reads a file once, where it switched whole meshes on and off. The
+groups' light of a history is laid by a gaussian's index as before, the groups handed on in the same order.
+The player still reads the earlier form (an entry a span with its `until`), so scenes already published draw
+as they did.
+
+The Sponza lamps scene (twenty frames, two groups, base colours, a level, `export_groups.py --history`): 330
+files where it was 774, 346 MB where 348, 190 spans in both. In Chrome on the Mac, riding the render camera,
+frames 3, 8 and 20 beside the earlier export: the same gaussians drawn (2.37 M, 3.90 M, 8.37 M) and the same
+picture to the eye.
+
+Not done: the scenes on the site handed on again in this form (`sponza_chrome` is the one with 3868 files);
+frame rate with a history drawn this way against meshes switched off -- a gaussian without opacity is still
+sorted -- not measured; a real Chrome on ixwin and a phone.

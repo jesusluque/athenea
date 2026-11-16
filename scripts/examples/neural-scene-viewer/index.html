@@ -623,6 +623,31 @@
           return { gsplat: shade.outputs.gsplat };
         });
       };
+      // A PART'S HISTORY IN ONE FILE: its spans one after another by the frame each stands until, so what stands
+      // at a frame is the file's gaussians from a count on. The ones before it are drawn with no opacity.
+      const cutOf = (mesh, column, spans) => {
+        const from = dyno.dynoFloat(0);
+        mesh.objectModifier = dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
+          const cut = new dyno.Dyno({
+            inTypes: { gsplat: dyno.Gsplat, from: "float" }, outTypes: { gsplat: dyno.Gsplat }, inputs: { gsplat, from },
+            globals: () => [dyno.defineGsplat],
+            statements: ({ inputs, outputs }) => dyno.unindentLines(`
+              ${outputs.gsplat} = ${inputs.gsplat};
+              if (float(${inputs.gsplat}.index) < ${inputs.from}) ${outputs.gsplat}.rgba.a = 0.0;
+            `),
+          });
+          return { gsplat: cut.outputs.gsplat };
+        });
+        mesh.updateGenerator();
+        return { from, spans: spans.map((span) => [span[0], span[column]]) };
+      };
+      // How many of a history's gaussians no longer stand at frame `at`, set where its mesh reads it.
+      const cutAt = (cut, at) => {
+        let gone = 0;
+        for (const [until, count] of cut.spans) if (until <= at) gone += count;
+        cut.from.value = gone;
+        return gone;
+      };
       const shadedShown = (which) => shaded.flat().filter((s) => s.kind === which && s.mesh.visible);
       // By the eye, or as the picture each was found with: the option's.
       const applyShading = () => {
@@ -711,13 +736,9 @@
         const at = shown > 0 ? frameOf(shown - 1) : 0;
         const stands = (k, until) => k < shown && (until === 0 || at < until);
         meshes.forEach((list, k) => {
-          for (const m of list) {
+          for (const m of [...list, ...shaded[k]]) {
             m.mesh.visible = stands(k, m.until);
-            if (m.mesh.visible) gaussians += m.gaussians;
-          }
-          for (const s of shaded[k]) {
-            s.mesh.visible = stands(k, s.until);
-            if (s.mesh.visible) gaussians += s.gaussians;
+            if (m.mesh.visible) gaussians += m.gaussians - (m.cut ? cutAt(m.cut, at) : 0);
           }
         });
         shadeStale = true;
@@ -828,7 +849,7 @@
                 mesh.worldModifier = groupLight(textures, base);
                 mesh.updateGenerator();
               }
-              own.push({ mesh, until, gaussians: span.gaussians ?? 0 });
+              own.push({ mesh, until, gaussians: span.gaussians ?? 0, cut: span.spans ? cutOf(mesh, 1, span.spans) : null });
               readHere += span.gaussians ?? 0;
               tell();
             }
@@ -837,6 +858,7 @@
               const other = await splatOf(made.file, { extSplats: true });
               await other.initialized;
               beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0, heart: heartOf(other, made.gaussians ?? 0),
+                            cut: span.spans ? cutOf(other, which === "glass" ? 2 : 3, span.spans) : null,
                             shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1])) });
               readHere += made.gaussians ?? 0;
               tell();

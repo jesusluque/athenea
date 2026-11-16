@@ -88,7 +88,7 @@ if args.levels or args.history:
                 own["history"] = lit_part["history"]
                 for span in lit_part["history"]:
                     kept.update(files_of(span))
-                    spans += 1
+                    spans += len(span.get("spans") or [1])
         print("history: %d spans, as found" % spans)
     folder = os.path.dirname(os.path.abspath(lit))
     for name in os.listdir(folder):

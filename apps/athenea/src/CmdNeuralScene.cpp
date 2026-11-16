@@ -1572,6 +1572,10 @@ struct ExportedPart {
     /// laid finer gaussians over, in files of their own, each with the frame from which it no longer stands.
     uint32_t                  untilFrame = 0;
     std::vector<ExportedPart> history;
+    /// A history's file holds every span of its part, one after another by the frame each stands until:
+    /// (that frame, its gaussians, its glass's, its mirrors') a span, so what stands at a frame is the
+    /// file's end from a count on, and a part's history is three files at most rather than three a span.
+    std::vector<std::array<uint32_t, 4>> spans;
     uint32_t    frame = 0;
     double      time = 0.0;
     std::string camera;
@@ -1626,8 +1630,19 @@ Result<void> writeExportIndex(const std::filesystem::path& stem, const io::Neura
             if (!part.history.empty()) {
                 index << ", \"history\": [";
                 for (size_t h = 0; h < part.history.size(); ++h) {
-                    writeOne(part.history[h], h == 0, "      ");
-                    index << ", \"until\": " << part.history[h].untilFrame << "}";
+                    const ExportedPart& earlier = part.history[h];
+                    writeOne(earlier, h == 0, "      ");
+                    index << ", \"until\": " << earlier.untilFrame;
+                    if (!earlier.spans.empty()) {
+                        index << ", \"spans\": [";
+                        for (size_t k = 0; k < earlier.spans.size(); ++k) {
+                            const auto& span = earlier.spans[k];
+                            index << (k != 0 ? ", [" : "[") << span[0] << ", " << span[1] << ", " << span[2] << ", "
+                                  << span[3] << "]";
+                        }
+                        index << "]";
+                    }
+                    index << "}";
                 }
                 index << "\n    ]";
             }
@@ -3641,17 +3656,36 @@ int runExport(const SceneOptions& o) {
                 empty.seconds = frame.seconds;
                 parts.push_back(empty);
             }
+            // One file for all of it (and one for its glass, one for its mirrors): the spans in the order of
+            // the frames they stand until, each span's counts in the index. A file a span was three thousand
+            // files for a walk of sixty frames.
             char label[32];
-            std::snprintf(label, sizeof(label), "_%03zu_until", parts.empty() ? size_t{0} : parts.size() - 1);
+            std::snprintf(label, sizeof(label), "_%03zu_history", parts.empty() ? size_t{0} : parts.size() - 1);
+            std::vector<std::array<uint32_t, 4>> spans;
             for (const uint32_t end : ends) {
+                const uint32_t had = held;
+                const uint32_t hadGlass = lenses.count;
+                const uint32_t hadMirror = mirrors.count;
                 if (auto taken = takeUntil(end); !taken) return report(taken.error());
+                if (held + lenses.count + mirrors.count != had + hadGlass + hadMirror) {
+                    spans.push_back({end, held - had, lenses.count - hadGlass, mirrors.count - hadMirror});
+                }
+            }
+            if (!spans.empty()) {
+                const bool plain = held != 0;
+                const bool glass = lenses.count != 0;
                 std::vector<ExportedPart> one;
-                char to[16];
-                std::snprintf(to, sizeof(to), "%03u", end);
-                // flush numbers a file by how many its list holds: the frame it stands until is in the name.
-                if (auto done = flush(one, given.string() + label + to, nullptr, 0); !done) return report(done.error());
+                if (auto done = flush(one, given.string() + label, nullptr, 0); !done) return report(done.error());
                 if (!one.empty()) {
-                    one.back().untilFrame = end;
+                    if (!plain) {
+                        // flush names a part of glass or of mirrors alone as the part itself: its counts with it.
+                        for (auto& span : spans) {
+                            span[1] = glass ? span[2] : span[3];
+                            span[glass ? 2 : 3] = 0;
+                        }
+                    }
+                    one.back().untilFrame = spans.back()[0];
+                    one.back().spans = std::move(spans);
                     parts.back().history.push_back(one.back());
                 }
             }
