@@ -24697,3 +24697,113 @@ Sponza at 1080p with two lamps as groups, twenty views, the same command as the 
 (27.41 / 23.04 / 25.83 / 24.25). A view is about 53 s; by the stage command's figures from one of its views
 (3.8 s the first hit, 10.3 s a bounce) some 35 s of it are paths, and the rest -- the planes denoised, the
 scene's pieces, what is kept -- is not taken apart here.
+
+## OpenPBR Surface's lobes built by one node (NEU36, 16 Nov)
+
+MaterialX's graph for `open_pbr_surface` reaches the generator as thirty BSDF node calls over 45 BSDF values,
+each `kBuildLobes` wide (eleven where an OpenPBR is in the frame), and a path evaluates it at every vertex and
+at every face of a glass it crosses. It is now one node, `athenea_open_pbr_bsdf`
+(`shaders/athenea/material/mx/athenea_open_pbr_bsdf.slang`), in the engine's own graph for the surface
+(`athenea_open_pbr_surface.mtlx`, put in place of MaterialX's by `MaterialCompiler::create`, as
+UsdPreviewSurface's is). The graph is MaterialX 1.39.5's with its 27 closure nodes taken out and the one node
+put where `fuzz_layer` was: every other node -- the roughnesses, the modulated index, the coat's darkening,
+the emission's EDFs, the surface constructor -- is MaterialX's, untouched, and feeds the node what it fed the
+closures.
+
+What the node reproduces, read off a generated module (`athenea_mat_59f46fb5d63c81ab.slang`):
+
+- *Eleven lobes, in this order, each pushed where its weight is not under 1e-8:* the fuzz (Zeltner's sheen),
+  the coat (a reflecting dielectric on the coat's normal and tangent), the metal twice (under the thin film
+  and bare, `specular_weight` by `thin_film_weight` and by its complement), the dielectric's reflection twice
+  (the same), the transmission (always), the thin wall's subsurface as a diffuse and as a translucent lobe
+  (always), the solid's subsurface (where the wall is not thin), the diffuse base. The pairs are MaterialX's
+  `premultipliedBsdfAdd`: a mix whose weight is connected becomes its two sides weighted and added, and the
+  engine's lobes take nothing from a thin film, so the two of a pair are alike.
+- *The weights*, multiplied in the graph's order so the floats are the same: a multiply's factor clamped to
+  [0, 1]; the thin wall's two halves by their colour factors and mixed half and half; the substrate under the
+  reflection's throughput (the two reflections' added, max(a + b - 1, 0)); by 1 - metalness; the darkening and
+  the coat's attenuation; under the coat's throughput; under the fuzz's.
+- *The marks:* the transmission under a reflection at its own index passes whole and is flagged
+  (`kFlagOwnFresnel`), under the first layer that qualifies and not again; and, in a kernel that asks
+  (`kAtheneaMarkLobes`), a layer more over every lobe of a base that weighs something, at each of the three
+  layers, and the tint of each colour multiply.
+
+Two things the graph computed and the node does not, neither reaching a lobe: the metal's throughput (a metal
+is never a top), and the layer of the transmission over `anisotropic_vdf`, whose throughput is one in the pass
+the lobes are built in.
+
+`lobesPushed` counts the node as eleven, so the stacks are as deep as with the graph. **The switch:**
+`ATHENEA_OPENPBR_GRAPH` set to anything in the environment keeps MaterialX's graph (the one node is the
+default; the genglsl reference always keeps the graph).
+
+**Pictures, the node against the graph** (`athenea compare`, 1920x1080, 32 paths, `--path-samples 8`, Metal,
+M5 Pro, `build/pt-exp`):
+
+| stage | bounces | relMSE | 8-bit p99 / max | PSNR | the largest relative difference |
+|---|---|---|---|---|---|
+| the materials stage (twelve OpenPBR balls) | 0 | 5.3e-14 | 0 / 0 | 143.8 dB | 0.00075 |
+| | 3 | 1.6e-13 | 0 / 0 | 137.8 dB | 0.00098 |
+| Sponza with the glass and chrome knights, `--ray-margin 2e-5` | 0 | 0 | 0 / 0 | bit for bit | 0 |
+| | 3 | 0 | 0 / 0 | bit for bit | 0 |
+| nineteen OpenPBR features, the materials stage's view | 0 | 1.9e-13 | 0 / 0 | 137.1 dB | 0.00090 |
+| | 3 | 1.6e-13 | 0 / 0 | 138.5 dB | 0.00082 |
+| the same stage, a view with all its balls in frame | 0 | 1.4e-13 | 0 / 0 | 138.5 dB | 0.00090 |
+| | 3 | 2.0e-13 | 0 / 0 | 135.0 dB | 0.00090 |
+
+Where the two differ it is by the last bit of the EXR's half float (2^-10 = 0.00098 relative) in a few pixels:
+the node's products are the graph's in the graph's order, and what is left is taken to be the compiler joining
+a multiply and an add differently in two differently shaped functions -- a guess: the pixels were not looked
+at one by one, and the difference was not removed.
+
+The nineteen features, a ball each (the materials stage's generator with another list; the stage is not in
+the repository): a coat with a colour, darkening and its own index; half a coat, anisotropic, over half a
+metal; fuzz; fuzz over a coat; a thin film over a metal, over a plastic (weight one, so the bare reflection is
+not pushed) and over glass; subsurface whole and half; a thin wall's subsurface; a thin wall's glass;
+transmission with dispersion; with depth and scatter; half transmission; emission under a tinted coat;
+opacity 0.5; an anisotropic metal; half metal with a specular colour and weight; and one with every weight
+between zero and one.
+
+That each route is the route it says: the generated modules dumped for each (`ATHENEA_SHADER_DUMP`) hold one
+call of the node and no `athenea_layer_bsdf` on one route, three layers and no node on the other; and with the
+node broken on purpose in the build's copy of the shaders (the diffuse at half its weight) the node route's
+picture of the materials stage changes (relMSE 7.3e-3, 8-bit p99 51) and the graph route's is bit for bit its
+own.
+
+**Seconds**, the whole `athenea stage` command, one run each, the two routes in one build, 66 M paths:
+
+| | node | graph |
+|---|---|---|
+| materials stage: one path, no bounce, first run / again | 19.9 / 11.1 | 25.6 / 11.3 |
+| 32 paths, no bounce | 12.5 | 13.1 |
+| 32 paths, three bounces | 20.9 | 25.7 |
+| **the first hit and its light** | **1.4** | 1.8 |
+| **a bounce** | **2.8** | 4.2 |
+| Sponza: one path, no bounce, first run / again | 62.0 / 35.8 | 63.1 / 36.7 |
+| 32 paths, no bounce | 38.5 | 40.3 |
+| 32 paths, three bounces | 58.4 | 70.8 |
+| **the first hit and its light** | **2.7** | 3.6 |
+| **a bounce** | **6.6** | 10.2 |
+| the nineteen features: 32 paths, no bounce / three bounces | 15.1 / 27.4 | 15.6 / 34.4 |
+| **a bounce** | **4.1** | 6.3 |
+
+The graph's figures are the afternoon's (3.8 and 10.3 in Sponza). A bounce is two thirds of what it was in
+all three stages. What the knights' glass still costs Sponza's bounces over a stage without it was not
+measured again.
+
+*The kernel's first compile* is not told apart by these runs: the first run of a stage is 9 s over the second
+with the node and 14 s with the graph on the materials stage, 26 s with either in Sponza, and the first run
+ever of the features stage was 39.8 s on both routes -- a first run also loads and builds what the second
+finds made, and the materials stage had been run on both routes before these.
+
+Tests, Metal, the node the default: `athenea_material_tests` (593 assertions in 12 cases) and
+`athenea_technique_tests` (2862 in 64) pass; of the 172 tests not marked slow whose names speak of materials,
+lobes, glass, coats, opacity, coverage, path tracing, emission, bakes or thin walls, 171 pass, and the one
+that does not (`sheet_glass_draws_whole`) is NEU34's and fails the same with `ATHENEA_OPENPBR_GRAPH` set.
+
+Not done: a test that holds the two routes to one stack (a MaterialX update that changes its graph would
+leave the node behind and only the reference tests, which compare responses within a tolerance, would say);
+CUDA and Vulkan, where neither the pictures nor the times were taken; the raster's shading and `shoot` timed
+with the node; `standard_surface` and `gltf_pbr`, whose graphs are as they were; the node's thread memory
+taken further (its one BSDF value could be the stack itself); a view of Sponza with no glass in sight; the
+first compile measured from a cold cache; OpenPBR inputs driven by textures compared route against route
+(the tests draw them, the stages here do not).

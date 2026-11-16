@@ -335,7 +335,9 @@ comprobación.
   `lobesPushed` (`technique/src/MaterialPrograms.cpp`) con cuántos empuja:
   las pilas de lóbulos tienen la profundidad que pueden empujar los
   materiales del frame, y un nodo que la cuenta no conoce no empuja nada en
-  ellas: sus lóbulos se descartan y nadie avisa.
+  ellas: sus lóbulos se descartan y nadie avisa. Una superficie cuyo grafo es
+  un solo nodo (`athenea_preview_bsdf`, cinco; `athenea_open_pbr_bsdf`, once) se
+  añade con todos los que empuja.
 
 ## 2. Las reglas, y qué evita cada una
 
