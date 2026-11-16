@@ -23810,3 +23810,12 @@ points at the kernel as a whole -- one compute kernel holding every material, th
 over samples and bounces -- rather than at any of its steps, and at many small kernels (a bounce a dispatch, the
 live paths compacted) as the change that would matter. It is not measured which property of the kernel it is: a
 capture on the device is still the next step, and now the only one left.
+
+## `shoot --groups-only` at 1080p (16 Nov)
+
+The two lamps added to the 1080p Sponza scene shot without them (8 366 012 gaussians, 20 views): 2058 s, where one
+lamp took 2428 s as a pass of its own (two: about 4856 s). The four views not taken, lamps on: 27.90, 22.82, 25.90,
+24.22 dB; the scene found with its lamps by the same paths (`--light-groups` alone, 2195 s for everything) reads
+27.35, 22.91, 25.71, 24.20. So at 1080p a scene with two lamps is 2195 s by the same paths, or 2339 + 2058 = 4397 s
+shot without them and the lamps added, up to 0.55 dB better on one view and within 0.2 dB on the others; a pass a
+lamp was 7195 s.
