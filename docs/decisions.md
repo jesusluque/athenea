@@ -24196,3 +24196,47 @@ follows from it: the copies taken out (the state handed on in place and written 
 smaller, and a stack sized to what a frame's materials leave standing rather than to what their source pushes.
 Even at one lobe a bounce is 4.9 s for 66 M paths, 27 M rays a second, so the rest of the state is next after the
 stack.
+
+## Where the unlit workflow's dB go: light no group holds, and what a layer costs (16 Nov)
+
+NEU32, measured by a subagent (scripts, logs, references and pictures in `build/night/agent-db`, not in the
+repository). Sponza with its two lamps, 960x540, the four views not taken, against `ref_all`; dB / SSIM.
+
+| what | k10 | k45 | a | b |
+|---|---|---|---|---|
+| no group at all: every light kept by the frame that made the gaussian | 28.34 / 0.896 | 23.44 / 0.788 | 26.41 / 0.874 | 24.47 / 0.834 |
+| the lit baseline (`clean.aths`: the day kept by the frame, the lamps as layers) | 27.95 / 0.875 | 22.76 / 0.765 | 25.81 / 0.844 | 24.24 / 0.814 |
+| every light a group in the shoot itself, the light no group holds kept | 27.77 / 0.889 | 22.51 / 0.791 | 25.61 / 0.864 | 24.08 / 0.836 |
+| the same, its layers alone (pictures subtracted) | 27.13 / 0.885 | 22.51 / 0.791 | 25.28 / 0.862 | 24.07 / 0.836 |
+| the lit gaussians with the day as a layer too (pictures) | 27.12 / 0.875 | 22.35 / 0.761 | 25.02 / 0.840 | 24.05 / 0.808 |
+| the unlit workflow as documented | 27.05 / 0.877 | 22.49 / 0.773 | 25.17 / 0.849 | 24.20 / 0.818 |
+| the unlit workflow, its geometry pass at 32 paths, 3 bounces, denoised (706 s) | 27.06 / 0.878 | 22.46 / 0.773 | 25.19 / 0.854 | 24.14 / 0.819 |
+| the unlit workflow plus the light no group holds (pictures added) | 27.66 / 0.880 | 22.49 / 0.773 | 25.51 / 0.852 | 24.21 / 0.818 |
+
+The rows marked as pictures are EXRs added or subtracted outside the engine and then measured by
+`athenea compare`, since a scene's own light cannot be switched off alone in `render`; checked two ways to 57-66 dB.
+
+What it settles:
+
+- **The gaussians are not it.** The same layers over lit gaussians and over unlit ones differ by -0.07 to +0.15 dB,
+  the unlit ones no worse; a geometry pass as costly as a lit shoot gives the lit scene's count of gaussians
+  (2 112 637) and the same dB. The 2 181 715 of the cheap pass are its 4 paths without a denoiser.
+- **Light no group holds** is the larger part at k10 and a: 0.61 / 0.00 / 0.34 / 0.01 dB of a gap of
+  0.90 / 0.27 / 0.64 / 0.04. A frame with every light in a group still leaves a plane "the frame less its groups"
+  that is not empty: the bright studs of the window, a glow beside it, the lantern's bulb, the knights' outlines
+  (mean 2.8e-4 at k10, maximum 6.6). It is light of the lights and not emission -- with the lights off and three
+  bounces the plane is 4.9e-5, maximum 1.3, the studs absent. A lit scene keeps it in its own light; the unlit
+  workflow loses it twice, its geometry pass having no light and `--groups-only` dropping that plane.
+- **A layer costs against light kept by the making frame**: every light as a layer loses 0.4-0.9 dB to none
+  (first row to third), and the lit baseline pays it for its lamps too. In one view, drawn from that view, the
+  layer already loses 1.2 dB to the frame's own; a nearer view added does not mend it, nor `--tolerance`, nor
+  frames at full size. What is left of the unlit workflow's gap once the unattributed light is back
+  (0.29 / 0.27 / 0.30 / 0.03) is this.
+- The "5 % less light" of the unlit scene misled: against the lamps alone its lamps read better than the lit
+  baseline's (29.96 / 23.18 / 27.52 / 25.20 against 29.65 / 22.94 / 27.17 / 24.88), whose layers carry fireflies.
+
+Not done: which route of the path tracer leaves that light outside its light's group (being looked for; the
+colour and the groups are both weighed by the first hit's opacity, so that factor alone is not it); a pass of
+groups keeping that plane; a layer read over a gaussian's footprint rather than at its middle, which is the
+suspect for a layer's general cost and is a guess, not measured. Not measured: 1080p, CUDA, Vulkan, the lamps
+dimmed or tinted.
