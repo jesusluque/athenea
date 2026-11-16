@@ -24419,3 +24419,19 @@ change's.) Tests, Metal: the scene tests (295 assertions) and the 41 QA flows pa
 Not done: a scene continued from one found before this keeps in its layers the depth the old rule stored,
 which the new score is compared with (a layer said anew over the whole run is not affected); k45's SSIM,
 which goes down 0.008 each time and is not looked into; CUDA and Vulkan.
+
+## The published Sponza with every light a group, found again (16 Nov)
+
+`sponza_lights` on the site was found before the day's changes. Found again the same way but its lights' pass
+at 960x540 where it was 480x270 (the path tracer being faster): its geometry at 1080p in 125 s (150 s before)
+and its lights in 306 s (230 s at a quarter of those pixels), 431 s in all against 380. The four views not
+taken at 960x540, against the reference, dB / SSIM:
+
+| | k10 | k45 | a | b |
+|---|---|---|---|---|
+| as published | 27.30 / 0.886 | 22.56 / 0.772 | 25.57 / 0.855 | 24.61 / 0.822 |
+| found again | 27.92 / 0.898 | 22.70 / 0.794 | 26.05 / 0.868 | 24.59 / 0.843 |
+
+Handed on with a level and its history in one file a part: 397 files where 857, 8.64 M gaussians as before.
+In Chrome on the Mac riding the render camera, frames 4, 12 and 20 draw the same counts as the published one.
+Not done: the other published scenes with groups (`lamps`, `sponza_lamps`) found again; a phone.

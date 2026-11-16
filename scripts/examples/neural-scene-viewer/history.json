@@ -71,6 +71,11 @@
       "date": "2026-11-16",
       "what": "A part's history in one file: what a frame found that a later one took out is kept in the order of the frame it stands until, and the player draws it from a count on. The chrome scene is 379 files where it was 3868.",
       "scene": "sponza_chrome"
+    },
+    {
+      "date": "2026-11-16",
+      "what": "A group's light on a gaussian is read from the view that sees it a pixel wide, not from the nearest eye. Sponza with every light a group, found again with the day's changes: 27.92 dB where 27.30 (a view not taken), 397 files where 857.",
+      "scene": "sponza_lights"
     }
   ]
 }
