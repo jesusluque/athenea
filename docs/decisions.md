@@ -23958,3 +23958,26 @@ what a later frame refined is not there to draw at that frame, and what shows bl
 without light. (b) The chrome knight seen from a hand away is black facets in both: the page's chrome, the facets
 NEU28 already names. The glass and mirrors are shaded in both (40 of 40 meshes). I took the first picture of the
 new scene for a fault of it without the other beside it. The scene is put with the site's.
+
+## Where the unlit scene's dB go: three causes ruled out (16 Nov)
+
+The scene found unlit with every light a group reads 0.3 to 0.9 dB under the scene found lit with a pass a lamp
+(Sponza, 960x540: 27.06, 22.48, 25.18, 24.21 against 27.94, 22.76, 25.81, 24.24), its SSIM the same or over. Tried,
+each on the same four views not taken:
+
+| what was changed | dB: k10, k45, a, b | SSIM |
+|---|---|---|
+| as it was: four paths for the geometry, the lights from 480x270, the ratio held to 4 | 27.06, 22.48, 25.18, 24.21 | 0.877, 0.773, 0.850, 0.818 |
+| the geometry from 32 paths, denoised (262 s for 78 s) | 27.07, 22.46, 25.19, 24.14 | 0.878, 0.773, 0.855, 0.819 |
+| the lights from the scene's own 960x540 | 27.03, 22.54, 25.30, 24.11 | 0.882, 0.789, 0.856, 0.834 |
+| the ratio of base colours held to 2 | 27.05, 22.49, 25.17, 24.21 | 0.877, 0.773, 0.849, 0.818 |
+
+None is it: not the geometry's few paths (so four are enough), not the size of the lights' frames, not the ratio's
+spikes. Held to 2 the brightest gaussian of a view falls from 27.6 to 6.6 (the reference's brightest pixel is 5.1)
+with nothing else changed, and 2 is kept (the sections above say four: it was four when they were measured). The
+mean light is 0.0343 where the lit scene's is 0.0362 and the reference's 0.0386: about 5% less light, which is in
+the direction of the dB and is not explained -- what a gaussian sends being read from the nearest view's frame
+rather than kept from the frame that made it is what is left unlooked at.
+
+The commit before this one (23a1f103) says in its message that this section was written with it: it was not, the
+script that wrote it having stopped early; the manuals' "held to twice" and the kernel's 2 were in it.

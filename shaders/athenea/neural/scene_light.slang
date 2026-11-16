@@ -116,7 +116,7 @@ void sceneRelight(uint3 tid: SV_DispatchThreadID) {
         // the ones the scene was found from says a surface's texture coarsely, and the gaussian keeps its own
         // base colour at the scene's detail: what the pixel sends over its base colour is the light on the
         // surface, and times the gaussian's base colour it is what that gaussian sends. Only where the pixel
-        // has a base colour to speak of and the gaussian lets no light through; held to four times.
+        // has a base colour to speak of and the gaussian lets no light through; held to twice.
         float3 sent = light;
         if (params.overBase != 0u && !(params.hasPbr != 0u && pbrTransmission(pbr[i]) > 0.02)) {
             const float3 of = frameBase[params.baseAt + at].rgb;
