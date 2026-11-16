@@ -814,6 +814,25 @@ public struct LobeStack {
     public float  opacity;
 };
 
+/// A stack copied as far as it holds lobes: an assignment copies all kMaxLobes of them, whatever the
+/// count, and a kernel is sized to the material of its stage that pushes most -- a stage of two-lobe
+/// surfaces and one of eleven copied eight lobes at every vertex (docs/decisions.md, 16 Nov).
+public void copyStack(inout LobeStack to, __constref LobeStack from) {
+    to.count = from.count;
+    to.emission = from.emission;
+    to.opacity = from.opacity;
+    for (uint k = 0; k < from.count; ++k) {
+        to.lobes[k] = from.lobes[k];
+    }
+}
+
+/// And emptied where it is.
+public void clearStack(inout LobeStack stack) {
+    stack.count = 0;
+    stack.emission = float3(0.0);
+    stack.opacity = 1.0;
+}
+
 public LobeStack emptyStack() {
     LobeStack stack;
     stack.count = 0;

@@ -181,7 +181,7 @@ public void atheneaBeginMaterial(__constref MaterialInputs inputs, uint blob) {
     atheneaBeginInputs(inputs, blob);
     gAtheneaLobeCount = 0;
     gAtheneaThinWalled = false;
-    gAtheneaResult = emptyStack();
+    clearStack(gAtheneaResult);
 }
 
 /// What a mesh with no material shows: its displayColor, diffusely, with its

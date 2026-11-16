@@ -1164,6 +1164,23 @@ struct Shaded {
     float3         geometricNormal;   // world, unit: the triangle's own, which a ray leaving it leaves by (leaveSurface)
 };
 
+/// A shading state copied with its stack as far as that holds lobes (copyStack).
+void copyShaded(inout Shaded to, __constref Shaded from) {
+    copyStack(to.stack, from.stack);
+    to.inputs = from.inputs;
+    to.toEye = from.toEye;
+    to.depth = from.depth;
+    to.categoriesLo = from.categoriesLo;
+    to.categoriesHi = from.categoriesHi;
+    to.valid = from.valid;
+    to.coverage = from.coverage;
+    to.transparent = from.transparent;
+    to.rowFlags = from.rowFlags;
+    to.rayOrigin = from.rayOrigin;
+    to.rayT = from.rayT;
+    to.geometricNormal = from.geometricNormal;
+}
+
 /// Evaluates whatever material a surface wears. `pixel` is only the uv
 /// footprint's: materialInputsAt takes it from the neighbouring pixels' rays,
 /// which is right for the camera's hit and an approximation for a bounce's.
@@ -1176,7 +1193,7 @@ void shadeSurface(uint2 pixel, __constref Surface s, out Shaded out) {
     out.inputs = materialInputsAt(camera, toWorld, pixel.x, pixel.y, s, lookup.time, !kBake);
     const MaterialRecord m = materials[materialRowOf(s)];
     evaluateMaterial(m.function, out.inputs, m.blob);
-    out.stack = gAtheneaResult;
+    copyStack(out.stack, gAtheneaResult);
     // A MeshLightAPI prim's own emission, and an emission group's level.
     out.stack.emission = meshLightEmission(iesValues, meshLightWords, s.instance.flags, out.inputs.inside,
                                            out.stack.emission);
@@ -2426,11 +2443,11 @@ R"(                    }
             const bool cameraHit = !lightStep && bounce == 0 && passed == 0 && !ownRays && !kBake;
             Shaded shaded;
             if (cameraHit && firstShaded) {
-                shaded = first;
+                copyShaded(shaded, first);
             } else {
                 shadeFound(tid, target, shaded);
                 if (cameraHit) {
-                    first = shaded;
+                    copyShaded(first, shaded);
                     firstShaded = true;
                 }
             }
@@ -2556,7 +2573,7 @@ R"(                    }
                     }
                     shaded.stack.emission /= keep;
                 }
-                cur = shaded;
+                copyShaded(cur, shaded);
                 if (cellsMode && bounce == 0) {
                     // Before the body is kept: a glass's transmission is
                     // its dielectric, which the body drops as polish.

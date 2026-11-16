@@ -24606,3 +24606,51 @@ Not done:
 - An antialiased reference: the stage's ids are one sample a pixel, so the figures above hold an edge's
   aliasing on the reference's side as well.
 - CUDA and Vulkan: run on Metal only.
+
+## The path tracer's bounce again: a stack copied as far as it holds lobes (16 Nov)
+
+With the parameters by reference a bounce of 66 M paths was 7 s on the materials stage and 13.6 s in Sponza
+with its two knights. Taken apart in a copy of the sources (a switch in the generated kernel, each cut alone
+and its picture checked to differ from the whole kernel's), Sponza, 1920x1080, 32 paths, seconds a bounce:
+
+| | a bounce |
+|---|---|
+| the whole kernel | 13.6 |
+| no light sampled at a bounce's vertex | 12.9 |
+| the vertex not shaded (the first hit's material stood in) | 3.9 |
+| a fallback material of one lobe in place of the stage's, shaded | 4.0 |
+| textures read with no footprint / with one sixteen times wider | 15.1 / 13.5 |
+| every mesh under one flat UsdPreviewSurface (no texture) | 10.8 |
+| that, its node pushing the diffuse lobe alone | 11.0 |
+| that flat stage without the two knights | 4.2 |
+
+So: a vertex's material is three quarters of a bounce; its textures are 2.8 s of it and their footprint is not
+(no footprint at a bounce's vertex leaves the picture bit for bit and gains nothing); the light sampled is
+under a second; and a flat material of two lobes costs 7 s a bounce *while the knights' materials are in the
+kernel* and almost nothing without them. The kernel's stacks are sized to the material of the stage that
+pushes most (the knights' OpenPBR pushes eleven, so `kMaxLobes` is 8), and an assignment of a stack copies all
+of them whatever its count: where a material leaves its result, where the first hit's shading is kept and
+taken back, where a vertex becomes the path's current one, and where a material begins (an empty stack made
+and assigned).
+
+Those are now `copyStack` (as far as the count) and `clearStack` (`lobes.slang`), and `copyShaded` in the
+kernel. Seconds, 66 M paths, both stages with the knights:
+
+| | first hit and its light, before | now | a bounce, before | now |
+|---|---|---|---|---|
+| Sponza | 9.9 | 3.8 | 13.6 | 10.3 |
+| Sponza under the flat material | 7.8 | 3.5 | 10.8 | 7.9 |
+
+The pictures are bit for bit the ones before (Sponza without bounces and with three; the materials stage with
+three, which went from 36.3 s to 26.7 s in all). Tests, Metal: the 167 not marked slow that speak of opacity,
+glass, lights, lobes, materials, emission, bakes or path tracing -- 166 pass, the one that does not
+(`sheet_glass_draws_whole`) is NEU34's; the scene tests pass (361 assertions).
+
+A mistake on the way, said because two figures given to the user were wrong for an hour: the first version of
+the cuts took the vertex's shading out for every cut numbered three or more, so "a fallback material", "one
+lobe copied" and the three texture footprints all measured a bounce without shading, and the footprint was
+taken for the cause. The table above is from cuts that stand alone.
+
+Not done: what is left between 7.9 s and the 4.2 s of the stage without the knights -- not looked for (their
+glass makes every shadow ray walk rather than stop at the first hit, which is a guess); the other kernels that
+assign a stack (the raster's shading) left as they were; CUDA and Vulkan; `shoot`'s time with this.
