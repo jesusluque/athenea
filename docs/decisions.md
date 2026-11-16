@@ -24167,3 +24167,32 @@ changed. The lobe stack's size is already a link-time constant sized to what the
 
 **Not measured.** The kernel's stack as compiled; whether Metal's back end falls back on anything for a kernel
 this large; the acceleration structure's build flags.
+
+## Settled: a bounce's time is the size of a thread's shading state (16 Nov)
+
+The measure the section above asked for. A second build of the program in a folder of its own (`build/pt-exp`), the
+lobes a stack keeps held by an environment switch made for the measure (the materials stage's materials push 11, so
+the stack is at its most, 8), the same stage and view, 1920x1080, 32 paths in passes of 8; seconds, the stage loaded
+taken off the first hit's, and the first hit's taken off three bounces':
+
+| lobes a stack keeps | kernels compiled and stage loaded, first run | first hit and its light | three bounces | a bounce |
+|---|---|---|---|---|
+| 8 (as it is) | 89.7 | 10.4 | 51.4 | 17.1 |
+| 4 | 53.5 | 5.8 | 31.8 | 10.6 |
+| 2 | 47.1 | 4.7 | 22.6 | 7.5 |
+| 1 | 48.6 | 2.9 | 14.7 | 4.9 |
+
+(This build's 17.1 s a bounce is under the 22.1 s the main build gave the night before on the same command; not
+explained, and the four rows are one run after another.) A bounce's time falls with the stack's size and nothing
+else was changed: about 1.75 s a lobe kept and 3.2 s for the rest. The cause is the one the bare kernel pointed
+at -- a thread's own shading state, held in memory and copied -- and it is confirmed in athenea's kernel. A lobe is
+about 160 bytes, a stack of 8 about 1.3 KB, the shading state (`Shaded`: the stack and a material's inputs) about
+1.8 KB; in the kernel as generated that state is copied whole several times a bounce -- returned by value from the
+shading functions, assigned to the loop's current state, and copied again before each call it is handed to (Slang
+copies a local the loop changes before passing it).
+
+Holding the stack to fewer lobes is not the fix: a material of many lobes would lose all but its heaviest. What
+follows from it: the copies taken out (the state handed on in place and written where it is kept), a lobe made
+smaller, and a stack sized to what a frame's materials leave standing rather than to what their source pushes.
+Even at one lobe a bounce is 4.9 s for 66 M paths, 27 M rays a second, so the rest of the state is next after the
+stack.
