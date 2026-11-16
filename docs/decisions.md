@@ -24122,3 +24122,48 @@ same file to the byte (8 710 465 bytes): the export with history does not darken
 the stage had its lamps, under the sky alone. Whether the site showed it brighter before cannot be checked: the
 earlier export was replaced and the options it was made with were not kept; the other chrome scene exported that
 week (`chrome2`, `gpu_exp3.sh`) was at exposure 3 too and looked as dark in the pictures taken of it. Left as it is.
+
+## The path tracer on the device: the GPU is full, a bare kernel is 450 times faster, and what reproduces the gap (16 Nov)
+
+Measured by an agent of this session, without building: the program as it is, and a Metal program of its own beside
+it (`build/night/agent-pt/bench/rtbench.swift`), both through the machine's GPU queue.
+
+**The program** (materials stage, 1920x1080, 32 paths in passes of 8, three bounces; 92.9 s):
+
+- The device is busy 99.95% of the time from the first pass to the last (`ioreg -r -d 1 -c IOAccelerator`): no idle
+  time between dispatches. One command buffer a pass, one dispatch of the whole frame in it.
+- The main thread waits: 210 to 226 of every 211 to 228 samples are in `Device::waitIdle` →
+  `waitUntilCompleted` (`sample`); 0.5 s of CPU in 81 s of tracing. Nothing compiles during a pass.
+- Of the 92.9 s: about 7 s the stage opened and framed, 4 s kernels compiled and data uploaded, 81 s the four
+  passes (20.2 s each, 19.4 to 20.4), 1.3 s the picture written.
+- What gave nothing here: `xctrace` with the Metal System Trace template (it recorded 40 K and hung), Metal's HUD
+  variables, the system log.
+
+**A bare kernel of the same shape** -- one compute dispatch, 16x16 threads a group, the loop over 8 samples and 3
+bounces inside it, an instanced top-level structure, a random direction from each hit -- on the same machine and
+queue, by the command buffer's own GPU times:
+
+| the bare kernel | million rays a second |
+|---|---|
+| ray queries as Slang emits them | 2750 to 2800 |
+| Metal's intersector in their place | 3170 |
+| 32 samples in the one dispatch | 2700 |
+| 11 bounces | 1900 |
+| 12 scattered reads of a 256 MiB buffer a hit; 48 | 765; 100 |
+| a thread's own array of 64, 256, 1024, 4096 floats, eight writes a bounce | 1200, 656, 136, 40 |
+| that array copied to another and back each bounce: 256 B, 1 KB, 4 KB, 16 KB | 1233, 67.5, 7.4, 1.7 |
+| athenea's kernel | about 6 |
+
+So it is not the machine, the queue's priority, the ray query, the loop over samples and bounces in one kernel, nor
+data fetched: each leaves a hundred million rays a second or more. The one thing that brings the bare kernel to
+athenea's rate is a thread's own state held in memory and copied by value -- 4 KB copied twice a bounce is 7.4 M
+rays a second. The kernel as generated holds 13 locals of `Shaded` (a lobe stack and a material's inputs; about
+1.7 KB by the agent's count at eight lobes), 7 of `LobeStack`, 21 of `Found`, 12 of `Surface`, and its shading
+functions return them by value. That the copies are athenea's cost is inferred from this, not measured in it.
+
+**What would settle it**, and is next: a bounce timed with the thread's state made smaller and nothing else
+changed. The lobe stack's size is already a link-time constant sized to what the frame's materials push
+(`MaterialPrograms.cpp`), so the agent's eight may be more than the kernel has; the measure is to hold it to one.
+
+**Not measured.** The kernel's stack as compiled; whether Metal's back end falls back on anything for a kernel
+this large; the acceleration structure's build flags.
