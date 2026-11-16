@@ -23726,3 +23726,28 @@ and a folder dropped on the page were not exercised.
 
 **The night's commits on the other two backends** (ixwin, RTX 3070, at ba2cc3f1): the scene tests pass on CUDA
 under WSL and on Vulkan on Windows (295 assertions in 12 cases each), and the QA flows on Vulkan, 40 of 40.
+
+## Several lamps added to a scene found, for one path tracing of the walk (`shoot --groups-only`, 16 Nov)
+
+Adding a lamp to a scene already found, with a path tracer's light, was a pass of `--light-group` a lamp: the walk
+path traced again under that lamp alone (Sponza at 960x540, 20 views: 566 s and 702 s for its two lamps; 2428 s
+one lamp at 1080p). `--light-groups NAME=PATH --groups-only` is that pass for several groups at once: the lights in
+no named group are switched off, each view is traced once and each group's plane of it is kept as its layer.
+
+| Sponza, two lamps added to the scene shot without them, 960x540, 20 views | seconds | lamps on: k10, k45, a, b (dB) | warm at half, spot tinted |
+|---|---|---|---|
+| a pass a lamp | 566 + 702 = 1268 | 27.94, 22.76, 25.81, 24.24 | 28.78, 24.00, 26.77, 25.42 |
+| `--groups-only`, one pass | 562 | 28.03, 22.82, 25.86, 24.28 | 28.85, 24.03, 26.81, 25.45 |
+
+Less than half the time and nothing lost: every path goes to one of the lamps, where found with the scene
+(`--light-groups` alone) the lamps share the frame's paths with the sun and the sky, which is the likely reason
+that one reads up to 0.5 dB under. A scene with its lamps for the time of two walks rather than three -- the scene
+with the lamps off (548 s), then this (562 s) -- reads as the three passes do. A light's plane holds no light of
+what glows, so the `dark` group a pass of `--light-group` wants is not wanted here.
+
+**The player's frame rate.** Headless Chrome on the Mac gave 18 frames a second for the whole 1080p scene and 10
+for its level of detail, then 6 for both a run later: not a measure. Chrome on ixwin (RTX 3070, the published
+page): 60 for the whole scene and 60 for the level, both at the display's rate.
+
+**Not done.** `--groups-only` at 1080p. More groups than two. A lamp moved is its group shot again: there is no
+way to move a lamp short of a walk's path tracing but `render --lamps`, which is no path tracer's light.
