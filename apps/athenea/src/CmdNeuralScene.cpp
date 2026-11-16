@@ -2746,19 +2746,31 @@ int runShoot(const SceneOptions& all) {
         }
         size_t next = 0;
         double firstAt = 0.0;
+        // Where a view's time goes, said in its line: the scene brought and drawn for its cover, the frame's
+        // passes (the paths and the denoiser), the looks taken of it, and the groups' light kept.
+        const auto seconds = [](std::chrono::steady_clock::time_point from) {
+            return std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count();
+        };
+        const double beforeSeconds = seconds(began);
+        double pathSeconds = 0.0;
+        double lookSeconds = 0.0;
         const uint32_t firstSnapshot = static_cast<uint32_t>(scene.snapshots.size()) + 1;
         for (uint32_t pass = 0; pass < 65536 && next < levels.size(); ++pass) {
+            const auto passBegan = std::chrono::steady_clock::now();
             if (auto drawn = stage.draw(camera, time, width, height, "rt"); !drawn) return report(drawn.error());
+            pathSeconds += seconds(passBegan);
             const uint32_t has = stage.pathAccumulated();
             const bool whole = stage.pathConverged();
             // The last look waits for the frame to be whole (and denoised, where that was asked).
             while (next < levels.size() &&
                    (next + 1 == levels.size() ? whole : has >= levels[next].second)) {
+                const auto lookBegan = std::chrono::steady_clock::now();
                 if (const int code = takeLook(camera, name, time, levels[next].first, has, next + 1 == levels.size(),
                                               firstSnapshot);
                     code != 0) {
                     return code;
                 }
+                lookSeconds += seconds(lookBegan);
                 if (next == 0) {
                     firstAt = std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count();
                 }
@@ -2768,6 +2780,7 @@ int runShoot(const SceneOptions& all) {
                 break;
             }
         }
+        const auto groupsBegan = std::chrono::steady_clock::now();
         // THE GROUPS' SHARE OF THIS FRAME, KEPT (--light-groups): the frame is whole, and each group's plane of
         // it is read at every gaussian the view shows, as a pass of the group alone would read its frame --
         // of the views that show a gaussian, the nearest one's word stands.
@@ -2898,17 +2911,23 @@ int runShoot(const SceneOptions& all) {
         frame.firstSnapshot = firstSnapshot;
         frame.lastSnapshot = static_cast<uint32_t>(scene.snapshots.size());
         frame.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count();
+        const double groupSeconds = seconds(groupsBegan);
         frame.taken = clock();
         scene.frames.push_back(frame);
+        const auto writeBegan = std::chrono::steady_clock::now();
         if (auto written = io::writeNeuralScene(directory, scene); !written) return report(written.error());
         if (auto grownNow = growBy(frame, static_cast<uint32_t>(scene.frames.size()), true); !grownNow) {
             return report(grownNow.error());
         }
+        const double writeSeconds = seconds(writeBegan);
         out("%s at %g: frame %zu, the scene covered %.1f%% of it before a path was traced (%zu looks taken); a scene to "
             "draw after %.1f s and the whole look after %.1f s; %u gaussians stand in %zu pieces, %zu snapshots; "
-            "for this view %u pieces were read, %zu were on the device already and %u stayed on the disk\n",
+            "for this view %u pieces were read, %zu were on the device already and %u stayed on the disk "
+            "(the scene brought and its cover drawn %.1f s, the frame's passes %.1f, its looks %.1f, the groups' light kept "
+            "%.1f, the scene written %.1f)\n",
             name.c_str(), time, scene.frames.size(), 100.0 * covered, levels.size(), covered >= all.coveredEnough ? 0.0 : firstAt,
-            frame.seconds, standing, scene.pieces.size(), scene.snapshots.size(), read, kept, left);
+            frame.seconds, standing, scene.pieces.size(), scene.snapshots.size(), read, kept, left, beforeSeconds, pathSeconds,
+            lookSeconds, groupSeconds, writeSeconds);
         return 0;
     };
 

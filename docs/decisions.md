@@ -24807,3 +24807,33 @@ with the node; `standard_surface` and `gltf_pbr`, whose graphs are as they were;
 taken further (its one BSDF value could be the stack itself); a view of Sponza with no glass in sight; the
 first compile measured from a cold cache; OpenPBR inputs driven by textures compared route against route
 (the tests draw them, the stages here do not).
+
+## The shoots' times of 16 Nov include the thermal guard's stops (16 Nov, late)
+
+The 1080p shoot was run again with OpenPBR as one node: 933 s, then 913 s with each view's time said in its
+line (`shoot` now prints, a view: the scene brought and its cover drawn, the frame's passes, its looks, the
+groups' light kept, the scene written). All but a few seconds of a view are the frame's passes, 23-29 s a view
+-- and two views of the twenty took 174 s and 184 s. Not the views: the same camera is 27 s by `athenea stage`
+and 29 s as the second view of a short shoot, with or without light groups or the denoiser. It is the GPU
+queue's guard (`~/luc/athenea-gpu/guard.sh`), which stops a job while the Mac's thermal pressure is off nominal
+and for 60 s after: two stops of about 150 s in each of these shoots, written in its log.
+
+So the day's shoot times, wall and with the stops the guard's log gives each job taken off (the log names the
+job's script, not the command inside it, so where a job ran more than the shoot the second figure is a bound):
+
+| Sponza at 1080p, two lamps, twenty views | wall | the guard's stops | working |
+|---|---|---|---|
+| the day before (`gpu_hd.sh`) | 2195 s | 576 s | about 1620 s |
+| structs by reference | 1160 s | 134 s | about 1030 s |
+| stacks copied by their count | 1069 s | 315 s in the shoot (460 s in the job) | about 750 s |
+| OpenPBR as one node | 933 s | 289 s | about 645 s |
+| the same, timed a view | 913 s | 305 s | 608 s |
+
+The last row is exact (the two stopped views are named by the log's times): 608 s, of which the first view is
+67 s (kernels compiled, the stage loaded) and the other nineteen 23-32 s each. Against the day before that is
+about 2.7 times, not the 2.4 the wall times give. Shorter timings of the day (a stage drawn in under two
+minutes) were mostly between stops; the two odd ones noted earlier (448 s where 320 s; a first run of 69 s)
+are of this kind and were not looked up one by one.
+
+Flat Sponza after OpenPBR as one node, the frame-12 view, 66 M paths: 2.2 s the first hit and 5.5 s a bounce
+with the knights' own materials (3.5 s and 7.9 s before), 1.8 s and 3.0 s without the knights.
