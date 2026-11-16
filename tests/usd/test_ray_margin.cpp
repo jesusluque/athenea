@@ -34,9 +34,9 @@ namespace {
 constexpr uint32_t kWidth = 96;
 constexpr uint32_t kHeight = 64;
 
-/// A box of six separate walls, a hundred units a side, centred `far` units
+/// A box of six separate walls, a hundred units a side, centred `away` units
 /// along x, a dome all round it and a camera inside looking at a corner's joins.
-fs::path stage(float far) {
+fs::path stage(float away) {
     const fs::path dir = fs::temp_directory_path() / "athenea-tests" / "ray_margin";
     fs::create_directories(dir);
     const fs::path path = dir / "closed_box.usda";
@@ -54,7 +54,7 @@ fs::path stage(float far) {
             corner[c][axis] = side;
             corner[c][(axis + 1) % 3] = u[c];
             corner[c][(axis + 2) % 3] = v[c];
-            corner[c][0] += far;
+            corner[c][0] += away;
         }
         out << "def Mesh \"Wall" << wall << "\"\n{\n    uniform bool doubleSided = 1\n"
                "    int[] faceVertexCounts = [4]\n    int[] faceVertexIndices = [0, 1, 2, 3]\n    point3f[] points = [";
@@ -67,7 +67,7 @@ fs::path stage(float far) {
            "    float horizontalAperture = 24.576\n    float verticalAperture = 16.384\n"
            "    float2 clippingRange = (0.1, 10000)\n"
            "    double3 xformOp:translate = ("
-        << far << ", 0, 30)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
+        << away << ", 0, 30)\n    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n}\n";
     return path;
 }
 

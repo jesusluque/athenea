@@ -24452,3 +24452,42 @@ The four views not taken at 960x540 against the reference, dB / SSIM:
 Handed on with its history in one file a part: 330 files where 774. In Chrome on the Mac, riding the render
 camera, frames 4, 12 and 20 draw the same counts as the published one. Not done: `lamps` (the 960x540 scene)
 found again; where the other half of a view's time goes at 1080p, now that the paths are not most of it.
+
+## The day's two path tracer changes on ixwin: CUDA and Vulkan (16 Nov)
+
+A subagent, on the RTX 3070 Laptop (WSL2 Ubuntu / CUDA and native Windows / Vulkan), the trees there brought
+from e7406db4 to 52e7b23a; scripts and outputs in `build/night/agent-ixwin2`.
+
+- **Builds**: both, no shader or C++ error from the `__constref` parameters, and no kernel refused at run time
+  in anything that ran. `athenea_usd_tests` did not compile under MSVC before or after: `test_ray_margin.cpp`
+  named a variable `far`, a macro of the Windows headers (renamed here with this section).
+- **Tests on 52e7b23a**, all passing: `athenea_render_tests "[scene]"` 295 assertions on each;
+  `athenea_material_tests` 593 (CUDA) and 695 (Vulkan); `athenea_technique_tests` 917 with 35 cases skipped
+  (CUDA: no rasterisation, no ray queries, no OptiX in WSL) and 2862 (Vulkan);
+  `athenea_usd_tests "[path],[glass],[lights],[emissive]"` 170 with 55 skipped (CUDA) and 1020 (Vulkan); the
+  QA flows 41 of 41 on each.
+- **Pictures, before against after**: bit for bit the same on the materials stage on both and on Sponza
+  without bounces; Sponza with three bounces on Vulkan differs in 72 pixels of 921 600 (relMSE 4e-8), all of
+  them the second commit's (the first alone is bit for bit e7406db4) -- not checked to be where a bounce sees a
+  light through a pane.
+- **The path tracer's time, Vulkan**, the materials stage, runs short enough not to throttle, frame time:
+
+| | before, a bounce | after, a bounce |
+|---|---|---|
+| 1280x720, 16 paths in passes of 2 | 1.63 s | 1.27 s |
+| 640x360, 4 paths | 0.12 s | 0.08 s |
+
+  So a fifth to a third faster there, where Metal is 2.4 times: the copies Slang writes cost Metal's compiler
+  far more than they cost SPIR-V's. **On CUDA the path tracer cannot be timed**: without OptiX in WSL `--technique
+  rt` traces no bounce on this branch (0 and 3 bounces give one picture), so the path tracing kernel was never
+  compiled for CUDA and `__constref` is verified there only in the kernels the tests and the first hit use.
+
+Found on the way and not explained (NEU35): on Vulkan the materials stage in passes of 8 paths takes about
+210 s where passes of 2 take 7-8 s for the same 16 paths, memory at 3.4-4.3 GB of 8 in both; Sponza with three
+bounces takes either about 24 s or 225-260 s with the same binary and the same picture; and the laptop's GPU
+throttles after about 95 s of load (clock from 1400-1575 MHz to 210-255), so no run longer than that measures
+anything there. `athenea compare` still has no device on Windows/Vulkan (NEU17); the pictures were compared by
+the WSL build.
+
+Not done: the full usd suite there (62 of about 195 cases by tag); D3D12; the later commits of the day (a
+part's history in one file, a layer's view) on ixwin.
