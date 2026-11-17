@@ -16,6 +16,8 @@
     ?frame=<n>       where the timeline is: so many frames of the scene as it grew, or a camera of the walk
     ?ride=1          riding the render camera
     ?light.<group>=<level>   a group of lights at a level other than the one it was shot at (0 to 2)
+    ?object=<prim path>      the object chosen: the gaussians made from the stage's prims at or under that path
+    ?object.view=<how>       how it is shown: matte, isolate or highlight (highlight where it is not said)
 -->
 <head>
   <meta charset="utf-8">
@@ -63,6 +65,21 @@
     .options .row input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
     .options .note { color: var(--dim); font-size: 10px; margin: 2px 0 0; }
     .options .close { min-width: 0; padding: 0 8px; }
+    /* THE OBJECTS: the stage's prims as a tree by their paths, and a box that finds one by a part of its path. */
+    .options .row input[type=search] { flex: 1; min-width: 0; background: #15151d; color: var(--fg);
+      border: 1px solid var(--dim); border-radius: 5px; padding: 3px 6px; font: inherit; }
+    .objects { max-height: 230px; overflow-y: auto; margin: 4px 0 0; padding: 4px 2px; border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 6px; font: 11px ui-monospace, Menlo, monospace; }
+    .objects details { margin-left: 10px; }
+    .objects > details, .objects > .leaf { margin-left: 0; }
+    .objects summary { cursor: pointer; white-space: nowrap; }
+    .objects .leaf { margin-left: 22px; white-space: nowrap; }
+    .objects > .leaf { margin-left: 12px; }
+    .objects button { min-width: 0; border: none; padding: 1px 4px; border-radius: 4px; font: inherit; text-align: left; }
+    .objects button:hover { background: rgba(255, 255, 255, 0.12); }
+    .objects button.chosen { background: var(--accent); color: #0b0d12; font-weight: 600; }
+    .objects .count { color: var(--dim); }
+    .objects button.none { color: var(--dim); opacity: 0.6; }
 
     /* A PHONE: the text folds to its title (the i opens it, and the credits are inside it, off the
        controls); the controls are a bar at the bottom in two rows, the timeline whole across the first,
@@ -90,6 +107,8 @@
       .options .row { min-height: 44px; }
       .options .row input[type=checkbox] { width: 22px; height: 22px; }
       .options .row select { min-height: 36px; }
+      .options .row input[type=search] { min-height: 36px; }
+      .objects button { min-height: 32px; }
       .options button { min-height: 44px; }
     }
   </style>
@@ -122,6 +141,17 @@
     <div class="row"><span>Scene</span><select id="optScene"></select></div>
     <div class="row"><span>Detail</span><select id="optDetail"></select></div>
     <p class="note" id="detailNote"></p>
+    <div id="optObjects" hidden>
+      <h3>Objects</h3>
+      <div class="row"><span>Show</span><select id="optObjectView">
+        <option value="off">the scene as it is</option>
+        <option value="highlight">the object tinted</option>
+        <option value="isolate">the object alone</option>
+        <option value="matte">its matte, white on black</option></select></div>
+      <div class="row"><span>Find</span><input type="search" id="optObjectFind" placeholder="part of a path" autocomplete="off" spellcheck="false"><button id="optObjectNone">None</button></div>
+      <div class="objects" id="optObjectTree"></div>
+      <p class="note" id="objectNote"></p>
+    </div>
     <h3>Picture</h3>
     <div class="row"><span>Resolution</span><input type="range" id="optPixels" min="0.5" max="2" step="0.25"><output id="outPixels"></output></div>
     <div class="row"><span>Field of view</span><input type="range" id="optFov" min="20" max="100" step="1"><output id="outFov"></output></div>
@@ -440,6 +470,110 @@
         try { const of = await (await fetch(urlOf(`${g.stem}.json`), { cache: "no-store" })).json(); g.parts = of.parts; g.levels = of.levels ?? []; }
         catch (error) { g.parts = null; }
       }
+      // OBJECTS. A scene handed on with which prim each gaussian was made from (index.prims: the stage's prims,
+      // a path and its Cryptomatte id each, and beside every file an `ids` file: sixteen bits a gaussian in the
+      // file's order, a place in that list counted from one, 0 for none) shows an object by itself: the
+      // gaussians of the prims at or under a path. Its matte -- those white and every other black, by the
+      // same blend, so what stands in front takes its share: the matte from this camera -- the object alone,
+      // or the scene with the object tinted. An id is read once a file into a texture, a texel a gaussian;
+      // the prims chosen are a texture of their own, a texel a prim, so choosing another writes that one alone.
+      // The modifier is a mesh's last: after its groups' light and after glass and chrome are shaded, which
+      // both make a colour the matte is to replace. An index without `prims` has none of this.
+      const objectViews = ["off", "highlight", "isolate", "matte"];
+      const prims = Array.isArray(index.prims) ? index.prims.filter((p) => typeof p?.path === "string") : [];
+      const pickHigh = Math.max(Math.ceil((prims.length + 1) / groupWide), 1);
+      const pickTexels = new Uint8Array(groupWide * pickHigh * 4);
+      const pickTexture = new THREE.DataTexture(pickTexels, groupWide, pickHigh, THREE.RGBAFormat, THREE.UnsignedByteType);
+      pickTexture.magFilter = THREE.NearestFilter; pickTexture.minFilter = THREE.NearestFilter;
+      pickTexture.needsUpdate = true;
+      const objects = {
+        prims, path: "", view: "off", chosen: 0,
+        gaussians: new Float64Array(prims.length + 1),                  // a prim's among what stands, as they are read
+        how: dyno.dynoFloat(0),                                         // 0 as it is, 1 tinted, 2 alone, 3 matte
+        tint: dyno.dynoVec3(new THREE.Vector3(1.0, 0.42, 0.08)),
+      };
+      window.__objects = objects;
+      const howNow = () => (objects.path ? objectViews.indexOf(objects.view) : 0);
+      const matteShown = () => objects.path !== "" && objects.view === "matte";
+      // A prim is of the object where it is at the path or under it, as the engine's `render --matte` reads one.
+      const under = (prim, path) => path === "/" || prim === path || (prim.length > path.length && prim.startsWith(path) && prim[path.length] === "/");
+      const idsTexture = async (file, count, counted) => {
+        // A file of sixteen bits a gaussian inside gzip, which the browser undoes: two bytes a texel, as they are.
+        const local = window.__sceneBlobs?.get(file);
+        const packed = local ?? await (await fetch(urlOf(file))).blob();
+        const bytes = new Uint8Array(await new Response(packed.stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+        // How many gaussians each prim has among what stands: what the panel says of one, and dims one without.
+        if (counted) for (let i = 0; i + 1 < bytes.length; i += 2) objects.gaussians[bytes[i] | (bytes[i + 1] << 8)] += 1;
+        const high = Math.max(Math.ceil(Math.max(count, bytes.length / 2) / groupWide), 1);
+        const texels = new Uint8Array(groupWide * high * 2);
+        texels.set(bytes.subarray(0, texels.length));
+        const texture = new THREE.DataTexture(texels, groupWide, high, THREE.RGFormat, THREE.UnsignedByteType);
+        texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
+        texture.needsUpdate = true;
+        return texture;
+      };
+      // The modifier of a mesh whose ids are `ids`; of one that has none (null), whose gaussians are no object's.
+      const objectsOf = (ids) => dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
+        const inTypes = { gsplat: dyno.Gsplat, how: "float", tint: "vec3" };
+        const inputs = { gsplat, how: objects.how, tint: objects.tint };
+        if (ids) {
+          inTypes.ids = "sampler2D"; inputs.ids = dyno.dynoSampler2D(ids);
+          inTypes.pick = "sampler2D"; inputs.pick = dyno.dynoSampler2D(pickTexture);
+        }
+        const mark = new dyno.Dyno({
+          inTypes, outTypes: { gsplat: dyno.Gsplat }, inputs,
+          globals: () => [dyno.defineGsplat],
+          statements: ({ inputs, outputs }) => dyno.unindentLines(`
+            ${outputs.gsplat} = ${inputs.gsplat};
+            if (${inputs.how} > 0.5 && isGsplatActive(${outputs.gsplat}.flags)) {
+              bool chosen = false;
+              ${ids ? `
+              vec2 word = texelFetch(${inputs.ids}, ivec2(${inputs.gsplat}.index % ${groupWide}, ${inputs.gsplat}.index / ${groupWide}), 0).rg;
+              int prim = int(word.r * 255.0 + 0.5) + 256 * int(word.g * 255.0 + 0.5);
+              chosen = prim > 0 && texelFetch(${inputs.pick}, ivec2(prim % ${groupWide}, prim / ${groupWide}), 0).r > 0.5;` : ""}
+              if (${inputs.how} > 2.5) { ${outputs.gsplat}.rgba.rgb = vec3(chosen ? 1.0 : 0.0); }
+              else if (${inputs.how} > 1.5) { if (!chosen) { ${outputs.gsplat}.rgba.a = 0.0; } }
+              else if (chosen) { ${outputs.gsplat}.rgba.rgb = mix(${outputs.gsplat}.rgba.rgb, ${inputs.tint}, 0.6); }
+            }
+          `),
+        });
+        return { gsplat: mark.outputs.gsplat };
+      });
+      // A mesh's modifiers in the world, in their order: its light (or its shading by the eye), then the objects'.
+      const setWorld = (mesh, first, last) => {
+        const list = [first, last].filter(Boolean);
+        if (list.length > 1) mesh.worldModifiers = list;
+        else mesh.worldModifier = list[0];
+        mesh.updateGenerator();
+      };
+      // A gaussian's colour is made when its mesh says it changed: what is drawn is told that the objects did.
+      const objectsChanged = () => {
+        for (const m of [...meshes.flat(), ...shaded.flat(), ...outgoing]) if (m.objects) m.mesh.updateVersion();
+      };
+      let objectsShown = () => {};   // the panel's, once it is made
+      let applySky = null;           // the sky's, the same: a matte is over black
+      const setObject = (path, view) => {
+        let to = String(path ?? "").trim();
+        while (to.length > 1 && to.endsWith("/")) to = to.slice(0, -1);
+        if (to && !to.startsWith("/")) to = `/${to}`;
+        let count = 0;
+        pickTexels.fill(0);
+        if (to) prims.forEach((p, k) => { if (under(p.path, to)) { pickTexels[(k + 1) * 4] = 255; count += 1; } });
+        pickTexture.needsUpdate = true;
+        objects.path = count > 0 ? to : "";
+        objects.chosen = count;
+        const wanted = objectViews.includes(view) ? view : objects.view;
+        // An object chosen with nothing said of how is tinted; with no object there is nothing to show.
+        objects.view = count > 0 && wanted === "off" && view === undefined ? "highlight" : wanted;
+        objects.how.value = howNow();
+        objectsChanged();
+        objectsShown();
+        applySky?.();
+        showLines();
+        keepAddress();
+      };
+      objects.set = setObject;
+
       // THE VIEW IN THE ADDRESS. The scene, the detail, where the timeline is, whether the render camera is
       // ridden and each group's level are kept in the page's query, in place (no entry in the history), and
       // read back when the page is: an address copied is the view handed on. What else the query says
@@ -465,7 +599,10 @@
           const key = `light.${g.name}`;
           if (Math.abs(g.level - 1) < 1e-6) to.delete(key); else to.set(key, String(Number(g.level.toFixed(2))));
         }
-        const query = to.toString();
+        if (objects.path) { to.set("object", objects.path); to.set("object.view", objects.view); }
+        else { to.delete("object"); to.delete("object.view"); }
+        // A prim's path is kept as it reads: its slashes are not escaped.
+        const query = to.toString().replace(/%2F/gi, "/");
         if (query === location.search.replace(/^\?/, "")) return;
         try { history.replaceState(history.state, "", `${location.pathname}?${query}${location.hash}`); }
         catch (error) { /* a browser that will not: the view is only not kept */ }
@@ -654,7 +791,7 @@
         for (const list of shaded) for (const s of list) {
           // What is set is kept here: Spark's mesh takes a modifier and does not hand it back.
           const wanted = settings.glass && kinds[s.kind].ready ? s.shading : undefined;
-          if (s.applied !== wanted) { s.mesh.worldModifier = wanted; s.mesh.updateGenerator(); s.applied = wanted; }
+          if (s.applied !== wanted) { setWorld(s.mesh, wanted, s.objects); s.applied = wanted; }
         }
       };
 
@@ -708,8 +845,9 @@
       };
       // What of the page's own lines is drawn: the options', and never the frustum while it is ridden.
       const showLines = () => {
-        frustum.visible = settings.frustum && frustumOf !== null && !follow.checked;
-        path.visible = settings.path;
+        // A matte is the gaussians' alone: none of the page's own lines over it.
+        frustum.visible = settings.frustum && frustumOf !== null && !follow.checked && !matteShown();
+        path.visible = settings.path && !matteShown();
       };
 
       const aim = (view) => {
@@ -803,6 +941,11 @@
         // history and its glass and mirrors with it. It is the load at hand that is measured: the coarse
         // level drawn first fills the bar once, and the detail read behind it ("refining") fills it again.
         const weigh = (p) => [p, ...(p.history ?? [])].reduce((sum, span) => sum + countOf({ gaussians: 0, ...span }), 0);
+        // A file's ids, or null where it has none or they cannot be read: its gaussians are then no object's.
+        const idsOf = async (file, count, counted) => {
+          if (!file) return null;
+          try { return await idsTexture(file, count, counted); } catch (error) { return null; }
+        };
         let readHere = 0;         // gaussians read of the part being read
         const tell = () => {
           if (mine !== generation) return;
@@ -842,14 +985,17 @@
               const fileOf = (entry) => typeof entry === "string" ? entry : entry?.file;
               const grouped = !litFirst && groups.length > 0 && groups.every((g) => fileOf(of(g)));
               const based = litFirst ? undefined : fileOf(of(lamp));
+              let light;
               if (grouped || based) {
                 const textures = [];
                 if (grouped) for (const g of groups) textures.push(await groupTexture(fileOf(of(g))));
                 const base = based ? await groupTexture(based) : null;
-                mesh.worldModifier = groupLight(textures, base);
-                mesh.updateGenerator();
+                light = groupLight(textures, base);
               }
-              own.push({ mesh, until, gaussians: span.gaussians ?? 0, cut: span.spans ? cutOf(mesh, 1, span.spans) : null });
+              // Which prim each gaussian was made from, where the scene says: the objects' modifier after the light's.
+              const marks = prims.length > 0 ? objectsOf(await idsOf(span.ids, span.gaussians ?? 0, span === part)) : undefined;
+              if (light || marks) setWorld(mesh, light, marks);
+              own.push({ mesh, until, gaussians: span.gaussians ?? 0, objects: marks, cut: span.spans ? cutOf(mesh, 1, span.spans) : null });
               readHere += span.gaussians ?? 0;
               tell();
             }
@@ -857,7 +1003,9 @@
               if (!made) continue;
               const other = await splatOf(made.file, { extSplats: true });
               await other.initialized;
-              beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0, heart: heartOf(other, made.gaussians ?? 0),
+              const marks = prims.length > 0 ? objectsOf(await idsOf(made.ids, made.gaussians ?? 0, span === part)) : undefined;
+              if (marks) setWorld(other, undefined, marks);
+              beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0, heart: heartOf(other, made.gaussians ?? 0), objects: marks,
                             cut: span.spans ? cutOf(other, which === "glass" ? 2 : 3, span.spans) : null,
                             shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1])) });
               readHere += made.gaussians ?? 0;
@@ -869,6 +1017,7 @@
           meshes.push(own);
           shaded.push(beside);
           applyShading();
+          objectsShown();
           window.__scene.parts = meshes.length;
           readHere = 0;
           if (meshes.length < parts.length) tell();
@@ -923,6 +1072,7 @@
         keeping = keep && outgoing.length > 0;
         meshes = [];
         shaded = [];
+        objects.gaussians.fill(0);
         if (!keeping) { shown = 0; cursor = 0; }
         atEnd = true;
         setPlaying(false);
@@ -956,6 +1106,8 @@
         meshes: shaded.flat().map((s) => ({ kind: s.kind, shaded: Boolean(s.applied), shown: s.mesh.visible, n: s.gaussians })) });
 
       window.__player.kinds = kinds;   // where the glass and the chrome are, for whoever drives the page
+      // And a camera of the walk by its name, aimed through with the scene left as it stands.
+      window.__player.aim = (camera) => { const view = cameras.get(camera); if (view) aim(view); return Boolean(view); };
 
       // TOO SLOW: a coarser level. Once the scene is in, the frames of a few seconds are counted; under
       // fifteen a second with a coarser level to go to, that one is drawn instead, and it is said.
@@ -997,6 +1149,123 @@
         $("detailNote").textContent = "";
         setDetail(settings.detail === "auto" ? autoDetail() : Number(detailSelect.value));
       });
+      // THE OBJECTS' PART OF THE PANEL, where the scene names its prims: how the chosen one is shown, a box
+      // that finds prims by a part of their path, and the prims as a tree by their paths -- a branch chooses
+      // every prim under it. A stage has more prims than a list is read through (Sponza: 117).
+      if (prims.length > 0) {
+        $("optObjects").hidden = false;
+        const viewSelect = $("optObjectView");
+        const find = $("optObjectFind");
+        const tree = $("optObjectTree");
+        const top = { name: "", path: "", kids: new Map(), count: 0 };
+        for (const p of prims) {
+          let node = top;
+          node.count += 1;
+          let at = "";
+          for (const piece of p.path.split("/").filter(Boolean)) {
+            at += `/${piece}`;
+            if (!node.kids.has(piece)) node.kids.set(piece, { name: piece, path: at, kids: new Map(), count: 0 });
+            node = node.kids.get(piece);
+            node.count += 1;
+          }
+        }
+        const buttons = [];
+        // How many gaussians the prims at or under a path have among what stands.
+        const has = (path) => prims.reduce((sum, p, k) => sum + (under(p.path, path) ? objects.gaussians[k + 1] : 0), 0);
+        const buttonOf = (label, path, count, from = path) => {
+          const button = document.createElement("button");
+          button.textContent = label;
+          button.title = path;
+          button.dataset.path = path;
+          button.dataset.from = from;   // a line that stands for several branches in a row: the first of them
+          button.addEventListener("click", (event) => { event.preventDefault(); setObject(button.classList.contains("chosen") ? "" : path); });
+          buttons.push(button);
+          const wrap = document.createDocumentFragment();
+          wrap.append(button);
+          if (count > 1) { const n = document.createElement("span"); n.className = "count"; n.textContent = ` ${count}`; wrap.append(n); }
+          return wrap;
+        };
+        const sorted = (node) => [...node.kids.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+        const draw = (node, into, lead) => {
+          // A branch of one branch is drawn as one line: /World/Scene/Meshes, not three to open.
+          let label = lead + node.name;
+          const from = node.path;
+          while (node.kids.size === 1 && node.count === [...node.kids.values()][0].count) {
+            node = [...node.kids.values()][0];
+            label += `/${node.name}`;
+          }
+          if (node.kids.size === 0) {
+            const leaf = document.createElement("div");
+            leaf.className = "leaf";
+            leaf.append(buttonOf(label, node.path, 1, from));
+            into.append(leaf);
+            return;
+          }
+          const branch = document.createElement("details");
+          branch.dataset.path = node.path;
+          const head = document.createElement("summary");
+          head.append(buttonOf(label, node.path, node.count, from));
+          branch.append(head);
+          for (const kid of sorted(node)) draw(kid, branch, "");
+          into.append(branch);
+        };
+        const drawTree = () => { buttons.length = 0; tree.replaceChildren(); for (const kid of sorted(top)) draw(kid, tree, "/"); };
+        // What the box finds: every prim and every branch whose path holds what was typed.
+        const drawFound = (text) => {
+          buttons.length = 0;
+          tree.replaceChildren();
+          const found = [];
+          const walkDown = (node) => { for (const kid of node.kids.values()) { if (kid.path.toLowerCase().includes(text)) found.push(kid); walkDown(kid); } };
+          walkDown(top);
+          // Those with gaussians first, then the shortest path.
+          found.sort((a, b) => (has(b.path) > 0) - (has(a.path) > 0) || a.path.length - b.path.length || a.path.localeCompare(b.path));
+          for (const node of found.slice(0, 60)) {
+            const leaf = document.createElement("div");
+            leaf.className = "leaf";
+            leaf.append(buttonOf(node.path, node.path, node.count));
+            tree.append(leaf);
+          }
+          if (found.length === 0) tree.textContent = "no prim's path holds that";
+          else if (found.length > 60) tree.append(`… and ${found.length - 60} more: type more of the path`);
+          return found;
+        };
+        let found = [];
+        const drawList = () => {
+          const text = find.value.trim().toLowerCase();
+          if (text) found = drawFound(text); else { found = []; drawTree(); }
+          objectsShown();
+        };
+        find.addEventListener("input", drawList);
+        // Enter takes what was typed as a path where it is one, else the first found.
+        find.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter") return;
+          const typed = find.value.trim();
+          if (typed.startsWith("/") && prims.some((p) => under(p.path, typed.replace(/\/+$/, "") || "/"))) setObject(typed);
+          else if (found.length > 0) setObject(found[0].path);
+        });
+        $("optObjectNone").addEventListener("click", () => { find.value = ""; drawList(); setObject(""); });
+        viewSelect.addEventListener("change", () => {
+          // A way of showing with no object chosen waits for one.
+          if (objects.path) setObject(objects.path, viewSelect.value);
+          else { objects.view = viewSelect.value; objectsShown(); }   // kept for the object chosen next
+        });
+        objectsShown = () => {
+          viewSelect.value = objects.view;
+          for (const button of buttons) {
+            button.classList.toggle("chosen", objects.path !== "" && under(button.dataset.path, objects.path) && under(objects.path, button.dataset.from));
+            // A prim no frame saw has no gaussian: it is there, and dim.
+            button.classList.toggle("none", has(button.dataset.path) === 0);
+          }
+          // The branches down to the one chosen are opened, so it is seen.
+          if (objects.path) for (const branch of tree.querySelectorAll("details")) {
+            if (under(objects.path, branch.dataset.path) && objects.path !== branch.dataset.path) branch.open = true;
+          }
+          $("objectNote").textContent = objects.path
+            ? `${objects.path}: ${objects.chosen} of the stage's ${prims.length} prims, ${has(objects.path).toLocaleString("en")} gaussians`
+            : `${prims.length} prims of the stage; dim, the ones no frame saw. Choose one, or a branch for every prim under it.`;
+        };
+        drawList();
+      }
       // The scenes there are to see, where the site lists them (scenes/scenes.json).
       const sceneSelect = $("optScene");
       sceneSelect.append(new Option(index.title ?? name, name));
@@ -1010,7 +1279,7 @@
         const to = new URLSearchParams(location.search);
         to.set("scene", sceneSelect.value);
         // Another scene: its own detail, timeline and lights.
-        for (const key of [...to.keys()]) if (key === "detail" || key === "frame" || key === "ride" || key.startsWith("light.")) to.delete(key);
+        for (const key of [...to.keys()]) if (key === "detail" || key === "frame" || key === "ride" || key.startsWith("light.") || key === "object" || key.startsWith("object.")) to.delete(key);
         location.search = to.toString();
       });
       const controls = new SparkControls({ canvas });
@@ -1043,7 +1312,7 @@
       ];
       // THE SKY. A found scene holds none: what is behind it is a colour, the option's. The cubes glass and
       // chrome read are not drawn over it: where a mirror looks past the scene it keeps the colour it was found with.
-      const applySky = () => { scene.background = new THREE.Color(settings.sky); };
+      applySky = () => { scene.background = new THREE.Color(matteShown() ? "#000000" : settings.sky); };
       $("optSky").value = settings.sky;
       $("optSky").addEventListener("input", () => { settings.sky = $("optSky").value; remember(); applySky(); });
       applySky();
@@ -1093,6 +1362,10 @@
             // frames wait meanwhile (`roomPass`), so the whole scene is not flashed on the screen.
             const was = meshes.flat().map((m) => [m, m.mesh.visible]);
             roomPass = true;
+            // And the room is the scene as it is, whatever is shown of an object: a matte or an object alone
+            // is of what the eye sees, not of what a mirror does.
+            const marked = objects.how.value !== 0;
+            if (marked) { objects.how.value = 0; objectsChanged(); }
             for (const [m] of was) m.mesh.visible = m.until === 0;
             let texture;
             // The cube is drawn over nothing, not over the sky's colour: its alpha is then how much of the
@@ -1107,6 +1380,7 @@
               scene.background = behindWas;
               renderer.setClearAlpha(alphaWas);
               for (const [m, shownBefore] of was) m.mesh.visible = shownBefore;
+              if (marked) { objects.how.value = howNow(); objectsChanged(); }
               roomPass = false;
             }
             window.__player.step = `${kind.which}: cube drawn`;
@@ -1230,6 +1504,11 @@
       for (const g of groups) {
         const level = params.get(`light.${g.name}`);
         if (level !== null && level !== "" && Number.isFinite(Number(level))) g.set(Math.max(0, Math.min(Number(level), 2)));
+      }
+      // And the object chosen, shown as the address says (tinted where it does not).
+      if (prims.length > 0 && params.get("object")) {
+        const how = params.get("object.view");
+        setObject(params.get("object"), objectViews.includes(how) ? how : "highlight");
       }
       {
         // The detail to end at, and -- where there is a coarser level than that, and the scene is not still

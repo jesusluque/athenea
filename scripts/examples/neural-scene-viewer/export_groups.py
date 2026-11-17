@@ -12,6 +12,11 @@
 # Writes <name>.json and its parts (the scene, groups off), <name>_g_<group>.json and its parts a group,
 # <name>_base.json and its parts (each gaussian's base colour, for the player's own lamp), and "groups" and
 # "base" in <name>.json. Nothing here computes on the data: it runs the engine and edits an index.
+#
+# Where the scene names its prims, the scene's own parts (and the lit levels' and the history's) come with
+# which prim each gaussian was made from -- an .ids file beside each, `prims` in the index -- for the player's
+# objects. A group's parts and the base colours' are the same gaussians in the same order and are written
+# without (--no-prims): the player reads an id from the scene's part.
 import argparse
 import json
 import os
@@ -54,7 +59,7 @@ for group in groups:
     stem = "%s_g_%s" % (args.out, group)
     # The group alone: no light of the scene's own, every other group off, and `dark` taken out of it as a
     # player's level will scale it (it is drawn at minus the levels drawn: one here).
-    export(stem, ["--own-light", "0", "--group", "*=0", "--group", "%s=1" % group] + levels)
+    export(stem, ["--own-light", "0", "--group", "*=0", "--group", "%s=1" % group, "--no-prims"] + levels)
     named.append({"name": group, "stem": os.path.basename(stem)})
 index_path = args.out + ".json"
 index = json.load(open(index_path))
@@ -74,7 +79,9 @@ if args.levels or args.history:
 
     def files_of(part):
         part = part if isinstance(part, dict) else {"file": part}
-        return [f for f in (part.get("file"), (part.get("glass") or {}).get("file"), (part.get("mirror") or {}).get("file")) if f]
+        glass, mirror = part.get("glass") or {}, part.get("mirror") or {}
+        return [f for f in (part.get("file"), glass.get("file"), mirror.get("file"),
+                            part.get("ids"), glass.get("ids"), mirror.get("ids")) if f]
 
     if args.levels:
         index["litLevels"] = lit_index.get("levels", [])
@@ -97,7 +104,7 @@ if args.levels or args.history:
 # And, where the scene keeps them, its base colours: what the player's own lamp is multiplied by. No exposure:
 # a base colour is a share, not a light.
 if manifest.get("baseColour"):
-    export(args.out + "_base", ["--base-colour"] + levels, plain)
+    export(args.out + "_base", ["--base-colour", "--no-prims"] + levels, plain)
     index["base"] = os.path.basename(args.out) + "_base"
     index["exposure"] = float(args.exposure) if args.exposure else 0.0
 json.dump(index, open(index_path, "w"), indent=1)
