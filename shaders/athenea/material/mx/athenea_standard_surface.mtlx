@@ -1,0 +1,299 @@
+<?xml version="1.0"?>
+<materialx version="1.39" colorspace="lin_rec709">
+  <!--
+    Autodesk Standard Surface as the engine reads it: MaterialX's own
+    nodegraph (libraries/bxdf/standard_surface.mtlx, 1.39.5) with every node
+    that is not a closure kept as it is (the roughnesses, the rotated
+    tangents, the coat's gamma on the colours, the artistic index, the
+    emission) and its sixteen BSDF nodes (eight lobes and the layer, mix and
+    multiply over them) made one, athenea_standard_surface_bsdf, which pushes
+    the same lobes in the same order with the same weights and layer marks.
+    The graph kept 29 BSDF values in thread memory, each kBuildLobes wide, at
+    every vertex of a path. ATHENEA_STANDARD_SURFACE_GRAPH in the environment
+    keeps MaterialX's graph (MaterialCompiler::create), to compare the two.
+
+    The node that fed only the subsurface's radius (subsurface_radius_scaled)
+    is left where it was and reaches nothing: the generator writes only what
+    the output reads, and the engine's subsurface is a diffuse lobe.
+  -->
+  <nodedef name="ND_athenea_standard_surface_bsdf" node="athenea_standard_surface_bsdf" nodegroup="pbr">
+    <input name="coat" type="float" value="0" />
+    <input name="coat_ior" type="float" value="1.5" />
+    <input name="coat_roughness" type="vector2" value="0.01, 0.01" />
+    <input name="metalness" type="float" value="0" />
+    <input name="metal_ior" type="color3" value="0.18, 0.42, 1.37" />
+    <input name="metal_extinction" type="color3" value="3.42, 2.35, 1.77" />
+    <input name="specular" type="float" value="1" />
+    <input name="specular_color" type="color3" value="1, 1, 1" />
+    <input name="specular_ior" type="float" value="1.5" />
+    <input name="roughness" type="vector2" value="0.04, 0.04" />
+    <input name="transmission" type="float" value="0" />
+    <input name="transmission_color" type="color3" value="1, 1, 1" />
+    <input name="transmission_roughness" type="vector2" value="0.04, 0.04" />
+    <input name="sheen" type="float" value="0" />
+    <input name="sheen_color" type="color3" value="1, 1, 1" />
+    <input name="sheen_roughness" type="float" value="0.3" />
+    <input name="subsurface" type="float" value="0" />
+    <input name="subsurface_color" type="color3" value="1, 1, 1" />
+    <input name="thin_walled" type="float" value="0" />
+    <input name="base" type="float" value="0.8" />
+    <input name="base_color" type="color3" value="1, 1, 1" />
+    <input name="diffuse_roughness" type="float" value="0" />
+    <input name="coat_attenuation" type="color3" value="1, 1, 1" />
+    <input name="normal" type="vector3" defaultgeomprop="Nworld" />
+    <input name="coat_normal" type="vector3" defaultgeomprop="Nworld" />
+    <input name="tangent" type="vector3" defaultgeomprop="Tworld" />
+    <input name="coat_tangent" type="vector3" defaultgeomprop="Tworld" />
+    <output name="out" type="BSDF" />
+  </nodedef>
+  <implementation name="IM_athenea_standard_surface_bsdf_genslang" nodedef="ND_athenea_standard_surface_bsdf" file="athenea/material/mx/athenea_standard_surface_bsdf.slang" function="athenea_standard_surface_bsdf" target="genslang" />
+
+  <nodegraph name="NG_standard_surface_surfaceshader_100">
+
+    <!-- Roughness influence by coat-->
+    <!-- Calculate main specular roughness -->
+    <multiply name="coat_affect_roughness_multiply1" type="float">
+      <input name="in1" type="float" interfacename="coat_affect_roughness" />
+      <input name="in2" type="float" interfacename="coat" />
+    </multiply>
+    <multiply name="coat_affect_roughness_multiply2" type="float">
+      <input name="in1" type="float" nodename="coat_affect_roughness_multiply1" />
+      <input name="in2" type="float" interfacename="coat_roughness" />
+    </multiply>
+    <mix name="coat_affected_roughness" type="float">
+      <input name="fg" type="float" value="1.0" />
+      <input name="bg" type="float" interfacename="specular_roughness" />
+      <input name="mix" type="float" nodename="coat_affect_roughness_multiply2" />
+    </mix>
+    <roughness_anisotropy name="main_roughness" type="vector2">
+      <input name="roughness" type="float" nodename="coat_affected_roughness" />
+      <input name="anisotropy" type="float" interfacename="specular_anisotropy" />
+    </roughness_anisotropy>
+    <!-- Calculate transmission roughness -->
+    <add name="transmission_roughness_add" type="float">
+      <input name="in1" type="float" interfacename="specular_roughness" />
+      <input name="in2" type="float" interfacename="transmission_extra_roughness" />
+    </add>
+    <clamp name="transmission_roughness_clamped" type="float">
+      <input name="in" type="float" nodename="transmission_roughness_add" />
+    </clamp>
+    <mix name="coat_affected_transmission_roughness" type="float">
+      <input name="fg" type="float" value="1.0" />
+      <input name="bg" type="float" nodename="transmission_roughness_clamped" />
+      <input name="mix" type="float" nodename="coat_affect_roughness_multiply2" />
+    </mix>
+    <roughness_anisotropy name="transmission_roughness" type="vector2">
+      <input name="roughness" type="float" nodename="coat_affected_transmission_roughness" />
+      <input name="anisotropy" type="float" interfacename="specular_anisotropy" />
+    </roughness_anisotropy>
+
+    <!-- Tangent rotation -->
+    <multiply name="tangent_rotate_degree" type="float">
+      <input name="in1" type="float" interfacename="specular_rotation" />
+      <input name="in2" type="float" value="360" />
+    </multiply>
+    <rotate3d name="tangent_rotate" type="vector3">
+      <input name="in" type="vector3" interfacename="tangent" />
+      <input name="amount" type="float" nodename="tangent_rotate_degree" />
+      <input name="axis" type="vector3" interfacename="normal" />
+    </rotate3d>
+    <normalize name="tangent_rotate_normalize" type="vector3">
+      <input name="in" type="vector3" nodename="tangent_rotate" />
+    </normalize>
+    <ifgreater name="main_tangent" type="vector3">
+      <input name="value1" type="float" interfacename="specular_anisotropy" />
+      <input name="value2" type="float" value="0.0" />
+      <input name="in1" type="vector3" nodename="tangent_rotate_normalize" />
+      <input name="in2" type="vector3" interfacename="tangent" />
+    </ifgreater>
+
+    <!-- Coat tangent rotation -->
+    <multiply name="coat_tangent_rotate_degree" type="float">
+      <input name="in1" type="float" interfacename="coat_rotation" />
+      <input name="in2" type="float" value="360" />
+    </multiply>
+    <rotate3d name="coat_tangent_rotate" type="vector3">
+      <input name="in" type="vector3" interfacename="tangent" />
+      <input name="amount" type="float" nodename="coat_tangent_rotate_degree" />
+      <input name="axis" type="vector3" interfacename="coat_normal" />
+    </rotate3d>
+    <normalize name="coat_tangent_rotate_normalize" type="vector3">
+      <input name="in" type="vector3" nodename="coat_tangent_rotate" />
+    </normalize>
+    <ifgreater name="coat_tangent" type="vector3">
+      <input name="value1" type="float" interfacename="coat_anisotropy" />
+      <input name="value2" type="float" value="0.0" />
+      <input name="in1" type="vector3" nodename="coat_tangent_rotate_normalize" />
+      <input name="in2" type="vector3" interfacename="tangent" />
+    </ifgreater>
+
+    <!-- Colors influenced by coat ("coat gamma") -->
+    <clamp name="coat_clamped" type="float">
+      <input name="in" type="float" interfacename="coat" />
+    </clamp>
+    <multiply name="coat_gamma_multiply" type="float">
+      <input name="in1" type="float" nodename="coat_clamped" />
+      <input name="in2" type="float" interfacename="coat_affect_color" />
+    </multiply>
+    <add name="coat_gamma" type="float">
+      <input name="in1" type="float" nodename="coat_gamma_multiply" />
+      <input name="in2" type="float" value="1.0" />
+    </add>
+    <max name="base_color_nonnegative" type="color3">
+      <input name="in1" type="color3" interfacename="base_color" />
+      <input name="in2" type="float" value="0.0" />
+    </max>
+    <power name="coat_affected_diffuse_color" type="color3">
+      <input name="in1" type="color3" nodename="base_color_nonnegative" />
+      <input name="in2" type="float" nodename="coat_gamma" />
+    </power>
+    <max name="subsurface_color_nonnegative" type="color3">
+      <input name="in1" type="color3" interfacename="subsurface_color" />
+      <input name="in2" type="float" value="0.0" />
+    </max>
+    <power name="coat_affected_subsurface_color" type="color3">
+      <input name="in1" type="color3" nodename="subsurface_color_nonnegative" />
+      <input name="in2" type="float" nodename="coat_gamma" />
+    </power>
+
+    <!-- Diffuse/Subsurface Layer -->
+    <multiply name="subsurface_radius_scaled" type="color3">
+      <input name="in1" type="color3" interfacename="subsurface_radius" />
+      <input name="in2" type="float" interfacename="subsurface_scale" />
+    </multiply>
+    <convert name="subsurface_selector" type="float">
+      <input name="in" type="boolean" interfacename="thin_walled" />
+    </convert>
+
+    <!-- Sheen Layer -->
+
+    <!-- Transmission Layer -->
+
+    <!-- Specular Layer -->
+
+    <!-- Metal Layer -->
+    <multiply name="metal_reflectivity" type="color3">
+      <input name="in1" type="color3" interfacename="base_color" />
+      <input name="in2" type="float" interfacename="base" />
+    </multiply>
+    <multiply name="metal_edgecolor" type="color3">
+      <input name="in1" type="color3" interfacename="specular_color" />
+      <input name="in2" type="float" interfacename="specular" />
+    </multiply>
+    <artistic_ior name="artistic_ior" type="multioutput">
+      <input name="reflectivity" type="color3" nodename="metal_reflectivity" />
+      <input name="edge_color" type="color3" nodename="metal_edgecolor" />
+    </artistic_ior>
+
+    <!-- Coat Layer -->
+    <mix name="coat_attenuation" type="color3">
+      <input name="fg" type="color3" interfacename="coat_color" />
+      <input name="bg" type="color3" value="1.0, 1.0, 1.0" />
+      <input name="mix" type="float" interfacename="coat" />
+    </mix>
+    <roughness_anisotropy name="coat_roughness_vector" type="vector2">
+      <input name="roughness" type="float" interfacename="coat_roughness" />
+      <input name="anisotropy" type="float" interfacename="coat_anisotropy" />
+    </roughness_anisotropy>
+
+    <!-- The lobes: MaterialX's coat over the metal and the dielectric base
+         (reflection over transmission and, under the sheen, subsurface and
+         diffuse), as one node (athenea_standard_surface_bsdf.slang says
+         why). -->
+    <athenea_standard_surface_bsdf name="coat_layer" type="BSDF">
+      <input name="coat" type="float" interfacename="coat" />
+      <input name="coat_ior" type="float" interfacename="coat_IOR" />
+      <input name="coat_roughness" type="vector2" nodename="coat_roughness_vector" />
+      <input name="metalness" type="float" interfacename="metalness" />
+      <input name="metal_ior" type="color3" nodename="artistic_ior" output="ior" />
+      <input name="metal_extinction" type="color3" nodename="artistic_ior" output="extinction" />
+      <input name="specular" type="float" interfacename="specular" />
+      <input name="specular_color" type="color3" interfacename="specular_color" />
+      <input name="specular_ior" type="float" interfacename="specular_IOR" />
+      <input name="roughness" type="vector2" nodename="main_roughness" />
+      <input name="transmission" type="float" interfacename="transmission" />
+      <input name="transmission_color" type="color3" interfacename="transmission_color" />
+      <input name="transmission_roughness" type="vector2" nodename="transmission_roughness" />
+      <input name="sheen" type="float" interfacename="sheen" />
+      <input name="sheen_color" type="color3" interfacename="sheen_color" />
+      <input name="sheen_roughness" type="float" interfacename="sheen_roughness" />
+      <input name="subsurface" type="float" interfacename="subsurface" />
+      <input name="subsurface_color" type="color3" nodename="coat_affected_subsurface_color" />
+      <input name="thin_walled" type="float" nodename="subsurface_selector" />
+      <input name="base" type="float" interfacename="base" />
+      <input name="base_color" type="color3" nodename="coat_affected_diffuse_color" />
+      <input name="diffuse_roughness" type="float" interfacename="diffuse_roughness" />
+      <input name="coat_attenuation" type="color3" nodename="coat_attenuation" />
+      <input name="normal" type="vector3" interfacename="normal" />
+      <input name="coat_normal" type="vector3" interfacename="coat_normal" />
+      <input name="tangent" type="vector3" nodename="main_tangent" />
+      <input name="coat_tangent" type="vector3" nodename="coat_tangent" />
+    </athenea_standard_surface_bsdf>
+
+    <!-- Emission Layer -->
+    <subtract name="one_minus_coat_ior" type="float">
+      <input name="in1" type="float" value="1.0" />
+      <input name="in2" type="float" interfacename="coat_IOR" />
+    </subtract>
+    <add name="one_plus_coat_ior" type="float">
+      <input name="in1" type="float" value="1.0" />
+      <input name="in2" type="float" interfacename="coat_IOR" />
+    </add>
+    <divide name="coat_ior_to_F0_sqrt" type="float">
+      <input name="in1" type="float" nodename="one_minus_coat_ior" />
+      <input name="in2" type="float" nodename="one_plus_coat_ior" />
+    </divide>
+    <multiply name="coat_ior_to_F0" type="float">
+      <input name="in1" type="float" nodename="coat_ior_to_F0_sqrt" />
+      <input name="in2" type="float" nodename="coat_ior_to_F0_sqrt" />
+    </multiply>
+    <subtract name="one_minus_coat_ior_to_F0" type="float">
+      <input name="in1" type="float" value="1.0" />
+      <input name="in2" type="float" nodename="coat_ior_to_F0" />
+    </subtract>
+    <multiply name="emission_weight" type="color3">
+      <input name="in1" type="color3" interfacename="emission_color" />
+      <input name="in2" type="float" interfacename="emission" />
+    </multiply>
+    <uniform_edf name="emission_edf" type="EDF">
+      <input name="color" type="color3" nodename="emission_weight" />
+    </uniform_edf>
+    <multiply name="coat_tinted_emission_edf" type="EDF">
+      <input name="in1" type="EDF" nodename="emission_edf" />
+      <input name="in2" type="color3" interfacename="coat_color" />
+    </multiply>
+    <convert name="emission_color0" type="color3">
+      <input name="in" type="float" nodename="one_minus_coat_ior_to_F0" />
+    </convert>
+    <generalized_schlick_edf name="coat_emission_edf" type="EDF">
+      <input name="color0" type="color3" nodename="emission_color0" />
+      <input name="color90" type="color3" value="0.0, 0.0, 0.0" />
+      <input name="exponent" type="float" value="5.0" />
+      <input name="base" type="EDF" nodename="coat_tinted_emission_edf" />
+    </generalized_schlick_edf>
+    <mix name="blended_coat_emission_edf" type="EDF">
+      <input name="fg" type="EDF" nodename="coat_emission_edf" />
+      <input name="bg" type="EDF" nodename="emission_edf" />
+      <input name="mix" type="float" interfacename="coat" />
+    </mix>
+
+    <!-- Surface construction with opacity -->
+    <!-- Node <surface> only supports monochromatic opacity so use the luminance of input opacity color -->
+    <luminance name="opacity_luminance" type="color3">
+      <input name="in" type="color3" interfacename="opacity" />
+    </luminance>
+    <extract name="opacity_luminance_float" type="float">
+      <input name="in" type="color3" nodename="opacity_luminance" />
+      <input name="index" type="integer" value="0" />
+    </extract>
+    <surface name="shader_constructor" type="surfaceshader">
+      <input name="bsdf" type="BSDF" nodename="coat_layer" />
+      <input name="edf" type="EDF" nodename="blended_coat_emission_edf" />
+      <input name="opacity" type="float" nodename="opacity_luminance_float" />
+    </surface>
+
+    <!-- Output -->
+    <output name="out" type="surfaceshader" nodename="shader_constructor" />
+
+  </nodegraph>
+</materialx>

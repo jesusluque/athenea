@@ -336,23 +336,37 @@ comprobación.
   las pilas de lóbulos tienen la profundidad que pueden empujar los
   materiales del frame, y un nodo que la cuenta no conoce no empuja nada en
   ellas: sus lóbulos se descartan y nadie avisa. Una superficie cuyo grafo es
-  un solo nodo (`athenea_preview_bsdf`, cinco; `athenea_open_pbr_bsdf`, once) se
-  añade con todos los que empuja.
-- El nodo único de OpenPBR Surface está escrito a mano a partir del nodegraph
-  de MaterialX, y un MaterialX cuyo grafo haya cambiado lo deja como estaba.
-  Al actualizar MaterialX: (1) `python3 scripts/materialx/make_open_pbr_mtlx.py
-  <raíz>/libraries` vuelve a escribir
-  `shaders/athenea/material/mx/athenea_open_pbr_surface.mtlx` -- el grafo de
-  MaterialX sin sus nodos BSDF y VDF y con el nodo único en su lugar --, y su
-  diff enseña un nodo de los que leían los closures que haya cambiado; (2) se
-  compila, para que se copien los shaders; (3) `athenea_material_tests
-  "[openpbr]"` compila OpenPBR por las dos rutas
-  (`MaterialCompilerOptions::openPbr`) y compara, en el dispositivo, las pilas
-  de lóbulos que construyen sobre diecinueve juegos de parámetros, con y sin
-  las marcas que pide un bake (`kAtheneaMarkLobes`). Ese test es el que dice
-  si `athenea_open_pbr_bsdf.slang` sigue coincidiendo: una cuenta, un tipo,
-  un flag o un valor que se aparte más de 1e-5 lo hace fallar, y la línea que
-  imprime dice en qué juego y cuál de ellos.
+  un solo nodo (`athenea_preview_bsdf`, cinco; `athenea_open_pbr_bsdf`, once;
+  `athenea_standard_surface_bsdf`, ocho) se añade con todos los que empuja.
+- El nodo único de OpenPBR Surface y el de Standard Surface están escritos a
+  mano a partir del nodegraph de MaterialX, y un MaterialX cuyo grafo haya
+  cambiado los deja como estaban. Al actualizar MaterialX: (1) `python3
+  scripts/materialx/make_surface_node_mtlx.py <raíz>/libraries` vuelve a
+  escribir `shaders/athenea/material/mx/athenea_open_pbr_surface.mtlx` y
+  `athenea_standard_surface.mtlx` -- el grafo de MaterialX sin sus nodos BSDF
+  y VDF y con el nodo único en su lugar --, y su diff enseña un nodo de los
+  que leían los closures que haya cambiado; (2) se compila, para que se
+  copien los shaders; (3) `athenea_material_tests "[openpbr]"` y
+  `"[standardsurface]"` compilan la superficie por las dos rutas
+  (`MaterialCompilerOptions::openPbr`, `standardSurface`) y comparan, en el
+  dispositivo, las pilas de lóbulos que construyen sobre diecinueve y
+  veintiséis juegos de parámetros, con y sin las marcas que pide un bake
+  (`kAtheneaMarkLobes`). Esos tests son los que dicen si
+  `athenea_open_pbr_bsdf.slang` y `athenea_standard_surface_bsdf.slang` siguen
+  coincidiendo: una cuenta, un tipo, un flag o un valor que se aparte más de
+  1e-5 los hace fallar, y la línea que imprimen dice en qué juego y cuál de
+  ellos.
+- Una superficie recibe su nodo único por los mismos pasos: sus lóbulos,
+  pesos y marcas leídos de un módulo generado del grafo de MaterialX
+  (`ATHENEA_SHADER_DUMP`) y escritos como `athenea_<superficie>_bsdf.slang`
+  sobre los pasos que los nodos comparten (`athenea_surface_node.slang`: el
+  empuje de un closure, el efecto de una capa y el de un multiply de color
+  sobre un lóbulo); una entrada en `make_surface_node_mtlx.py` (las entradas
+  del nodo, su nodedef) y en `kSurfaceNodes`
+  (`material/src/MaterialCompiler.cpp`: el grafo que sustituye, su fichero,
+  su variable de entorno, su opción); su cuenta en `lobesPushed`; y un caso
+  de test sobre `compareRoutes` (`tests/material/test_material_compiler.cpp`)
+  cuyos juegos alcancen cada lóbulo y cada combinador del grafo.
 
 ## 2. Las reglas, y qué evita cada una
 
@@ -529,6 +543,7 @@ fuera del proceso.
 | `ATHENEA_SHADER_DUMP` | escribe cada módulo Slang generado en ese directorio |
 | `ATHENEA_MTLX_DUMP` | escribe el documento MaterialX que se le da al generador, uno por material |
 | `ATHENEA_OPENPBR_GRAPH` | con cualquier valor: OpenPBR Surface se compila desde el grafo de nodos BSDF del propio MaterialX en vez de desde el nodo único del motor (`athenea_open_pbr_bsdf`), para comparar las dos rutas en una misma compilación (imágenes y tiempos; `athenea_material_tests "[openpbr]"` compara sus pilas de lóbulos sin ella, mediante `MaterialCompilerOptions::openPbr`, a la que da valor cuando quien llama deja la elección al entorno) |
+| `ATHENEA_STANDARD_SURFACE_GRAPH` | lo mismo para Autodesk Standard Surface: el grafo de MaterialX en vez del nodo único del motor (`athenea_standard_surface_bsdf`); `athenea_material_tests "[standardsurface]"` compara los dos sin ella, mediante `MaterialCompilerOptions::standardSurface` |
 | `ATHENEA_SHADOW_DEBUG` | loguea los mapas de sombra de nube: emisores, luces, texels, transmitancia media |
 | `ATHENEA_VISIBILITY_DEBUG` | loguea los factores de visibilidad por partes |
 | `ATHENEA_CUDA_LDG` | `=1` deja en su sitio el camino de caché de solo lectura de CUDA, reproduciendo un defecto que el prelude normalmente esquiva |

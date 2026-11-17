@@ -325,22 +325,35 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
   pushes: the lobe stacks are as deep as the frame's materials can push, and
   a node the count does not know pushes nothing into it -- its lobes are
   dropped, and nothing says so. A surface whose graph is one node
-  (`athenea_preview_bsdf`, five; `athenea_open_pbr_bsdf`, eleven) is listed with
-  all it pushes.
-- OpenPBR Surface's one node is written by hand from MaterialX's nodegraph,
-  and a MaterialX whose graph has changed leaves it as it was. When MaterialX
-  is updated: (1) `python3 scripts/materialx/make_open_pbr_mtlx.py
-  <root>/libraries` writes `shaders/athenea/material/mx/athenea_open_pbr_surface.mtlx`
-  again -- MaterialX's graph with its BSDF and VDF nodes taken out and the
-  one node put in -- and its diff shows a node the closures read that has
-  changed; (2) build, so the shaders are copied; (3) `athenea_material_tests
-  "[openpbr]"` compiles OpenPBR by both routes
-  (`MaterialCompilerOptions::openPbr`) and compares, on the device, the lobe
-  stacks they build over nineteen parameter sets, with and without the marks
-  a bake asks for (`kAtheneaMarkLobes`). That test is what says whether
-  `athenea_open_pbr_bsdf.slang` still matches: a count, a kind, a flag or a
-  value beyond 1e-5 off fails it, and the line it prints says which set and
-  which of them.
+  (`athenea_preview_bsdf`, five; `athenea_open_pbr_bsdf`, eleven;
+  `athenea_standard_surface_bsdf`, eight) is listed with all it pushes.
+- OpenPBR Surface's and Standard Surface's one node are each written by hand
+  from MaterialX's nodegraph, and a MaterialX whose graph has changed leaves
+  them as they were. When MaterialX is updated: (1) `python3
+  scripts/materialx/make_surface_node_mtlx.py <root>/libraries` writes
+  `shaders/athenea/material/mx/athenea_open_pbr_surface.mtlx` and
+  `athenea_standard_surface.mtlx` again -- MaterialX's graph with its BSDF
+  and VDF nodes taken out and the one node put in -- and their diff shows a
+  node the closures read that has changed; (2) build, so the shaders are
+  copied; (3) `athenea_material_tests "[openpbr]"` and `"[standardsurface]"`
+  compile the surface by both routes (`MaterialCompilerOptions::openPbr`,
+  `standardSurface`) and compare, on the device, the lobe stacks they build
+  over nineteen and twenty-six parameter sets, with and without the marks a
+  bake asks for (`kAtheneaMarkLobes`). Those tests are what say whether
+  `athenea_open_pbr_bsdf.slang` and `athenea_standard_surface_bsdf.slang`
+  still match: a count, a kind, a flag or a value beyond 1e-5 off fails
+  them, and the line they print says which set and which of them.
+- A surface gets its one node by the same steps: its lobes, weights and
+  marks read off a generated module of MaterialX's graph
+  (`ATHENEA_SHADER_DUMP`) and written as `athenea_<surface>_bsdf.slang` over
+  the steps the nodes share (`athenea_surface_node.slang`: a closure's push,
+  a layer's and a colour multiply's effect on one lobe); an entry in
+  `make_surface_node_mtlx.py` (the node's inputs, its nodedef) and in
+  `kSurfaceNodes` (`material/src/MaterialCompiler.cpp`: the graph it
+  replaces, its file, its environment variable, its option); its count in
+  `lobesPushed`; and a test case over `compareRoutes`
+  (`tests/material/test_material_compiler.cpp`) whose sets reach every lobe
+  and combinator of the graph.
 
 ## 2. The rules, and what each is there to prevent
 
@@ -508,6 +521,7 @@ written out by `ATHENEA_SHADER_DUMP=<dir>`, and compile with `slangc -I shaders 
 | `ATHENEA_SHADER_DUMP` | write every generated Slang module to this directory |
 | `ATHENEA_MTLX_DUMP` | write the MaterialX document handed to the generator, one per material |
 | `ATHENEA_OPENPBR_GRAPH` | set to anything: OpenPBR Surface is compiled from MaterialX's own graph of BSDF nodes instead of the engine's one node (`athenea_open_pbr_bsdf`), to compare the two routes in one build (pictures and timings; `athenea_material_tests "[openpbr]"` compares their lobe stacks without it, through `MaterialCompilerOptions::openPbr`, which it sets where the caller leaves the choice to the environment) |
+| `ATHENEA_STANDARD_SURFACE_GRAPH` | the same for Autodesk Standard Surface: MaterialX's graph instead of the engine's one node (`athenea_standard_surface_bsdf`); `athenea_material_tests "[standardsurface]"` compares the two without it, through `MaterialCompilerOptions::standardSurface` |
 | `ATHENEA_SHADOW_DEBUG` | log the cloud shadow maps: casters, lights, texels, mean transmittance |
 | `ATHENEA_VISIBILITY_DEBUG` | log the per-part visibility factors |
 | `ATHENEA_CUDA_LDG` | `=1` leaves CUDA's read-only cache path in place, reproducing a defect the prelude otherwise works around |

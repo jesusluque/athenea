@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdio>
 #include <functional>
+#include <set>
 #include <sstream>
 
 #include <MaterialXCore/Document.h>
@@ -55,7 +56,23 @@ std::string quadDerivatives(std::string text) {
 const std::string kFunctionPlaceholder = "ATHENEA_MATERIAL_FUNCTION";
 /// MaterialX's UsdPreviewSurface nodegraph, replaced by the engine's own.
 const std::string kPreviewSurfaceGraph = "IMP_UsdPreviewSurface_surfaceshader";
-const std::string kOpenPbrGraph = "NG_open_pbr_surface_surfaceshader";
+
+/// A surface whose lobes one node of the engine's builds: MaterialX's
+/// nodegraph for it, the engine's file that takes its place
+/// (scripts/materialx/make_surface_node_mtlx.py derives it from MaterialX's),
+/// and the variable that keeps MaterialX's graph.
+struct SurfaceNode {
+    const char* graph;
+    const char* file;
+    const char* environment;
+    SurfaceRoute MaterialCompilerOptions::* route;
+};
+const SurfaceNode kSurfaceNodes[] = {
+    {"NG_open_pbr_surface_surfaceshader", "athenea/material/mx/athenea_open_pbr_surface.mtlx", "ATHENEA_OPENPBR_GRAPH",
+     &MaterialCompilerOptions::openPbr},
+    {"NG_standard_surface_surfaceshader_100", "athenea/material/mx/athenea_standard_surface.mtlx",
+     "ATHENEA_STANDARD_SURFACE_GRAPH", &MaterialCompilerOptions::standardSurface},
+};
 
 /// The surface node: no light loop. Its BSDF graph runs once, pushing lobes;
 /// what it weights them by becomes the material's lobe stack.
@@ -686,9 +703,6 @@ Result<std::unique_ptr<MaterialCompiler>> MaterialCompiler::create(
 Result<std::unique_ptr<MaterialCompiler>> MaterialCompiler::create(
     const std::shared_ptr<void>& libraries, const std::vector<std::filesystem::path>& librarySearchPaths,
     const std::vector<std::filesystem::path>& shaderPaths, const MaterialCompilerOptions& options) {
-    const bool openPbrGraph = options.openPbr == OpenPbrRoute::Environment
-                                  ? !platform::env("ATHENEA_OPENPBR_GRAPH").empty()
-                                  : options.openPbr == OpenPbrRoute::Graph;
     auto compiler = std::unique_ptr<MaterialCompiler>(new MaterialCompiler());
     compiler->impl_ = std::make_unique<Impl>();
     Impl& impl = *compiler->impl_;
@@ -726,21 +740,29 @@ Result<std::unique_ptr<MaterialCompiler>> MaterialCompiler::create(
                     mx::readFromXmlFile(previewDoc, mx::FilePath(preview.string()));
                     impl.libraries->importLibrary(previewDoc);
                 }
-                // OpenPBR Surface with its lobes built by one node, in place
-                // of MaterialX's graph of thirty BSDF nodes (the file says
-                // why). MaterialCompilerOptions::openPbr, or
-                // ATHENEA_OPENPBR_GRAPH in the environment where it leaves
-                // it to that, keeps the graph: the material tests compile
-                // both in one process and hold the node's stack to the
-                // graph's. The reference keeps the graph always.
-                const std::filesystem::path openPbr = shaders / "athenea/material/mx/athenea_open_pbr_surface.mtlx";
-                if (std::filesystem::exists(openPbr) && !openPbrGraph) {
-                    if (impl.libraries->getNodeGraph(kOpenPbrGraph)) {
-                        impl.libraries->removeNodeGraph(kOpenPbrGraph);
+                // OpenPBR Surface and Standard Surface with their lobes
+                // built by one node each, in place of MaterialX's graphs of
+                // thirty and sixteen BSDF nodes (the files say why).
+                // MaterialCompilerOptions, or the surface's variable in the
+                // environment where they leave it to that, keeps a graph:
+                // the material tests compile both in one process and hold
+                // each node's stack to its graph's. The reference keeps the
+                // graphs always.
+                for (const SurfaceNode& surface : kSurfaceNodes) {
+                    const SurfaceRoute route = options.*surface.route;
+                    const bool keepGraph = route == SurfaceRoute::Environment
+                                               ? !platform::env(surface.environment).empty()
+                                               : route == SurfaceRoute::Graph;
+                    const std::filesystem::path file = shaders / surface.file;
+                    if (!std::filesystem::exists(file) || keepGraph) {
+                        continue;
                     }
-                    mx::DocumentPtr openPbrDoc = mx::createDocument();
-                    mx::readFromXmlFile(openPbrDoc, mx::FilePath(openPbr.string()));
-                    impl.libraries->importLibrary(openPbrDoc);
+                    if (impl.libraries->getNodeGraph(surface.graph)) {
+                        impl.libraries->removeNodeGraph(surface.graph);
+                    }
+                    mx::DocumentPtr document = mx::createDocument();
+                    mx::readFromXmlFile(document, mx::FilePath(file.string()));
+                    impl.libraries->importLibrary(document);
                 }
                 found = true;
             }
@@ -1160,6 +1182,18 @@ Result<CompiledMaterial> MaterialCompiler::compileDocument(const std::shared_ptr
         mx::DocumentPtr doc = mx::createDocument();
         doc->copyContentFrom(given);
         const std::vector<mx::ElementPtr> children = doc->getChildren();   // a copy: removing changes the list
+        // A graph an implementation names is a definition's too, though it
+        // does not say whose: standard_surface's is written so
+        // (NG_standard_surface_surfaceshader_100, named by the
+        // implementations of both its versions), and left in the document it
+        // kept the engine's graph for that surface out -- an import skips a
+        // name the document already has.
+        std::set<std::string> implementing;
+        for (const mx::ElementPtr& child : children) {
+            if (child->isA<mx::Implementation>() && child->asA<mx::Implementation>()->hasNodeGraph()) {
+                implementing.insert(child->asA<mx::Implementation>()->getNodeGraph());
+            }
+        }
         for (const mx::ElementPtr& child : children) {
             if (!ours && child->getName() == kPreviewSurfaceGraph) {
                 continue;   // the reference keeps MaterialX's graph
@@ -1170,7 +1204,9 @@ Result<CompiledMaterial> MaterialCompiler::compileDocument(const std::shared_ptr
             const mx::ElementPtr theirs = libraries->getChild(child->getName());
             const bool definition = child->isA<mx::NodeDef>() || child->isA<mx::Implementation>() ||
                                     child->isA<mx::TypeDef>() ||
-                                    (child->isA<mx::NodeGraph>() && child->hasAttribute(mx::InterfaceElement::NODE_DEF_ATTRIBUTE));
+                                    (child->isA<mx::NodeGraph>() &&
+                                     (child->hasAttribute(mx::InterfaceElement::NODE_DEF_ATTRIBUTE) ||
+                                      implementing.count(child->getName()) != 0));
             if (definition && theirs && theirs->getCategory() == child->getCategory()) {
                 doc->removeChild(child->getName());
             }

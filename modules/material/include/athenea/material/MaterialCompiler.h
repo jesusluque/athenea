@@ -92,17 +92,20 @@ struct Transmission {
 /// 9e-4.
 inline constexpr float kGlassShadowRoughness = 0.03F;
 
-/// What OpenPBR Surface's lobes are built by.
-enum class OpenPbrRoute : uint8_t {
-    /// The environment says: MaterialX's graph where `ATHENEA_OPENPBR_GRAPH`
-    /// is set to anything, the engine's node otherwise.
+/// What a surface's lobes are built by, where the engine has one node for
+/// them (OpenPBR Surface, Autodesk Standard Surface).
+enum class SurfaceRoute : uint8_t {
+    /// The environment says: MaterialX's graph where the surface's variable
+    /// (`ATHENEA_OPENPBR_GRAPH`, `ATHENEA_STANDARD_SURFACE_GRAPH`) is set to
+    /// anything, the engine's node otherwise.
     Environment,
-    Node,    ///< the engine's one node, `athenea_open_pbr_bsdf` (athenea_open_pbr_surface.mtlx)
+    Node,    ///< the engine's one node (`athenea_open_pbr_bsdf`, `athenea_standard_surface_bsdf`)
     Graph,   ///< MaterialX's own nodegraph of BSDF nodes, which the node is held to (the material tests)
 };
 
 struct MaterialCompilerOptions {
-    OpenPbrRoute openPbr = OpenPbrRoute::Environment;
+    SurfaceRoute openPbr = SurfaceRoute::Environment;           ///< `open_pbr_surface`
+    SurfaceRoute standardSurface = SurfaceRoute::Environment;   ///< `standard_surface`
 };
 
 class MaterialCompiler {

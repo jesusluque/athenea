@@ -74,7 +74,7 @@ public bool materialCuts(CameraParams camera, uint2 pixel, uint4 seen) {
 
 /// HOW MANY LOBES A MATERIAL CAN PUSH: its generated source walked from its
 /// function down, a BSDF node's call one lobe (UsdPreviewSurface's node five, OpenPBR's
-/// eleven),
+/// eleven, Standard Surface's eight),
 /// a function of the graph's as many as its body's calls push. An upper
 /// bound -- both sides of a branch count -- and kBuildLobes (16) where the
 /// source is not what the generator writes (a call to itself).
@@ -85,7 +85,7 @@ uint32_t lobesPushed(const std::string& source, const std::string& entry) {
         {"athenea_dielectric_bsdf", 1},         {"athenea_conductor_bsdf", 1},
         {"athenea_generalized_schlick_bsdf", 1}, {"athenea_sheen_bsdf", 1},
         {"athenea_chiang_hair_bsdf", 1},        {"athenea_preview_bsdf", 5},
-        {"athenea_open_pbr_bsdf", 11},
+        {"athenea_open_pbr_bsdf", 11},          {"athenea_standard_surface_bsdf", 8},
     };
     constexpr uint32_t kMost = 16;
     // The functions the source defines, by their bodies: a definition opens
