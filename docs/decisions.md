@@ -25659,6 +25659,12 @@ The correction of the glass's own look made earlier the same morning (a solid re
 ray, the room taken farther off) stands: against the engine's `render --glass` from three eyes it follows the
 same change. It was not what the user was missing.
 
+Published (sysop, version 1a0f2fd9) and tried again there and here: on WebKit's desktop a mouse drag raises
+the looks; on a phone's emulation, by real touch events (DevTools `Input.dispatchTouchEvent`), one finger's
+drag is taken (one pointer, its point fixed) and the eye moves ((1.735, 15.53, 11.423) to (1.597, 15.53,
+11.284)). The looks count low in headless runs: one a frame in which the eye moved, and a headless page draws
+few frames.
+
 Not done: a real browser and a real phone (the user's device is still not known); the wheel, which in the
 headless test moved nothing and was not acknowledged; the hold-and-second-finger gesture beside the new drag
 on a touch screen, not tried; the chrome knight's darkness (NEU39).
