@@ -186,6 +186,47 @@ if args.stage and args.walk:
             rows[-1] = (rows[-1][0], "ok (refused)") + rows[-1][2:]
         else:
             rows[-1] = (rows[-1][0], "FAILED (not refused)") + rows[-1][2:]
+        # THE IDS HANDED ON: `export` writes, beside every file of the scene's, which prim each of its gaussians
+        # was made from (an .ids file, sixteen bits a gaussian inside gzip) and names the prims in the index. Checked by
+        # what the index says against the files' sizes -- the part's own, its glass's, its mirrors', a
+        # level's and a history's -- and the same export asked without them (--no-prims) leaves none.
+        ids = os.path.join(out, "ids")
+        for stale in glob.glob(ids + "*"):
+            os.remove(stale)
+        run("export, an id a gaussian (--by-frame --history --levels)", ["neural-scene", "export", shot, "--by-frame",
+            "--history", "--levels", "20000,5000", "-o", ids], [ids + "_*.ids", ids + ".json"])
+        if os.path.exists(ids + ".json"):
+            handed = json.load(open(ids + ".json"))
+            wrong = []
+            files = 0
+
+            def check(entry):
+                global files
+                for part in (entry, entry.get("glass") or {}, entry.get("mirror") or {}):
+                    if not part.get("file"):
+                        continue
+                    at = os.path.join(out, part.get("ids") or "(none)")
+                    # The file is gzip, whose last four bytes say how long what it holds is: two bytes a gaussian.
+                    if not os.path.isfile(at) or int.from_bytes(open(at, "rb").read()[-4:], "little") != 2 * part.get("gaussians", 0):
+                        wrong.append(part["file"])
+                    files += 1
+
+            for entry in handed["parts"] + [p for level in handed.get("levels", []) for p in level["parts"]]:
+                check(entry)
+                for span in entry.get("history", []):
+                    check(span)
+            if len(handed.get("prims", [])) != len(named):
+                wrong.append("prims: %d in the index, %d in the scene" % (len(handed.get("prims", [])), len(named)))
+            if wrong or files == 0:
+                rows[-1] = (rows[-1][0], "FAILED (ids: %s)" % ", ".join(wrong[:3] or ["no file"])) + rows[-1][2:]
+            else:
+                rows[-1] = rows[-1][:4] + (("%d files each with its ids, %d prims named; " % (files, len(named))) + rows[-1][4],)
+        noids = os.path.join(out, "noids")
+        for stale in glob.glob(noids + "*"):
+            os.remove(stale)
+        run("export --no-prims", ["neural-scene", "export", shot, "--no-prims", "-o", noids], [noids + "_*.spz", noids + ".json"])
+        if glob.glob(noids + "*.ids") or (os.path.exists(noids + ".json") and "prims" in json.load(open(noids + ".json"))):
+            rows[-1] = (rows[-1][0], "FAILED (ids written)") + rows[-1][2:]
     # A GROUP OF LIGHTS: the scene shot without one of the stage's lights, that light's own layer kept by a
     # second pass under it alone, and the scene drawn with the group at a level.
     lamp = args.group_light
