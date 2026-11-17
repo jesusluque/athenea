@@ -25500,3 +25500,12 @@ map through the node); CUDA and Vulkan; the marks through a conversion; the rast
 modes compared as pictures beyond the two balls of the stage; the first run's compile, which was 36.5 s
 with the node and 26.2 s with the graph here once each -- the node's run was the first ever of that stage
 in this build, so the two are not a comparison.
+
+## The branch's head on Metal, checked whole (17 Nov, 5ee7f9e1)
+
+After the night's commits (the prims' ids in an export and the player's objects, the making-width rule, the
+three surfaces as one node each), the main build at 5ee7f9e1, M5 Pro: the scene tests 361 assertions in 13
+cases, `athenea_material_tests` 2985 in 15, `athenea_technique_tests` 2862 in 64, the QA flows 49 of 49, and
+of the 168 ctests not marked slow that speak of opacity, glass, lights, lobes, materials, emission, bakes,
+gltf, coat or sheen, 167 pass -- the one that does not is `sheet_glass_draws_whole`, which is the trunk's
+(NEU34). Not run: the whole suite (565 tests) and the slow gates.
