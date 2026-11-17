@@ -2747,6 +2747,14 @@ int runShoot(const SceneOptions& all) {
                 std::chrono::duration<double>(ended - began).count(), std::chrono::duration<double>(brought - began).count(),
                 std::chrono::duration<double>(traced - brought).count(), std::chrono::duration<double>(ended - traced).count());
             std::fflush(stdout);   // a walk of groups is long: each view is said when it is done
+            // The view's frame took this pass as well: its seconds are what the scene says its rendering took,
+            // and a scene found in two passes said the first alone (87 s of 270).
+            for (auto frame = scene.frames.rbegin(); frame != scene.frames.rend(); ++frame) {
+                if (frame->camera == name && frame->time == time) {
+                    frame->seconds += std::chrono::duration<double>(ended - began).count();
+                    break;
+                }
+            }
             return 0;
         }
         const uint32_t read = piecesRead;

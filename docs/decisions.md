@@ -25925,3 +25925,13 @@ by a finer threshold (5.5 pixels where 15.7) and a better picture. `athenea_rend
 Not done: the published scenes are not found again with it (the floor of the chrome at 1080p would be about
 0.85 M by proportion, not measured; their levels for a phone are the grafted ones); CUDA and Vulkan; why a
 third and not more -- 211 840 gaussians still stand with no parent.
+
+## A frame's seconds count the groups' pass as well (17 Nov)
+
+A scene found in two passes -- the geometry unlit, then `--groups-only` over it -- said the first pass's
+seconds alone: `sponza_lights` on the site says 87 s where the two took about 270. A view of a group pass now
+adds what it took to that view's frame. Four views of the Sponza with lamps at 960x540: 33.6 s after the
+first pass, 95.0 s after the second, whose four views said 45.3, 5.3, 5.4 and 5.4 s.
+
+Not done: the published `sponza_lights` and `lamps` still say their first pass alone (the scenes are not
+found again); a pass of one group at a time (`--light-group`) adds each of its walks, which is what they took.
