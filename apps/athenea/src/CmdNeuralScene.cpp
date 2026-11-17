@@ -1645,9 +1645,16 @@ Result<void> writeExportIndex(const std::filesystem::path& stem, const io::Neura
                 total += earlier.gaussians + earlier.glassGaussians + earlier.mirrorGaussians;
             }
         }
+        // The pixels of the frames the scene was found from, where it has frames: a viewer that draws it on
+        // more pixels than that widens its filter by as much, or the rows of gaussians part and show lines.
+        std::string frameSize;
+        if (!scene.frames.empty() && scene.frames.front().width != 0 && scene.frames.front().height != 0) {
+            frameSize = ",\n  \"frameSize\": [" + std::to_string(scene.frames.front().width) + ", " +
+                        std::to_string(scene.frames.front().height) + "]";
+        }
         index << "{\n  \"name\": \"" << scene.name << "\",\n  \"upAxis\": \"" << scene.upAxis
               << "\",\n  \"metersPerUnit\": " << scene.metersPerUnit << ",\n  \"antialiased\": "
-              << (scene.antialiased ? "true" : "false") << ",\n  \"spread\": " << scene.spread << ",\n  \"growing\": " << (growing ? "true" : "false")
+              << (scene.antialiased ? "true" : "false") << ",\n  \"spread\": " << scene.spread << frameSize << ",\n  \"growing\": " << (growing ? "true" : "false")
               << ",\n  \"gaussians\": " << total << ",\n  \"min\": [" << low[0] << ", " << low[1] << ", " << low[2]
               << "],\n  \"max\": [" << high[0] << ", " << high[1] << ", " << high[2] << "],\n  \"parts\": [";
         const auto writeOne = [&](const ExportedPart& part, bool first, const char* indent) {

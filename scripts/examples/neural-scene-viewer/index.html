@@ -18,6 +18,8 @@
     ?light.<group>=<level>   a group of lights at a level other than the one it was shot at (0 to 2)
     ?object=<prim path>      the object chosen: the gaussians made from the stage's prims at or under that path
     ?object.view=<how>       how it is shown: matte, isolate or highlight (highlight where it is not said)
+  and one thing said only there:
+    ?filter=fixed    the filter a third of a pixel whatever the canvas (as it was before the index said frameSize)
 -->
 <head>
   <meta charset="utf-8">
@@ -301,9 +303,28 @@
       // A scene drawn without the 2D filter's compensation (`antialiased: false` in its index): each gaussian
       // is spread a third of a pixel and keeps its opacity, as the engine draws it. With the compensation,
       // which is Spark's default, its discs of half a pixel are thin and the surfaces show through.
+      // DRAWN ON MORE PIXELS THAN IT WAS FOUND FROM, the filter is as much wider: a gaussian was made `spread`
+      // of a pixel of its frame (`frameSize`), and on a canvas of more pixels the rows of gaussians on a floor
+      // seen at a slant part and show dark lines (a canvas a third taller than the frames: lines at 0.3 and
+      // at 0.5 of a pixel, none at 0.8). Without the frame's size in the index, a third of a pixel as before.
+      // `?filter=fixed` keeps the third of a pixel, to see one beside the other.
+      const filterFor = () => {
+        const frameWidth = Array.isArray(index.frameSize) ? index.frameSize[0] : 0;
+        if (!(frameWidth > 0) || new URLSearchParams(location.search).get("filter") === "fixed") return 0.3;
+        // Pixels a unit of slope across, the canvas's over the frame's: the canvas's from its own projection
+        // (a narrow canvas fits the frame across, and is then fewer pixels than the frame however tall it
+        // is), the frame's from its lens -- a focal length over a 24.576 mm aperture across.
+        const focal = index.cameras?.[0]?.focal ?? 20;
+        const drawn = 0.5 * renderer.domElement.width * camera.projectionMatrix.elements[0];
+        const made = 0.5 * frameWidth * focal / 12.288;
+        return Math.min(Math.max(1.2 * (index.spread ?? 0.5) * drawn / made, 0.3), 2.0);
+      };
       if (index.antialiased === false) {
-        spark.preBlurAmount = 0.3;
+        spark.preBlurAmount = filterFor();
         spark.blurAmount = 0.0;
+        // Set again as the canvas or the lens changes (riding a frame's camera takes that frame's lens).
+        setInterval(() => { const wide = filterFor(); if (Math.abs(wide - spark.preBlurAmount) > 0.01) spark.preBlurAmount = wide; }, 500);
+        window.__filter = () => spark.preBlurAmount;
       }
       // The scene's own space into three's: metres, y up. A stage that is z up is turned a quarter about x.
       // An index that does not say its unit is taken as centimetres where its box is hundreds across.

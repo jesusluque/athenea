@@ -25562,3 +25562,31 @@ or in one render was not taken (the section before last says why).
 
 Seen in the same crops and not new: the floor in the page shows fine horizontal dark lines the engine's
 drawing does not have, in the published export and in today's alike. Not looked into.
+
+## The page's filter follows the canvas's pixels over the frames' (17 Nov)
+
+In the page a floor seen at a slant showed fine horizontal dark lines the engine's drawing of the same frame
+does not have. They are the rows of gaussians parting: a gaussian is made `spread` of a pixel of its frame
+(half a pixel), the page spread each a third of a pixel whatever its canvas, and a canvas of more pixels than
+the frame draws the rows further apart. `lamps` (frames of 960x540) on a canvas 633 pixels high, frame 4,
+the same crop: lines at a filter of 0.3 of a pixel and at 0.5, none at 0.8.
+
+So an export's index says the frames' size (`frameSize`, where the scene has frames) and the page's filter is
+1.2 x spread x the canvas's pixels a unit of slope over the frame's (the canvas's from its projection, the
+frame's from its lens and its width), held between 0.3 and 2 pixels and kept up as the canvas or the lens
+changes; an index without the size, or `?filter=fixed` in the address, is drawn at 0.3 as before. (By the
+canvas's height over the frame's it was wrong on a phone held upright, whose canvas fits the frame across:
+1.4 pixels where its picture is fewer pixels than the frame, and the page drew soft.)
+On that canvas `lamps` gets 0.70 and its
+lines all but go; a scene of 1080p frames on it stays near 0.3. The six published indexes were given the size
+by hand (the shoots' own: 960x540 for `lamps`, `sponza_knight`, `sponza_growth`; 1920x1080 for the others)
+rather than exported again.
+
+A false alarm on the way: in the first captures the glass and the chrome knights looked darker with the wider
+filter. Captured again six seconds after the frame is set rather than one and a half, they are the same at
+0.3 and at 0.7 -- the brighter knights were the page caught before it had shaded them by the eye (with
+`?glass=0` they are bright at both widths). It was the capture's moment, not the filter.
+
+Not done: a screen of two or three device pixels a pixel seen by eye (a phone's emulation was captured, not
+judged against anything); a view from much nearer or farther than the frames were, where the right width is
+another; a real Chrome.
