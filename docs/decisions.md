@@ -25590,3 +25590,28 @@ filter. Captured again six seconds after the frame is set rather than one and a 
 Not done: a screen of two or three device pixels a pixel seen by eye (a phone's emulation was captured, not
 judged against anything); a view from much nearer or farther than the frames were, where the right width is
 another; a real Chrome.
+
+## The page's glass showed the same from anywhere (17 Nov, the user's report)
+
+The user: moving the camera, the glass does not show a background that changes; it is frozen, as the
+reflection is. Checked first that the page does shade again as the eye moves -- a view reached by moving is
+pixel for pixel the view loaded there, in three published scenes -- so nothing was stale. The look itself was
+the fault, in two places of the page's shader:
+
+- **The glass read the ray bent at one face.** Each gaussian is one face of a solid, and `refract` at that
+  face alone was taken for what the glass shows: a direction that turns with the face and hardly with the eye.
+  A solid's far face bends the ray back, and what leaves is near the eye's own ray; the page now reads the
+  room along the eye's ray turned three tenths of the way the first face turned it.
+- **The room was read as near as twice the thing's size.** The cube is drawn from the thing's middle and a
+  ray from elsewhere is read where it meets a ball about that middle; with the ball that small, a look
+  depended on where on the thing it left more than on which way it went. The ball is now eight sizes, two
+  metres at least.
+
+Three eyes a third of a metre apart in front of the knights (`sponza_lamps` as exported, headless Chrome):
+before, the glass knight is the same milky facets from the three; now the wall behind it shows through
+lighter from the first and the dark door comes into it from the third. Looked at, not measured: there is no
+reference for these eyes.
+
+Not done: the same eyes drawn by the engine (`render --glass`) to judge it against; the chrome knight, which
+the wider ball changes too and was not looked at closely; a mirror standing on a floor, where a near room was
+the better guess; the three tenths, which is a guess at a solid's far face and not its geometry.
