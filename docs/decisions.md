@@ -25684,3 +25684,70 @@ Not done: the other half of the report -- the page shades only once everything i
 is what is seen while it loads; shading the coarse level as soon as it is whole was looked at and not done
 (the parts being read behind it and the parts drawn are different lists, and the room is drawn from one of
 them). Nor the facets' cause itself: a gaussian's axis is its disc's, not a smooth normal of the surface.
+
+## The page's knights while it reads, the chrome's dark room, and a normal from the neighbours (17 Nov)
+
+Three things left by the sections above, each looked at in headless Chrome on the Mac against a baseline
+(the page as it was, a0206592) and, for the looks, against the engine's `render --glass` from three eyes
+(`build/night/webshot/truth_e*.png`). The pictures are in `build/night/agent-player2/`.
+
+**The chrome knight was dark because its room was drawn with the chrome in it.** Spark draws what it last
+sorted: `update` makes the gaussians of what is visible and asks for their order, and comes back at once
+where an order is being worked out -- until the new one is in, what is drawn is the set before. The page hid
+a kind, called `renderCubeMap` (which calls `update`) and took the cube. The glass's cube, drawn first, came
+out right; the chrome's, drawn straight after, was drawn with the set of the glass's pass: the glass hidden
+and the chrome shown. Read back, the chrome's cube was the knight's own shell from inside, shaded by the room
+before, with alpha near one along every ray (faces' means 10 to 55 of 255); the page's own frame from the
+same point with the chrome hidden showed the room bright (`d1_cubes.png`, `d1_in.png`). That is also why
+reading the cube with an axis flipped mended nothing: there was no room in it to flip. The page now waits
+until Spark is at rest with what it was asked for, sorted from where it was asked (`settle`), before a cube
+is drawn, and again for the eye's own view before its frames go on -- a frame drawn before that showed the
+cube's set, which is where the glass knight went missing for a few frames at the end of a load
+(`sheet_cast_base.png`). After: the chrome's cube is the room with the glass knight in it (`d2_cubes.png`).
+
+It was still dark at full detail, for a second reason: where the room holds nothing along a ray a gaussian
+shows the colour it was found with, and the glass's and the mirrors' files were given no groups' light --
+found without the lamps, in a scene lit by its lamps, is near black. (The level drawn first has its lamps
+in its colours, and there the chrome was light.) They now take their groups' light as every other part does,
+from the groups' own glass and mirror files. Page against engine from the three eyes: `cmp_v3.png` (rows:
+engine, page before, page now at full detail, page now at level 1) -- the chrome knight is the tan of the
+lit stone where it was black.
+
+**Shaded while it reads.** The room is drawn from what is on the screen -- the level drawn first, kept in
+`outgoing` while the detail is read behind it, or the parts read so far -- and no longer only when nothing is
+being read. What is gathered behind takes its shading as it is read, so the detail comes in shaded from the
+coarse level's room and the room is drawn again from the detail after. A load of `n_lamps` (the published
+`sponza_lamps`) on a throttled network, a capture every half second (`cast.mjs`; `sheet_cast_v3.png` beside
+`sheet_cast_base.png`): before, the knights as found for 34 s, then the glass knight missing, then shaded;
+now `glass and mirror by the eye` from 4.9 s (the coarse level whole at 3.1 s, its room's pass after) to the
+end, and no capture at the swap differs from the one before it by more than 7 of 255 in the knights' boxes
+(22 before). `sponza_chrome` the same by its status line (by the eye from 4.5 s); its picture from the
+camera tried is too dark to tell anything by.
+
+A pass holds the page's frames while Spark sorts (three sorts): 2 s at the coarse level, 4 to 5 s at 8 M
+gaussians with the normals, in headless Chrome, which is not a device. While the page reads or plays, a
+pass is not begun within a second and a half of the last. The frames it holds were counted as the device's
+rate and the page went to a coarser level right after loading; they are no longer counted.
+
+**A normal from the neighbours.** Each kind's gaussians give their axes to the cells of a grid (a sixtieth
+of the thing's size, 2.4 cm for these knights; as n nᵀ, so which way an axis points does not matter), a
+gaussian blends the eight cells about it and takes the direction that sum holds most of. It is kept a texel
+a gaussian and read by the shading in place of the disc's own axis; the cones are then 0.08 (mirror), 0.1 and
+0.06 (glass, mirrored and through) where they were 0.25, 0.3 and 0.2. Worked out in 0.9 to 1.2 s for the
+1.3 M glass and mirror gaussians of the full scene and 45 ms at level 1 (headless), with the frames going
+on. And through a glass, where the room holds nothing, is now the page's sky -- what the eye sees past it
+there -- not the colour the gaussian was found with, which kept a glass before a dark door milky. Against
+the engine (`cmp_v3.png`, `crop_v3_e0.png`): the glass is light before the wall and dark as the door comes
+behind, as the engine's is, without the facets on the head; it is still a frosted, even glass where the
+engine's is clear with sharp lights in it.
+
+Not done: a real browser, a real phone, WebKit -- all of this is headless Chrome on one Mac. The pass's
+hold on the frames, which is long at full detail and is paid again whenever a lamp's level, the timeline or
+an option changes the room (the eye's frames could go on from Spark's last set while it sorts for the cube;
+not tried). The first seconds of the coarse level, still as found until its room is drawn. A single frame
+at the swap could have fallen between two captures half a second apart. The cell's size and the cones were
+set once and looked at, not searched; the normals of a part's history (shown only at earlier frames) are
+worked out only while they are shown. The room's reach is still eight times a box that strays stretch (15
+and 33 m here, so a look goes by its direction alone). `sponza_chrome` from a camera that shows its
+knights. The glass as the engine draws it: one colour a gaussian and one room from one point do not give
+its inner faces.
