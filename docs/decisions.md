@@ -25126,3 +25126,36 @@ Not done:
 - A phone: the panel's tree was looked at on the desktop layout only.
 - Frame rates: headless Chrome's on this machine are not a measure, and none was taken.
 - CUDA and Vulkan: run on Metal only. The site: nothing was published.
+
+## A layer's view: the one that sees the gaussian as wide as it was made, not a pixel wide (17 Nov)
+
+The rule of 16 Nov scored a view by how far a gaussian's width in its frame was from a pixel. A gaussian is
+not made a pixel wide: `shoot` makes it `--spread` of a cell, half a pixel by default. So the rule preferred a
+view twice as near as the one that made the gaussian. The width aimed at is now the scene's own spread
+(`sceneRelight`'s `madeWide`, handed by `Discovery::relight`), and the view kept is then, for most gaussians,
+the frame that made them: their layers are read at the pixel their own colour came from, and the groups'
+layers and what is left sum to that colour.
+
+Sponza, 960x540, the four views not taken, dB / SSIM against the reference; the two rules shot one after the
+other on the same build (the first by the build's shader copy alone):
+
+| every light a group in the shoot | k10 | k45 | a | b |
+|---|---|---|---|---|
+| a pixel aimed at | 27.98 / 0.8955 | 22.82 / 0.7822 | 25.95 / 0.8672 | 24.31 / 0.8360 |
+| the making width aimed at | 28.35 / 0.8948 | 23.40 / 0.7771 | 26.43 / 0.8661 | 24.30 / 0.8262 |
+| no group at all (16 Nov) | 28.34 / 0.896 | 23.44 / 0.788 | 26.41 / 0.874 | 24.47 / 0.834 |
+
+In dB a scene with every light apart is now the scene with none apart, to 0.04 dB in three views (0.17 in the
+fourth, which does not move). SSIM goes down by 0.001 to 0.010 against the pixel rule, and stays 0.001 to 0.011
+under the scene with no group -- not explained; crops of two views beside the reference show no artefact of the
+new rule's own (floor and walls as the reference in both, the shadow under the glass knight nearer it).
+
+The unlit workflow with its lights' pass at a quarter of the pixels, measured with the number fixed in the
+shader before it was a parameter: 28.08 / 0.878, 23.03 / 0.757, 25.69 / 0.846, 24.54 / 0.806 with half a pixel
+aimed at, against 27.62 / 0.880, 22.57 / 0.773, 25.47 / 0.851, 24.24 / 0.818 -- 0.2 to 0.5 dB more, SSIM 0.002
+to 0.016 less. Aiming at the width scaled to the smaller frame (a quarter of a pixel) was tried and is worse:
+SSIM down by up to 0.07 and a view's dB down. So the width aimed at is the scene's spread in the pass's own
+pixels, whatever the pass's size. Tests, Metal: the scene tests pass (361 assertions).
+
+Not done: why SSIM gives a little where dB gains; the QA flows and the other backends with this; a scene whose
+gaussians were made at coarser cells (their width is a cell's, not the spread's).

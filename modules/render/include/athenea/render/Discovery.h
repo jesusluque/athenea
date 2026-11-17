@@ -271,7 +271,7 @@ public:
                                               const gpu::Buffer* gone = nullptr, bool keep = false,
                                               const gpu::Buffer* into = nullptr, uint32_t colourBase = 0,
                                               const gpu::Buffer* frameBase = nullptr, uint32_t baseAt = 0,
-                                              const gpu::Buffer* matter = nullptr);
+                                              const gpu::Buffer* matter = nullptr, float madeWide = 1.0F);
 
     /// A layer of light (a float4 a gaussian: rgb, linear, and 1 where there
     /// is any) added to `cloud`'s own colours, times `gain`: a group of

@@ -41,7 +41,8 @@ struct RelightParams {
     uint  colourBase;   // sceneRelight: where in `frameColour` the frame starts (a light group's plane in a buffer of several)
     uint  overBase;     // sceneRelight with keep: 1, the frame's light is carried from its pixel's base colour to the gaussian's own
     uint  baseAt;       // and where in `frameBase` the frame's base colours start
-    uint  pad5; uint pad6; uint pad7;
+    float madeWide;     // sceneRelight with keep: a gaussian's width where it was made, in pixels of its frame (the scene's spread)
+    uint pad6; uint pad7;
 };
 
 StructuredBuffer<float4>   positions;    // xyz, opacity (0 and under: not standing)
@@ -99,16 +100,19 @@ void sceneRelight(uint3 tid: SV_DispatchThreadID) {
         return;
     }
     const float4 pixel = frameColour[params.colourBase + at];
-    // OF THE VIEWS THAT SEE A GAUSSIAN, THE ONE THAT SEES IT A PIXEL WIDE is the one whose word is kept
-    // (score: how far from a pixel its width is in this frame, the smaller the better). A gaussian keeps
-    // its own colour from the frame that made it, where it was a pixel wide; the nearest eye holds it over
-    // many pixels and its middle's is one sample of them, and a far one holds many gaussians in a pixel.
-    // (The mean over the pixels it covers was tried in the nearest view and lost detail for no gain.)
+    // OF THE VIEWS THAT SEE A GAUSSIAN, THE ONE THAT SEES IT AS WIDE AS IT WAS MADE is the one whose word is
+    // kept (score: how far its width in this frame is from the width it was made with, `madeWide` pixels --
+    // the scene's spread, half a pixel by default; the smaller the better). A gaussian keeps its own colour
+    // from the frame that made it, and read from that frame its layers are that same pixel's: the groups'
+    // layers and what is left then sum to the colour it has. The nearest eye holds it over many pixels and
+    // its middle's is one sample of them; a far one holds many gaussians in a pixel. (A pixel as the width
+    // aimed at chose a view twice as near as the making one and cost 0.2 to 0.6 dB; the mean over the pixels
+    // it covers was tried in the nearest view and lost detail for no gain.)
     float score = z;
     if (params.keep != 0u) {
         const uint row = i * 4u;
         const float wide = exp(max(lowHalf(shape[row + 1u]), max(highHalf(shape[row + 1u]), lowHalf(shape[row + 2u]))));
-        score = 1.0e-3 + abs(log(max(wide * params.lensX / z, 1.0e-4)));
+        score = 1.0e-3 + abs(log(max(wide * params.lensX / z, 1.0e-4) / max(params.madeWide, 1.0e-3)));
     }
     // A frame's colour says where it holds a surface by its alpha; a light group's plane does not (its alpha
     // is the path tracer's own count, not a coverage), and there the depth above is what says so.

@@ -727,7 +727,7 @@ Result<gpu::Buffer> Discovery::relight(scene::GpuSplats& cloud, const gpu::Buffe
                                        const Projection& projection, float nearness, uint32_t& taken,
                                        const gpu::Buffer* gone, bool keep, const gpu::Buffer* into,
                                        uint32_t colourBase, const gpu::Buffer* frameBase, uint32_t baseAt,
-                                       const gpu::Buffer* matter) {
+                                       const gpu::Buffer* matter, float madeWide) {
     gpu::Device& device = library_->device();
     taken = 0;
     const bool merge = keep && into != nullptr && into->valid();
@@ -756,6 +756,7 @@ Result<gpu::Buffer> Discovery::relight(scene::GpuSplats& cloud, const gpu::Buffe
         cursor["records"].setBinding(spareFloats_.rhi());
         cursor["params"]["keep"].setData(uint32_t{keep ? 1u : 0u});
         cursor["params"]["merge"].setData(uint32_t{merge ? 1u : 0u});
+        cursor["params"]["madeWide"].setData(madeWide > 0.0F ? madeWide : 1.0F);
         cursor["params"]["colourBase"].setData(colourBase);
         const bool over = keep && frameBase != nullptr && frameBase->valid() && matter != nullptr && matter->valid();
         cursor["frameBase"].setBinding(over ? frameBase->rhi() : frameColour.rhi());

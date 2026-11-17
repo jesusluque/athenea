@@ -2679,7 +2679,7 @@ int runShoot(const SceneOptions& all) {
                 auto layer = discovery->relight(cloud, *groupColour, *depthOf->buffer, width, height, projection,
                                                 all.tolerance, took, &found->second, true,
                                                 whole != groupLayers.end() ? &whole->second : nullptr, groupBase,
-                                                frameBase, frameBaseAt, own);
+                                                frameBase, frameBaseAt, own, scene.spread);
                 if (!layer) return std::move(layer).error();
                 if (whole == groupLayers.end()) {
                     groupLayers.emplace(key, *layer);
@@ -2857,7 +2857,8 @@ int runShoot(const SceneOptions& all) {
                     uint32_t took = 0;
                     auto layer = discovery->relight(cloud, *planeOf->buffer, *depthOf->buffer, width, height, projection,
                                                     all.tolerance, took, &record, true,
-                                                    whole != groupLayers.end() ? &whole->second : nullptr, planeOf->offset);
+                                                    whole != groupLayers.end() ? &whole->second : nullptr, planeOf->offset,
+                                                    nullptr, 0, nullptr, scene.spread);
                     if (!layer) return report(layer.error());
                     if (whole == groupLayers.end()) {
                         groupLayers.emplace(key, *layer);
