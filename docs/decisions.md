@@ -25668,3 +25668,19 @@ few frames.
 Not done: a real browser and a real phone (the user's device is still not known); the wheel, which in the
 headless test moved nothing and was not acknowledged; the hold-and-second-finger gesture beside the new drag
 on a touch screen, not tried; the chrome knight's darkness (NEU39).
+
+## The glass in facets (17 Nov, the user's second report)
+
+With the drag mended the user saw the glass change and said what was left: while the page loads, a model as
+it was found (frozen), and at the end a refresh to one shaded by the eye, in facets. The facets: a glass
+gaussian read the room along one ray for its reflection and one for what shows through, and neighbours'
+axes a little apart read the room far apart -- what a mirror's look was softened for already. The glass's
+two looks are now read as the mirror's is, over a cone of thirteen rays (0.3 about the mirrored ray, 0.2
+about the one through). Three eyes in front of the knights, beside the page as published an hour before: the
+glass knight smooth where it was a mosaic; the door coming behind it darkens it less than before, the cone
+averaging it with the wall -- softer and less telling, the price of it.
+
+Not done: the other half of the report -- the page shades only once everything is read, so the model as found
+is what is seen while it loads; shading the coarse level as soon as it is whole was looked at and not done
+(the parts being read behind it and the parts drawn are different lists, and the room is drawn from one of
+them). Nor the facets' cause itself: a gaussian's axis is its disc's, not a smooth normal of the surface.

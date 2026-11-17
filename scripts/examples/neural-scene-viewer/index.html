@@ -761,7 +761,7 @@
                 // does not have -- the cube's alpha says so, and the gaussian shows there the colour it was
                 // found with, not black.
                 vec3 found = pow(max(${inputs.gsplat}.rgba.rgb, vec3(0.0)), vec3(2.2));
-                vec4 mirrored4 = lensSoft(${inputs.room}, p, reflect(v, n), ${inputs.middle}, ${inputs.reach}, ${mirror ? "0.25" : "0.0"});
+                vec4 mirrored4 = lensSoft(${inputs.room}, p, reflect(v, n), ${inputs.middle}, ${inputs.reach}, ${mirror ? "0.25" : "0.3"});
                 vec3 seenMirrored = mirrored4.rgb + (1.0 - mirrored4.a) * found;
                 ${mirror ? `
                 vec3 light = ${inputs.through} * seenMirrored;` : `
@@ -776,7 +776,9 @@
                 // the eye, so the glass seemed painted, the same from anywhere. What leaves a solid is near
                 // the eye's own ray, turned a part of the way the first face turned it.
                 bent = normalize(mix(v, bent, 0.3));
-                vec4 behind4 = texture(${inputs.room}, lensLook(p, bent, ${inputs.middle}, ${inputs.reach}));
+                // Softened as a mirror's look is, and for the same reason: one ray a face, the faces' axes a
+                // little apart, drew the glass in facets.
+                vec4 behind4 = lensSoft(${inputs.room}, p, bent, ${inputs.middle}, ${inputs.reach}, 0.2);
                 vec3 seenBehind = behind4.rgb + (1.0 - behind4.a) * found;
                 vec3 light = mirrored * seenMirrored + (1.0 - mirrored) * ${inputs.through} * ${inputs.through} * seenBehind;`}
                 ${outputs.gsplat}.rgba.rgb = lensEncoded(light);
