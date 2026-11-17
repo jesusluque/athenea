@@ -195,6 +195,8 @@ public:
     struct RecordSet {
         gpu::Buffer records;
         uint32_t    count = 0;
+        gpu::Buffer kept;     ///< a uint a record of the piece: 1 where it is in the set
+        gpu::Buffer places;   ///< and its place in the set (what `primIndices` carries the ids by)
     };
     [[nodiscard]] Result<RecordSet> recordsOf(const gpu::Buffer& records, uint32_t count, uint32_t floats,
                                               const gpu::Buffer& drawn, RecordKind kind);
@@ -368,6 +370,17 @@ public:
     [[nodiscard]] Result<void> gatherPrims(const gpu::Buffer& prims, uint32_t count, const CutPlan& plan,
                                            gpu::Buffer& into, uint32_t base);
 
+    /// WHICH PRIM EACH GAUSSIAN HANDED ON WAS MADE FROM (scene_matte.slang's
+    /// matteIndex): a piece's ids (`prims`, a uint a gaussian of its `count`)
+    /// carried to a set `recordsOf` made of the piece -- the same gaussians in
+    /// the same order -- each as its place, counted from one, among `named`
+    /// ids in ascending order (`table`); 0 where no prim of the table is it.
+    /// `primWords` packs `count` of those two a word, sixteen bits each: what
+    /// `neural-scene export` writes beside a part.
+    [[nodiscard]] Result<gpu::Buffer> primIndices(const gpu::Buffer& prims, uint32_t count, const RecordSet& set,
+                                                  const gpu::Buffer& table, uint32_t named);
+    [[nodiscard]] Result<gpu::Buffer> primWords(const gpu::Buffer& indices, uint32_t count);
+
     /// HOW MANY GAUSSIANS EVERY THRESHOLD DRAWS (discoverCutSpans): a piece's
     /// gaussians each added into `histogram` (made by `cutHistogram`, shared
     /// by a scene's pieces) where the span of thresholds it is drawn between
@@ -409,7 +422,7 @@ private:
     uint32_t            cachePlanes_ = 0;
     gpu::Buffer         ownFrame_;   ///< framePlane's result, kept between calls
     gpu::ComputeKernel  clear_, mark_, count_, mask_, gone_, sizes_, frameValid_, framePack_, frameThrough_;
-    gpu::ComputeKernel  mattePrims_, matteGather_, matteOf_;
+    gpu::ComputeKernel  mattePrims_, matteGather_, matteOf_, matteIndex_, matteWords_;
     gpu::ComputeKernel  renderValid_, renderPack_, renderSpare_, cut_, cutFlags_, gather_, cutSpans_, exportFlat_, levelFlags_, levelGather_;
     std::optional<gpu::PrefixSum> prefix_;
     gpu::Buffer         counters_, spareWords_, spareFloats_, matteSpare_, matteSpareOut_;

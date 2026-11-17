@@ -131,6 +131,7 @@ struct SceneOptions {
     std::vector<std::string> groups;                  // render, export: NAME=LEVEL or NAME=R,G,B, a group of lights' level
     float                    ownLight = 1.0F;         // export: what the scene's own light is multiplied by
     bool                     baseColour = false;      // export: each gaussian's base colour as its colour
+    bool                     noPrims = false;         // export: the parts without which prim each gaussian was made from
     std::vector<std::string> mattes;                  // render: NAME=PRIMPATH, the matte of the gaussians made from the prims at or under a path
     bool                     noHeadlight = false;     // shoot: a stage with no light is not lit from the eye
     std::vector<std::string> lightsOn;                // shoot: the stage's lights left on (the rest switched off)
@@ -1592,6 +1593,12 @@ struct LensRecords {
 struct ExportedPart {
     std::string file;
     uint32_t    gaussians = 0;
+    /// WHICH PRIM EACH GAUSSIAN WAS MADE FROM, beside the file and in its order (`<file's stem>.ids`): sixteen
+    /// bits a gaussian, its prim's place counted from one in the index's `prims`, 0 for none. And the same
+    /// of its glass and of its mirrors. Empty where the scene names no prims.
+    std::string ids;
+    std::string glassIds;
+    std::string mirrorIds;
     std::string          glassFile;
     uint32_t             glassGaussians = 0;
     float                glassIor = 1.0F;
@@ -1627,7 +1634,8 @@ struct ExportedLevel {
 Result<void> writeExportIndex(const std::filesystem::path& stem, const io::NeuralScene& scene,
                               const std::vector<ExportedPart>& parts, const std::array<float, 3>& low,
                               const std::array<float, 3>& high, bool growing,
-                              const std::vector<ExportedLevel>* levels = nullptr) {
+                              const std::vector<ExportedLevel>* levels = nullptr,
+                              const std::vector<std::pair<uint32_t, std::string>>* prims = nullptr) {
     return platform::writeAtomically(stem.string() + ".json", [&](const std::filesystem::path& partial) -> Result<void> {
         std::ofstream index(partial);
         uint64_t total = 0;
@@ -1644,6 +1652,9 @@ Result<void> writeExportIndex(const std::filesystem::path& stem, const io::Neura
               << "],\n  \"max\": [" << high[0] << ", " << high[1] << ", " << high[2] << "],\n  \"parts\": [";
         const auto writeOne = [&](const ExportedPart& part, bool first, const char* indent) {
             index << (first ? "\n" : ",\n") << indent << "{\"file\": \"" << part.file << "\", \"gaussians\": " << part.gaussians;
+            if (!part.ids.empty()) {
+                index << ", \"ids\": \"" << part.ids << "\"";
+            }
             if (part.frame != 0) {
                 index << ", \"frame\": " << part.frame << ", \"time\": " << part.time << ", \"camera\": \"" << part.camera
                       << "\", \"seconds\": " << part.seconds;
@@ -1651,10 +1662,18 @@ Result<void> writeExportIndex(const std::filesystem::path& stem, const io::Neura
             if (!part.glassFile.empty()) {
                 index << ", \"glass\": {\"file\": \"" << part.glassFile << "\", \"gaussians\": " << part.glassGaussians
                       << ", \"ior\": " << part.glassIor << ", \"tint\": [" << part.glassTint[0] << ", "
-                      << part.glassTint[1] << ", " << part.glassTint[2] << "]}";
+                      << part.glassTint[1] << ", " << part.glassTint[2] << "]";
+                if (!part.glassIds.empty()) {
+                    index << ", \"ids\": \"" << part.glassIds << "\"";
+                }
+                index << "}";
             }
             if (!part.mirrorFile.empty()) {
-                index << ", \"mirror\": {\"file\": \"" << part.mirrorFile << "\", \"gaussians\": " << part.mirrorGaussians << "}";
+                index << ", \"mirror\": {\"file\": \"" << part.mirrorFile << "\", \"gaussians\": " << part.mirrorGaussians;
+                if (!part.mirrorIds.empty()) {
+                    index << ", \"ids\": \"" << part.mirrorIds << "\"";
+                }
+                index << "}";
             }
         };
         const auto writePart = [&](const ExportedPart& part, bool first, const char* indent) {
@@ -1700,6 +1719,18 @@ Result<void> writeExportIndex(const std::filesystem::path& stem, const io::Neura
                     writePart(level.parts[k], k == 0, "      ");
                 }
                 index << "\n    ]}";
+            }
+            index << "\n  ],";
+        }
+        if (prims != nullptr && !prims->empty()) {
+            // THE PRIMS THE PARTS' IDS NAME, in ascending order of their Cryptomatte id: a gaussian's sixteen
+            // bits in a part's `ids` file are a place in this list counted from one.
+            index << "\n  \"prims\": [";
+            for (size_t k = 0; k < prims->size(); ++k) {
+                char hex[16];
+                std::snprintf(hex, sizeof(hex), "%08x", (*prims)[k].first);
+                index << (k != 0 ? ",\n    " : "\n    ") << "{\"path\": \"" << (*prims)[k].second << "\", \"id\": \"" << hex
+                      << "\"}";
             }
             index << "\n  ],";
         }
@@ -3449,18 +3480,70 @@ int runExport(const SceneOptions& o) {
     uint32_t held = 0;
     uint32_t floats = 0;
     uint64_t bytes = 0;
+    // WHICH PRIM EACH GAUSSIAN HANDED ON WAS MADE FROM (a piece's `.prims`, the manifest's `prims`): a place
+    // in the scene's prims a gaussian, counted from one in ascending order of their ids -- the order the
+    // index names them in -- carried through the same sets the records are (Discovery::primIndices), so a
+    // part's ids are its file's gaussians in its file's order: its glass's and its mirrors' their own, a
+    // level's, a history's. Sixteen bits a gaussian, which is why a scene of more prims than that hands none.
+    std::vector<std::pair<uint32_t, std::string>> primList;
+    for (const auto& [path, id] : scene->prims) {
+        primList.emplace_back(id, path);
+    }
+    std::sort(primList.begin(), primList.end());
+    if (primList.size() > 65535 && !o.noPrims) {
+        out("the scene names %zu prims, more than a part's ids hold (65535): the parts are written without\n", primList.size());
+    }
+    const bool namesPrims = !o.noPrims && !primList.empty() && primList.size() <= 65535;
+    const uint32_t named = namesPrims ? static_cast<uint32_t>(primList.size()) : 0u;
+    gpu::Buffer primTable;
+    if (namesPrims) {
+        std::vector<uint32_t> ascending;
+        for (const auto& [id, path] : primList) {
+            ascending.push_back(id);
+        }
+        ascending.resize(std::max<size_t>(ascending.size(), 4), 0xFFFFFFFFu);
+        auto table = gpu::Buffer::fromSpan<uint32_t>(**device, std::span<const uint32_t>(ascending), "export.prims");
+        if (!table) return report(table.error());
+        primTable = *table;
+    }
+    std::vector<uint32_t> recordPrims;
+    std::vector<uint32_t> lensPrims;
+    std::vector<uint32_t> mirrorPrims;
+    uint64_t idBytes = 0;
+    // A piece's ids on the device, where it keeps any (a piece found before a scene kept them names none).
+    const auto primsOf = [&](const io::NeuralScenePiece& piece, uint32_t count) -> Result<gpu::Buffer> {
+        if (!namesPrims || piece.prims.empty() || count == 0) {
+            return gpu::Buffer{};
+        }
+        auto ids = io::readSeen(directory / piece.prims, count);
+        if (!ids) return std::move(ids).error();
+        return gpu::Buffer::fromSpan<uint32_t>(**device, std::span<const uint32_t>(*ids), "export.piece.prims");
+    };
     const render::Projection units = render::Discovery::worldWidths();
-    const auto gatherKinds = [&](const gpu::Buffer& onDevice, uint32_t count, const gpu::Buffer& flags) -> Result<uint32_t> {
+    const auto gatherKinds = [&](const gpu::Buffer& onDevice, uint32_t count, const gpu::Buffer& flags,
+                                 const gpu::Buffer& prims) -> Result<uint32_t> {
         uint32_t matter = 0;
-        const std::pair<render::Discovery::RecordKind, std::vector<float>*> kinds[3] = {
-            {render::Discovery::RecordKind::Matter, &records},
-            {render::Discovery::RecordKind::Lens, &lenses.records},
-            {render::Discovery::RecordKind::Mirror, &mirrors.records}};
-        for (const auto& [kind, into] : kinds) {
+        const std::tuple<render::Discovery::RecordKind, std::vector<float>*, std::vector<uint32_t>*> kinds[3] = {
+            {render::Discovery::RecordKind::Matter, &records, &recordPrims},
+            {render::Discovery::RecordKind::Lens, &lenses.records, &lensPrims},
+            {render::Discovery::RecordKind::Mirror, &mirrors.records, &mirrorPrims}};
+        for (const auto& [kind, into, primsInto] : kinds) {
             auto set = discovery->recordsOf(onDevice, count, floats, flags, kind);
             if (!set) return std::move(set).error();
             if (set->count == 0) {
                 continue;
+            }
+            if (namesPrims) {
+                if (prims.valid()) {
+                    auto indices = discovery->primIndices(prims, count, *set, primTable, named);
+                    if (!indices) return std::move(indices).error();
+                    auto read = indices->readAll<uint32_t>(**device);
+                    if (!read) return std::move(read).error();
+                    read->resize(set->count);
+                    primsInto->insert(primsInto->end(), read->begin(), read->end());
+                } else {
+                    primsInto->insert(primsInto->end(), set->count, 0u);
+                }
             }
             auto back = set->records.readAll<float>(**device);
             if (!back) return std::move(back).error();
@@ -3541,7 +3624,9 @@ int runExport(const SceneOptions& o) {
         auto lit = litOnDevice(piece, *read);
         if (!lit) return std::move(lit).error();
         gpu::Buffer* onDevice = &*lit;
-        return gatherKinds(*onDevice, read->count, plan->flags);
+        auto prims = primsOf(piece, read->count);
+        if (!prims) return std::move(prims).error();
+        return gatherKinds(*onDevice, read->count, plan->flags, *prims);
     };
     // A piece's gaussians by the frame from which each no longer stands (0: it stands to the end): read off
     // its two records of stamps, which are looks, and the frames' own first and last looks. Bookkeeping: no
@@ -3585,7 +3670,9 @@ int runExport(const SceneOptions& o) {
         gpu::Buffer* onDevice = &*lit;
         auto drawn = gpu::Buffer::fromSpan<uint32_t>(**device, std::span<const uint32_t>(flags), "export.flags");
         if (!drawn) return std::move(drawn).error();
-        return gatherKinds(*onDevice, read->count, *drawn);
+        auto prims = primsOf(piece, read->count);
+        if (!prims) return std::move(prims).error();
+        return gatherKinds(*onDevice, read->count, *drawn, *prims);
     };
     std::array<float, 3> low{1.0e30F, 1.0e30F, 1.0e30F};
     std::array<float, 3> high{-1.0e30F, -1.0e30F, -1.0e30F};
@@ -3608,15 +3695,41 @@ int runExport(const SceneOptions& o) {
             bytes += *size;
             return path.filename().string();
         };
+        // A file's ids beside it: the indices two a word on the device (Discovery::primWords), and the words
+        // written as they are -- sixteen bits a gaussian, little endian -- inside gzip.
+        const auto writeIds = [&](const std::vector<uint32_t>& of, uint32_t count, const char* suffix) -> Result<std::string> {
+            if (!namesPrims || of.size() != count || count == 0) {
+                return std::string{};
+            }
+            auto indices = gpu::Buffer::fromSpan<uint32_t>(**device, std::span<const uint32_t>(of), "export.ids");
+            if (!indices) return std::move(indices).error();
+            auto packed = discovery->primWords(*indices, count);
+            if (!packed) return std::move(packed).error();
+            auto words = packed->readAll<uint32_t>(**device);
+            if (!words) return std::move(words).error();
+            const std::filesystem::path path = prefix + number + suffix + ".ids";
+            // Inside gzip: a prim's gaussians come in runs, and a file of them is a sixtieth of its bytes.
+            auto size = io::writeGzipped(path, std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(words->data()),
+                                                                        size_t{count} * 2));
+            if (!size) return std::move(size).error();
+            idBytes += *size;
+            return path.filename().string();
+        };
         if (held != 0) {
             auto file = write(records, held, "");
             if (!file) return std::move(file).error();
             part.file = *file;
             part.gaussians = held;
+            auto ids = writeIds(recordPrims, held, "");
+            if (!ids) return std::move(ids).error();
+            part.ids = *ids;
         }
         if (lenses.count != 0) {
             auto file = write(lenses.records, lenses.count, "_glass");
             if (!file) return std::move(file).error();
+            auto ids = writeIds(lensPrims, lenses.count, "_glass");
+            if (!ids) return std::move(ids).error();
+            part.glassIds = *ids;
             part.glassFile = *file;
             part.glassGaussians = lenses.count;
             part.glassIor = lenses.ior;
@@ -3625,6 +3738,9 @@ int runExport(const SceneOptions& o) {
         if (mirrors.count != 0) {
             auto file = write(mirrors.records, mirrors.count, "_mirror");
             if (!file) return std::move(file).error();
+            auto ids = writeIds(mirrorPrims, mirrors.count, "_mirror");
+            if (!ids) return std::move(ids).error();
+            part.mirrorIds = *ids;
             part.mirrorFile = *file;
             part.mirrorGaussians = mirrors.count;
         }
@@ -3634,11 +3750,15 @@ int runExport(const SceneOptions& o) {
             if (!part.glassFile.empty()) {
                 part.file = part.glassFile;
                 part.gaussians = part.glassGaussians;
+                part.ids = part.glassIds;
+                part.glassIds.clear();
                 part.glassFile.clear();
                 part.glassGaussians = 0;
             } else {
                 part.file = part.mirrorFile;
                 part.gaussians = part.mirrorGaussians;
+                part.ids = part.mirrorIds;
+                part.mirrorIds.clear();
                 part.mirrorFile.clear();
                 part.mirrorGaussians = 0;
             }
@@ -3654,6 +3774,9 @@ int runExport(const SceneOptions& o) {
         records.clear();
         lenses = LensRecords{};
         mirrors = LensRecords{};
+        recordPrims.clear();
+        lensPrims.clear();
+        mirrorPrims.clear();
         return ok();
     };
     const auto wanted = [&](const io::NeuralScenePiece& piece, bool finest) {
@@ -3869,8 +3992,13 @@ int runExport(const SceneOptions& o) {
             level.parts.size());
         levels.push_back(std::move(level));
     }
-    if (auto written = writeExportIndex(given, *scene, parts, low, high, false, &levels); !written) {
+    if (auto written = writeExportIndex(given, *scene, parts, low, high, false, &levels, namesPrims ? &primList : nullptr);
+        !written) {
         return report(written.error());
+    }
+    if (namesPrims) {
+        out("prims: %zu named in the index, an id a gaussian beside each file (.ids), %.2f MB\n", primList.size(),
+            static_cast<double>(idBytes) / 1048576.0);
     }
     out("%s: %llu gaussians in %zu parts (the largest %llu), %zu levels of detail, %.1f MB in all; wrote %s.json\n",
         scene->name.c_str(), static_cast<unsigned long long>(total), parts.size(),
@@ -4576,6 +4704,7 @@ void addNeuralScene(CLI::App& app) {
     exported->add_option("--group", o.groups, "a group of lights' level in what is handed on (shoot --light-group): NAME=LEVEL or NAME=R,G,B; * names every group not named. A group not named is at 1");
     render->add_option("--matte", o.mattes, "NAME=PRIMPATH (repeatable): beside the picture, the matte of the gaussians made from the stage's prims at or under PRIMPATH -- what they cover of each pixel, by the picture's own blend, behind whatever stands in front -- written as <picture>_matte_NAME; a scene shot before it kept its gaussians' prims has none");
     exported->add_flag("--base-colour", o.baseColour, "each gaussian is handed on with its surface's base colour as its colour, in place of its light (glass black): for a viewer that lights the scene with a lamp of its own. The same parts as the scene's own export; --exposure would scale it, and is left out");
+    exported->add_flag("--no-prims", o.noPrims, "the parts without which prim each gaussian was made from: no <file>.ids beside them and no prims in the index (the same parts written again for a group of lights or for the base colours need none)");
     exported->add_option("--own-light", o.ownLight, "what the scene's own light is multiplied by: 0 hands on the groups' light alone (a group by itself, with --group)");
     exported->add_option("-o,--output", o.output, "a path with no extension: <stem>_NNN.spz and <stem>.json")->required();
     run(exported, options, runExport);

@@ -84,7 +84,8 @@ Result<Discovery> Discovery::create(gpu::ShaderLibrary& library) {
             *kernel = std::move(*made);
         }
         for (const auto& [kernel, entry] : {std::pair{&d.mattePrims_, "mattePrims"}, std::pair{&d.matteGather_, "matteGather"},
-                                            std::pair{&d.matteOf_, "matteOf"}}) {
+                                            std::pair{&d.matteOf_, "matteOf"}, std::pair{&d.matteIndex_, "matteIndex"},
+                                            std::pair{&d.matteWords_, "matteWords"}}) {
             auto made = gpu::ComputeKernel::create(library, "athenea/neural/scene_matte", entry);
             if (!made) return std::move(made).error();
             *kernel = std::move(*made);
@@ -390,6 +391,8 @@ Result<Discovery::RecordSet> Discovery::recordsOf(const gpu::Buffer& records, ui
     });
     ATHENEA_TRY(batch.submit(true));
     set.records = *gathered;
+    set.kept = *kept;
+    set.places = *places;
     return set;
 }
 
@@ -593,6 +596,46 @@ Result<void> Discovery::gatherPrims(const gpu::Buffer& prims, uint32_t count, co
         cursor["params"]["base"].setData(base);
     });
     return batch.submit(true);
+}
+
+Result<gpu::Buffer> Discovery::primIndices(const gpu::Buffer& prims, uint32_t count, const RecordSet& set,
+                                           const gpu::Buffer& table, uint32_t named) {
+    auto out = words(library_->device(), set.count, 4, "export.primIndices");
+    if (!out) return std::move(out).error();
+    if (set.count == 0 || !set.kept.valid()) {
+        return out;
+    }
+    gpu::CommandBatch batch(library_->device());
+    matteIndex_.dispatch(batch, {count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        bindMatte(cursor);
+        cursor["drawn"].setBinding(set.kept.rhi());
+        cursor["dest"].setBinding(set.places.rhi());
+        cursor["primsRead"].setBinding(prims.rhi());
+        cursor["wanted"].setBinding(table.rhi());
+        cursor["prims"].setBinding(out->rhi());
+        cursor["params"]["count"].setData(count);
+        cursor["params"]["named"].setData(named);
+    });
+    ATHENEA_TRY(batch.submit(true));
+    return out;
+}
+
+Result<gpu::Buffer> Discovery::primWords(const gpu::Buffer& indices, uint32_t count) {
+    const uint32_t wordCount = (count + 1) / 2;
+    auto out = words(library_->device(), wordCount, 4, "export.primWords");
+    if (!out) return std::move(out).error();
+    if (count == 0) {
+        return out;
+    }
+    gpu::CommandBatch batch(library_->device());
+    matteWords_.dispatch(batch, {wordCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
+        bindMatte(cursor);
+        cursor["primsRead"].setBinding(indices.rhi());
+        cursor["prims"].setBinding(out->rhi());
+        cursor["params"]["count"].setData(count);
+    });
+    ATHENEA_TRY(batch.submit(true));
+    return out;
 }
 
 Result<gpu::Buffer> Discovery::matte(const gpu::Buffer& crypto, uint32_t width, uint32_t height,

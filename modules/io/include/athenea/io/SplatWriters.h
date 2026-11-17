@@ -43,6 +43,10 @@ struct SpzHeader {
 [[nodiscard]] Result<void> writeSpz(const std::filesystem::path& path, const SpzHeader& header,
                                     const std::array<std::vector<uint8_t>, 6>& streams);
 
+/// Bytes as they are inside gzip, in a file: what a browser's own
+/// DecompressionStream reads back (`neural-scene export`'s `.ids`). Its size.
+[[nodiscard]] Result<uint64_t> writeGzipped(const std::filesystem::path& path, std::span<const uint8_t> bytes);
+
 /// Whether this build writes SPZ version 4 (it needs ZSTD).
 [[nodiscard]] bool writesSpzVersion4() noexcept;
 

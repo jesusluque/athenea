@@ -67,6 +67,16 @@ constexpr uint8_t  kFlagAntialiased = 0x1;
 
 }   // namespace
 
+Result<uint64_t> writeGzipped(const std::filesystem::path& path, std::span<const uint8_t> bytes) {
+    auto zipped = gzipped(std::vector<uint8_t>(bytes.begin(), bytes.end()));
+    if (!zipped) return std::move(zipped).error();
+    auto out = openForWriting(path);
+    if (!out) return std::move(out).error();
+    out->write(reinterpret_cast<const char*>(zipped->data()), static_cast<std::streamsize>(zipped->size()));
+    ATHENEA_TRY(closed(*out, path));
+    return static_cast<uint64_t>(zipped->size());
+}
+
 Result<void> writePly3dgs(const std::filesystem::path& path, std::span<const std::vector<float>> chunks,
                           std::span<const std::string> comments) {
     size_t floats = 0;
