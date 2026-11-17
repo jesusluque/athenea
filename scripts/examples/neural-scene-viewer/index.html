@@ -18,6 +18,7 @@
     ?light.<group>=<level>   a group of lights at a level other than the one it was shot at (0 to 2)
     ?object=<prim path>      the object chosen: the gaussians made from the stage's prims at or under that path
     ?object.view=<how>       how it is shown: matte, isolate or highlight (highlight where it is not said)
+    ?orbit=0                 a drag turns the camera where it stands, as it did (Alt held does the same for one drag)
   and one thing said only there:
     ?filter=fixed    the filter a third of a pixel whatever the canvas (as it was before the index said frameSize)
 -->
@@ -124,9 +125,8 @@
       each frame. There is no mesh and no stored picture. Black is what no camera has seen yet.</p>
     <p class="help">The <span style="color:#ffd166">yellow frustum</span> is the camera of the frame being
       taken in; the line is the path the frames were rendered along.
-      <span class="keys">Drag to look · W A S D to move, Q E down and up · Shift faster</span><span class="touch">Drag
-      to look · two fingers to move: pinch forward and back, drag sideways · hold one finger still on a point and
-      drag a second to turn about it</span></p>
+      <span class="keys">Drag to turn about what is under the pointer (Alt: look from where you stand) · W A S D to move, Q E down and up · Shift faster</span><span class="touch">Drag
+      to turn about what is under the finger · two fingers to move: pinch forward and back, drag sideways</span></p>
     <div class="stats" id="stats">loading…</div>
   </div>
   <div class="timeline">
@@ -1134,7 +1134,8 @@
       window.__player.shading = () => ({ stale: shadeStale, busy: shadeBusy, loading, step: window.__player.step, glass: kinds.glass.ready, mirror: kinds.mirror.ready,
         meshes: shaded.flat().map((s) => ({ kind: s.kind, shaded: Boolean(s.applied), shown: s.mesh.visible, n: s.gaussians })) });
 
-      window.__player.kinds = kinds;   // where the glass and the chrome are, for whoever drives the page
+      window.__player.kinds = kinds;
+      window.__player.eye = () => camera.position.toArray();   // where the eye is, for whoever drives the page   // where the glass and the chrome are, for whoever drives the page
       // And a camera of the walk by its name, aimed through with the scene left as it stands.
       window.__player.aim = (camera) => { const view = cameras.get(camera); if (view) aim(view); return Boolean(view); };
 
@@ -1451,6 +1452,43 @@
         own.dualPress = false;
         for (const key of ["moveVelocity", "rotateVelocity"]) own[key]?.set?.(0, 0, 0);
       };
+      // A DRAG TURNS ABOUT WHAT IS UNDER IT. Spark's own drag turns the camera where it stands, and from one
+      // place a glass and a mirror show the same whichever way the eye is turned: the user dragged, saw them
+      // stay, and took them for frozen. So the turn Spark makes is carried to the eye's place as well: the
+      // camera goes round the point that was under the pointer when the drag began, and that point stays
+      // where it is on the screen. One pointer only (two fingers still move), not while a frame's camera is
+      // ridden, and not with Alt held or `?orbit=0`, which leave the drag as it was.
+      const drag = { ids: new Set(), point: null, last: new THREE.Quaternion() };
+      const orbits = new URLSearchParams(location.search).get("orbit") !== "0";
+      const underPointer = (x, y) => {
+        const box = canvas.getBoundingClientRect();
+        const ray = new THREE.Raycaster();
+        ray.setFromCamera(new THREE.Vector2((x - box.left) / box.width * 2 - 1, -((y - box.top) / box.height) * 2 + 1), camera);
+        const drawn = [...meshes.flat(), ...shaded.flat()].map((m) => m.mesh).filter((m) => m.visible);
+        const hits = ray.intersectObjects(drawn, false);
+        if (hits.length > 0) return hits[0].point.clone();
+        const middle = place([(index.min[0] + index.max[0]) / 2, (index.min[1] + index.max[1]) / 2,
+                              (index.min[2] + index.max[2]) / 2]);
+        return ray.ray.origin.clone().addScaledVector(ray.ray.direction, Math.max(camera.position.distanceTo(middle), 1));
+      };
+      canvas.addEventListener("pointerdown", (event) => {
+        drag.ids.add(event.pointerId);
+        drag.point = orbits && drag.ids.size === 1 && !event.altKey && (event.pointerType !== "mouse" || event.button === 0)
+          ? underPointer(event.clientX, event.clientY) : null;
+        drag.last.copy(camera.quaternion);
+      }, true);
+      for (const type of ["pointerup", "pointercancel"]) {
+        addEventListener(type, (event) => { drag.ids.delete(event.pointerId); drag.point = null; }, true);
+      }
+      // After Spark has turned the camera: the same turn, about the point.
+      const carryTurn = () => {
+        if (drag.point && !pivot.held && !follow.checked) {
+          const turn = camera.quaternion.clone().multiply(drag.last.clone().invert());
+          if (Math.abs(turn.w) < 1 - 1e-9) camera.position.sub(drag.point).applyQuaternion(turn).add(drag.point);
+        }
+        drag.last.copy(camera.quaternion);
+      };
+      window.__player.drag = drag;
       const fixPoint = () => {
         const box = canvas.getBoundingClientRect();
         const ndc = new THREE.Vector2((pivot.at.x - box.left) / box.width * 2 - 1,
@@ -1612,7 +1650,7 @@
             atEnd = cursor >= steps();
           }
         }
-        if (!(playing && follow.checked)) controls.update(camera);
+        if (!(playing && follow.checked)) { controls.update(camera); carryTurn(); }
         if (marker.visible) {
           marker.position.copy(pivot.point);
           marker.quaternion.copy(camera.quaternion);
@@ -1630,7 +1668,7 @@
           // device where it stays at nought shows that it does.
           if (told > 0) {
             window.__player.shadedTimes = (window.__player.shadedTimes ?? 0) + 1;
-            if (window.__player.shadedTimes % 30 === 1) {
+            {
               shadeNote = shadeNote.replace(/\(\d+ parts, \d+ looks\)/, `(${told} parts, ${window.__player.shadedTimes} looks)`);
               say(said);
             }

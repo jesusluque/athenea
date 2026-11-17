@@ -25632,3 +25632,33 @@ failed. Seen in headless Chrome, desktop and a phone's emulation: by the eye in 
 Not done: the device itself (which one and which browser is not known yet; WebKit was not at hand to try);
 the chrome knight, which the engine draws bright and the page dark -- its room's cube holds something along
 every ray (alpha one) and that something is dark, not looked into.
+
+## Why the glass looked frozen: a drag turned the camera where it stood (17 Nov)
+
+The report closed. With real mouse and key events sent to the page (DevTools protocol, headless Chrome), the
+eye's place and the count of times its move was handed to the shading, read from the page:
+
+| | the eye | looks |
+|---|---|---|
+| loaded | (1.74, 15.53, 11.42) | 2 |
+| after a drag of 200 pixels | the same | 2 |
+| after W held 1.5 s | (2.12, 15.13, 11.31) | 8 |
+| the drag, as it is now | (-1.35, 15.53, 6.77) | 22 |
+
+A drag was Spark's own: it turns the camera and leaves it where it stands. From one place a glass and a mirror
+show the same whichever way the eye is turned -- that is right, and it is what "frozen" was: the user dragged,
+nothing in the glass changed, and only walking (W A S D, two fingers) would have changed it. The shading was
+applied all along, on WebKit and on a phone's emulation as well (sysop's runs: `by the eye`, no error).
+
+Now a drag turns the camera about the point under the pointer when the drag began: Spark's turn is carried to
+the eye's place each frame, the point stays where it is on the screen, and the eye moves, so the glass and the
+chrome are shaded again as one drags. One pointer only (two fingers still move), not while a frame's camera is
+ridden; `Alt` held, or `?orbit=0`, leaves the drag as it was. The hint under the title says so.
+
+The correction of the glass's own look made earlier the same morning (a solid reads the room near the eye's
+ray, the room taken farther off) stands: against the engine's `render --glass` from three eyes it follows the
+same change. It was not what the user was missing.
+
+Not done: a real browser and a real phone (the user's device is still not known); the wheel, which in the
+headless test moved nothing and was not acknowledged; the hold-and-second-finger gesture beside the new drag
+on a touch screen, not tried; the chrome knight's darkness (NEU39).
