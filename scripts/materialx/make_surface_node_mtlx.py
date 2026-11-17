@@ -3,20 +3,21 @@
 #
 # A SURFACE'S GRAPH AS THE ENGINE READS IT, derived from MaterialX's own. MaterialX's nodegraph for a surface
 # shader (OpenPBR Surface's NG_open_pbr_surface_surfaceshader in libraries/bxdf/open_pbr_surface.mtlx, Autodesk
-# Standard Surface's NG_standard_surface_surfaceshader_100 in bxdf/standard_surface.mtlx) is copied with every
-# node whose type is BSDF or VDF taken out and one node (athenea_open_pbr_bsdf, athenea_standard_surface_bsdf)
-# put before the emission layer under the name the surface constructor reads, fed by the nodes that fed the
+# Standard Surface's NG_standard_surface_surfaceshader_100 in bxdf/standard_surface.mtlx, glTF PBR's
+# IMPL_gltf_pbr_surfaceshader in bxdf/gltf_pbr.mtlx) is copied with every node whose type is BSDF or VDF taken
+# out and one node (athenea_open_pbr_bsdf, athenea_standard_surface_bsdf, athenea_gltf_pbr_bsdf) put before the
+# emission layer under the name the surface constructor reads, fed by the nodes that fed the
 # closures; the nodedef and the implementation of that node are written before it. The node's code is
 # shaders/athenea/material/mx/athenea_<surface>_bsdf.slang, written by hand from the closures this takes out:
 # when MaterialX is updated, run this again and read the diff of the .mtlx (a node the closures read that has
 # changed its name or its inputs shows there), then run the test that holds each node to its graph --
-# athenea_material_tests "[openpbr]" and "[standardsurface]" -- which says whether the node still builds the
+# athenea_material_tests "[openpbr]", "[standardsurface]" and "[gltfpbr]" -- which says whether the node still builds the
 # stack MaterialX's graph builds (docs/development.md, 1.5).
 #
 #   make_surface_node_mtlx.py <MaterialX libraries> [<surface> [<output .mtlx>]]
 #
 # <MaterialX libraries> is the folder that holds bxdf/ (~/tools/usd-26.08-mx/libraries as scripts/build-usd.sh
-# installs it). <surface> is open_pbr or standard_surface; without one, every surface is written. The output
+# installs it). <surface> is open_pbr, standard_surface or gltf_pbr; without one, every surface is written. The output
 # defaults to the file in the repository this script is in.
 import os
 import re
@@ -210,6 +211,80 @@ SURFACES["standard_surface"] = {
     <output name="out" type="BSDF" />
   </nodedef>
   <implementation name="IM_athenea_standard_surface_bsdf_genslang" nodedef="ND_athenea_standard_surface_bsdf" file="athenea/material/mx/athenea_standard_surface_bsdf.slang" function="athenea_standard_surface_bsdf" target="genslang" />
+
+''',
+}
+
+SURFACES["gltf_pbr"] = {
+    "source": "gltf_pbr.mtlx",
+    "graph": "IMPL_gltf_pbr_surfaceshader",
+    "output": "athenea_gltf_pbr.mtlx",
+    "before": "    <!-- Emission -->",
+    "node": '''
+    <!-- The lobes: MaterialX's clearcoat over sheen over the metal and the
+         dielectric base (reflection over transmission and diffuse), each
+         reflection under the iridescence and bare, as one node
+         (athenea_gltf_pbr_bsdf.slang says why). -->
+    <athenea_gltf_pbr_bsdf name="clearcoat_layer" type="BSDF">
+      <input name="clearcoat" type="float" interfacename="clearcoat" />
+      <input name="clearcoat_roughness" type="vector2" nodename="clearcoat_roughness_uv" />
+      <input name="sheen" type="float" nodename="sheen_intensity" />
+      <input name="sheen_color" type="color3" nodename="sheen_color_normalized" />
+      <input name="sheen_roughness" type="float" nodename="sheen_roughness_sq" />
+      <input name="iridescence" type="float" interfacename="iridescence" />
+      <input name="base_color" type="color3" interfacename="base_color" />
+      <input name="metallic" type="float" interfacename="metallic" />
+      <input name="dielectric_f0" type="color3" nodename="dielectric_f0" />
+      <input name="dielectric_f90" type="color3" nodename="dielectric_f90" />
+      <input name="roughness" type="vector2" nodename="roughness_uv" />
+      <input name="transmission" type="float" interfacename="transmission" />
+      <input name="ior" type="float" interfacename="ior" />
+      <input name="normal" type="vector3" interfacename="normal" />
+      <input name="clearcoat_normal" type="vector3" interfacename="clearcoat_normal" />
+      <input name="tangent" type="vector3" nodename="selected_tangent" />
+      <input name="clearcoat_tangent" type="vector3" interfacename="tangent" />
+    </athenea_gltf_pbr_bsdf>
+''',
+    "head": '''<?xml version="1.0"?>
+<materialx version="1.39" colorspace="lin_rec709">
+  <!--
+    glTF PBR as the engine reads it: MaterialX's own nodegraph
+    (libraries/bxdf/gltf_pbr.mtlx, 1.39.5) with every node that is not a
+    closure kept as it is (the dielectric's F0 and F90, the roughnesses, the
+    sheen's intensity, the turned tangent, the emission, the alpha modes) and
+    its fifteen BSDF nodes (eight lobes and the layer and mix over them) and
+    one VDF made one, athenea_gltf_pbr_bsdf, which pushes the same lobes in
+    the same order with the same weights and layer marks. The graph kept its
+    BSDF values in thread memory, each kBuildLobes wide, at every vertex of a
+    path. ATHENEA_GLTF_PBR_GRAPH in the environment keeps MaterialX's graph
+    (MaterialCompiler::create), to compare the two.
+
+    The nodes that fed only the volume (the attenuation coefficient of
+    <anisotropic_vdf>, which the graph itself left unread) are left where
+    they were and reach nothing: the generator writes only what the output
+    reads.
+  -->
+  <nodedef name="ND_athenea_gltf_pbr_bsdf" node="athenea_gltf_pbr_bsdf" nodegroup="pbr">
+    <input name="clearcoat" type="float" value="0" />
+    <input name="clearcoat_roughness" type="vector2" value="0, 0" />
+    <input name="sheen" type="float" value="0" />
+    <input name="sheen_color" type="color3" value="0, 0, 0" />
+    <input name="sheen_roughness" type="float" value="0" />
+    <input name="iridescence" type="float" value="0" />
+    <input name="base_color" type="color3" value="1, 1, 1" />
+    <input name="metallic" type="float" value="1" />
+    <input name="dielectric_f0" type="color3" value="0.04, 0.04, 0.04" />
+    <input name="dielectric_f90" type="color3" value="1, 1, 1" />
+    <input name="roughness" type="vector2" value="1, 1" />
+    <input name="transmission" type="float" value="0" />
+    <input name="ior" type="float" value="1.5" />
+    <input name="normal" type="vector3" defaultgeomprop="Nworld" />
+    <input name="clearcoat_normal" type="vector3" defaultgeomprop="Nworld" />
+    <input name="tangent" type="vector3" defaultgeomprop="Tworld" />
+    <input name="clearcoat_tangent" type="vector3" defaultgeomprop="Tworld" />
+    <output name="out" type="BSDF" />
+  </nodedef>
+  <implementation name="IM_athenea_gltf_pbr_bsdf_genslang" nodedef="ND_athenea_gltf_pbr_bsdf" file="athenea/material/mx/athenea_gltf_pbr_bsdf.slang" function="athenea_gltf_pbr_bsdf" target="genslang" />
 
 ''',
 }

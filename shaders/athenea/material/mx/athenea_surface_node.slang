@@ -1,7 +1,7 @@
 // Copyright (c) 2026 jesus luque.
 //
 // What the nodes that build a whole surface's lobes share
-// (athenea_open_pbr_bsdf, athenea_standard_surface_bsdf): MaterialX's graph
+// (athenea_open_pbr_bsdf, athenea_standard_surface_bsdf, athenea_gltf_pbr_bsdf): MaterialX's graph
 // for such a surface passes a BSDF value from closure node to closure node,
 // kBuildLobes wide each, and one node pushes the same lobes with the same
 // weights instead. These are the closure nodes' own steps taken one lobe at a
@@ -9,7 +9,7 @@
 // others), a layer's effect on one lobe of its base (athenea_layer_bsdf), a
 // colour multiply's (athenea_multiply_bsdf_color3) -- so a change to one of
 // those nodes is a change here, and the tests that hold each node to its
-// graph ("[openpbr]", "[standardsurface]") say when the two have parted.
+// graph ("[openpbr]", "[standardsurface]", "[gltfpbr]") say when the two have parted.
 #include "pbrlib/genglsl/lib/mx_closure_type.glsl"
 
 // What a reflecting dielectric_bsdf of weight one takes from what lies under
@@ -41,19 +41,35 @@ uint athenea_node_dielectric(float weight, float3 tint, float ior, float2 roughn
     return atheneaPushLobe(lobe, N, X);
 }
 
-// A generalized_schlick_bsdf's (color90 white, exponent 5).
-uint athenea_node_schlick(float weight, float3 color0, float3 color82, float2 roughness, float3 N, float3 X)
+// A generalized_schlick_bsdf's (exponent 5), reflecting.
+uint athenea_node_schlick(float weight, float3 color0, float3 color82, float3 color90, float2 roughness, float3 N,
+                          float3 X)
 {
     if (weight < M_FLOAT_EPS)
         return kBuildLobes;
     Lobe lobe = atheneaLobe(kLobeSchlick);
     lobe.colour0 = color0;
-    lobe.colour1 = float3(1.0);
+    lobe.colour1 = color90;
     lobe.colour2 = color82;
     lobe.exponent = 5.0;
     lobe.alpha = roughness;
     lobe.scatter = kScatterReflect;
     return atheneaPushLobe(lobe, N, X);
+}
+
+// What a reflecting generalized_schlick_bsdf of weight one takes from what
+// lies under it: its directional albedo, averaged
+// (athenea_generalized_schlick_bsdf).
+float athenea_node_schlick_albedo(float3 V, float3 color0, float3 color82, float3 color90, float exponent,
+                                  float2 roughness, float3 N)
+{
+    const float3 n = dot(N, V) < 0.0 ? -N : N;
+    const float NdotV = clamp(dot(n, V), M_FLOAT_EPS, 1.0);
+    const float avgAlpha = averageAlpha(clamp(roughness, M_FLOAT_EPS, 1.0));
+    const float3 F = fresnelHoffmanSchlick(NdotV, max(color0, 0.0), max(color82, 0.0), max(color90, 0.0), exponent);
+    const float3 comp = ggxEnergyCompensation(NdotV, avgAlpha, F);
+    const float3 dirAlbedo = ggxDirectionalAlbedo(NdotV, avgAlpha, max(color0, 0.0), max(color90, 0.0)) * comp;
+    return dot(dirAlbedo, float3(1.0 / 3.0));
 }
 
 // A conductor_bsdf's.

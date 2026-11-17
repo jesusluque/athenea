@@ -337,23 +337,25 @@ comprobación.
   materiales del frame, y un nodo que la cuenta no conoce no empuja nada en
   ellas: sus lóbulos se descartan y nadie avisa. Una superficie cuyo grafo es
   un solo nodo (`athenea_preview_bsdf`, cinco; `athenea_open_pbr_bsdf`, once;
-  `athenea_standard_surface_bsdf`, ocho) se añade con todos los que empuja.
-- El nodo único de OpenPBR Surface y el de Standard Surface están escritos a
+  `athenea_standard_surface_bsdf` y `athenea_gltf_pbr_bsdf`, ocho cada uno) se
+  añade con todos los que empuja.
+- El nodo único de OpenPBR Surface, el de Standard Surface y el de glTF PBR
+  están escritos a
   mano a partir del nodegraph de MaterialX, y un MaterialX cuyo grafo haya
   cambiado los deja como estaban. Al actualizar MaterialX: (1) `python3
   scripts/materialx/make_surface_node_mtlx.py <raíz>/libraries` vuelve a
-  escribir `shaders/athenea/material/mx/athenea_open_pbr_surface.mtlx` y
-  `athenea_standard_surface.mtlx` -- el grafo de MaterialX sin sus nodos BSDF
+  escribir `shaders/athenea/material/mx/athenea_open_pbr_surface.mtlx`,
+  `athenea_standard_surface.mtlx` y `athenea_gltf_pbr.mtlx` -- el grafo de MaterialX sin sus nodos BSDF
   y VDF y con el nodo único en su lugar --, y su diff enseña un nodo de los
   que leían los closures que haya cambiado; (2) se compila, para que se
-  copien los shaders; (3) `athenea_material_tests "[openpbr]"` y
-  `"[standardsurface]"` compilan la superficie por las dos rutas
-  (`MaterialCompilerOptions::openPbr`, `standardSurface`) y comparan, en el
-  dispositivo, las pilas de lóbulos que construyen sobre diecinueve y
-  veintiséis juegos de parámetros, con y sin las marcas que pide un bake
-  (`kAtheneaMarkLobes`). Esos tests son los que dicen si
-  `athenea_open_pbr_bsdf.slang` y `athenea_standard_surface_bsdf.slang` siguen
-  coincidiendo: una cuenta, un tipo, un flag o un valor que se aparte más de
+  copien los shaders; (3) `athenea_material_tests "[openpbr]"`,
+  `"[standardsurface]"` y `"[gltfpbr]"` compilan la superficie por las dos
+  rutas (`MaterialCompilerOptions::openPbr`, `standardSurface`, `gltfPbr`) y
+  comparan, en el dispositivo, las pilas de lóbulos que construyen sobre
+  diecinueve, veintiséis y veinticinco juegos de parámetros, con y sin las
+  marcas que pide un bake (`kAtheneaMarkLobes`). Esos tests son los que dicen
+  si `athenea_open_pbr_bsdf.slang`, `athenea_standard_surface_bsdf.slang` y
+  `athenea_gltf_pbr_bsdf.slang` siguen coincidiendo: una cuenta, un tipo, un flag o un valor que se aparte más de
   1e-5 los hace fallar, y la línea que imprimen dice en qué juego y cuál de
   ellos.
 - Una superficie recibe su nodo único por los mismos pasos: sus lóbulos,
@@ -544,6 +546,7 @@ fuera del proceso.
 | `ATHENEA_MTLX_DUMP` | escribe el documento MaterialX que se le da al generador, uno por material |
 | `ATHENEA_OPENPBR_GRAPH` | con cualquier valor: OpenPBR Surface se compila desde el grafo de nodos BSDF del propio MaterialX en vez de desde el nodo único del motor (`athenea_open_pbr_bsdf`), para comparar las dos rutas en una misma compilación (imágenes y tiempos; `athenea_material_tests "[openpbr]"` compara sus pilas de lóbulos sin ella, mediante `MaterialCompilerOptions::openPbr`, a la que da valor cuando quien llama deja la elección al entorno) |
 | `ATHENEA_STANDARD_SURFACE_GRAPH` | lo mismo para Autodesk Standard Surface: el grafo de MaterialX en vez del nodo único del motor (`athenea_standard_surface_bsdf`); `athenea_material_tests "[standardsurface]"` compara los dos sin ella, mediante `MaterialCompilerOptions::standardSurface` |
+| `ATHENEA_GLTF_PBR_GRAPH` | lo mismo para glTF PBR: el grafo de MaterialX en vez del nodo único del motor (`athenea_gltf_pbr_bsdf`); `athenea_material_tests "[gltfpbr]"` compara los dos sin ella, mediante `MaterialCompilerOptions::gltfPbr` |
 | `ATHENEA_SHADOW_DEBUG` | loguea los mapas de sombra de nube: emisores, luces, texels, transmitancia media |
 | `ATHENEA_VISIBILITY_DEBUG` | loguea los factores de visibilidad por partes |
 | `ATHENEA_CUDA_LDG` | `=1` deja en su sitio el camino de caché de solo lectura de CUDA, reproduciendo un defecto que el prelude normalmente esquiva |

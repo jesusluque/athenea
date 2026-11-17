@@ -720,8 +720,8 @@ import athenea.material.material_runtime;
 import NODE_MODULE;
 import GRAPH_MODULE;
 export static const bool kAtheneaMarkLobes = MARK_LOBES;
-// Every lobe a surface can push kept (OpenPBR eleven, Standard Surface
-// eight), so none is dropped as the
+// Every lobe a surface can push kept (OpenPBR eleven, Standard Surface and
+// glTF PBR eight), so none is dropped as the
 // lightest and the stack's order is the order they were pushed in; a device
 // that gives a thread less stack keeps its own counts.
 #ifndef ATHENEA_MAX_LOBES
@@ -1275,6 +1275,113 @@ TEST_CASE("Standard Surface's one node builds the stack MaterialX's graph builds
                 cases.size(), total.kinds, total.deepest, total.emitting, total.cut);
     CHECK((total.kinds & 0xBAu) == 0xBAu);   // kLobeOrenNayar, Translucent, Dielectric, Conductor, Sheen
     CHECK(total.deepest >= 7);
+    CHECK(total.emitting > 0);
+    CHECK(total.cut > 0);
+}
+
+// AND FOR GLTF PBR, whose lobes athenea_gltf_pbr_bsdf builds, written from
+// MaterialX 1.39.5's IMPL_gltf_pbr_surfaceshader (docs/decisions.md, 17 Nov).
+// The sets reach each lobe and each combinator of that graph: the diffuse,
+// the Schlick metal and the Schlick reflection with its specular weight,
+// colour and index, each bare and under the iridescence, the transmission
+// (with thickness, attenuation and dispersion, which reach no lobe), the
+// sheen, the clearcoat -- over a transmission at its own index, which it
+// spares, and at another -- anisotropy, emission, and the three alpha modes.
+TEST_CASE("glTF PBR's one node builds the stack MaterialX's graph builds", "[material][materialx][gltfpbr]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const std::vector<RouteCase> cases{
+        {"a rough dielectric",
+         {{"base_color", "color3", "0.6, 0.3, 0.1"}, {"metallic", "float", "0"}, {"roughness", "float", "0.6"}}},
+        {"the defaults: a rough white metal", {}},
+        {"an anisotropic metal, its tangent turned",
+         {{"base_color", "color3", "0.95, 0.8, 0.5"}, {"metallic", "float", "1"}, {"roughness", "float", "0.3"},
+          {"anisotropy_strength", "float", "0.8"}, {"anisotropy_rotation", "float", "1"}}},
+        {"half metal with a specular colour and weight",
+         {{"base_color", "color3", "0.8, 0.5, 0.3"}, {"metallic", "float", "0.5"}, {"roughness", "float", "0.25"},
+          {"specular", "float", "0.5"}, {"specular_color", "color3", "0.6, 0.8, 1"}}},
+        {"a dielectric at its own index",
+         {{"base_color", "color3", "0.05, 0.05, 0.05"}, {"metallic", "float", "0"}, {"roughness", "float", "0.15"},
+          {"ior", "float", "1.8"}, {"specular_color", "color3", "1, 0.9, 0.7"}}},
+        {"a dielectric with no reflection",
+         {{"base_color", "color3", "0.2, 0.5, 0.7"}, {"metallic", "float", "0"}, {"roughness", "float", "0.5"},
+          {"specular", "float", "0"}}},
+        {"glass",
+         {{"base_color", "color3", "0.9, 0.95, 1"}, {"metallic", "float", "0"}, {"roughness", "float", "0"},
+          {"transmission", "float", "1"}, {"ior", "float", "1.52"}}},
+        {"glass with thickness and attenuation",
+         {{"metallic", "float", "0"}, {"roughness", "float", "0.05"}, {"transmission", "float", "1"},
+          {"thickness", "float", "0.2"}, {"attenuation_distance", "float", "0.3"},
+          {"attenuation_color", "color3", "0.4, 0.7, 0.9"}}},
+        {"glass with dispersion, anisotropic",
+         {{"metallic", "float", "0"}, {"roughness", "float", "0.1"}, {"transmission", "float", "1"},
+          {"ior", "float", "1.6"}, {"dispersion", "float", "0.5"}, {"anisotropy_strength", "float", "0.4"}}},
+        {"half transmission",
+         {{"base_color", "color3", "0.8, 0.3, 0.1"}, {"metallic", "float", "0"}, {"roughness", "float", "0.1"},
+          {"transmission", "float", "0.5"}}},
+        {"iridescence over a metal",
+         {{"base_color", "color3", "0.9, 0.9, 0.9"}, {"metallic", "float", "1"}, {"roughness", "float", "0.15"},
+          {"iridescence", "float", "0.6"}, {"iridescence_ior", "float", "1.4"},
+          {"iridescence_thickness", "float", "400"}}},
+        {"iridescence of weight one over a plastic",
+         {{"base_color", "color3", "0.05, 0.05, 0.05"}, {"metallic", "float", "0"}, {"roughness", "float", "0.1"},
+          {"iridescence", "float", "1"}, {"iridescence_thickness", "float", "300"}}},
+        {"iridescence over glass",
+         {{"metallic", "float", "0"}, {"roughness", "float", "0"}, {"transmission", "float", "1"},
+          {"iridescence", "float", "0.5"}}},
+        {"sheen",
+         {{"base_color", "color3", "0.15, 0.05, 0.2"}, {"metallic", "float", "0"}, {"roughness", "float", "0.7"},
+          {"sheen_color", "color3", "0.9, 0.8, 1"}, {"sheen_roughness", "float", "0.5"}}},
+        {"sheen under a clearcoat",
+         {{"base_color", "color3", "0.2, 0.5, 0.1"}, {"metallic", "float", "0"}, {"roughness", "float", "0.5"},
+          {"sheen_color", "color3", "0.6, 0.5, 0.3"}, {"sheen_roughness", "float", "0.3"},
+          {"clearcoat", "float", "0.8"}, {"clearcoat_roughness", "float", "0.05"}}},
+        {"a clearcoat",
+         {{"base_color", "color3", "0.6, 0.03, 0.03"}, {"metallic", "float", "0"}, {"roughness", "float", "0.5"},
+          {"clearcoat", "float", "1"}, {"clearcoat_roughness", "float", "0.1"}}},
+        {"half a clearcoat over half a metal",
+         {{"base_color", "color3", "0.1, 0.4, 0.7"}, {"metallic", "float", "0.5"}, {"roughness", "float", "0.3"},
+          {"clearcoat", "float", "0.5"}, {"clearcoat_roughness", "float", "0.3"}}},
+        {"glass at the clearcoat's index, with no reflection, under a clearcoat",
+         {{"base_color", "color3", "0.8, 1, 0.8"}, {"metallic", "float", "0"}, {"roughness", "float", "0"},
+          {"transmission", "float", "1"}, {"specular", "float", "0"}, {"clearcoat", "float", "1"}}},
+        {"glass at another index under a clearcoat",
+         {{"metallic", "float", "0"}, {"roughness", "float", "0.05"}, {"transmission", "float", "1"},
+          {"ior", "float", "1.7"}, {"clearcoat", "float", "0.8"}}},
+        {"emission under a clearcoat",
+         {{"base_color", "color3", "0.1, 0.1, 0.1"}, {"metallic", "float", "0"}, {"roughness", "float", "0.4"},
+          {"emissive", "color3", "0.3, 0.6, 1"}, {"emissive_strength", "float", "3"}, {"clearcoat", "float", "1"}}},
+        {"alpha 0.5, blended",
+         {{"base_color", "color3", "0.7, 0.7, 0.1"}, {"metallic", "float", "0"}, {"roughness", "float", "0.5"},
+          {"alpha", "float", "0.5"}, {"alpha_mode", "integer", "2"}}},
+        {"alpha 0.4, masked at 0.5",
+         {{"base_color", "color3", "0.1, 0.7, 0.7"}, {"metallic", "float", "0"}, {"roughness", "float", "0.5"},
+          {"alpha", "float", "0.4"}, {"alpha_mode", "integer", "1"}, {"alpha_cutoff", "float", "0.5"}}},
+        {"alpha 0.4, opaque",
+         {{"base_color", "color3", "0.1, 0.7, 0.7"}, {"metallic", "float", "0"}, {"roughness", "float", "0.5"},
+          {"alpha", "float", "0.4"}}},
+        {"every weight fractional",
+         {{"base_color", "color3", "0.6, 0.4, 0.5"}, {"metallic", "float", "0.3"}, {"roughness", "float", "0.2"},
+          {"specular", "float", "0.8"}, {"specular_color", "color3", "0.9, 1, 0.8"}, {"ior", "float", "1.4"},
+          {"transmission", "float", "0.3"}, {"iridescence", "float", "0.4"},
+          {"iridescence_thickness", "float", "350"}, {"sheen_color", "color3", "0.4, 0.4, 0.5"},
+          {"sheen_roughness", "float", "0.4"}, {"clearcoat", "float", "0.7"},
+          {"clearcoat_roughness", "float", "0.1"}, {"anisotropy_strength", "float", "0.3"},
+          {"anisotropy_rotation", "float", "0.5"}, {"emissive", "color3", "0.5, 0.4, 0.3"},
+          {"emissive_strength", "float", "1"}, {"alpha", "float", "0.9"}, {"alpha_mode", "integer", "2"}}},
+        {"weights past one and under zero",
+         {{"base_color", "color3", "0.6, 0.4, 0.5"}, {"metallic", "float", "1.2"}, {"roughness", "float", "0.3"},
+          {"transmission", "float", "-0.2"}, {"iridescence", "float", "1.3"}, {"clearcoat", "float", "1.5"},
+          {"specular", "float", "1.4"}}},
+    };
+    const RouteTotals total = compareRoutes(gpu, "gltf_pbr", &material::MaterialCompilerOptions::gltfPbr,
+                                            "athenea_gltf_pbr_bsdf(", cases);
+    // That the sets reached the graph's parts: a diffuse, a dielectric, a
+    // Schlick and a sheen among the lobes, a stack of all eight, a surface
+    // that emits and one that is not opaque.
+    std::printf("  over the %zu sets: kinds 0x%x, the deepest stack %u lobes, %u points emitting, %u not opaque\n",
+                cases.size(), total.kinds, total.deepest, total.emitting, total.cut);
+    CHECK((total.kinds & 0xD2u) == 0xD2u);   // kLobeOrenNayar, Dielectric, Schlick, Sheen
+    CHECK(total.deepest >= 8);
     CHECK(total.emitting > 0);
     CHECK(total.cut > 0);
 }

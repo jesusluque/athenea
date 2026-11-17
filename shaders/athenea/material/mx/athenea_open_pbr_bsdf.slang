@@ -80,8 +80,9 @@ void athenea_open_pbr_bsdf(ClosureData closureData, float fuzz_weight, float3 fu
 
     // The metal, under a thin film and bare.
     index[kOpenPbrMetalFilm] =
-        athenea_node_schlick(metalFilmWeight, metal_reflectivity, specular_color, roughness, N, X);
-    index[kOpenPbrMetal] = athenea_node_schlick(metalWeight, metal_reflectivity, specular_color, roughness, N, X);
+        athenea_node_schlick(metalFilmWeight, metal_reflectivity, specular_color, float3(1.0), roughness, N, X);
+    index[kOpenPbrMetal] =
+        athenea_node_schlick(metalWeight, metal_reflectivity, specular_color, float3(1.0), roughness, N, X);
 
     // The dielectric's reflection, under a thin film and bare, and what the
     // two together let by: an add of throughputs, max(a + b - 1, 0).

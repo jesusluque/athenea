@@ -25413,3 +25413,90 @@ inputs driven by textures in the test (the knights' maps are compared as picture
 marks through a conversion (`mesh2splat --transfer` on a standard_surface, as was done for OpenPBR); the
 raster's shading and `shoot` timed with the node; the feature stage kept in the repository (it and its
 generator are in `build/night/agent-stdsurf`).
+
+## glTF PBR's lobes built by one node, by the same recipe (17 Nov)
+
+The third surface, after OpenPBR and Standard Surface: MaterialX's `gltf_pbr` (`IMPL_gltf_pbr_surfaceshader`),
+fifteen BSDF nodes and a VDF over seventeen BSDF values in the generated module. No stage at hand uses it,
+so there is no scene whose time it was known to cost; done so that the three shading models are handled
+alike.
+
+**The node.** `athenea_gltf_pbr_bsdf` (`shaders/athenea/material/mx/athenea_gltf_pbr_bsdf.slang`) in the
+engine's graph `athenea_gltf_pbr.mtlx` -- MaterialX 1.39.5's with its sixteen closure nodes taken out and the
+one node put where `clearcoat_layer` was, written by `make_surface_node_mtlx.py` (its third entry). Read off
+a generated module (`build/night/agent-stdsurf/dump_gltf_graph0`):
+
+- *Eight lobes, in this order:* the clearcoat (a reflecting dielectric at 1.5, the graph's constant, on the
+  clearcoat's normal), the sheen (Conty and Kulla's, weighed by the largest component of `sheen_color`), the
+  metal under the iridescence and bare (a Schlick from the base colour to white, weights `iridescence` and
+  its complement), the dielectric's reflection under the iridescence and bare (a Schlick from
+  `dielectric_f0` to `dielectric_f90`), the transmission (a dielectric tinted by the base colour, weight
+  `transmission`) and the diffuse (its complement). All eight in one stack where every weight is fractional.
+- *The weights:* the metals by `metallic` clamped; the transmission and the diffuse under what the two
+  reflections let by (a Schlick's averaged directional albedo; the two throughputs added, max(a + b - 1, 0));
+  those and the reflections by `1 - metallic` clamped; the six under the sheen's throughput; the seven under
+  the clearcoat's.
+- *The marks:* the reflection is a Schlick, so the transmission under it is not spared its Fresnel; the
+  clearcoat is a dielectric at 1.5 and spares a transmission at that index (flagged `kFlagOwnFresnel`) -- as
+  MaterialX's graph has the engine's layer do, said here because it is glTF's default index. A layer more
+  over each lobe of a base that weighs something at each of the three layers, in a kernel that asks. No
+  colour multiply, so no tint.
+
+`athenea_surface_node.slang` gained the Schlick's colour at grazing and its throughput. `lobesPushed` counts
+the node as eight. **The switch:** `ATHENEA_GLTF_PBR_GRAPH`, and `MaterialCompilerOptions::gltfPbr` from
+code. The graph names its nodedef, so a document that carries it (hdMtlx's) gave way to the compiler's
+before today's fix as after.
+
+**The test** (`athenea_material_tests "[gltfpbr]"`, over `compareRoutes`): 25 parameter sets, marked and
+unmarked -- a rough dielectric; the defaults; an anisotropic metal with its tangent turned; half metal with
+a specular colour and weight; a dielectric at its own index; one with no reflection; glass; glass with
+thickness and attenuation, and with dispersion (neither reaches a lobe); half transmission; iridescence
+over a metal, of weight one over a plastic, and over glass; sheen; sheen under a clearcoat; a clearcoat;
+half a clearcoat over half a metal; glass at the clearcoat's index with no reflection under a clearcoat,
+and at another index; emission under a clearcoat; alpha 0.5 blended, 0.4 masked at 0.5, 0.4 opaque; every
+weight fractional; weights past one and under zero. Metal, M5 Pro: in all 50 runs no count, word, value,
+mark, emission or opacity off; floats differing at all in two sets (555 with iridescence over glass, 99 429
+with every weight fractional, the worst by 3.2e-7). Kinds 0xd2 (diffuse, dielectric, Schlick, sheen), the
+deepest stack eight. 854 assertions. The other two cases pass with the shared file changed (888 and 650).
+
+**That it fails when the node is wrong** (the build's copy edited, restored, `cmp` equal, passing again):
+
+| the edit | runs failing, of 50 | what the test said |
+|---|---|---|
+| the diffuse at half its weight | 30 | 49 152 floats off, the worst by 0.5 |
+| the clearcoat's weight by 0.999 | 16 | 49 152 floats off, the worst by 1.0e-3 |
+| the reflection's colour at grazing left white | 8 | the sets whose `specular` is not one: floats off, the worst by 0.5 |
+| the clearcoat not sparing a transmission at its index | 2 | 16 384 words and 49 152 floats off, the worst by 0.91 |
+| a layer over counted as two | 25 | the marked runs alone, all 25 |
+
+**Pictures and seconds, the node against the graph**, a stage of 22 glTF PBR balls (the test's sets less the
+defaults, the opaque alpha and the weights out of range; `build/night/agent-stdsurf/gltf`, not in the
+repository), 1920x1080, `--path-samples 8`, one build; the dumped modules hold one call of the node and no
+layer on one route, three layers and no node on the other:
+
+| paths, bounces | relMSE | 8-bit p99 / max | PSNR | the largest relative difference |
+|---|---|---|---|---|
+| 1, 0 | 0 | 0 / 0 | bit for bit | 0 |
+| 32, 0 | 7.6e-14 | 0 / 0 | 138.8 dB | 0.00082 |
+| 32, 3 | 2.3e-13 | 0 / 0 | 136.3 dB | 0.00082 |
+
+| the whole command, s | node | graph |
+|---|---|---|
+| one path, first run / again | 36.5 / 13.0 | 26.2 / 13.2 |
+| 32 paths, no bounce | 14.6 | 15.0 |
+| 32 paths, three bounces | 24.6, 24.8 | 28.2, 28.3 |
+| the first hit and its light | 1.6 | 1.8 |
+| **a bounce** | **3.4** | 4.4 |
+
+A bounce is 23 % less, as Standard Surface's was on its stage of balls (4.2 where 5.6) and OpenPBR's on its
+(4.1 where 6.3). No stop of the thermal guard inside (05:46 to 05:51). The node is the default.
+
+Tests, Metal: `athenea_material_tests` (2985 assertions in 15 cases) and `athenea_technique_tests` (2862 in
+64) pass; the 54 tests of ctest not marked slow whose names speak of glTF, materials, lobes, coats or sheen pass.
+The whole suite was not run.
+
+Not done: a real glTF asset (the stage is constants on balls; no texture, no `gltf_colorimage`, no normal
+map through the node); CUDA and Vulkan; the marks through a conversion; the raster's shading; the alpha
+modes compared as pictures beyond the two balls of the stage; the first run's compile, which was 36.5 s
+with the node and 26.2 s with the graph here once each -- the node's run was the first ever of that stage
+in this build, so the two are not a comparison.

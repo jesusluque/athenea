@@ -72,6 +72,8 @@ const SurfaceNode kSurfaceNodes[] = {
      &MaterialCompilerOptions::openPbr},
     {"NG_standard_surface_surfaceshader_100", "athenea/material/mx/athenea_standard_surface.mtlx",
      "ATHENEA_STANDARD_SURFACE_GRAPH", &MaterialCompilerOptions::standardSurface},
+    {"IMPL_gltf_pbr_surfaceshader", "athenea/material/mx/athenea_gltf_pbr.mtlx", "ATHENEA_GLTF_PBR_GRAPH",
+     &MaterialCompilerOptions::gltfPbr},
 };
 
 /// The surface node: no light loop. Its BSDF graph runs once, pushing lobes;
@@ -740,9 +742,10 @@ Result<std::unique_ptr<MaterialCompiler>> MaterialCompiler::create(
                     mx::readFromXmlFile(previewDoc, mx::FilePath(preview.string()));
                     impl.libraries->importLibrary(previewDoc);
                 }
-                // OpenPBR Surface and Standard Surface with their lobes
-                // built by one node each, in place of MaterialX's graphs of
-                // thirty and sixteen BSDF nodes (the files say why).
+                // OpenPBR Surface, Standard Surface and glTF PBR with their
+                // lobes built by one node each, in place of MaterialX's
+                // graphs of thirty, sixteen and fifteen BSDF nodes (the
+                // files say why).
                 // MaterialCompilerOptions, or the surface's variable in the
                 // environment where they leave it to that, keeps a graph:
                 // the material tests compile both in one process and hold
