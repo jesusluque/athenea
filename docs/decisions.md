@@ -25521,3 +25521,30 @@ it read Y. The scene tests (361 assertions) and the 49 QA flows pass.
 
 Not done: the other half of NEU38 -- the published `lamps` scene exported again differs at frame 4 from the
 export on the site, and which is right is not checked.
+
+## The night's commits on ixwin: CUDA and Vulkan at 5ee7f9e1 (17 Nov)
+
+A subagent, RTX 3070 Laptop, both trees brought from cb22fdb7 to 5ee7f9e1 (the prims' ids in an export, the
+making-width rule, Standard Surface and glTF PBR as one node each with the `compileDocument` fix); scripts and
+outputs in `build/night/agent-ixwin5`.
+
+- **Builds**: both, no error. Writing `.ids` (gzip) works on Windows. (The Windows build that "stopped early
+  with a return of 0" has its cause: `cmake --build --target` handed a PowerShell array built the last name
+  alone; with the names written out all are built.)
+- **Tests, all passing**: `athenea_material_tests` 2985 assertions in 15 cases (CUDA) and 3087 in 16
+  (Vulkan), with `[openpbr]`, `[standardsurface]` 888 and `[gltfpbr]` 854 on each; the scene tests 361 / 361;
+  `athenea_technique_tests` 917 with 35 cases skipped / 2862; the usd tags 170 with 55 skipped / 1020. The QA
+  flows 49 of 49 on CUDA and 48 of 49 on Vulkan (the flow that needs `athenea compare`: NEU17), the two flows
+  of an export with ids among those that pass, and every flow of groups and light layers.
+- **The `compileDocument` fix**, by the dumped modules, the same on both: Sponza with the knights holds two
+  calls of the Standard Surface node and no layer by default, none and six layers with
+  `ATHENEA_STANDARD_SURFACE_GRAPH`, and none and six with the build before the fix.
+- **Pictures, the node against the graph** (1280x720, 16 paths): Sponza bit for bit on Vulkan with and
+  without bounces, a half float's last bit on CUDA; the 25 Standard Surface balls bit for bit or that last
+  bit. The graph's route is bit for bit what cb22fdb7 drew.
+- **Time on Vulkan**, the 25 balls, 16 paths in passes of 2, frame time: 1339 ms to 1136 ms without bounces,
+  3166 ms to 2359 ms with three, the graph against the node -- 609 ms to 408 ms a bounce, a third less (a
+  quarter on the Mac).
+
+Not done there: CUDA's bounces (no OptiX in WSL); a glTF PBR stage; the web player's Objects control; which
+prim each `.ids` value names, beyond the flow's counts; the making-width rule's dB.
