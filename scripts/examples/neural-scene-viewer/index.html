@@ -389,9 +389,9 @@
       // them is drawn into a cube from their middle, and each gaussian takes the cube along the eye's ray
       // mirrored at its disc and, for glass, along it bent in -- so the room turns as the camera does. Each
       // kind has its cube, drawn with the other kind in it: the chrome shows the glass and the glass the
-      // chrome. One bend at the face the eye meets and a room read from one point: a lens's far face and
-      // whatever stands near are not there. Where the room holds nothing a gaussian keeps the colour it was
-      // found with.
+      // chrome. A room read from one point, and a far face that is guessed (a ball's, see the shading): what
+      // stands near and the solid's own inner faces are not there. Where the room holds nothing a gaussian
+      // keeps the colour it was found with.
       const kindOf = (which) => ({
         which, eye: dyno.dynoVec3(new THREE.Vector3()), middle: dyno.dynoVec3(new THREE.Vector3()),
         reach: dyno.dynoFloat(1.0), room: dyno.dynoSamplerCube(new THREE.WebGLCubeRenderTarget(1).texture),
@@ -817,7 +817,17 @@
         }
       };
       // The cones a look is read over (a part of a radian about its ray): with a smooth normal, and without.
-      const cones = { mirror: [0.08, 0.25], glassMirrored: [0.1, 0.3], glassThrough: [0.06, 0.2] };
+      // HOW A KIND LOOKS, four numbers the shading reads: how far a glass's look through is the one a ball of
+      // glass gives (0: the eye's own ray, a pane's; 1: bent in at the face met and out again at a far face
+      // that mirrors it), the cone about the mirrored ray, the cone about the look through, and how much of
+      // the room's brightest is added as a highlight.
+      // With the eye's own ray and cones of a tenth of a radian the glass was frosted and even where the
+      // engine's is clear; these are the ones looked at beside the engine's pictures from three eyes.
+      // `window.__player.look(kind, ...four)` sets them on a page that is open, to see others.
+      const looks = {
+        glass: dyno.dynoVec4(new THREE.Vector4(0.85, 0.03, 0.015, 1.5)),
+        mirror: dyno.dynoVec4(new THREE.Vector4(0.0, 0.04, 0.0, 1.0)),
+      };
       const shadingOf = (kind, ior, tint, normals) => {
         const index = dyno.dynoFloat(ior);
         const through = dyno.dynoVec3(new THREE.Vector3(tint[0], tint[1], tint[2]));
@@ -825,10 +835,10 @@
         return dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
           const shade = new dyno.Dyno({
             inTypes: { gsplat: dyno.Gsplat, eye: "vec3", middle: "vec3", reach: "float", room: "samplerCube",
-                       index: "float", through: "vec3", normals: "sampler2D", sky: "vec3" },
+                       index: "float", through: "vec3", normals: "sampler2D", sky: "vec3", look: "vec4" },
             outTypes: { gsplat: dyno.Gsplat },
             inputs: { gsplat, eye: kind.eye, middle: kind.middle, reach: kind.reach, room: kind.room, index, through,
-                      normals: dyno.dynoSampler2D(normals), sky: skyLight },
+                      normals: dyno.dynoSampler2D(normals), sky: skyLight, look: looks[kind.which] },
             globals: () => [dyno.defineGsplat, dyno.unindent(`
               vec3 lensAxis(vec4 q, vec3 scales) {
                 vec3 axis = scales.x <= scales.y ? (scales.x <= scales.z ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0))
@@ -881,31 +891,45 @@
                 // does not have -- the cube's alpha says so, and the gaussian shows there the colour it was
                 // found with, not black.
                 vec3 found = pow(max(${inputs.gsplat}.rgba.rgb, vec3(0.0)), vec3(2.2));
-                vec4 mirrored4 = lensSoft(${inputs.room}, p, reflect(v, n), ${inputs.middle}, ${inputs.reach},
-                                       smooth_ ? ${(mirror ? cones.mirror : cones.glassMirrored)[0].toFixed(3)} : ${(mirror ? cones.mirror : cones.glassMirrored)[1].toFixed(3)});
+                // Without the neighbours' normal the cones are three times as wide, as they were before it.
+                float wide = smooth_ ? 1.0 : 3.0;
+                vec3 back = reflect(v, n);
+                vec4 mirrored4 = lensSoft(${inputs.room}, p, back, ${inputs.middle}, ${inputs.reach}, ${inputs.look}.y * wide);
                 vec3 seenMirrored = mirrored4.rgb + (1.0 - mirrored4.a) * found;
+                // A HIGHLIGHT: the room is kept as a display shows it, and a lamp or a sunlit wall in it is no
+                // brighter than white. What the mirrored ray itself meets -- one read, no cone -- is taken for
+                // a light where it is near that white, and added.
+                vec3 hot = texture(${inputs.room}, lensLook(p, back, ${inputs.middle}, ${inputs.reach})).rgb;
+                vec3 shine = ${inputs.look}.w * hot * smoothstep(0.55, 0.95, max(hot.r, max(hot.g, hot.b)));
                 ${mirror ? `
-                vec3 light = ${inputs.through} * seenMirrored;` : `
+                vec3 light = ${inputs.through} * (seenMirrored + shine);` : `
                 float cosine = clamp(-dot(n, v), 0.0, 1.0);
                 float f0 = (${inputs.index} - 1.0) / (${inputs.index} + 1.0);
                 f0 *= f0;
                 float mirrored = f0 + (1.0 - f0) * pow(1.0 - cosine, 5.0);
                 vec3 bent = refract(v, n, 1.0 / ${inputs.index});
                 if (dot(bent, bent) < 1.0e-6) { bent = v; }
-                // A SOLID'S FAR FACE BENDS THE RAY BACK. Each gaussian is one face, and the ray bent at it
-                // alone was read as what the glass shows: a look that turns with the face and hardly with
-                // the eye, so the glass seemed painted, the same from anywhere. What leaves a solid is near
-                // the eye's own ray, turned a part of the way the first face turned it.
-                bent = normalize(mix(v, bent, 0.3));
+                // A SOLID HAS A FAR FACE. Each gaussian is one face, and the ray bent at it alone was read as
+                // what the glass shows: a look that turns with the face and hardly with the eye, so the glass
+                // seemed painted. Read along the eye's own ray instead -- a pane's far face undoes the first --
+                // every gaussian showed what is straight behind it, and the glass was frosted and even. The
+                // far face is taken here as a ball's: the one that mirrors the face met about the ray inside,
+                // where the ray is bent as much again. A solid is neither, and the look is most of the way
+                // to the ball's (look.x): what is behind comes through turned and gathered, bright and dark
+                // side by side, as through the engine's. With the discs' own axes (no normal from the
+                // neighbours yet) it stays near the eye's ray: a ball's bend there is facets.
+                vec3 farNormal = n - 2.0 * dot(n, bent) * bent;
+                vec3 out_ = refract(bent, -farNormal, ${inputs.index});
+                if (dot(out_, out_) < 1.0e-6) { out_ = bent; }
+                bent = normalize(mix(v, out_, smooth_ ? ${inputs.look}.x : 0.15));
                 // Softened as a mirror's look is, and for the same reason: one ray a face, the faces' axes a
                 // little apart, drew the glass in facets.
-                vec4 behind4 = lensSoft(${inputs.room}, p, bent, ${inputs.middle}, ${inputs.reach},
-                                        smooth_ ? ${cones.glassThrough[0].toFixed(3)} : ${cones.glassThrough[1].toFixed(3)});
+                vec4 behind4 = lensSoft(${inputs.room}, p, bent, ${inputs.middle}, ${inputs.reach}, ${inputs.look}.z * wide);
                 // Through the glass, where the room holds nothing, is what the eye sees past it there: the
                 // page's sky. (Mirrored, it is the colour the gaussian was found with: a found scene has no
                 // sky to mirror.) With the found colour here a glass before a dark door stayed milky.
                 vec3 seenBehind = behind4.rgb + (1.0 - behind4.a) * ${inputs.sky};
-                vec3 light = mirrored * seenMirrored + (1.0 - mirrored) * ${inputs.through} * ${inputs.through} * seenBehind;`}
+                vec3 light = mirrored * seenMirrored + shine + (1.0 - mirrored) * ${inputs.through} * ${inputs.through} * seenBehind;`}
                 ${outputs.gsplat}.rgba.rgb = lensEncoded(light);
               }
             `),
@@ -1303,6 +1327,7 @@
         meshes: shaded.flat().map((s) => ({ kind: s.kind, shaded: Boolean(s.applied), shown: s.mesh.visible, n: s.gaussians })) });
 
       window.__player.kinds = kinds;
+      window.__player.look = (which, ...four) => { if (four.length === 4) { looks[which].value.set(...four); shadeFresh = true; } return looks[which].value.toArray(); };
       window.__player.eye = () => camera.position.toArray();   // where the eye is, for whoever drives the page   // where the glass and the chrome are, for whoever drives the page
       // And a camera of the walk by its name, aimed through with the scene left as it stands.
       window.__player.aim = (camera) => { const view = cameras.get(camera); if (view) aim(view); return Boolean(view); };
