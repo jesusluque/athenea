@@ -25252,3 +25252,164 @@ has none -- and which is right was not checked against the engine.
 
 **Not done.** A phone and ixwin; the levels side by side; a coarser level for the chrome (a shoot with wider
 cells); CUDA and Vulkan.
+
+## Standard Surface's lobes built by one node, held to MaterialX's graph by a test (17 Nov)
+
+The same as OpenPBR's (16 and 17 Nov) for Autodesk Standard Surface, whose graph
+(`NG_standard_surface_surfaceshader_100`, which both versions of the nodedef use) reaches the generator as
+sixteen BSDF nodes over 29 BSDF values. The two chess knights of the Sponza test stage are standard_surface,
+and the glass one is what the stage's bounces were said to be dear for (16 Nov).
+
+**The node.** `athenea_standard_surface_bsdf` (`shaders/athenea/material/mx/athenea_standard_surface_bsdf.slang`),
+in the engine's graph for the surface (`athenea_standard_surface.mtlx`): MaterialX 1.39.5's with its sixteen
+closure nodes taken out and the one node put where `coat_layer` was; every other node -- the roughnesses and
+what the coat does to them, the two rotated tangents, the coat's gamma on the colours, the artistic index,
+the emission's EDFs -- is MaterialX's and feeds the node what it fed the closures. Read off a generated
+module (`build/night/ptexp/dump2/athenea_mat_33691493a9c71768.slang`):
+
+- *Eight lobes, in this order, each pushed where its weight is not under 1e-8:* the coat (a reflecting
+  dielectric on the coat's normal and tangent), the metal (a conductor of the artistic index, weight
+  `metalness`), the reflection (a dielectric, weight `specular`), the transmission (a dielectric at its own
+  roughness, weight `transmission`), the sheen (Conty and Kulla's), the thin wall's subsurface (translucent)
+  or the solid's (a diffuse) -- `thin_walled` is a boolean, so one of the two -- and the diffuse base
+  (`base` by `1 - subsurface`). Seven at most in a stack.
+- *The weights*, in the graph's order so the floats are the same: the subsurface by `subsurface` clamped;
+  it and the diffuse under the sheen's throughput; those and the sheen by `1 - transmission` clamped; all
+  four and the transmission under the reflection's throughput; those and the reflection by `1 - metalness`
+  clamped; everything under the coat by the coat's attenuation (`mix(1, coat_color, coat)`, clamped) and
+  under the coat's throughput.
+- *The marks:* the transmission under the reflection passes whole and is flagged (`kFlagOwnFresnel`) --
+  under the coat instead where `specular` is zero and the coat is at the transmission's index; and in a
+  kernel that asks (`kAtheneaMarkLobes`) a layer more over each lobe of a base that weighs something, at
+  each of the three layers, and the coat's tint.
+
+What the nodes share -- a closure's push, a layer's and a colour multiply's effect on one lobe, a
+dielectric's directional albedo -- is now one file, `athenea_surface_node.slang`, which OpenPBR's node
+includes too (its test reads as before: 93 882 floats differing at all in the fractional set, the worst by
+3.9e-7). `lobesPushed` counts the node as eight. **The switch:** `ATHENEA_STANDARD_SURFACE_GRAPH` set to
+anything keeps MaterialX's graph; from code, `MaterialCompilerOptions::standardSurface` (`SurfaceRoute`,
+which `openPbr` is now too). The surfaces that have a node are a table in `MaterialCompiler.cpp`
+(`kSurfaceNodes`), and one script derives every such graph: `scripts/materialx/make_surface_node_mtlx.py
+<MaterialX libraries> [surface]` (`make_open_pbr_mtlx.py` renamed and made to hold a table; OpenPBR's file
+comes out byte for byte).
+
+**A stage drew MaterialX's graph whatever the compiler held, and the test did not see it.** The first
+pictures and times of the two routes were the same to the bit and to the second, and the dumped modules of
+the "node" route held no call of the node. `compileDocument` replaces what a document carries (hdMtlx's
+carries the libraries its USD loaded) with the compiler's own where both define an element, and took a
+nodegraph for a definition only where it names its nodedef. Standard Surface's does not: an
+`<implementation>` names the graph. It stayed in the document, and an import skips a name the document
+already has. Now a graph an implementation of the document names is a definition too. The test compiled
+from XML, where there is nothing to replace, so it compared the node while a stage drew the graph:
+`compareRoutes` now also compiles each set from a document that carries MaterialX's graph and requires the
+node's module. With the fix taken out that check fails in all 26 sets of Standard Surface (and in none of
+OpenPBR's, whose graph names its nodedef); the timings below were taken after it, and their dumps hold what
+each route says.
+
+**The test** (`athenea_material_tests "[standardsurface]"`; it and `"[openpbr]"` share `compareRoutes` in
+`tests/material/test_material_compiler.cpp`): both routes compiled in one process, the two stacks compared
+word by word on the device at 16 384 shading points, marked and unmarked, over 26 parameter sets -- a rough
+diffuse base; one with no reflection; an anisotropic metal with its tangent turned; half metal with a
+specular colour and weight; a reflection with anisotropy and its own index; glass; transmission with depth
+and scatter; with dispersion and extra roughness; half transmission; glass with no reflection under a coat
+at its index (the coat spares it); glass under a coat at another index; subsurface whole and half; a thin
+wall's subsurface; a thin wall's glass; sheen; sheen over half a subsurface, half transmitting; a tinted
+coat, rough, anisotropic, at its own index; half a coat with `coat_affect_color` and
+`coat_affect_roughness`; a thin film over a metal and over a plastic; emission under a tinted coat; opacity
+0.5; every weight fractional, solid and thin-walled; and weights past one and under zero (the clamps).
+Metal, M5 Pro, `build/pt-exp`: in all 52 runs no count, word, value, mark, emission or opacity off; no float
+differs at all but in the two fractional sets unmarked (126 667 and 132 759 of them, the worst by 2.3e-7).
+Kinds seen 0xba (diffuse, translucent, dielectric, conductor, sheen), the deepest stack seven. 888
+assertions.
+
+**That it fails when the node is wrong** -- the build's copy of the shader edited, the test run, the copy
+restored and compared with the source (`cmp`: equal), the test passing again:
+
+| the edit | runs failing, of 52 | what the test said |
+|---|---|---|
+| the diffuse at half its weight | 32 | 49 152 floats off (three a point), the worst by 0.5 |
+| the coat's weight by 0.999 | 16 | 49 152 floats off, the worst by 1.0e-3 |
+| `1 - metalness` not clamped | 2 | the set with weights past one alone: 121 stacks of another count |
+| the sheen left out of the multiply by `1 - transmission` | 6 | 49 152 floats off, the worst by 0.5 |
+| the sheen flagged Zeltner's | 8 | 16 384 words off, no float |
+| the own-Fresnel flag not set | 22 | words off in the 22 runs that transmit (16 384 in 16 of them), no float |
+| the coat not sparing a transmission at its index | 2 | 16 384 words and 49 152 floats off, the worst by 0.89 |
+| a layer over counted as two | 26 | the marked runs alone, all 26: every lobe's mark off, no word, no float |
+| the tint mark halved | 26 | the marked runs alone, all 26: three marks a lobe off |
+
+**Pictures, the node against the graph** (`athenea compare`, 1920x1080, `--path-samples 8`, the two routes
+in one build; the dumped modules of each run hold two calls of the node and no `athenea_layer_bsdf` on one
+route in Sponza, six layers and no node on the other):
+
+| stage | paths, bounces | relMSE | 8-bit p99 / max | PSNR | the largest relative difference |
+|---|---|---|---|---|---|
+| Sponza with the knights, `--ray-margin 2e-5` | 1, 0 | 0 | 0 / 0 | bit for bit | 0 |
+| | 32, 0 | 0 | 0 / 0 | bit for bit | 0 |
+| | 32, 3 | 0 | 0 / 0 | bit for bit | 0 |
+| flat Sponza, the knights their own materials | 32, 0 and 32, 3 | 0 | 0 / 0 | bit for bit | 0 |
+| 25 standard_surface balls (the test's sets but the last) | 1, 0 | 6.5e-14 | 0 / 0 | 139.6 dB | 0.00098 |
+| | 32, 0 | 9.5e-15 | 0 / 0 | 149.4 dB | 0.00075 |
+| | 32, 3 | 2.6e-13 | 0 / 0 | 138.4 dB | 0.00098 |
+| *flat Sponza without the knights: no standard_surface, the same modules on both routes* | 32, 0 | 0 | 0 / 0 | bit for bit | 0 |
+| | 32, 3 | 1.8e-12 | 0 / 1 | 115.5 dB | 0.0625 |
+
+The balls differ by the last bit of a half float in a few pixels, as OpenPBR's did. The last row is not a
+difference of the routes -- the stage holds no standard_surface and its modules are the same files -- so
+two runs of one command are not always one picture with three bounces in that stage; **not looked into**.
+
+**Seconds**, the whole `athenea stage` command, 66 M paths at 32, no stop of the thermal guard inside any
+run (`guard.log`: none between 04:12 and 05:45, the runs 04:32 to 04:54 and 05:25 to 05:44). One path twice,
+32 paths, 32 paths and three bounces, one run each; then the last twice more a route (the routes alternated,
+which costs every run without a bounce a kernel compile -- 50 to 55 s where 37 to 41 -- so those are not
+used):
+
+| | node | graph |
+|---|---|---|
+| Sponza: one path, first run / again | 60.5 / 36.6 | 53.6 / 37.2 |
+| 32 paths, no bounce | 41.8 | 39.1 (39.3 and 40.3 in an earlier job) |
+| 32 paths, three bounces | 62.9, 61.6, 61.3 | 60.9, 63.1, 62.7 (62.4, 62.6 earlier) |
+| flat, the knights their own: one path again | 35.0 | 34.5 |
+| 32 paths, no bounce | 36.8 | 37.4 |
+| 32 paths, three bounces | 52.7, 53.2, 53.6 | 53.8, 54.9, 54.5 |
+| **a bounce** | **5.5** | 5.7 |
+| flat without the knights (the same code on both): one path again | 33.0 | 33.7 |
+| 32 paths, no bounce / three bounces | 35.2 / 43.2 | 35.0 / 42.9 |
+| a bounce | 2.7 | 2.6 |
+| 25 standard_surface balls: one path, first run / again | 38.0 / 13.4 | 37.5 / 13.6 |
+| 32 paths, no bounce | 15.5 | 15.9 |
+| 32 paths, three bounces | 28.0, 28.2, 28.5 | 32.5, 32.6, 32.7 |
+| the first hit and its light | 2.1 | 2.3 |
+| **a bounce** | **4.2** | 5.6 |
+
+Where every surface is standard_surface a bounce is a quarter less (4.2 s where 5.6). **In Sponza it is
+nothing that these runs can tell:** three bounces are 61.9 s against 62.3 on average with a second of
+scatter run to run; the first hit -- a difference of two runs of 37 to 42 s -- came out 5.2 s with the
+node and 1.9, 2.4 and 3.9 s with the graph, which is a run's scatter and not the routes; and a bounce is
+about 7.3 s by either (three bounces less the mean of the runs without, 40.1 s). Against the 2.7 s and
+6.6 s of 16 Nov the first hit cannot be told and a bounce is 0.7 s more on both routes alike, the machine
+having been at work all night. In flat Sponza the three
+bounces are 1.2 s less with the node in each of three pairs (0.4 s a bounce, 5.5 where 5.7). **So the
+glass knight's cost is not its graph's BSDF values:** flat Sponza is 2.7 s a bounce without the knights and
+5.5 with them by either route, and what the node took of that is 0.2 to 0.4 s. What is left is where
+16 Nov left it -- a path inside the glass takes a step a face and evaluates the material at each, and how
+much of the 2.8 s is those steps was not separated.
+
+The node is the default: its pictures are the graph's, the test holds it, and it is faster where the
+surface is and no slower elsewhere.
+
+Tests, Metal, the node the default: `athenea_material_tests` (2131 assertions in 14 cases: the 1224 before,
+888 of the new case, 19 of the new check in OpenPBR's) and `athenea_technique_tests` (2862 in 64) pass; the
+new case passes the same with `ATHENEA_STANDARD_SURFACE_GRAPH` set; of the 159 tests of ctest not marked
+slow whose names speak of materials, lobes, glass, coats, opacity, coverage, paths, emission, bakes, thin
+walls, sheen, tints, subsurface or transmission, 158 pass, and the one that does not
+(`sheet_glass_draws_whole`) is NEU34's and fails the same with the variable set. The whole suite was not
+run.
+
+Not done: CUDA and Vulkan (neither the test nor the pictures; the fix in `compileDocument` is the same code
+there but was not run); what the glass knight costs a bounce, still not explained and now known not to be
+the closures; why two runs of flat Sponza without the knights differ in a few pixels at three bounces;
+Sponza's first hit measured well enough to say anything (several runs of each, not one); standard_surface
+inputs driven by textures in the test (the knights' maps are compared as pictures only, bit for bit); the
+marks through a conversion (`mesh2splat --transfer` on a standard_surface, as was done for OpenPBR); the
+raster's shading and `shoot` timed with the node; the feature stage kept in the repository (it and its
+generator are in `build/night/agent-stdsurf`).
