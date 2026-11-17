@@ -25896,3 +25896,32 @@ guard). A real phone; the dashes of the levels of a million explained (`sponza_k
 the same kind of cut and was not looked at); the one-line change to `heldThere` and a scene found with it; a
 level of two million for the three scenes a mid device draws at under one; `sponza_growth` near half a
 million (its floor is 0.69 M).
+
+## A parent in the level above is asked for as a surface is held (17 Nov)
+
+The one line the section above left: `heldThere` in `scene_render.slang` called the cell of the level above
+held from a cover of 0.5, where `holds` has called a surface held from 0.8 since a6afd496. Between the two a
+cell the gathering look makes again was called held, no parent was named, and its gaussians stood laid over
+nothing -- the floor under which no cut goes. It is 0.8 now.
+
+The stage of the two knights through 20 views of its walk at 960x540, by the shaders before and after
+(`ATHENEA_SHADER_DIR`), held views against the path traced reference (dB / SSIM):
+
+| | before | after |
+|---|---|---|
+| gaussians standing | 2 112 486 | 2 112 486 |
+| the coarsest cut draws | 306 305 | 211 840 |
+| whole, k10 / k45 / a / b | 32.42 / 30.86 / 31.28 / 30.78 dB | the same, and the same SSIM |
+| `--budget 400000`, k10 | 30.37 / 0.907 | 31.47 / 0.920 |
+| k45 | 30.18 / 0.674 | 31.58 / 0.818 |
+| a | 29.27 / 0.878 | 29.33 / 0.886 |
+| b | 29.64 / 0.817 | 29.65 / 0.845 |
+| `--budget 200000` | 29.28 / 30.18 / 29.31 / 28.94 dB | the same dB, SSIM 0.0002–0.0003 lower |
+
+The same gaussians and the same picture whole; a third fewer with no parent; a budget between the floors met
+by a finer threshold (5.5 pixels where 15.7) and a better picture. `athenea_render_tests "[scene]"` on Metal:
+361 assertions in 13 cases, all pass.
+
+Not done: the published scenes are not found again with it (the floor of the chrome at 1080p would be about
+0.85 M by proportion, not measured; their levels for a phone are the grafted ones); CUDA and Vulkan; why a
+third and not more -- 211 840 gaussians still stand with no parent.

@@ -538,7 +538,9 @@ void renderPack(uint3 tid: SV_DispatchThreadID) {
             const float z2 = depth[at2];
             const bool there = z2 > 0.0 && colour[at2].a > 0.5 && abs(z2 - z) <= 0.05 * z &&
                                plane(kPlaneRow, at2).x == rowHere.x;
-            const bool heldThere = params.hasKnown != 0 && knownColour[at2].a > 0.5 &&
+            // Held as `holds` calls a surface held (a cover over 0.8): from 0.5 a cell the gathering look
+            // makes again was called held here, and its gaussians stood with no parent -- the cut's floor.
+            const bool heldThere = params.hasKnown != 0 && knownColour[at2].a > 0.8 &&
                                    abs(knownDepth[at2] - z2) <= params.tolerance * z2;
             if (there && !heldThere) {
                 records[row + kAtParent] = 2.0 * across;
