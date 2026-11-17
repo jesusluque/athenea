@@ -396,6 +396,8 @@
         ready: false, target: null,
       });
       const kinds = { glass: kindOf("glass"), mirror: kindOf("mirror") };
+      // What the page draws behind the scene, as light: what a glass shows through where the room holds nothing.
+      const skyLight = dyno.dynoVec3(new THREE.Vector3());
 
       // GROUPS OF LIGHTS. A scene handed on with its lamps as groups (index.groups: a name and the stem of
       // that group's own export, the same gaussians in the same order with the group's light alone as their
@@ -560,11 +562,10 @@
         });
         return { gsplat: mark.outputs.gsplat };
       });
-      // A mesh's modifiers in the world, in their order: its light (or its shading by the eye), then the objects'.
-      const setWorld = (mesh, first, last) => {
-        const list = [first, last].filter(Boolean);
-        if (list.length > 1) mesh.worldModifiers = list;
-        else mesh.worldModifier = list[0];
+      // A mesh's modifiers in the world, in their order: its light, its shading by the eye, then the objects'.
+      const setWorld = (mesh, ...modifiers) => {
+        const list = modifiers.filter(Boolean);
+        mesh.worldModifiers = list.length > 0 ? list : undefined;
         mesh.updateGenerator();
       };
       // A gaussian's colour is made when its mesh says it changed: what is drawn is told that the objects did.
@@ -803,10 +804,10 @@
         return dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
           const shade = new dyno.Dyno({
             inTypes: { gsplat: dyno.Gsplat, eye: "vec3", middle: "vec3", reach: "float", room: "samplerCube",
-                       index: "float", through: "vec3", normals: "sampler2D" },
+                       index: "float", through: "vec3", normals: "sampler2D", sky: "vec3" },
             outTypes: { gsplat: dyno.Gsplat },
             inputs: { gsplat, eye: kind.eye, middle: kind.middle, reach: kind.reach, room: kind.room, index, through,
-                      normals: dyno.dynoSampler2D(normals) },
+                      normals: dyno.dynoSampler2D(normals), sky: skyLight },
             globals: () => [dyno.defineGsplat, dyno.unindent(`
               vec3 lensAxis(vec4 q, vec3 scales) {
                 vec3 axis = scales.x <= scales.y ? (scales.x <= scales.z ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0))
@@ -879,7 +880,10 @@
                 // little apart, drew the glass in facets.
                 vec4 behind4 = lensSoft(${inputs.room}, p, bent, ${inputs.middle}, ${inputs.reach},
                                         smooth_ ? ${cones.glassThrough[0].toFixed(3)} : ${cones.glassThrough[1].toFixed(3)});
-                vec3 seenBehind = behind4.rgb + (1.0 - behind4.a) * found;
+                // Through the glass, where the room holds nothing, is what the eye sees past it there: the
+                // page's sky. (Mirrored, it is the colour the gaussian was found with: a found scene has no
+                // sky to mirror.) With the found colour here a glass before a dark door stayed milky.
+                vec3 seenBehind = behind4.rgb + (1.0 - behind4.a) * ${inputs.sky};
                 vec3 light = mirrored * seenMirrored + (1.0 - mirrored) * ${inputs.through} * ${inputs.through} * seenBehind;`}
                 ${outputs.gsplat}.rgba.rgb = lensEncoded(light);
               }
@@ -925,7 +929,7 @@
         for (const s of [...shaded.flat(), ...outgoing.filter((m) => m.kind)]) {
           // What is set is kept here: Spark's mesh takes a modifier and does not hand it back.
           const wanted = settings.glass && kinds[s.kind].ready ? s.shading : undefined;
-          if (s.applied !== wanted) { setWorld(s.mesh, wanted, s.objects); s.applied = wanted; }
+          if (s.applied !== wanted) { setWorld(s.mesh, s.light, wanted, s.objects); s.applied = wanted; }
         }
       };
 
@@ -1106,6 +1110,24 @@
           // that stood only for a while: each a file, with its glass and its mirrors beside it.
           for (const span of [part, ...(part.history ?? [])]) {
             const until = span === part ? 0 : span.until ?? 0;
+            const spanAt = part.history ? part.history.indexOf(span) : -1;
+            const of = (held) => {
+              const entry = (detail === 0 ? held.parts : held.levels?.[detail - 1]?.parts)?.[meshes.length];
+              return span === part ? entry : entry?.history?.[spanAt];
+            };
+            const fileOf = (entry) => typeof entry === "string" ? entry : entry?.file;
+            // The light of a file of the span: the span's own (`which` undefined), its glass's or its mirrors'.
+            // A GLASS AND A MIRROR TAKE THEIR GROUPS' LIGHT TOO: where the room holds nothing along a ray a
+            // gaussian shows the colour it was found with, and found without the lamps that was near black.
+            const lightOf = async (which) => {
+              const at = (held) => (which ? fileOf(of(held)?.[which]) : fileOf(of(held)));
+              const grouped = !litFirst && groups.length > 0 && groups.every((g) => at(g));
+              const based = litFirst ? undefined : at(lamp);
+              if (!grouped && !based) return undefined;
+              const textures = [];
+              if (grouped) for (const g of groups) textures.push(await groupTexture(at(g)));
+              return groupLight(textures, based ? await groupTexture(based) : null);
+            };
             if (span.file) {
               // extSplats: Spark's packed splat keeps a centre in three half floats, a part in 2048 of its
               // distance from the origin -- a centimetre in a stage of centimetres twenty metres across -- and
@@ -1118,21 +1140,7 @@
               // already, and takes none.
               // A part's history -- what its frame found that stood only for a while -- takes the groups' light as
               // the part does, where each group was handed on with its history too (the same spans, in order).
-              const spanAt = part.history ? part.history.indexOf(span) : -1;
-              const of = (held) => {
-                const entry = (detail === 0 ? held.parts : held.levels?.[detail - 1]?.parts)?.[meshes.length];
-                return span === part ? entry : entry?.history?.[spanAt];
-              };
-              const fileOf = (entry) => typeof entry === "string" ? entry : entry?.file;
-              const grouped = !litFirst && groups.length > 0 && groups.every((g) => fileOf(of(g)));
-              const based = litFirst ? undefined : fileOf(of(lamp));
-              let light;
-              if (grouped || based) {
-                const textures = [];
-                if (grouped) for (const g of groups) textures.push(await groupTexture(fileOf(of(g))));
-                const base = based ? await groupTexture(based) : null;
-                light = groupLight(textures, base);
-              }
+              const light = await lightOf();
               // Which prim each gaussian was made from, where the scene says: the objects' modifier after the light's.
               const marks = prims.length > 0 ? objectsOf(await idsOf(span.ids, span.gaussians ?? 0, span === part)) : undefined;
               if (light || marks) setWorld(mesh, light, marks);
@@ -1145,9 +1153,10 @@
               const other = await splatOf(made.file, { extSplats: true });
               await other.initialized;
               const marks = prims.length > 0 ? objectsOf(await idsOf(made.ids, made.gaussians ?? 0, span === part)) : undefined;
-              if (marks) setWorld(other, undefined, marks);
+              const light = await lightOf(which);
+              if (light || marks) setWorld(other, light, marks);
               const shape = shapeOf(other);
-              beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0, shape, heart: heartOf(shape, made.gaussians ?? 0), objects: marks,
+              beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0, shape, heart: heartOf(shape, made.gaussians ?? 0), light, objects: marks,
                             cut: span.spans ? cutOf(other, which === "glass" ? 2 : 3, span.spans) : null,
                             shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1]), shape.texture) });
               readHere += made.gaussians ?? 0;
@@ -1460,7 +1469,12 @@
       ];
       // THE SKY. A found scene holds none: what is behind it is a colour, the option's. The cubes glass and
       // chrome read are not drawn over it: where a mirror looks past the scene it keeps the colour it was found with.
-      applySky = () => { scene.background = new THREE.Color(matteShown() ? "#000000" : settings.sky); };
+      applySky = () => {
+        scene.background = new THREE.Color(matteShown() ? "#000000" : settings.sky);
+        const hex = /^#[0-9a-f]{6}$/i.test(settings.sky) ? settings.sky : "#000000";
+        skyLight.value.set(...[1, 3, 5].map((at) => Math.pow(parseInt(hex.slice(at, at + 2), 16) / 255, 2.2)));
+        shadeFresh = true;
+      };
       $("optSky").value = settings.sky;
       $("optSky").addEventListener("input", () => { settings.sky = $("optSky").value; remember(); applySky(); });
       applySky();
