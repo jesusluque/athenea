@@ -25548,3 +25548,17 @@ outputs in `build/night/agent-ixwin5`.
 
 Not done there: CUDA's bounces (no OptiX in WSL); a glTF PBR stage; the web player's Objects control; which
 prim each `.ids` value names, beyond the flow's counts; the making-width rule's dB.
+
+## `lamps` on the site: the same scene, handed on again (17 Nov)
+
+The other half of NEU38. The published `lamps` export and today's export of the same scene (`clean.aths`, not
+found again) differ at frame 4 in the spot's pool on the floor. The engine's own drawing of that frame as the
+scene stood (`render --frame 4 --glass`) shows the pool cool and bright, as today's export does and the
+published one less so (crops of the three side by side, the floor under the knights): the published export
+was made before a part's history was lit with its groups as the part is. So today's export replaces it in the
+site's folder: the same 2 112 486 gaussians, 315 files where 723, no ids (the scene was found before a
+gaussian kept its prim, so the page shows no Objects control for it). The scene found again by its own flow
+or in one render was not taken (the section before last says why).
+
+Seen in the same crops and not new: the floor in the page shows fine horizontal dark lines the engine's
+drawing does not have, in the published export and in today's alike. Not looked into.
