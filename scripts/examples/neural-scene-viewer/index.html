@@ -366,7 +366,10 @@
       // (`litLevels`): a picture as the scene is found, with no group's part to wait for.
       const litLevels = index.litLevels ?? [];
       let litFirst = false;
-      const letGo = (list) => { for (const m of list) { m.mesh.parent?.remove(m.mesh); m.mesh.dispose?.(); } };
+      // What is let go takes its textures with it -- its groups' light, its ids, its normals: they were left
+      // on the device when a level was swapped for another.
+      const letGo = (list) => { for (const m of list) { m.mesh.parent?.remove(m.mesh); m.mesh.dispose?.(); for (const t of m.textures ?? []) t.dispose(); } };
+      let texturesMade = [];    // the textures made for the file being read, until its entry takes them
       let cameras = new Map((index.cameras ?? []).map((c) => [c.name, c]));
       let shown = 0;            // parts drawn: the scene as it stood after that many
       let atEnd = true;         // the timeline is at its end: new parts are shown as they arrive
@@ -433,6 +436,7 @@
         const texture = new THREE.DataTexture(texels, groupWide, high, THREE.RGBAFormat, THREE.UnsignedByteType);
         texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
         texture.needsUpdate = true;
+        texturesMade.push(texture);
         return texture;
       };
       // A LAMP OF THE PLAYER'S OWN. Where the scene was handed on with its base colours (index.base: the same
@@ -535,6 +539,7 @@
         const texture = new THREE.DataTexture(texels, groupWide, high, THREE.RGFormat, THREE.UnsignedByteType);
         texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
         texture.needsUpdate = true;
+        texturesMade.push(texture);
         return texture;
       };
       // The modifier of a mesh whose ids are `ids`; of one that has none (null), whose gaussians are no object's.
@@ -693,7 +698,12 @@
       let shadeStale = false;   // what is shown changed: the cubes are drawn again
       let shadeBusy = false;
       let shadeFresh = false;   // a cube was just drawn: the gaussians are shaded from it
-      let shadeFailed = false;  // the rooms could not be drawn: glass and chrome are shown as they were found
+      // `?rooms=0`: no room is drawn and glass and chrome are shown as they were found. The page puts it in
+      // its own address when the browser takes the graphics back while there are rooms' Sparks, and reads
+      // itself again: a room's Spark is memory, and a page that lost its graphics with them does not make
+      // them a second time.
+      const roomsWanted = params.get("rooms") !== "0";
+      let shadeFailed = !roomsWanted;  // the rooms could not be drawn: glass and chrome are shown as they were found
       let roomKeyDrawn = null;  // what the rooms were last drawn of (`roomKey`)
       let roomsAt = -Infinity;  // when the last pass ended, by the frames' clock
       // WHAT IS UNDER A POINTER is asked of one gaussian in sixteen, kept as points when a part is read. Spark's
@@ -754,6 +764,7 @@
         const texture = new THREE.DataTexture(texels, groupWide, high, THREE.RGBAFormat, THREE.UnsignedByteType);
         texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
         texture.needsUpdate = true;
+        texturesMade.push(texture);
         return { count, centres: Float32Array.from(centres), axes: Float32Array.from(axes), texels, texture };
       };
       // The normals of one kind's parts, from all of them together: `cell` is in the parts' own units.
@@ -1129,7 +1140,7 @@
       let fpsText = "";
       // Whether the glass and the chrome are shaded by the eye, said with the rest: a device that cannot draw
       // their room leaves them as they were found, the same from anywhere, and says so here and why.
-      let shadeNote = "";
+      let shadeNote = roomsWanted ? "" : " · glass and chrome as found, not by the eye (?rooms=0: the graphics were lost once with their rooms)";
       const say = (text) => { statusLine.textContent = text + shadeNote + (settings.fps && fpsText ? ` · ${fpsText}` : ""); };
       let said = "loading…";
       const report = (text) => { said = text; say(text); };
@@ -1202,7 +1213,7 @@
               // Which prim each gaussian was made from, where the scene says: the objects' modifier after the light's.
               const marks = prims.length > 0 ? objectsOf(await idsOf(span.ids, span.gaussians ?? 0, span === part)) : undefined;
               if (light || marks) setWorld(mesh, light, marks);
-              own.push({ mesh, until, gaussians: span.gaussians ?? 0, objects: marks, pick: pickOf(mesh), cut: span.spans ? cutOf(mesh, 1, span.spans) : null });
+              own.push({ mesh, until, gaussians: span.gaussians ?? 0, objects: marks, textures: texturesMade.splice(0), pick: pickOf(mesh), cut: span.spans ? cutOf(mesh, 1, span.spans) : null });
               readHere += span.gaussians ?? 0;
               tell();
             }
@@ -1214,14 +1225,14 @@
               const light = await lightOf(which);
               if (light || marks) setWorld(other, light, marks);
               const shape = shapeOf(other);
-              beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0, shape, pick: pickOf(other), heart: heartOf(shape, made.gaussians ?? 0), light, objects: marks,
+              beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0, shape, textures: texturesMade.splice(0), pick: pickOf(other), heart: heartOf(shape, made.gaussians ?? 0), light, objects: marks,
                             cut: span.spans ? cutOf(other, which === "glass" ? 2 : 3, span.spans) : null,
                             shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1]), shape.texture) });
               readHere += made.gaussians ?? 0;
               tell();
             }
           }
-          if (mine !== generation) { for (const m of [...own, ...beside]) m.mesh.dispose?.(); break; }
+          if (mine !== generation) { letGo([...own, ...beside]); for (const t of texturesMade.splice(0)) t.dispose(); break; }
           for (const m of [...own, ...beside]) { m.mesh.visible = false; (keeping ? staging : root).add(m.mesh); }
           meshes.push(own);
           shaded.push(beside);
@@ -1236,7 +1247,7 @@
             if (window.__player.firstMs === undefined) window.__player.firstMs = Math.round(performance.now() - began);
           }
         }
-        if (mine === generation && keeping && settings.glass) {
+        if (mine === generation && keeping && settings.glass && roomsWanted) {
           // The finer detail's normals before it is shown: it comes in as smooth as it will be, not in the
           // discs' own axes and a wide cone for the second its first room takes. (Of what stands to the end;
           // a timeline held at an earlier frame has its own worked out with its room.)
@@ -1647,9 +1658,10 @@
         window.__player.smoothMs = Math.round(performance.now() - startedAt);
       };
       let trimTimer = 0;
+      let roomSet = null;       // the store of the one set of gaussians the rooms' Sparks take turns with
       const drawRooms = async () => {
         if (shadeBusy) return;
-        if (!settings.glass) { shadeStale = false; return; }
+        if (!settings.glass || !roomsWanted) { shadeStale = false; return; }
         shadeBusy = true;
         shadeStale = false;
         roomKeyDrawn = roomKey();
@@ -1659,8 +1671,19 @@
           root.updateMatrixWorld(true);
           // First the normals.
           for (const kind of Object.values(kinds)) await smoothKind(kind, shadedShown(kind.which));
-          // Then each kind's gaussians are made and their order asked for, the kinds side by side.
-          const turns = [];
+          // Then the kinds, ONE AFTER THE OTHER, EACH HOLDING ONE SET OF THE SCENE'S GAUSSIANS AND ONLY WHILE
+          // ITS CUBE IS DRAWN. A set is twenty bytes a gaussian on the device, in layers of four million: a
+          // quarter of a gigabyte at eight million gaussians, 84 MB at anything under four. Spark keeps up
+          // to three a renderer and asks for an order after every set it makes; the two rooms side by side
+          // held four to six sets while a lamp was dragged and two at rest, beside the page's own three --
+          // WebKit took the graphics back a minute after the full detail was in. Here a kind's set is made,
+          // sorted only where its order does not hold, drawn into the cube and let go before the other
+          // kind's is made. THE TWO KINDS SHARE THE ONE SET'S STORE (`roomSet`): it is handed to the Spark
+          // whose turn it is and taken back after, so a lamp dragged does not ask the device for a quarter
+          // of a gigabyte and give it back at every pass (WebKit's graphics process went up and down by
+          // half a gigabyte with that), and it is let go when the rooms have been left alone a while. One
+          // set while the rooms are at work, none at rest.
+          let fresh = 0, drawn_ = 0;
           for (const kind of Object.values(kinds)) {
             const seen = shadedShown(kind.which);
             window.__player.step = `${kind.which}: ${seen.length} seen`;
@@ -1671,6 +1694,12 @@
             if (!await waitFor(() => !own.sorting, 20000)) throw new Error(`the ${kind.which}'s room was not sorted in 20 s`);
             const before = own.current;
             let failed = null;
+            // Spark asks for an order as soon as a set is made, wanted or not: put off here (it then sets a
+            // timer in place of the sort) and asked for below where it is wanted.
+            own.minSortIntervalMs = 1e9;
+            // The set Spark makes next is the last of its spares: the shared store goes there.
+            const next = own.accumulators[own.accumulators.length - 1];
+            if (roomSet && next && !next.target) { next.target = roomSet.target; next.maxSplats = roomSet.maxSplats; roomSet = null; }
             asRoom(kind, () => {
               const from = new THREE.Camera();
               from.position.copy(middle);
@@ -1678,15 +1707,19 @@
             });
             if (own.current === before) throw new Error(`the ${kind.which}'s room was not made`);
             // The order it has holds where the set is laid out as the one before (Spark then shows it at
-            // once) and is sorted from where that one was.
-            const moved = !(kind.drawnFrom && kind.drawnFrom.distanceTo(middle) < 0.02);
-            turns.push({ kind, own, middle, size, moved, failed: () => failed });
-          }
-          let fresh = 0;
-          for (const { kind, own, middle, size, moved, failed } of turns) {
-            const sorted = () => failed() || (own.display === own.current && (!moved || (!own.sorting && !own.sortDirty)));
-            if (!await waitFor(sorted, 20000)) throw new Error(`the ${kind.which}'s room was not sorted in 20 s`);
-            if (failed()) throw failed();
+            // once), is sorted from where that one was, and was not let go since.
+            const holds = own.display === own.current && own.orderingTexture && kind.drawnFrom && kind.drawnFrom.distanceTo(middle) < 0.02;
+            if (holds && !own.sorting) {
+              clearTimeout(own.sortTimeoutId);
+              own.sortTimeoutId = undefined;
+              own.sortDirty = false;
+            } else {
+              own.minSortIntervalMs = 0;
+              own.driveSort();
+              const sorted = () => failed || (own.display === own.current && !own.sorting && !own.sortDirty);
+              if (!await waitFor(sorted, 20000)) throw new Error(`the ${kind.which}'s room was not sorted in 20 s`);
+            }
+            if (failed) throw failed;
             // Spark keeps one cube, on its class, and would draw every kind into it: each kind's own is put
             // there for its turn and taken back after.
             SparkRenderer.cubeRender = kind.target ?? undefined;
@@ -1697,6 +1730,11 @@
               return cube;
             });
             const texture = await drawn;
+            // The cube is all the shading reads: the set it was drawn from is taken back for the next turn.
+            for (const set of new Set([own.display, own.current, ...own.accumulators])) {
+              if (set.target && !roomSet) { roomSet = { target: set.target, maxSplats: set.maxSplats }; set.target = null; }
+              else set.dispose();
+            }
             window.__player.step = `${kind.which}: cube drawn`;
             kind.room.value = texture;
             kind.middle.value.copy(middle);
@@ -1707,12 +1745,13 @@
             kind.reach.value = Math.max(size * 8.0, 2.0);
             if (!kind.ready) fresh += 1;
             kind.ready = true;
+            drawn_ += 1;
           }
           shadeFailed = false;
           applyShading();
           shadeFresh = true;
           // A kind drawn for the first time was not shaded yet in the other's room: once more, with it.
-          if (fresh > 0 && turns.length > 1) shadeStale = true;
+          if (fresh > 0 && drawn_ > 1) shadeStale = true;
           const kindsReady = Object.values(kinds).filter((kind) => kind.ready).map((kind) => kind.which);
           const applied = drawnShaded().filter((entry) => entry.applied).length;
           shadeNote = kindsReady.length > 0 ? ` · ${kindsReady.join(" and ")} by the eye (${applied} parts, ${window.__player.shadedTimes ?? 0} looks)` : "";
@@ -1730,16 +1769,49 @@
           window.__player.rooms = (window.__player.rooms ?? 0) + 1;
           roomsAt = performance.now();
           shadeBusy = false;
-          // A room's Spark holds three sets of the scene's gaussians while it works and needs one to draw
-          // from: the others are let go once the rooms have been left alone a while.
+          // Left alone a while, the rooms let go of what is left: the set's store, the order each sorted (four bytes a
+          // gaussian on the device and as many in the page), what it read it from, and its worker. The pass
+          // after that sorts again. A set left by a pass that failed goes with them.
           trimTimer = setTimeout(() => {
             if (shadeBusy) return;
+            roomSet?.target.dispose();
+            roomSet = null;
             for (const kind of Object.values(kinds)) {
               const own = kind.spark;
-              if (own && !own.sorting && !own.sortDirty && own.display === own.current) for (const spare of own.accumulators) spare.dispose();
+              if (!own || own.sorting) continue;
+              for (const set of new Set([own.display, own.current, ...own.accumulators])) set.dispose();
+              own.orderingTexture?.dispose();
+              own.orderingTexture = null;
+              own.readback32 = new Uint32Array();
+              own.sortWorker?.dispose();
+              own.sortWorker = null;
             }
           }, 4000);
         }
+      };
+      // WHAT THE PAGE HOLDS, in megabytes, for whoever asks (`window.__player.holds()`): each Spark's sets of
+      // gaussians on the device (a set is 20 bytes a gaussian, in layers of 2048 by 2048) and the order it
+      // keeps; the files' gaussians as Spark keeps them (32 bytes each, on the device and again in the page);
+      // the page's own textures a gaussian (light, ids, normals) and the rooms' cubes.
+      const sparkHolds = (own) => {
+        if (!own) return null;
+        const sets = [...new Set([own.display, own.current, ...own.accumulators])].filter((set) => set?.target);
+        const order = own.orderingTexture?.image;
+        const MB = (bytes) => Math.round(bytes / 1048576);
+        return { sets: sets.length, setsMB: MB(sets.reduce((sum, set) => sum + set.maxSplats * 20, 0)),
+                 orderMB: MB(order ? order.width * order.height * 16 : 0),
+                 pageMB: MB((own.readback32?.byteLength ?? 0) + (order?.data?.byteLength ?? 0)), worker: Boolean(own.sortWorker) };
+      };
+      window.__player.holds = () => {
+        const all = [...meshes.flat(), ...shaded.flat(), ...outgoing];
+        const MB = (bytes) => Math.round(bytes / 1048576);
+        const texels = (t) => (t.image?.width ?? 0) * (t.image?.height ?? 0) * (t.format === THREE.RGFormat ? 2 : 4);
+        const cubes = Object.values(kinds).reduce((sum, kind) => sum + (kind.target ? kind.target.target.width ** 2 * 6 * 4 : 0), 0);
+        return { page: sparkHolds(spark), glass: sparkHolds(kinds.glass.spark), mirror: sparkHolds(kinds.mirror.spark),
+                 gaussians: all.reduce((sum, m) => sum + (m.mesh.numSplats ?? 0), 0),
+                 filesMB: MB(all.reduce((sum, m) => sum + (m.mesh.numSplats ?? 0), 0) * 32),
+                 texturesMB: MB(all.reduce((sum, m) => sum + (m.textures ?? []).reduce((of, t) => of + texels(t), 0), 0)),
+                 roomSetMB: MB(roomSet ? roomSet.maxSplats * 20 : 0), cubesMB: MB(cubes), rooms: roomsWanted };
       };
       // TURNING ABOUT A POINT, on a touch screen. A first finger laid down and kept still fixes a point --
       // the gaussian under it, or where the view is aimed if there is none -- and a second finger then
@@ -1886,8 +1958,13 @@
       // again a level coarser where there is one; where there is none it says so.
       canvas.addEventListener("webglcontextlost", (event) => {
         event.preventDefault();
-        if (detail < levels.length) {
-          const to = new URLSearchParams(location.search);
+        const to = new URLSearchParams(location.search);
+        if (roomsWanted && Object.values(kinds).some((kind) => kind.spark)) {
+          // With rooms' Sparks made: the scene again as it was, without them. Lost again, a level coarser.
+          to.set("rooms", "0");
+          report("the browser took its graphics back: reading the scene again, its glass and chrome as found…");
+          setTimeout(() => { location.search = to.toString(); }, 800);
+        } else if (detail < levels.length) {
           to.set("detail", String(detail + 1));
           report("the browser took its graphics back: reading the scene again, coarser…");
           setTimeout(() => { location.search = to.toString(); }, 800);
@@ -1960,6 +2037,7 @@
       let last = performance.now();
       let since = 0;
       const lastEye = new THREE.Vector3(Infinity, 0, 0);
+      const spares = { of: null, since: 0, gone: false };
       renderer.setAnimationLoop((now) => {
         const dt = Math.min((now - last) / 1000, 0.1);
         last = now;
@@ -2004,6 +2082,14 @@
         // its first room, so its glass and its chrome come in once, in a room that is all there.
         const firstWhole = loading && window.__player.then !== undefined && !Object.values(kinds).some((kind) => kind.ready);
         if (shadeStale && !shadeBusy && !firstWhole && now - roomsAt > (loading || playing ? 1500 : 250)) drawRooms();
+        // THE PAGE'S OWN SPARK KEEPS UP TO THREE SETS of the scene's gaussians -- the one drawn, the one being
+        // made, one more while an order is worked out -- and draws from one. With nothing made for two
+        // seconds the spares are let go; Spark makes them again when the eye moves.
+        if (spark.current !== spares.of) { spares.of = spark.current; spares.since = now; spares.gone = false; }
+        else if (!spares.gone && now - spares.since > 2000 && !spark.sorting && !spark.sortDirty && spark.display === spark.current) {
+          for (const spare of spark.accumulators) spare.dispose();
+          spares.gone = true;
+        }
         renderer.render(scene, camera);
         // Frames drawn while a room is made share the device with it and are not its rate: the count begins again after.
         if (shadeBusy) { slow.since = now; slow.frames = 0; }
