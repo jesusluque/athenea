@@ -25835,3 +25835,64 @@ that is the same from anywhere kept a row in a buffer, not a thread; whether the
 really traced twice; the group's size and shape on this device; Sponza itself, the materials stage and
 `shoot` timed by views (nothing changed, so there is no before and after); CUDA and Vulkan. The switches
 and the jobs are in `build/night/agent-glass` (`src` is the copy; `regen.py` makes the one loop).
+
+## A level a phone can draw for the three 1080p scenes, and why the cut stops where it does (17 Nov)
+
+A phone's budget in the page is a million gaussians, and three published scenes held no level within it:
+`sponza_chrome` (3.81, 1.82, 1.40 M), `sponza_lamps` (1.93 M) and `sponza_lights` (1.97 M), so a phone drew
+the coarsest, over its budget. `export --levels` could not go lower: the chrome's coarsest cut draws 1.31 M.
+
+**Why.** Not fewer coarse cells: the chrome found again holds the pyramid it held (2.37 M cells of two pixels
+where 2.45 M, 594 k of four where 613 k, and so on up). The cut's floor is the gaussians standing that were
+laid over nothing -- no parent -- and a count of them a piece gives the exporter's figure to the gaussian:
+1 309 386 where the scene of 14 Nov has 533 904 (the knight 369 916 where 191 590; the walk 691 481; hd8
+1 106 699; geohd3 986 510; clean 306 305). The second frame of every scene found again makes 7% of its pixels
+so (the chrome's k01: 138 994 where 3 330) and the later frames three times as many as before. a6afd496 (14
+Nov) holds a surface from a cover of 0.8, not 0.5: a pixel half covered by its neighbours' discs is made
+again, is no wider than what is there, so is laid over nothing, and the test for a parent in the level above
+still calls that cell held from 0.5. Eight views at 960x540 through copies of the build's shaders
+(`ATHENEA_SHADER_DIR`): floor 145 627 by the build's, 85 479 with a surface held from 0.5 again, 94 747 with
+the level above called held from 0.8 as a surface is (scene_render.slang, `heldThere`; the same 597 613
+gaussians). `--covered-enough` and `--pyramid` are not in it.
+
+**What was done.** No code changed. Each stage was found again through its walk at 960x540 -- a gaussian the
+path traced mean of a pixel twice as wide -- and that scene's level of half a million handed on as a level of
+the published one, its files under the scene's names and the indexes edited (`build/night/agent-levels`,
+`graft.py`): the chrome 562 s (735 s with one stop of the guard), the lights' two passes 64 s and 191 s, the
+lamps from the scene of that size already found (192 s). Now `sponza_chrome` 3.81, 1.82, 1.40, 0.49 M;
+`sponza_lamps` 1.93, 0.43 M; `sponza_lights` 1.97, 0.48 M; 51 files more (3018 in the site's folder).
+
+Held views, 960x540, dB / SSIM against the reference, `render --budget` standing for a level (it cuts by
+pixels from the view, an exported level by a width in units):
+
+| | k10 | k45 | a | b |
+|---|---|---|---|---|
+| chrome, 1080p at 1.40 M | 29.69 / 0.875 | 30.07 / 0.732 | 28.87 / 0.836 | 29.05 / 0.785 |
+| chrome, 540p at 1.0 M | 32.21 / 0.932 | 30.75 / 0.839 | 30.65 / 0.902 | 29.67 / 0.859 |
+| chrome, 540p at 0.5 M (handed on) | 30.75 / 0.915 | 29.54 / 0.752 | 29.29 / 0.881 | 29.41 / 0.827 |
+| lamps, 1080p at 1.93 M | 27.32 / 0.845 | 23.20 / 0.721 | 25.39 / 0.784 | 24.19 / 0.764 |
+| lamps, 540p at 1.0 M | 27.51 / 0.860 | 23.51 / 0.733 | 25.98 / 0.816 | 24.31 / 0.771 |
+| lamps, 540p at 0.5 M (handed on) | 27.16 / 0.833 | 22.76 / 0.709 | 24.91 / 0.768 | 24.05 / 0.749 |
+| lights, 1080p at 1.97 M | 28.09 / 0.863 | 22.94 / 0.701 | 25.98 / 0.785 | 24.08 / 0.743 |
+| lights, 540p at 1.0 M | 27.71 / 0.853 | 22.98 / 0.706 | 25.94 / 0.795 | 24.03 / 0.742 |
+| lights, 540p at 0.5 M (handed on) | 27.52 / 0.826 | 22.80 / 0.690 | 25.14 / 0.761 | 23.95 / 0.732 |
+
+**The levels of a million were not handed on.** By the engine they are as good as or better than the levels
+of twice the count they would stand under. In the page on an emulated phone (390x844 at three device pixels)
+they show short dark dashes across the floor and dark lines on the walls, and in the two scenes with lamps
+the chrome knight dark and striped where the level of 1.93 M shows it bright. The levels of half a million
+from the same exports do not: the scene whole, glass and mirror shaded by the eye, the arches' undersides
+dotted as the published `lamps` level is. Why the one cut and not the other was not found.
+
+**The seconds.** A frame's entry says when it was done and the guard's log when it stopped the job; every
+stop of the two shoots lies whole inside one frame, so those frames' seconds were set less the stop in the
+indexes: `sponza_lamps` 579 s where 889 (k24, k45), `sponza_chrome` 1835 s where 2727 (six frames), each
+corrected frame within four seconds of its neighbours. `sponza_lights` says 87 s, its first pass alone (the
+two took 270 s), and `lamps` its base pass alone; left.
+
+**Not done.** At the time of writing the levels and the seconds are in the site's folder and not yet on the
+site: the final indexes were not captured again with the page of d73fb5c7 (a capture was stopped by the
+guard). A real phone; the dashes of the levels of a million explained (`sponza_knight`'s level of 0.96 M is
+the same kind of cut and was not looked at); the one-line change to `heldThere` and a scene found with it; a
+level of two million for the three scenes a mid device draws at under one; `sponza_growth` near half a
+million (its floor is 0.69 M).
