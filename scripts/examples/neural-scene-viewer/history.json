@@ -95,6 +95,11 @@
     {
       "date": "2026-11-16",
       "what": "OpenPBR built by one node in place of MaterialX's graph of 45 values, the same picture: Sponza at 1080p with two lamps found in about 590 s of work where it took about 1620 s."
+    },
+    {
+      "date": "2026-11-17",
+      "what": "The three older scenes found again with today's engine: they keep their history, so an earlier frame is whole where it showed holes, and their objects can be picked. A walk of 100 frames in 443 s where it took 741 s, and 1.1 to 2.0 dB better in views not taken.",
+      "scene": "sponza_growth"
     }
   ]
 }

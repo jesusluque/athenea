@@ -25211,3 +25211,44 @@ A subagent, RTX 3070 Laptop, both trees brought from 35c47360 to cb22fdb7; scrip
 
 Not done: CUDA's bounces (no OptiX in WSL), so the node inside a bounce is unverified on CUDA past the first
 hit; the commits after cb22fdb7 (the prims' ids in an export, the making-width rule) on ixwin.
+
+## The older scenes of the site found again: history, ids, and what the levels lose (17 Nov)
+
+By an agent of this session, with the engine at 946aa4ea and each scene's own command (found in the transcripts
+of 13 and 14 Nov and in `gpu_groups3.sh`), exported with `--history` and its ids, and checked against the one
+on the site: held views against a path traced reference made for it (64 paths, 8 bounces, denoised, 960x540),
+and the page in headless Chrome riding the render camera at an early, a middle and the last frame. Scripts,
+logs, references and pictures in `build/night/agent-refresh`.
+
+| scene | shoot (less the guard's stops) | gaussians standing | held views, dB / SSIM, before -> now | files |
+|---|---|---|---|---|
+| `sponza_knight` | 532 s (the page said 1766) | 2.59 M (2.44) | k10 30.85/0.925 -> 32.84/0.940, k45 33.57/0.861 -> 34.60/0.884, a 30.26/0.909 -> 31.77/0.929, b 32.44/0.882 -> 33.59/0.906 | 485 (124) |
+| `sponza_growth` | 443 s (741) | 4.22 M (4.88) | four views off the walk: 32.10/0.907 -> 33.46/0.931, 32.63/0.909 -> 33.69/0.921, 33.05/0.923 -> 34.12/0.931, 32.85/0.939 -> 34.11/0.952 | 401 (102) |
+| `sponza_chrome` | 2738 s, 1846 without six stops (6185) | 11.41 M (9.72) | k10 30.07/0.860 -> 31.71/0.875, k45 29.36/0.794 -> 29.03/0.803, a 29.33/0.860 -> 30.48/0.875, b 29.34/0.833 -> 29.58/0.848 | 753 (379) |
+
+For the knight and the walk "before" is the scene of 13 Nov still on the disk, not the one of 14 Nov that was
+published, which is gone; for the chrome it is the published scene. In the page the knight and the walk, which
+had no history, are whole at their early frames where they showed holes and stripes (looked at: the walk at
+frames 5 and 50); at the last frame the pictures are the same. Mattes of `/GlassKnight` and `/ChromeKnight` are
+clean. The three are in `build/web` (3375 files where 2341).
+
+**The levels.** The scenes hold fewer coarse cells than they did: the knight's level of 250 000 and the chrome's
+of 1 000 000 and 500 000 cannot be met (the coarsest the chrome holds draws 1.31 M). The chrome is handed on
+with levels of 3.81, 1.82 and 1.40 M, so a phone, whose budget is a million, draws 1.40 M where it drew 0.96.
+Worse than it was, and accepted for the rest.
+
+**`lamps` is left as it was.** Its flow (the scene without the lamps, then a `--light-group` pass a lamp) with
+this engine reads 28.22/0.868, 23.14/0.731, 26.22/0.829, 24.35/0.780 against 27.94/0.875, 22.76/0.765,
+25.81/0.844, 24.24/0.814: more dB and less SSIM in every view, with speckle over the dark door in the held
+picture. The same stage in one render with `--light-groups` (192 s) reads 27.53/0.888, 23.36/0.771,
+25.90/0.862, 24.04/0.821: SSIM above the published in the four, dB above in two and below in two. Kept beside
+(`build/night/agent-refresh`, `n_lampsb`), not published.
+
+**Found on the way (NEU38).** A pass over a scene already found (`--light-group`) sets the scene's `upAxis`
+again from the stage, and `all.usda` says none on its root layer: the scene became Y up after `--up-axis Z` on
+its first pass, and the page drew it on its side. And the published `lamps` exported again by this exporter
+(315 files where 723) is not the same picture at frame 4 -- the spot's pool is on the floor where the published
+has none -- and which is right was not checked against the engine.
+
+**Not done.** A phone and ixwin; the levels side by side; a coarser level for the chrome (a shoot with wider
+cells); CUDA and Vulkan.
