@@ -25159,3 +25159,26 @@ pixels, whatever the pass's size. Tests, Metal: the scene tests pass (361 assert
 
 Not done: why SSIM gives a little where dB gains; the QA flows and the other backends with this; a scene whose
 gaussians were made at coarser cells (their width is a cell's, not the spread's).
+
+## The two published 1080p scenes found again, with the prims' ids and the making-width rule (17 Nov)
+
+Both by the commands they were made with, the build of 946aa4ea; the four views not taken at 960x540 against
+the reference, dB / SSIM, each beside the one on the site:
+
+| | k10 | k45 | a | b |
+|---|---|---|---|---|
+| `sponza_lamps` (two lamps as groups, one render), on the site | 27.42 / 0.8630 | 23.04 / 0.7575 | 25.83 / 0.8364 | 24.25 / 0.8106 |
+| found again | 27.51 / 0.8636 | 23.37 / 0.7567 | 26.00 / 0.8387 | 24.22 / 0.8053 |
+| `sponza_lights` (found unlit, every light a group), on the site | 27.91 / 0.8982 | 22.70 / 0.7937 | 26.06 / 0.8682 | 24.59 / 0.8429 |
+| found again | 28.40 / 0.9037 | 23.11 / 0.7863 | 26.44 / 0.8704 | 24.75 / 0.8403 |
+
+`sponza_lamps`: 899 s wall with two thermal stops of 155 s (the guard's log), so about 589 s working, the same
+8 365 438 gaussians. `sponza_lights`: 270 s for its two passes, no stop (431 s on 16 Nov). Handed on with a
+level, their history and the prims' ids: 458 and 525 files (117 prims named; an `.ids` file beside each file
+of gaussians), the largest 10.5 MB. In Chrome on the Mac, riding the render camera, frames 4, 12 and 20 draw
+the counts the published ones draw, and `?object=/ChromeKnight&object.view=matte` draws the chrome knight's
+matte. A scene's page says its frames' seconds as the shoot's wall clock gave them, the guard's stops
+included (889 s for `sponza_lamps`).
+
+Not done: the other scenes on the site found again (they carry no ids, and the player shows no Objects control
+for them); a phone; a real Chrome.

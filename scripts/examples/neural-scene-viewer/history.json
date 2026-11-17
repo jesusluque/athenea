@@ -81,6 +81,20 @@
       "date": "2026-11-16",
       "what": "Sponza at 1080p with two lamps as groups, found in one render, again with the faster path tracer: 1160 s where it took 2195 s, and a little better in every view not taken.",
       "scene": "sponza_lamps"
+    },
+    {
+      "date": "2026-11-17",
+      "what": "Objects: every gaussian keeps the prim it was made from, and the player shows an object's matte, the object alone, or the object tinted (Options, Objects; the choice is kept in the address).",
+      "scene": "sponza_lamps"
+    },
+    {
+      "date": "2026-11-17",
+      "what": "A group's light on a gaussian is read from the frame that made it. A scene with every light apart now reads as one with none apart: 28.40 dB where 27.91 (Sponza at 1080p, a view not taken), found in 270 s.",
+      "scene": "sponza_lights"
+    },
+    {
+      "date": "2026-11-16",
+      "what": "OpenPBR built by one node in place of MaterialX's graph of 45 values, the same picture: Sponza at 1080p with two lamps found in about 590 s of work where it took about 1620 s."
     }
   ]
 }
