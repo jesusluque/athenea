@@ -1884,7 +1884,9 @@
         // soonest: a pass holds the page's frames while Spark sorts for it.
         if (shadeStale && !shadeBusy && now - roomsAt > (loading || playing ? 1500 : 250)) drawRooms();
         if (!roomPass) renderer.render(scene, camera);
-        if (!loading && window.__scene.loaded) judge(now);
+        // Frames held or slowed by a room's pass are not the device's rate: the count begins again after it.
+        if (shadeBusy) { slow.since = now; slow.frames = 0; }
+        else if (!loading && window.__scene.loaded) judge(now);
       });
     } catch (error) {
       window.__scene.error = String(error);
