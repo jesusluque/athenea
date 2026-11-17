@@ -1889,9 +1889,21 @@ int runShoot(const SceneOptions& all) {
     if (!discovery) return report(discovery.error());
     if (scene.name.empty()) scene.name = directory.stem().string();
     if (!all.name.empty()) scene.name = all.name;
-    scene.upAxis = !all.upAxis.empty() ? all.upAxis : std::string(1, stage.upAxis());
-    // The stage's own unit, as its up axis: a stage in centimetres left a scene that said metres.
-    scene.metersPerUnit = all.metersPerUnit > 0.0 ? all.metersPerUnit : stage.metersPerUnit();
+    // The stage's own up axis and unit (a stage in centimetres left a scene that said metres) -- for a scene
+    // being found. One found already keeps what it was found with unless the option says otherwise: a pass
+    // of a light group over a stage whose root layer names no up axis turned a scene made `--up-axis Z` into
+    // Y up, and the page drew it on its side.
+    const bool foundBefore = !scene.pieces.empty();
+    if (!all.upAxis.empty()) {
+        scene.upAxis = all.upAxis;
+    } else if (!foundBefore || scene.upAxis.empty()) {
+        scene.upAxis = std::string(1, stage.upAxis());
+    }
+    if (all.metersPerUnit > 0.0) {
+        scene.metersPerUnit = all.metersPerUnit;
+    } else if (!foundBefore) {
+        scene.metersPerUnit = stage.metersPerUnit();
+    }
     // Drawn without the 2D filter's compensation from here on, and by whoever draws the scene after: what
     // the looks ask of the scene (is this pixel held?) and what a render shows are then the same picture.
     if (all.noAntialias) scene.antialiased = false;

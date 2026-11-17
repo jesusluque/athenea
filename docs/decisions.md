@@ -25509,3 +25509,15 @@ cases, `athenea_material_tests` 2985 in 15, `athenea_technique_tests` 2862 in 64
 of the 168 ctests not marked slow that speak of opacity, glass, lights, lobes, materials, emission, bakes,
 gltf, coat or sheen, 167 pass -- the one that does not is `sheet_glass_draws_whole`, which is the trunk's
 (NEU34). Not run: the whole suite (565 tests) and the slow gates.
+
+## A scene found already keeps its up axis and its unit (NEU38, 17 Nov)
+
+`shoot` set a scene's up axis and metres a unit from the stage at every run, so a later pass over a scene
+(`--light-group`, `--groups-only`) wrote them again: over a stage whose root layer names no up axis, a scene
+made with `--up-axis Z` became Y up, and the web player drew it lying on its side. Now a scene that holds
+pieces keeps both unless the option is given; a scene being found takes the stage's as before. Checked on
+that stage (`all.usda`): `"upAxis": "Z"` after the first pass and after a `--light-group` pass over it, where
+it read Y. The scene tests (361 assertions) and the 49 QA flows pass.
+
+Not done: the other half of NEU38 -- the published `lamps` scene exported again differs at frame 4 from the
+export on the site, and which is right is not checked.
