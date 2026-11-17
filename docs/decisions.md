@@ -25958,3 +25958,83 @@ is not.
 
 Not done: a coarse level of the cut that stands in the page (wider discs for a cell, or the cells laid as a
 frame of half the size lays them); the other scenes found again; a real phone.
+
+## The page's frames while a room is made, its knights before they are shaded, and a clear glass (17 Nov)
+
+Three things the section on the page's knights left, each measured or looked at in headless Chrome on the Mac
+against the page as it was (a58b7cf7); tools, logs and pictures in `build/night/agent-player3/`.
+
+**A room's pass no longer holds the page.** Spark draws what it last sorted, and a room's set is not the
+eye's, so with one Spark the page held its own frames for three sorts at every pass. Each kind's room now
+has a `SparkRenderer` of its own that is never in the scene (Spark's `sparkOverride` draws through the one
+that is): what is visible is changed only for the moment its gaussians are made and put back before a frame
+is drawn, its order comes from its own worker, and the cube is drawn through it when the order is in. Where
+a room's parts are the ones before and its middle has not moved -- a lamp's level changes colours alone --
+Spark shows the new set at once on the order it has, and the cube is drawn without waiting for a sort. The
+timeline moved over frames that change no part of a room leaves the rooms alone (it asked for a pass a
+step). A slider dragged gets the pass that is being drawn and one more after it.
+
+Measured with real input through the DevTools protocol (`gap.mjs`: a mouse's drag, a finger's on a phone's
+emulation), the time of every frame the page draws kept in the page: the longest gap between two frames,
+in ms, `n_lamps` (the published `sponza_lamps`). A headless frame is 60 to 250 ms here by itself, depending
+on what else the Mac is doing, so a gap under 300 is no hold.
+
+| longest gap between frames, ms | 8.4 M, before | after | 1.9 M, before | after | phone's emulation, before | after |
+|---|---|---|---|---|---|---|
+| a load | 2462 | 386 | 1397 | 264 | 1323 | 280 |
+| a lamp's slider dragged 3 s | 2470 (11 frames in 7.5 s) | 226 (113) | 1414 (18 in 6.8 s) | 270 (118) | 1416 | 271 |
+| the timeline dragged 3 s | 2398 | 686 | 1348 | 271 | 1300 | 403 |
+| an orbit drag | 1062 | 258 | 243 | 217 | 284 | 247 |
+
+A pass takes 0.2 to 0.3 s at 1.9 M where it sorts and 20 ms where it does not (a lamp's drag: 28 passes in
+the three seconds, 6 before), and 0.4 to 2 s at 8.4 M (8 passes in the drag, 4 before, each of which held
+the frames). The 686 ms at 8.4 M on the timeline was 320 in another run; what it is was not looked into
+(the normals of the glass that stands at the new frame are worked out on the page's thread, in slices).
+Run again with the Mac busier (every frame 200 ms and more, the page before as well): the page before held
+1.8 to 2.8 s in a load and 1.9 to 2.2 s in the drags of the lamp and the timeline, the page now 0.41 s at
+most.
+
+**What is under a pointer.** The second at the start of an orbit drag at 8.4 M was not the room: a drag's
+first touch asks which gaussian is under it, and Spark's ray goes through every gaussian drawn, on the page's
+thread (1.06 s at 8.4 M, 0.24 s at 1.9 M on this Mac's processor; a phone's is slower). One gaussian in
+sixteen is now kept as a point when a part is read, and the point to turn about is the nearest of those
+within a narrow cone about the ray that has another close behind it. The eye ends where it ended before
+((1.73, 15.53, 11.42) to (-5.70, 15.53, 2.49) by the same drag). At 1.9 M the quarter of a second it saves
+is a frame's time in these runs and is not told apart by them.
+
+**No frame shows the knights as found.** A glass or a mirror is drawn only once its kind's room has been
+drawn (or the option is off, or the rooms failed, which the status line says); the level drawn first waits
+to be whole before its first room, so the knights come in once, shaded, in a room that is all there; and
+the finer detail's normals are worked out before it takes the coarse level's place. A load of `n_lamps` on
+a throttled network (`cast_w_lamps`, `sheet_cast_v1_first.png`): the room without the knights from 3.0 s,
+the knights shaded from 3.7 s, and no capture after differs from the one before by more than 4 of 255 in
+the knights' boxes, the swap to full detail included (7 before, and 22 before that). Counted in the page
+at every frame it draws -- a glass or a mirror visible with no shading on it -- 0 frames in the three loads
+(8.4 M, 1.9 M, a phone's emulation).
+
+**The glass was frosted because every gaussian read what is straight behind it.** The look through was the
+eye's own ray turned three twentieths of the way a ball of glass would turn it -- a pane's far face undoes
+the first -- over a cone of 0.06, and the picture behind came through unmoved and blurred: an even grey.
+Not its opacity or its tint (0.93, 0.98, 1: a look through is that squared). The far face is now taken as a
+ball's: the one that mirrors the face met about the ray inside, where the ray is bent as much again; the
+look is 0.85 of the way from the eye's ray to that, read over a cone of 0.015 (0.03 mirrored; the chrome's
+0.04 from 0.08), which the normal from the neighbours allows without the facets. A highlight is one read of
+the room along the mirrored ray, added where it is near white: the room is kept as a display shows it and
+the page is not told where a lamp stands, so what is taken for a light is a sunlit wall or floor. Against
+the engine's `render --glass` from the three eyes (`cmp_w.png`: the engine, the page at 8.4 M, at 1.9 M,
+1.9 M with the look at 0.6, the page before; `crop_w.png`; the six looks tried, `sheet_x1.png`): the glass
+is clear, bright and dark side by side with a dark rim and white lights in it, where it was milk. It is not
+the engine's picture: the page's knight shows the lit wall on the side the engine's shows the dark door,
+its highlights are fewer and broader, and from the third eye, where the engine's knight goes dark before
+the door, the page's stays grey. At 1.9 M it is blotchier and holds.
+
+Not done: a real browser, a real phone, WebKit -- every number and picture here is headless Chrome on one
+Mac, and its frame rates say nothing of a device. The memory of a room's Spark: three sets of the scene's
+gaussians while it works (20 bytes a gaussian each), one at rest (the others are let go four seconds after
+the last pass), a kind -- 60 MB a kind at a million gaussians, 0.5 GB a kind at 8.4 M while a lamp is
+dragged; not measured on a device, and a phone that loses its graphics context reads the scene again a
+level coarser as before. The first room shows the other kind as it was found until the pass after it. The
+player's own lamp, which rides with the eye, still does not ask for a room. The point under a pointer is
+not the gaussian under it: a thin thing between sampled points is missed for what is behind. The 0.85 and
+the cones were chosen from six looks at three eyes of one scene; `sponza_chrome` was loaded (by the eye, no
+error) and not judged. Highlights where the lamps are, which wants the lamps' places in the index.
