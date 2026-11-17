@@ -358,6 +358,8 @@
       // and takes its place when it is whole: `outgoing` is what stays drawn meanwhile, `staging` where the
       // next is gathered.
       const staging = new THREE.Group();
+      staging.rotation.copy(root.rotation);   // placed as the scene is: what is gathered is measured there
+      staging.scale.copy(root.scale);
       let outgoing = [];
       let keeping = false;
       // The level drawn first is, where the index has one, a level of the scene with its lamps on
@@ -393,7 +395,7 @@
       const kindOf = (which) => ({
         which, eye: dyno.dynoVec3(new THREE.Vector3()), middle: dyno.dynoVec3(new THREE.Vector3()),
         reach: dyno.dynoFloat(1.0), room: dyno.dynoSamplerCube(new THREE.WebGLCubeRenderTarget(1).texture),
-        ready: false, target: null,
+        ready: false, target: null, spark: null, drawnFrom: null,
       });
       const kinds = { glass: kindOf("glass"), mirror: kindOf("mirror") };
       // What the page draws behind the scene, as light: what a glass shows through where the room holds nothing.
@@ -691,8 +693,27 @@
       let shadeStale = false;   // what is shown changed: the cubes are drawn again
       let shadeBusy = false;
       let shadeFresh = false;   // a cube was just drawn: the gaussians are shaded from it
-      let roomPass = false;     // a cube is being drawn with the whole scene shown: the page's own frame waits
+      let shadeFailed = false;  // the rooms could not be drawn: glass and chrome are shown as they were found
+      let roomKeyDrawn = null;  // what the rooms were last drawn of (`roomKey`)
       let roomsAt = -Infinity;  // when the last pass ended, by the frames' clock
+      // WHAT IS UNDER A POINTER is asked of one gaussian in sixteen, kept as points when a part is read. Spark's
+      // own ray goes through every gaussian that is drawn, on the page's thread: a second at eight million
+      // and a quarter of one at two (headless, a desktop's processor), at every drag's first touch, with
+      // nothing drawn or answered meanwhile. A point about which to turn does not want the very gaussian.
+      const pickStride = 16;
+      const pickOf = (mesh) => {
+        try {
+          const held = mesh.extSplats ?? mesh.packedSplats;
+          const count = held?.numSplats ?? 0;
+          if (typeof held?.getSplat !== "function" || !(count > 0)) return null;
+          const points = new Float32Array(Math.ceil(count / pickStride) * 3);
+          for (let k = 0; k * 3 < points.length; ++k) {
+            const { center } = held.getSplat(k * pickStride);
+            points[k * 3] = center.x; points[k * 3 + 1] = center.y; points[k * 3 + 2] = center.z;
+          }
+          return points;
+        } catch (error) { return null; }
+      };
       // WHERE A KIND'S ROOM IS DRAWN FROM: the middle of where its gaussians are, not of the box that holds
       // them all. A few gaussians found far from the object (a part's strays) stretch the box, and its middle
       // was then a metre and more from the chrome knight -- beside the glass one, whose cube the chrome read.
@@ -922,7 +943,23 @@
       // the glass and the chrome are shaded by the eye while the page still reads, not only once it has.
       const drawnOwn = () => (keeping ? outgoing.filter((m) => !m.kind) : meshes.flat());
       const drawnShaded = () => (keeping ? outgoing.filter((m) => m.kind) : shaded.flat());
-      const shadedShown = (which) => drawnShaded().filter((s) => s.kind === which && s.mesh.visible);
+      // A GLASS OR A CHROME IS NOT DRAWN UNTIL IT IS SHADED. Whether a mesh stands at the frame the timeline is
+      // at is kept beside it (`stands`); a glass's or a mirror's is drawn where it stands and its kind's room
+      // has been drawn -- or the option is off, or the rooms could not be drawn, and it is shown as found.
+      // Before, the level drawn first showed its knights as they were found for the seconds its room took,
+      // and then swapped them. What has once been drawn is not taken away again.
+      const revealed = (s) => !s.kind || s.seen || !settings.glass || kinds[s.kind].ready || shadeFailed;
+      const setStands = (m, stands) => {
+        m.stands = stands;
+        m.mesh.visible = stands && revealed(m);
+        if (m.mesh.visible) m.seen = true;
+      };
+      const reveal = () => { for (const s of [...shaded.flat(), ...outgoing.filter((m) => m.kind)]) setStands(s, Boolean(s.stands)); };
+      const shadedShown = (which) => drawnShaded().filter((s) => s.kind === which && s.stands);
+      // What a room is drawn of: the parts that stand to the end and the glass and mirrors that stand now.
+      // The timeline moved over frames that change none of them leaves the rooms as they are.
+      const roomKey = () => [...drawnOwn().filter((m) => m.until === 0), ...drawnShaded().filter((s) => s.stands)]
+        .map((m) => m.mesh.uuid).join(" ");
       // By the eye, or as the picture each was found with: the option's. What is being gathered behind the
       // scene takes its shading as it is read, so it comes in shaded.
       const applyShading = () => {
@@ -931,6 +968,7 @@
           const wanted = settings.glass && kinds[s.kind].ready ? s.shading : undefined;
           if (s.applied !== wanted) { setWorld(s.mesh, s.light, wanted, s.objects); s.applied = wanted; }
         }
+        reveal();
       };
 
       // THE CAMERA BEING PROCESSED, drawn: the frustum of the frame the timeline is at -- its eye, its four
@@ -1003,11 +1041,7 @@
       const walk = () => index.parts.map(partOf).filter((p) => cameras.has(p.camera));
       const steps = () => detail === 0 ? meshes.length : walk().length;
       let cursor = 0;           // where the timeline is: parts drawn (the grown scene), or a camera of the walk
-      let showLater = null;     // a show asked for while a room was being drawn: done when the pass ends
       const show = (count, moveCamera) => {
-        // A room's pass shows the scene whole for its cube and puts back what was shown: what is shown is
-        // not changed under it.
-        if (roomPass) { showLater = () => show(count, moveCamera); return; }
         cursor = Math.max(0, Math.min(count, steps()));
         shown = detail === 0 ? cursor : meshes.length;
         let gaussians = 0;
@@ -1017,11 +1051,11 @@
         const stands = (k, until) => k < shown && (until === 0 || at < until);
         meshes.forEach((list, k) => {
           for (const m of [...list, ...shaded[k]]) {
-            m.mesh.visible = stands(k, m.until);
-            if (m.mesh.visible) gaussians += m.gaussians - (m.cut ? cutAt(m.cut, at) : 0);
+            setStands(m, stands(k, m.until));
+            if (m.stands) gaussians += m.gaussians - (m.cut ? cutAt(m.cut, at) : 0);
           }
         });
-        shadeStale = true;
+        if (roomKey() !== roomKeyDrawn) shadeStale = true;
         const count_ = detail === 0 ? parts.length : walk().length;
         slider.max = String(Math.max(count_, 1));
         slider.value = String(cursor);
@@ -1144,7 +1178,7 @@
               // Which prim each gaussian was made from, where the scene says: the objects' modifier after the light's.
               const marks = prims.length > 0 ? objectsOf(await idsOf(span.ids, span.gaussians ?? 0, span === part)) : undefined;
               if (light || marks) setWorld(mesh, light, marks);
-              own.push({ mesh, until, gaussians: span.gaussians ?? 0, objects: marks, cut: span.spans ? cutOf(mesh, 1, span.spans) : null });
+              own.push({ mesh, until, gaussians: span.gaussians ?? 0, objects: marks, pick: pickOf(mesh), cut: span.spans ? cutOf(mesh, 1, span.spans) : null });
               readHere += span.gaussians ?? 0;
               tell();
             }
@@ -1156,14 +1190,13 @@
               const light = await lightOf(which);
               if (light || marks) setWorld(other, light, marks);
               const shape = shapeOf(other);
-              beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0, shape, heart: heartOf(shape, made.gaussians ?? 0), light, objects: marks,
+              beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0, shape, pick: pickOf(other), heart: heartOf(shape, made.gaussians ?? 0), light, objects: marks,
                             cut: span.spans ? cutOf(other, which === "glass" ? 2 : 3, span.spans) : null,
                             shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1]), shape.texture) });
               readHere += made.gaussians ?? 0;
               tell();
             }
           }
-          while (roomPass) await new Promise((done) => setTimeout(done, 20));
           if (mine !== generation) { for (const m of [...own, ...beside]) m.mesh.dispose?.(); break; }
           for (const m of [...own, ...beside]) { m.mesh.visible = false; (keeping ? staging : root).add(m.mesh); }
           meshes.push(own);
@@ -1179,7 +1212,15 @@
             if (window.__player.firstMs === undefined) window.__player.firstMs = Math.round(performance.now() - began);
           }
         }
-        while (roomPass && mine === generation) await new Promise((done) => setTimeout(done, 20));
+        if (mine === generation && keeping && settings.glass) {
+          // The finer detail's normals before it is shown: it comes in as smooth as it will be, not in the
+          // discs' own axes and a wide cone for the second its first room takes. (Of what stands to the end;
+          // a timeline held at an earlier frame has its own worked out with its room.)
+          try {
+            staging.updateMatrixWorld(true);
+            for (const kind of Object.values(kinds)) await smoothKind(kind, shaded.flat().filter((s) => s.kind === kind.which && s.until === 0));
+          } catch (error) { /* its room's pass works them out */ }
+        }
         if (mine === generation) {
           if (keeping) {
             // The finer detail is whole: it comes into the scene and what stood for it goes. Its glass and
@@ -1207,7 +1248,7 @@
           // Spark's ray through the gaussians starts itself on the first one asked and answers from the
           // second: one is asked here, so that the first finger laid on the scene finds what is under it.
           const first = meshes.flat()[0];
-          if (first) new THREE.Raycaster(camera.position, new THREE.Vector3(0, 0, -1)).intersectObject(first.mesh, false);
+          if (first && !first.pick) new THREE.Raycaster(camera.position, new THREE.Vector3(0, 0, -1)).intersectObject(first.mesh, false);
           slow.since = performance.now();
           slow.frames = 0;
         }
@@ -1494,122 +1535,159 @@
 
       // The cubes, drawn again when what is shown changed: the room as it stands from the middle of each
       // kind that is shown, without that kind or the lines this page draws over the scene.
-      // SPARK DRAWS WHAT IT LAST SORTED, NOT WHAT IS SHOWN. Its `update` makes the gaussians of what is
-      // visible and asks for their order, and comes back at once where an order is already being worked out
-      // or one was a moment ago -- what is drawn until the new order is in is the set before. A cube drawn
-      // straight after hiding a kind was therefore drawn with that kind in it: the chrome's room, drawn second,
-      // was the chrome knight itself from inside, shaded by the room before -- dark, and darker each time.
-      // So the page waits until Spark is at rest with what it was asked for, sorted from where it was asked.
-      const settle = async (eye) => {
-        const where = new THREE.Vector3();   // where it was last asked from: the eye may move meanwhile
-        const until = performance.now() + 8000;
-        let asked = false;
-        while (performance.now() < until) {
-          if (!spark.sorting && !spark.sortDirty) {
-            if (asked && spark.display === spark.current && (spark.sortedCenter?.distanceTo(where) ?? 0) < 0.002) return true;
-            eye.getWorldPosition(where);
-            await spark.update({ scene, camera: eye });
-            asked = true;
-          }
+      // A ROOM IS DRAWN BY A SPARK OF ITS OWN, AND THE PAGE'S FRAMES GO ON. Spark draws what it last sorted,
+      // not what is shown: its `update` makes the gaussians of what is visible and asks a worker for their
+      // order, and what is drawn until that order is in is the set before. A room's set is not the eye's --
+      // the scene whole, without the kind the room is for -- so with one Spark the page had to hold its own
+      // frames while the room's set was made, sorted, drawn into the cube and the eye's set sorted again:
+      // two seconds at the level drawn first and four or five at eight million gaussians, paid again whenever
+      // a lamp's level or an option changed the room. Each kind now has a SparkRenderer of its own, never in
+      // the scene: what is visible is changed for the moment its gaussians are made and put back before
+      // anything is drawn, its order is worked out by its own worker while the page's frames are drawn from
+      // the page's own Spark, and the cube is drawn through it when the order is in. Where the room's parts
+      // are the ones they were and its middle has not moved -- a lamp's level changed their colours alone --
+      // the order it has still holds and the cube is drawn at once.
+      const roomSpark = (kind) => {
+        kind.spark ??= new SparkRenderer({ renderer, autoUpdate: false });
+        // Drawn as the page's own frames are.
+        for (const key of ["preBlurAmount", "blurAmount", "maxStdDev", "minAlpha", "falloff", "focalAdjustment"]) kind.spark[key] = spark[key];
+        return kind.spark;
+      };
+      const waitFor = async (met, limit) => {
+        const until = performance.now() + limit;
+        while (!met()) {
+          if (performance.now() > until) return false;
           await new Promise((done) => setTimeout(done, 8));
         }
-        return false;
+        return true;
       };
+      // What is visible, as a kind's room wants it, for as long as `draw` takes and no longer: `draw` returns
+      // before a frame of the page's is drawn, and what was shown is put back whatever happens in it.
+      const asRoom = (kind, draw) => {
+        const all = [...drawnOwn(), ...drawnShaded()];
+        const was = all.map((m) => m.mesh.visible);
+        const lines = [frustum, path, marker].map((line) => [line, line.visible]);
+        const behindWas = scene.background, alphaWas = renderer.getClearAlpha(), howWas = objects.how.value;
+        try {
+          // THE ROOM A GLASS OR A MIRROR SHOWS IS THE SCENE WHOLE, whatever frame the timeline is at. At an
+          // earlier frame most of the room about it had not been found yet, and a room drawn as the scene
+          // stood then was black: the knights went black ridden from the walk's first cameras. Every part
+          // that stands to the end is in it, and the other kind where it stands now -- not the kind itself.
+          for (const m of all) m.mesh.visible = m.kind ? m.kind !== kind.which && Boolean(m.stands) : m.until === 0;
+          for (const [line] of lines) line.visible = false;
+          // The cube is drawn over nothing, not over the sky's colour: its alpha is then how much of the
+          // room there is along a ray, which is what the shading asks.
+          scene.background = null;
+          renderer.setClearAlpha(0);
+          // And the room is the scene as it is, whatever is shown of an object: a matte or an object alone
+          // is of what the eye sees, not of what a mirror does.
+          objects.how.value = 0;
+          return draw();
+        } finally {
+          all.forEach((m, k) => { m.mesh.visible = was[k]; });
+          for (const [line, shownBefore] of lines) line.visible = shownBefore;
+          scene.background = behindWas;
+          renderer.setClearAlpha(alphaWas);
+          objects.how.value = howWas;
+        }
+      };
+      // Where a kind's gaussians are: the middle of each part's, by how many each holds.
+      const middleOf = (seen) => {
+        const box = new THREE.Box3();
+        for (const s of seen) box.union(s.mesh.getBoundingBox(true).clone().applyMatrix4(s.mesh.matrixWorld));
+        const middle = box.getCenter(new THREE.Vector3());
+        const sum = new THREE.Vector3();
+        let weight = 0;
+        for (const s of seen) if (s.heart) { sum.addScaledVector(s.heart.at.clone().applyMatrix4(s.mesh.matrixWorld), s.heart.count); weight += s.heart.count; }
+        if (weight > 0) middle.copy(sum.divideScalar(weight));
+        return { middle, size: box.getSize(new THREE.Vector3()).length() };
+      };
+      // A kind's normals, where its parts are not the ones they were worked out for. The thing's size for it
+      // is where nine in ten of its gaussians are about the middle, twice: strays stretch the box.
+      const smoothKind = async (kind, seen) => {
+        const parts_ = seen.map((s) => s.mesh.uuid).join(" ");
+        if (seen.length === 0 || kind.smoothed === parts_) return;
+        const here = root.worldToLocal(middleOf(seen).middle);
+        const far = [];
+        for (const s of seen) {
+          const step = Math.max(1, Math.floor(s.shape.count / 2048));
+          for (let at = 0; at < s.shape.count; at += step) far.push(Math.hypot(s.shape.centres[at * 3] - here.x, s.shape.centres[at * 3 + 1] - here.y, s.shape.centres[at * 3 + 2] - here.z));
+        }
+        far.sort((a, b) => a - b);
+        const extent = 2 * (far[Math.floor(far.length * 0.9)] ?? 0);
+        const startedAt = performance.now();
+        if (extent > 0) await smoothNormals(seen, extent * smoothCell);
+        kind.smoothed = parts_;
+        kind.extent = extent * unit;
+        window.__player.smoothMs = Math.round(performance.now() - startedAt);
+      };
+      let trimTimer = 0;
       const drawRooms = async () => {
         if (shadeBusy) return;
         if (!settings.glass) { shadeStale = false; return; }
         shadeBusy = true;
         shadeStale = false;
+        roomKeyDrawn = roomKey();
+        clearTimeout(trimTimer);
         const began = performance.now();
-        // What a pass changes, to put back whatever happens in it.
-        let own = [], others = [];
-        const behindWas = scene.background, alphaWas = renderer.getClearAlpha();
-        const marked = objects.how.value !== 0;
-        let passed = false;
-        // Where a kind's gaussians are: the middle of each part's, by how many each holds.
-        const middleOf = (seen) => {
-          const box = new THREE.Box3();
-          for (const s of seen) box.union(s.mesh.getBoundingBox(true).clone().applyMatrix4(s.mesh.matrixWorld));
-          const middle = box.getCenter(new THREE.Vector3());
-          const sum = new THREE.Vector3();
-          let weight = 0;
-          for (const s of seen) if (s.heart) { sum.addScaledVector(s.heart.at.clone().applyMatrix4(s.mesh.matrixWorld), s.heart.count); weight += s.heart.count; }
-          if (weight > 0) middle.copy(sum.divideScalar(weight));
-          return { middle, size: box.getSize(new THREE.Vector3()).length() };
-        };
         try {
           root.updateMatrixWorld(true);
-          // First the normals, with the page's frames still drawn; then the rooms, with them held.
+          // First the normals.
+          for (const kind of Object.values(kinds)) await smoothKind(kind, shadedShown(kind.which));
+          // Then each kind's gaussians are made and their order asked for, the kinds side by side.
+          const turns = [];
           for (const kind of Object.values(kinds)) {
             const seen = shadedShown(kind.which);
-            if (seen.length === 0) continue;
-            const { middle } = middleOf(seen);
-            // The kind's normals, where its parts are not the ones they were worked out for. The thing's size
-            // for it is where nine in ten of its gaussians are about the middle, twice: strays stretch the box.
-            const parts_ = seen.map((s) => s.mesh.uuid).join(" ");
-            if (kind.smoothed !== parts_) {
-              const here = root.worldToLocal(middle.clone());
-              const far = [];
-              for (const s of seen) {
-                const step = Math.max(1, Math.floor(s.shape.count / 2048));
-                for (let at = 0; at < s.shape.count; at += step) far.push(Math.hypot(s.shape.centres[at * 3] - here.x, s.shape.centres[at * 3 + 1] - here.y, s.shape.centres[at * 3 + 2] - here.z));
-              }
-              far.sort((a, b) => a - b);
-              const extent = 2 * (far[Math.floor(far.length * 0.9)] ?? 0);
-              const startedAt = performance.now();
-              if (extent > 0) await smoothNormals(seen, extent * smoothCell);
-              kind.smoothed = parts_;
-              kind.extent = extent * unit;
-              window.__player.smoothMs = Math.round(performance.now() - startedAt);
-            }
-          }
-          const turns = Object.values(kinds).map((kind) => [kind, shadedShown(kind.which)]);
-          for (const [kind, seen] of turns) {
             window.__player.step = `${kind.which}: ${seen.length} seen`;
             if (seen.length === 0) continue;
             const { middle, size } = middleOf(seen);
+            const own = roomSpark(kind);
+            // Spark makes no new set of other parts while it sorts one.
+            if (!await waitFor(() => !own.sorting, 20000)) throw new Error(`the ${kind.which}'s room was not sorted in 20 s`);
+            const before = own.current;
+            let failed = null;
+            asRoom(kind, () => {
+              const from = new THREE.Camera();
+              from.position.copy(middle);
+              own.update({ scene, camera: from }).catch((error) => { failed = error; });
+            });
+            if (own.current === before) throw new Error(`the ${kind.which}'s room was not made`);
+            // The order it has holds where the set is laid out as the one before (Spark then shows it at
+            // once) and is sorted from where that one was.
+            const moved = !(kind.drawnFrom && kind.drawnFrom.distanceTo(middle) < 0.02);
+            turns.push({ kind, own, middle, size, moved, failed: () => failed });
+          }
+          let fresh = 0;
+          for (const { kind, own, middle, size, moved, failed } of turns) {
+            const sorted = () => failed() || (own.display === own.current && (!moved || (!own.sorting && !own.sortDirty)));
+            if (!await waitFor(sorted, 20000)) throw new Error(`the ${kind.which}'s room was not sorted in 20 s`);
+            if (failed()) throw failed();
             // Spark keeps one cube, on its class, and would draw every kind into it: each kind's own is put
             // there for its turn and taken back after.
             SparkRenderer.cubeRender = kind.target ?? undefined;
-            // THE ROOM A GLASS OR A MIRROR SHOWS IS THE SCENE WHOLE, whatever frame the timeline is at. At an
-            // earlier frame most of the room about it had not been found yet, and a room drawn as the scene
-            // stood then was black: the knights went black ridden from the walk's first cameras. Every part
-            // that stands to the end is shown for the cube and what was shown is put back; the page's own
-            // frames wait meanwhile (`roomPass`), so the whole scene is not flashed on the screen.
-            if (!passed) {
-              passed = true;
-              roomPass = true;
-              own = drawnOwn().map((m) => [m, m.mesh.visible]);
-              others = [...drawnShaded().map((s) => s.mesh), frustum, path, marker].map((m) => [m, m.visible]);
-              // And the room is the scene as it is, whatever is shown of an object: a matte or an object alone
-              // is of what the eye sees, not of what a mirror does.
-              if (marked) { objects.how.value = 0; objectsChanged(); }
-              for (const [m] of own) m.mesh.visible = m.until === 0;
-              for (const line of [frustum, path, marker]) line.visible = false;
-              // The cube is drawn over nothing, not over the sky's colour: its alpha is then how much of the
-              // room there is along a ray, which is what the shading asks.
-              scene.background = null;
-              renderer.setClearAlpha(0);
-            }
-            // Each kind's room is drawn without that kind and with the other in it.
-            for (const s of drawnShaded()) s.mesh.visible = s.kind !== kind.which && others.find(([m]) => m === s.mesh)?.[1] === true;
-            const from = new THREE.Camera();
-            from.position.copy(middle);
-            await settle(from);
-            const texture = await spark.renderCubeMap({ scene, worldCenter: middle, size: settings.cube, near: 0.02,
-                                                        far: Math.max(across * unit * 2, 10), update: false });
+            const drawn = asRoom(kind, () => {
+              const cube = own.renderCubeMap({ scene, worldCenter: middle, size: settings.cube, near: 0.02,
+                                               far: Math.max(across * unit * 2, 10), update: false });
+              kind.target = SparkRenderer.cubeRender;
+              return cube;
+            });
+            const texture = await drawn;
             window.__player.step = `${kind.which}: cube drawn`;
-            kind.target = SparkRenderer.cubeRender;
             kind.room.value = texture;
             kind.middle.value.copy(middle);
+            kind.drawnFrom = middle.clone();
             // How far the room is taken to be about the middle: read as near as twice the thing's size, a
             // look depended on where on the thing it left more than on which way it went, and the room in
             // a glass or a mirror stayed put as the eye moved.
             kind.reach.value = Math.max(size * 8.0, 2.0);
+            if (!kind.ready) fresh += 1;
             kind.ready = true;
           }
+          shadeFailed = false;
           applyShading();
           shadeFresh = true;
+          // A kind drawn for the first time was not shaded yet in the other's room: once more, with it.
+          if (fresh > 0 && turns.length > 1) shadeStale = true;
           const kindsReady = Object.values(kinds).filter((kind) => kind.ready).map((kind) => kind.which);
           const applied = drawnShaded().filter((entry) => entry.applied).length;
           shadeNote = kindsReady.length > 0 ? ` · ${kindsReady.join(" and ")} by the eye (${applied} parts, ${window.__player.shadedTimes ?? 0} looks)` : "";
@@ -1619,28 +1697,23 @@
           window.__player.shadeError = String(error?.stack ?? error);
           console.error("glass and chrome could not be shaded", error);
           shadeNote = ` · glass and chrome as found, not by the eye: ${String(error?.message ?? error).slice(0, 120)}`;
+          shadeFailed = true;
+          reveal();
           say(said);
         } finally {
-          if (passed) {
-            scene.background = behindWas;
-            renderer.setClearAlpha(alphaWas);
-            for (const [m, shownBefore] of own) m.mesh.visible = shownBefore;
-            for (const [m, shownBefore] of others) m.visible = shownBefore;
-            if (marked) { objects.how.value = howNow(); objectsChanged(); }
-            // The eye's own frame again only once Spark has what the eye sees, shaded from the new rooms:
-            // a frame drawn before that showed the cube's set -- the scene whole, without the last kind.
-            for (const kind of Object.values(kinds)) kind.eye.value.copy(camera.position);
-            for (const s of drawnShaded()) if (s.applied) s.mesh.updateVersion();
-            try { await settle(camera); } catch (error) { /* the frame's own update follows */ }
-            roomPass = false;
-          }
           window.__player.roomMs = Math.round(performance.now() - began);
           window.__player.rooms = (window.__player.rooms ?? 0) + 1;
           roomsAt = performance.now();
           shadeBusy = false;
-          const later = showLater;
-          showLater = null;
-          later?.();
+          // A room's Spark holds three sets of the scene's gaussians while it works and needs one to draw
+          // from: the others are let go once the rooms have been left alone a while.
+          trimTimer = setTimeout(() => {
+            if (shadeBusy) return;
+            for (const kind of Object.values(kinds)) {
+              const own = kind.spark;
+              if (own && !own.sorting && !own.sortDirty && own.display === own.current) for (const spare of own.accumulators) spare.dispose();
+            }
+          }, 4000);
         }
       };
       // TURNING ABOUT A POINT, on a touch screen. A first finger laid down and kept still fixes a point --
@@ -1666,16 +1739,49 @@
       // ridden, and not with Alt held or `?orbit=0`, which leave the drag as it was.
       const drag = { ids: new Set(), point: null, last: new THREE.Quaternion() };
       const orbits = new URLSearchParams(location.search).get("orbit") !== "0";
+      // The point of the scene a ray meets: the nearest of the kept points within a narrow cone about it that
+      // has another close behind it (one alone may be a stray in the air), in the scene's own space. Where a
+      // part has no points kept, Spark's ray through all of it, as before; where there is nothing, as far
+      // along the ray as the middle of the scene is from the eye.
+      const underRay = (ray) => {
+        const drawn = [...drawnOwn(), ...drawnShaded()].filter((m) => m.mesh.visible);
+        if (drawn.some((m) => !m.pick)) {
+          const hits = ray.intersectObjects(drawn.map((m) => m.mesh), false);
+          if (hits.length > 0) return hits[0].point.clone();
+        } else {
+          root.updateMatrixWorld(true);
+          const from = root.worldToLocal(ray.ray.origin.clone());
+          const along = ray.ray.direction.clone().transformDirection(root.matrixWorld.clone().invert());
+          const ox = from.x, oy = from.y, oz = from.z, dx = along.x, dy = along.y, dz = along.z;
+          const near = 0.05 / unit;
+          const met = [];
+          for (const m of drawn) {
+            const points = m.pick;
+            // A history's gaussians that no longer stand are the first of its file.
+            for (let k = (m.cut ? Math.ceil(m.cut.from.value / pickStride) : 0) * 3; k < points.length; k += 3) {
+              const x = points[k] - ox, y = points[k + 1] - oy, z = points[k + 2] - oz;
+              const t = x * dx + y * dy + z * dz;
+              if (t < near) continue;
+              const wide = t * 0.012;
+              if (x * x + y * y + z * z - t * t < wide * wide) met.push(t);
+            }
+          }
+          if (met.length > 0) {
+            met.sort((a, b) => a - b);
+            let t = met[0];
+            for (let k = 0; k + 1 < met.length; ++k) if (met[k + 1] < met[k] * 1.1) { t = met[k]; break; }
+            return root.localToWorld(new THREE.Vector3(ox + dx * t, oy + dy * t, oz + dz * t));
+          }
+        }
+        const middle = place([(index.min[0] + index.max[0]) / 2, (index.min[1] + index.max[1]) / 2,
+                              (index.min[2] + index.max[2]) / 2]);
+        return ray.ray.origin.clone().addScaledVector(ray.ray.direction, Math.max(camera.position.distanceTo(middle), 1));
+      };
       const underPointer = (x, y) => {
         const box = canvas.getBoundingClientRect();
         const ray = new THREE.Raycaster();
         ray.setFromCamera(new THREE.Vector2((x - box.left) / box.width * 2 - 1, -((y - box.top) / box.height) * 2 + 1), camera);
-        const drawn = [...drawnOwn(), ...drawnShaded()].map((m) => m.mesh).filter((m) => m.visible);
-        const hits = ray.intersectObjects(drawn, false);
-        if (hits.length > 0) return hits[0].point.clone();
-        const middle = place([(index.min[0] + index.max[0]) / 2, (index.min[1] + index.max[1]) / 2,
-                              (index.min[2] + index.max[2]) / 2]);
-        return ray.ray.origin.clone().addScaledVector(ray.ray.direction, Math.max(camera.position.distanceTo(middle), 1));
+        return underRay(ray);
       };
       canvas.addEventListener("pointerdown", (event) => {
         drag.ids.add(event.pointerId);
@@ -1696,20 +1802,7 @@
       };
       window.__player.drag = drag;
       const fixPoint = () => {
-        const box = canvas.getBoundingClientRect();
-        const ndc = new THREE.Vector2((pivot.at.x - box.left) / box.width * 2 - 1,
-                                      -((pivot.at.y - box.top) / box.height) * 2 + 1);
-        const ray = new THREE.Raycaster();
-        ray.setFromCamera(ndc, camera);
-        const drawn = [...drawnOwn(), ...drawnShaded()].map((m) => m.mesh).filter((m) => m.visible);
-        const hits = ray.intersectObjects(drawn, false);
-        if (hits.length > 0) pivot.point.copy(hits[0].point);
-        else {
-          // Nothing under the finger: as far along it as the middle of the scene is from the eye.
-          const middle = place([(index.min[0] + index.max[0]) / 2, (index.min[1] + index.max[1]) / 2,
-                                (index.min[2] + index.max[2]) / 2]);
-          pivot.point.copy(ray.ray.origin).addScaledVector(ray.ray.direction, Math.max(camera.position.distanceTo(middle), 1));
-        }
+        pivot.point.copy(underPointer(pivot.at.x, pivot.at.y));
         pivot.held = true;
         controls.pointerControls.enable = false;
         quiet();
@@ -1881,10 +1974,13 @@
           }
         }
         // While the page reads or plays, a room is drawn again a second and a half after the last at the
-        // soonest: a pass holds the page's frames while Spark sorts for it.
-        if (shadeStale && !shadeBusy && now - roomsAt > (loading || playing ? 1500 : 250)) drawRooms();
-        if (!roomPass) renderer.render(scene, camera);
-        // Frames held or slowed by a room's pass are not the device's rate: the count begins again after it.
+        // soonest, and otherwise a quarter of a second: a slider dragged asks for one at each step and gets
+        // the one that is being drawn and one more after it. The level drawn first waits to be whole before
+        // its first room, so its glass and its chrome come in once, in a room that is all there.
+        const firstWhole = loading && window.__player.then !== undefined && !Object.values(kinds).some((kind) => kind.ready);
+        if (shadeStale && !shadeBusy && !firstWhole && now - roomsAt > (loading || playing ? 1500 : 250)) drawRooms();
+        renderer.render(scene, camera);
+        // Frames drawn while a room is made share the device with it and are not its rate: the count begins again after.
         if (shadeBusy) { slow.since = now; slow.frames = 0; }
         else if (!loading && window.__scene.loaded) judge(now);
       });
