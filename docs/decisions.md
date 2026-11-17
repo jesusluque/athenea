@@ -25751,3 +25751,87 @@ worked out only while they are shown. The room's reach is still eight times a bo
 and 33 m here, so a look goes by its direction alone). `sponza_chrome` from a camera that shows its
 knights. The glass as the engine draws it: one colour a gaussian and one room from one point do not give
 its inner faces.
+
+## What a glass costs the path tracer's bounces: where it goes (17 Nov)
+
+Measured, nothing changed in the kernel. Flat Sponza with the glass knight alone (`flat_glass.usda`, the knight
+is OpenPBR, 11 % of the frame), the frame-12 view, 1920x1080, 32 paths in passes of 8, Metal, M5 Pro.
+
+**The instrument.** A camera file with the same view four times (the eye moved a hundredth of a millimetre):
+`athenea stage --cameras` draws them from one load, so a view's seconds hold no loading and no compile, and
+three views agree to 1 %. The whole command's time, used until now, moved by 8 s between two runs of one
+binary (46.0 and 53.9 s). Seconds a view:
+
+| | no bounce | three bounces | a bounce |
+|---|---|---|---|
+| flat Sponza without the knights | 2.5-2.7 | 11.0-12.0 | 2.9 |
+| with the glass knight | 4.4-4.7 | 19.4-19.9 | 5.0 |
+
+**Counted by the kernel** (a copy of the sources, a switch in the generated kernel; the counts written in
+place of the colour and their means read by `athenea compare`): a path takes 4.44 steps at three bounces
+(4.09 outside the knight's pixels, 7.3 in them), shades 3.55 vertices of which 0.46 are glass, crosses 0.52
+times; 1.9 % of the paths spend all eight free crossings. A tenth more steps for three quarters more time.
+
+**Cuts**, each alone, each picture compared with the whole kernel's inside the knight's matte
+(`--matte knight=/GlassKnight`) and outside it:
+
+| | no bounce | three bounces | the picture differs |
+|---|---|---|---|
+| the whole kernel | 4.5 | 19.4 | |
+| the knight's own pixels trace nothing | 2.5 | 15.3 | in the knight; outside in 547 edge pixels |
+| a bounce that lands on glass ends there | 4.5 | 14.4 | outside (76 356 pixels over two codes); in the knight 98 |
+| both | 2.4 | 10.1 | both |
+| no free crossing (`kFreeCrossings` 0) | 2.35 | 11.9 | both |
+
+So glass in the stage that no path shades costs nothing (10.1 s is the stage without the knight less the
+knight's pixels): no cost to every surface from the kernel's size or from the shadow rays. Of the 9.3 s the
+knight adds at three bounces, 4.2 s are its own pixels' paths and 5.1 s are the other pixels' bounces that
+land on it, and the two add up. The crossings are what costs (7.5 s of it).
+
+**Doubling cuts**: one piece of a step done twice in a loop, the picture bit for bit, the time it grows by
+being that piece. Three bounces, 19.85 s the whole kernel:
+
+| done twice | seconds | grows by | for |
+|---|---|---|---|
+| a glass vertex's material | 27.6-32.3 | 8-12 | 0.46 evaluations a path |
+| any other vertex's material | 25.8 | 6.0 | 3.1 a path |
+| the light gathered at another vertex | 21.4 | 1.5 | |
+| the light gathered at a glass vertex | 19.8 | 0 | (its lobes are deltas: no shadow ray) |
+| the ray leaving a glass vertex / any other | 19.9 / 19.7 | 0 | not to be trusted: the compiler may have dropped the second query |
+
+With no bounce the glass material twice adds 0.75 s for 0.24 evaluations a path, all in the knight's own
+pixels. So an evaluation of the glass material costs some 3 s a unit where neighbouring threads are all on
+glass and several times that where it is one thread among others on a wall.
+
+**The threads of a group run together.** The stage without glass, three bounces, half the pixels tracing
+nothing: by blocks of 16 x 16 pixels 5.9 s, by a checker of single pixels 14.2 s, where the whole frame is
+11.0 s. A thread with nothing to do saves nothing while its neighbours work, and a group pays for every
+branch any of its threads takes. That is the cause: one thread in a group shading the OpenPBR glass makes
+the group pay that material's evaluation, and a path inside the knight does it at every face while the
+others of its group wait.
+
+**Tried, and not kept:**
+
+- *A thread's paths end to end* (one loop: a path that ends hands the thread to the next sample at once).
+  Bit for bit; slower: 5.0 s where 4.4 with no bounce and 20.9 where 19.5 with three with the knight, 13.6
+  where 12.0 without it. The first step of a sample, which reads the camera's hit shaded once a pixel,
+  stops being a step all threads take together.
+- *The same, a path beginning only on a trip that is a multiple of bounces + 1.* Bit for bit; 5.1 and 19.9 s
+  with the knight, 2.8 and 11.6 without: nothing gained. A straggler holds its group as many trips either
+  way; only moving it out of the group would not.
+- *A glass row's stack evaluated once a thread and a pass, then stood on each later face's normal with the
+  inside flag set by the face* (in the copy; right only where a material's weights do not change with the
+  view, as a bare glass's do not): 18.1 s where 19.8 at three bounces, 4.25 where 4.7 with none, the picture
+  bit for bit with none and within what two runs of one binary differ by with three (one code in a few
+  pixels). A twelfth, for a rule that would have to be told material by material; not taken to the tree.
+
+Every run went through the queue; the guard stopped none of these jobs (its two stops in those hours,
+11:54 and 12:08, were another session's job).
+
+Not done: the paths that are on glass gathered into a dispatch of their own (the state kept in a buffer at
+the moment a ray lands on glass, the rest of the path added to the pixel's sum by a second pass), which is
+what these numbers point at and is the 5 s of the other pixels' bounces at most; the stack of a material
+that is the same from anywhere kept a row in a buffer, not a thread; whether the doubled ray queries were
+really traced twice; the group's size and shape on this device; Sponza itself, the materials stage and
+`shoot` timed by views (nothing changed, so there is no before and after); CUDA and Vulkan. The switches
+and the jobs are in `build/night/agent-glass` (`src` is the copy; `regen.py` makes the one loop).
