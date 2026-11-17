@@ -25182,3 +25182,32 @@ included (889 s for `sponza_lamps`).
 
 Not done: the other scenes on the site found again (they carry no ids, and the player shows no Objects control
 for them); a phone; a real Chrome.
+
+## OpenPBR as one node and its test on ixwin: CUDA and Vulkan at cb22fdb7 (17 Nov)
+
+A subagent, RTX 3070 Laptop, both trees brought from 35c47360 to cb22fdb7; scripts and outputs in
+`build/night/agent-ixwin4`.
+
+- **Builds**: both, no error. (On Windows the first `cmake --build` stopped at step 43 of 46 with a return of
+  0 and three binaries not relinked; the same command again finished. Not explained.)
+- **Tests, all passing**: `athenea_material_tests` 1224 assertions in 13 cases (CUDA) and 1326 in 14 (Vulkan);
+  `athenea_technique_tests` 917 with 35 cases skipped / 2862; the scene tests 361 / 361; the usd tags 170 with
+  55 skipped / 1020; the QA flows 47 of 47 on CUDA, 46 of 47 on Vulkan (the flow that needs `athenea compare`,
+  which has no device there: NEU17).
+- **The test that holds the node to the graph** (`[openpbr]`, 631 assertions) passes on both: its
+  `InterlockedMax` and its stack of twelve lobes work there. No count, word, mark, emission or opacity off in
+  any of the 38 runs; the worst float 2.3e-7 on CUDA and 5.3e-7 on Vulkan (3.9e-7 on Metal).
+- **Pictures, the node against the graph** (1280x720, 16 paths), the materials stage and Sponza with the
+  knights: bit for bit on Vulkan, with and without bounces; on CUDA a half float's last bit (relMSE 5e-13 to
+  7e-13, no code of eight bits). The graph's route is bit for bit what 35c47360 drew, on both.
+- **Time on Vulkan**, the materials stage, 16 paths in passes of 2, frame time: 1287 ms to 1106 ms without
+  bounces and 2697 ms to 1909 ms with three, the graph against the node (14 % and 29 % less).
+- **NEU37 narrowed** (CUDA's first hit of Sponza differing by a code since `shadeSurface` and `shadeFound`
+  write their caller's state): not a field left unwritten -- zeroing the whole state first changes nothing --
+  and not the call site. It is the two functions' bodies computing through the `out` parameter: built in a
+  local and assigned at the end, the old picture comes back bit for bit. That is what a compiler contracting
+  multiplies and adds differently would do, and it could not be switched off there to prove it. Left as it
+  is: the difference is under a code, and Metal and Vulkan are bit for bit.
+
+Not done: CUDA's bounces (no OptiX in WSL), so the node inside a bounce is unverified on CUDA past the first
+hit; the commits after cb22fdb7 (the prims' ids in an export, the making-width rule) on ixwin.
