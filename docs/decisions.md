@@ -25935,3 +25935,26 @@ first pass, 95.0 s after the second, whose four views said 45.3, 5.3, 5.4 and 5.
 
 Not done: the published `sponza_lights` and `lamps` still say their first pass alone (the scenes are not
 found again); a pass of one group at a time (`--light-group`) adds each of its walks, which is what they took.
+
+## `sponza_lights` found again with the two changes, and what a level of a million shows in the page (17 Nov)
+
+The every-light-a-group Sponza found again at 1080p (`build/night/groups/geohd4.aths`; the two passes 107 s
+and 178 s by the clock, no stop of the guard): 8 639 341 gaussians as before, the held views whole 28.40 /
+23.11 / 26.44 / 24.75 dB as before to the hundredth, and the frames say 258.7 s where they said 87.2. With the
+parent asked for from 0.8 the cut goes lower by itself: `export --levels 2000000,1000000,500000` writes
+1.93 M, 0.97 M and 0.58 M where it wrote 1.97 M alone. `render --budget 1000000`, old scene and new: k10
+25.90 -> 27.45 dB (SSIM 0.758 -> 0.825), a 23.12 -> 24.98, b 22.87 -> 23.48, k45 the same.
+
+**In the page the level of 0.97 M is not good, and now it is seen why the levels of a million were not.** On
+an emulated phone, from a frame that looks along the floor, the floor is ruled in horizontal lines: the
+level's gaussians are cells of two pixels of the frame that made them, in rows, and from another eye the rows
+stand apart. The engine's held views do not show it at their distance. The level of 0.58 M of the same cut is
+smeared. The level grafted in the afternoon (0.48 M, the stage found at 960x540) is clean beside both: a
+gaussian of a scene found at half the size is the frame's own, laid as its neighbours are; a cell of the cut
+is not.
+
+**On the site** (the folder; sysop publishes): the scene found again, its finest level and the grafted 0.48 M
+-- the levels it had -- 549 files as before, and 259 s where it said 87.
+
+Not done: a coarse level of the cut that stands in the page (wider discs for a cell, or the cells laid as a
+frame of half the size lays them); the other scenes found again; a real phone.
