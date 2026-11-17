@@ -25009,3 +25009,120 @@ Metal.
 Not done here: any of them mended -- they are the trunk's areas (the ray tracer, flatten, the transfers,
 mesh2splat), and the two with an engine consequence (flatten's floor; a skinned gaussian's harmonics not
 turned by its joint) are for whoever owns those. The slow `tx_gate_*` tests were not run.
+
+## Mattes by object in the web player: an id a gaussian, handed on (17 Nov)
+
+A found scene kept which prim each gaussian was made from, and `render --matte` gave a prim's matte from a
+camera; the ids did not leave the engine. `neural-scene export` wrote none, so the web player
+(`scripts/examples/neural-scene-viewer`) could not show an object's matte. Now it does.
+
+**What is handed on is a place in a list, not the id.** The index carries `prims[]`: each prim's path and its
+Cryptomatte id (eight hex digits), in ascending order of id. Beside every file of gaussians there is
+`<its stem>.ids`: sixteen bits a gaussian, little endian, in the file's own order, the prim's place in that
+list counted from one and 0 where no prim names the gaussian (what a pane shows behind it), inside gzip. A
+player's shader reads sixteen bits and looks up a texel; thirty-two bits of hash would want a search a
+gaussian, or the same table built in the page. The order by id is what makes the place a binary search in
+the table the engine already keeps in that order for `render --matte`, and nothing else has to be sent.
+Sixteen bits are 65535 prims; a scene of more says so and writes none.
+
+**The ids go where the gaussians go, by the same sets.** A part's file is not a piece's records: the cut
+drops some, and `Discovery::recordsOf` sets what is left apart as matter, lens and mirror, each kind into a
+file of its own, at every level of detail, and for a history by the frame each stands until. The ids are
+carried by the same flags and the same places (`RecordSet::kept`, `places`): `Discovery::primIndices`
+(`scene_matte.slang`'s `matteIndex`) writes, for each record kept, its id's place in the table at the
+record's place in the set, and `primWords` (`matteWords`) packs them two a word so the file is the buffer's
+bytes. So a part's ids are its file's gaussians in its file's order by construction -- its glass's and its
+mirrors' their own, a level's, a history's spans one after another -- and the CPU reads a piece's `.prims`,
+lays buffers end to end and gzips. A piece that keeps no ids (found before a scene kept any) hands on zeros.
+
+**gzip, because the ids come in runs.** A look makes its gaussians cell after cell, and a wall is thousands
+of cells in a row. Raw, the ids of the Sponza below are 4 225 274 bytes beside 19.4 MB of SPZ, 22 % more to
+read; inside gzip they are 63 658 bytes, 0.3 %, a quarter of a bit a gaussian. The player undoes it with the
+browser's own `DecompressionStream`. A static server does not compress a type it does not know, so the file
+is compressed itself.
+
+**`--no-prims`** writes none. `export_groups.py` runs `export` once a group of lights and once for the base
+colours, the same gaussians in the same order with another colour: those are asked without, and the scene's
+own parts, the lit levels and the history carry them. An index without `prims` is what every export before
+this was, and the player plays it and shows no objects.
+
+**The player.** An *Objects* part in the options: how the chosen object is shown, a box that finds prims by
+a part of their path, and the stage's prims as a tree by their paths, a branch choosing every prim under it
+(at or under a path, as `render --matte` reads one). A row of branches with one child each is one line. A
+prim no frame saw has no gaussian and is dim; the count is taken as the ids are read. The three ways:
+
+- *matte*: the chosen gaussians white, every other black, drawn by the same blend over black with none of
+  the page's lines: what stands in front takes its share, so it is the matte from this camera;
+- *isolate*: every other gaussian's opacity 0;
+- *highlight*: the scene as it is, the chosen mixed 0.6 towards a colour.
+
+It is one more modifier, and the order is the point. Spark's mesh takes a list of modifiers in the world
+(`worldModifiers`) and the page used one: a group of lights' sum on a mesh of matter, the shading by the eye
+on glass and chrome, each of which *makes* the gaussian's colour. The objects' modifier is the mesh's last
+(`setWorld`), so a matte replaces that colour and a tint is laid over it; the history's cut is an object
+modifier, before either, and a gaussian it cut stays cut. One program serves the three ways and none: the
+way is a uniform, the prims chosen a texture of a texel a prim that choosing rewrites, and a gaussian's id a
+texture of a texel a gaussian read once a file -- nothing is compiled or read again for a choice. The cubes
+glass and chrome read are drawn with the objects' way put back to none, so an object alone still mirrors its
+room. The choice is in the address with the rest of the view: `object=<prim path>` and
+`object.view=matte|isolate|highlight` (highlight where it is not said); another scene chosen drops both.
+
+**Measured**, Metal (M5 Pro), binaries of `build/pt-exp`, headless Chrome 157 at 1280x720; scripts, logs
+and pictures in `build/night/agent-webmatte`.
+
+- **The scene**: `sponza_lamps.usda` with the two knights, the walk's twenty views at 960x540, 32 paths in
+  passes of 8, three bounces, denoised, two groups of lights: 216 s (no stop of the thermal guard in it),
+  2 112 637 gaussians standing, 117 prims named. 15 of them have gaussians (the floor 751 426, the walls
+  536 244, the chrome knight 239 119, the glass one 83 487), and 233 gaussians are named by none.
+- **What the ids cost**: `export --by-frame`, 60 files of gaussians, 19 391 650 bytes of SPZ and 60 `.ids` of
+  63 658 bytes in all. Through `export_groups.py --levels 1000000 --history` (the scene, two groups, the base
+  colours, a level, the lit level, the history): 437 files, 117.4 MB, of which 122 `.ids`, 167 825 bytes; the
+  largest file 8.04 MB, the largest `.ids` 45 967 bytes. `export --by-frame --history` alone, twice each: 14.8 s and 14.8 s
+  without the ids, 15.8 s and 16.3 s with them (116 files of each, 75 573 bytes of ids beside 22 994 302 of SPZ).
+- **The tests**: `athenea_render_tests "[scene]"`, 361 assertions in 13 cases, pass. The QA flows on the
+  materials stage: 49 of 49 (two new: an export `--by-frame --history --levels` whose every file -- a part's,
+  its glass's, its mirrors', a history's: 17 files -- names an `.ids` whose gzip says two bytes a gaussian,
+  and whose index names as many prims as the scene, 21; and `--no-prims`, which leaves none. That scene is
+  too small for the levels asked, so a level's ids are held by the Sponza export alone).
+- **Looked at** (`shots/`): riding the render camera at frames 9 and 16 of the scene as it stood then
+  (`ride_f9_*`, `ride_f16_*`: the scene, the matte of `/GlassKnight`, of `/ChromeKnight`, each alone, each
+  tinted, then the `warm` group put out and the chrome one tinted and as a matte); the scene whole from
+  the walk's `k24` and `k45` (`whole_*`); the panel (`panel_*`); a view from its address alone
+  (`url_*`, one at the level of detail); the one-file player handed the folder (`alone_matte.png`); two
+  exports made before (`old_*`). Each knight's matte is that knight whole and nothing else, at both frames,
+  where the glass one's gaussians are in the parts' `_glass` files and the chrome one's in their `_mirror`
+  files, and at the level of detail; the matte of `/` is the frame; the old exports play and the panel has
+  no Objects part.
+- **Against the engine's own matte** (`neural-scene render --matte --glass` of the same scene from the same
+  walk views at the same size, `eng/e_<view>_matte_<knight>.png`): by eye only -- `athenea compare` reads
+  EXR and a browser's capture is a PNG, so no figure. From `k24` and `k45`, both knights: the same
+  silhouette on the same pixels as far as the eye tells, the same holes in the chrome knight's foot from
+  `k24`, the same grain inside the glass knight from `k45` where discs made from further off do not close
+  the surface. The player's grain is darker than the engine's picture.
+
+**What is wrong, or not as good as it reads.**
+
+- **No figure for the agreement.** The comparison above is two pictures side by side.
+- **The grain of the player's matte is darker than the engine's**, where a pixel is covered less than
+  whole. Not run down: the engine's PNG is its coverage through its display's curve and Spark blends the
+  bytes it is given, so the two are not the same quantity in the half tones; and Spark spreads a disc by its
+  own filter (`preBlurAmount` 0.3), not the engine's.
+- **A matte in the player is eight bits of a display's blend**, not the coverage summed by id that
+  `render --matte` writes: it is for looking, and a compositor's matte is the engine's.
+- **The tree lists every prim the stage names**, 117, of which 102 have nothing to show in this scene; they
+  are dim, not gone.
+- **One path at a time.** Two objects together are a common branch or nothing.
+- **The one-file player still asks for `site.css`** beside it (as before this): alone in a folder it is
+  unstyled, and it showed the matte so.
+
+Not done:
+
+- `shoot --grow` writes its parts without ids: a scene watched while it is shot has no objects until it is
+  exported.
+- A test of `primIndices` in `athenea_render_tests`: the order is held by construction, by the flow's
+  counts and by the pictures, not by a kernel that compares.
+- Picking an object by clicking it in the page.
+- `.ply` and `.glb` parts get the `.ids` beside them too; no reader of those was tried with them.
+- A phone: the panel's tree was looked at on the desktop layout only.
+- Frame rates: headless Chrome's on this machine are not a measure, and none was taken.
+- CUDA and Vulkan: run on Metal only. The site: nothing was published.
