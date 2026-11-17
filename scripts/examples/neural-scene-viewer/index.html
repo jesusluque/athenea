@@ -953,7 +953,10 @@
                (frames > 0 ? ` · ${frames} rendered frames` : "") + (seconds > 0 ? ` · ${Math.round(seconds)} s of rendering` : "");
       };
       let fpsText = "";
-      const say = (text) => { statusLine.textContent = text + (settings.fps && fpsText ? ` · ${fpsText}` : ""); };
+      // Whether the glass and the chrome are shaded by the eye, said with the rest: a device that cannot draw
+      // their room leaves them as they were found, the same from anywhere, and says so here and why.
+      let shadeNote = "";
+      const say = (text) => { statusLine.textContent = text + shadeNote + (settings.fps && fpsText ? ` · ${fpsText}` : ""); };
       let said = "loading…";
       const report = (text) => { said = text; say(text); };
 
@@ -1421,10 +1424,16 @@
           }
           applyShading();
           shadeFresh = true;
+          const kindsReady = Object.values(kinds).filter((kind) => kind.ready).map((kind) => kind.which);
+          const applied = shaded.flat().filter((entry) => entry.applied).length;
+          shadeNote = kindsReady.length > 0 ? ` · ${kindsReady.join(" and ")} by the eye (${applied} parts, ${window.__player.shadedTimes ?? 0} looks)` : "";
+          say(said);
         } catch (error) {
           // Said, and the gaussians stay as they were found: a page that cannot shade still shows the scene.
           window.__player.shadeError = String(error?.stack ?? error);
           console.error("glass and chrome could not be shaded", error);
+          shadeNote = ` · glass and chrome as found, not by the eye: ${String(error?.message ?? error).slice(0, 120)}`;
+          say(said);
         } finally { shadeBusy = false; }
       };
       // TURNING ABOUT A POINT, on a touch screen. A first finger laid down and kept still fixes a point --
@@ -1615,7 +1624,17 @@
           lastEye.copy(camera.position);
           shadeFresh = false;
           for (const kind of Object.values(kinds)) kind.eye.value.copy(camera.position);
-          for (const s of shaded.flat()) if (s.mesh.visible && s.applied) s.mesh.updateVersion();
+          let told = 0;
+          for (const s of shaded.flat()) if (s.mesh.visible && s.applied) { s.mesh.updateVersion(); ++told; }
+          // How many times the eye's move was handed on, and to how many parts: said in the status, so a
+          // device where it stays at nought shows that it does.
+          if (told > 0) {
+            window.__player.shadedTimes = (window.__player.shadedTimes ?? 0) + 1;
+            if (window.__player.shadedTimes % 30 === 1) {
+              shadeNote = shadeNote.replace(/\(\d+ parts, \d+ looks\)/, `(${told} parts, ${window.__player.shadedTimes} looks)`);
+              say(said);
+            }
+          }
         }
         if (shadeStale && !loading) drawRooms();
         if (!roomPass) renderer.render(scene, camera);

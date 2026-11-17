@@ -25615,3 +25615,20 @@ reference for these eyes.
 Not done: the same eyes drawn by the engine (`render --glass`) to judge it against; the chrome knight, which
 the wider ball changes too and was not looked at closely; a mirror standing on a floor, where a near room was
 the better guess; the three tenths, which is a guess at a solid's far face and not its geometry.
+
+## The page says whether its glass is shaded by the eye (17 Nov)
+
+After the correction above was published the user answered that nothing had changed on their device: the
+reflections and what shows through the glass still frozen. In headless Chrome on the Mac the change is there,
+and so is the engine's own drawing from the same three eyes (`render --glass`): the glass knight light where
+the wall is behind it and darkening as the door comes behind, which the page now follows. So on that device
+the shading by the eye is most likely not applied at all -- a page that cannot draw the room's cube leaves the
+glass and the chrome as they were found, which is exactly frozen -- and the page said nothing of it.
+
+Now its status line says it: `glass and mirror by the eye (N parts, M looks)`, the looks counting each time
+the eye's move was handed on, or `glass and chrome as found, not by the eye: <why>` where drawing the room
+failed. Seen in headless Chrome, desktop and a phone's emulation: by the eye in both.
+
+Not done: the device itself (which one and which browser is not known yet; WebKit was not at hand to try);
+the chrome knight, which the engine draws bright and the page dark -- its room's cube holds something along
+every ray (alpha one) and that something is dark, not looked into.
