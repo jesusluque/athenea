@@ -494,6 +494,7 @@ Result<RenderLook> Discovery::fromRender(const gpu::Buffer& colour, const gpu::B
         p["footprint"].setData(footprint);
         p["glassOpacity"].setData(settings.glassOpacity);
         p["turned"].setData(settings.turned);
+        p["inside"].setData(settings.inside);
         p["panes"].setData(uint32_t{settings.panes ? 1u : 0u});
         p["pyramid"].setData(uint32_t{settings.pyramid ? 1u : 0u});
         p["hasFirst"].setData(uint32_t{hasKnown && known.first != nullptr ? 1u : 0u});
@@ -1350,21 +1351,32 @@ Result<float> Discovery::thresholdFor(const gpu::Buffer& histogram, uint64_t bud
     std::array<uint32_t, 257> differences{};
     ATHENEA_TRY(histogram.read(library_->device(), 0, sizeof(differences), differences.data()));
     // The differences summed are each threshold's count; the finest threshold within the budget is the first.
+    std::array<uint32_t, 256> counts{};
     uint32_t running = 0;
     uint32_t chosen = 255;
-    uint64_t count = 0;
     bool found = false;
     for (uint32_t bin = 0; bin < 256; ++bin) {
         running += differences[bin];   // wraps as the kernel's "one less" does
+        counts[bin] = running;
         if (!found && running <= budget) {
             chosen = bin;
-            count = running;
             found = true;
         }
-        if (bin == 255 && !found) {
-            count = running;
+    }
+    if (!found) {
+        // A BUDGET UNDER THE CUT'S FLOOR. No threshold draws so few: what stands with nothing coarser under it
+        // is drawn at every one. The coarsest threshold then saves nothing the finest near the floor does not
+        // and draws every surface that has a pyramid by its widest cells -- a smear. The finest threshold
+        // within a twentieth of the floor is taken.
+        const uint64_t floor = counts[255];
+        for (uint32_t bin = 0; bin < 256; ++bin) {
+            if (counts[bin] <= floor + floor / 20) {
+                chosen = bin;
+                break;
+            }
         }
     }
+    const uint64_t count = counts[chosen];
     if (drawn != nullptr) {
         *drawn = count;
     }

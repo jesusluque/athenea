@@ -26038,3 +26038,81 @@ player's own lamp, which rides with the eye, still does not ask for a room. The 
 not the gaussian under it: a thin thing between sampled points is missed for what is behind. The 0.85 and
 the cones were chosen from six looks at three eyes of one scene; `sponza_chrome` was loaded (by the eye, no
 error) and not judged. Highlights where the lamps are, which wants the lamps' places in the index.
+
+## Why a cut's level is ruled in rows in the page, and a level's cells made to cover their surface (17 Nov)
+
+**The cause.** A disc is as wide as its cell across the way its surface falls from the eye and, along it, as
+long as the cell lies on the surface -- by no more than one over `--turned` (0.5: twice). A floor seen from an
+eye's height is met at a tenth to a third (`sponza_lights`' walk: 170 units up, the floor 500 to 1800 away), so
+its rows of cells stand three to ten cells apart on the floor and the discs are two long: a sixth to a third of
+what closes it. The finest scene does not show it: later frames lay gaussians between the rows (they are the
+pixels "half covered and made again", the ones with no parent) and the drawing's filter is a third of a pixel
+or more against cells of one. A level of detail has neither. Its gaussians are the pyramid's cells of 2, 4 and
+8 pixels, drawn in place of all that was laid over them, and a filter of a part of a pixel is nothing to a cell
+of four: the rows show, with the dark between them. `sponza_lights` (geohd4) at a width of 1.445 units, 969 238
+gaussians: 393 080 cells of two pixels, 299 147 of four, 80 367 of eight, 171 410 finest with no parent; of the
+cells, 420 000 were bounded by `--turned`.
+
+What rules the candidates out, and in:
+
+- **The engine draws it too**, once asked the same thing the page is: `athenea render --splats` of the exported
+  level's file from frame 4's eye at 1920x1080 shows the same ruled floor
+  (`build/night/agent-cut/shots/e_f4_before_after.png`, above). The held views did not because `render
+  --budget` cuts by pixels from each view, at 960x540, where a cell is under the filter.
+- **Not the page's filter** (`filterFor`, the frames' size for every level): a level is a width in the scene's
+  units, so its cells are any number of pixels on the screen -- many near the eye, where the rows are seen --
+  and no one filter in pixels fits them. The same file is ruled in the engine with its own filter.
+- **Not the cut's cells against a frame's own.** The level grafted from the stage found at 960x540 is ruled as
+  well, and worse, from the same eye (`shots/phone_f4_1M.png`, right: a grid over the floor's near half): it is
+  a cut of that scene (a width of 2.04 units), cells with the same bound. It looked clean in the capture it was
+  judged by, frame 12, where the level of 0.97 M looks clean too; frame 4 looks along the floor.
+- **The length is it.** The level's gaussians lengthened at export to across over their facing, from their
+  frame's eye, by no more than ten times: the floor closes, in the engine and in the page. But every gaussian
+  at a silhouette met aslant stands out past its surface as a spike (`shots/e_f4_ab.png`, below; removed).
+
+**What is done.** `shoot` makes a cell of the levels above its last look (`--pyramid`) as long as it lies on
+its surface where the surface is seen to go on: where the four cells beside it show the same material within
+its plane (0.15 of their distance), the least its facing is taken as is `--pyramid-turned` (0.1) in place of
+`--turned` (`scene_render.slang`: `inside`, `sameSurface`). A cell at a silhouette or a rim keeps `--turned`,
+so nothing stands out past an edge. The last look's own gaussians are made as before: the scene whole is the
+same gaussians to the last one, and the cells are only ever drawn by a cut.
+
+And a budget under the cut's floor (`thresholdFor`): no width draws so few, and the coarsest width was taken --
+every surface with a pyramid by its cells of 32 pixels, for 4% fewer gaussians than a width four times finer.
+The finest width within a twentieth of the floor is taken now: `--levels 500000` writes 607 775 at 4.86 units
+where it wrote 583 308 at 8016.
+
+**Measured.** `sponza_lights` found again (`build/night/agent-cut/geo5.aths`; 103 s and 171 s by the clock, no
+stop of the guard): 8 639 341 gaussians as before, levels of 1 931 076, 969 253 and 607 775. Held views at
+960x540 against the references (dB / SSIM; geohd4 is the same stage found by the engine before):
+
+| | k10 | k45 | a | b |
+|---|---|---|---|---|
+| whole, before | 28.41 / 0.904 | 23.11 / 0.786 | 26.44 / 0.870 | 24.75 / 0.840 |
+| whole, now | 28.40 / 0.904 | 23.11 / 0.786 | 26.44 / 0.870 | 24.75 / 0.840 |
+| `--budget 2000000`, before | 28.07 / 0.864 | 22.96 / 0.703 | 26.07 / 0.796 | 24.04 / 0.746 |
+| now | 28.04 / 0.856 | 22.86 / 0.704 | 26.06 / 0.794 | 23.89 / 0.741 |
+| `--budget 1000000`, before | 27.44 / 0.825 | 22.49 / 0.680 | 24.98 / 0.754 | 23.48 / 0.717 |
+| now | 27.57 / 0.830 | 22.43 / 0.681 | 24.96 / 0.753 | 23.39 / 0.713 |
+
+The cut loses up to 0.15 dB and 0.008 of SSIM where it lost nothing by being open: the figure is taken where
+the scene holds something and does not count what shows between the rows, as the section on the discs' stretch
+found (`--turned`). In the page, an emulated phone (390x844 at three device pixels) and a desktop canvas, frame
+4 and frame 12 (`build/night/agent-cut/shots`: `phone_f4_1M.png` -- the level of 0.97 M before, now, and the
+grafted 0.48 M; `phone_f4_others.png`; `phone_f12.png`; `desk_f4.png`): the levels of 1.93 M and 0.97 M show
+the floor whole with no rows, the walls as before; the level of 0.61 M is whole and soft -- cells of 8 and 16
+pixels -- which is what the floor of 583 308 gaussians with no parent leaves a budget under it.
+
+A test, `[pyramid]`: a floor met at a sixth, cells of four pixels, drawn from above covers 0.388 of the frame
+as its cells were made and 0.863 inside their surface (the floor itself 1.000), the same 2400 gaussians; from
+the eye that made them 0.268 and 0.432 of a floor that covers 0.500. `athenea_render_tests "[scene]"` on Metal: 383
+assertions in 14 cases, all pass; `qa_flows.py` over the materials stage shot again at 640x360: 49 of 49 ended
+well.
+
+Not done: the published scenes found again and handed on with these levels (the export of this one is
+`build/night/webtest/scenes/n_lights5`, not on the site); the scenes found before keep the cells they have --
+nothing lengthens a scene already found, the lengthening at export having left spikes; the last look's own
+gaussians, which a level also draws where they have no parent (171 410 of the 0.97 M) and are as they were; a
+level of half a million that is not soft, which wants the floor lower (the gaussians later frames lay between
+the first frame's rows, each with no parent -- a first look whose cells closed their surface would leave fewer,
+and that changes the scene whole); a real phone; CUDA and Vulkan.

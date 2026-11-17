@@ -88,6 +88,10 @@ struct RenderLookSettings {
     uint32_t footprint = 1;         ///< pixels a side of the cell one gaussian is made of
     float    glassOpacity = 0.05F;  ///< the least a pane covers of what is behind it, however clear
     float    turned = 0.5F;         ///< the least a disc's facing is taken as: it is stretched by no more than 1 / this
+    /// Under `turned`: the least a facing is taken as for a cell whose four
+    /// neighbours show its own surface -- a level of a frame's pyramid, which
+    /// nothing is laid between the rows of (0: `turned` everywhere).
+    float    inside = 0.0F;
     /// A surface that lets the eye through made as a pane and what stands
     /// behind it; false, as a disc carrying its pixel like any other -- what
     /// a look at coarse cells takes, which a finer one then replaces whole.

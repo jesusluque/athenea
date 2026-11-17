@@ -149,6 +149,7 @@ struct SceneOptions {
     unsigned                 coarsest = 8;
     float                    glassOpacity = 0.05F;
     float                    turned = 0.5F;
+    float                    pyramidTurned = 0.1F;    // the same for a cell of the levels above that lies inside its surface
     std::vector<double>      times;
     double                   timeStep = 0.0;
     bool                     freeEachFrame = false;
@@ -2511,6 +2512,9 @@ int runShoot(const SceneOptions& all) {
                 above.repaint = 0.0F;
                 above.panes = false;
                 above.pyramid = level * 2 <= all.pyramid;
+                // A level's cells are drawn in place of everything finer: inside a surface each covers its
+                // share of it, however aslant the eye (scene_render.slang, `inside`).
+                above.inside = all.pyramidTurned;
                 auto cells = discovery->fromRender(frameColour, frameDepth, planes, width, height, projection, under, above,
                                                    frameIds, idsAt);
                 if (!cells) return report(cells.error());
@@ -4704,6 +4708,7 @@ void addNeuralScene(CLI::App& app) {
     shoot->add_flag("--antialias", o.antialias, "a new scene is drawn with the Mip-Splatting 2D filter's compensation, by the looks and by whoever draws it after (kept in its manifest); without it, the default, a disc narrower than a pixel stays opaque");
     shoot->add_flag("--no-antialias", o.noAntialias, "the scene is drawn without the compensation from here on, whatever its manifest says");
     shoot->add_option("--turned", o.turned, "the least a disc's facing is taken as: it is stretched along the surface's fall by no more than 1 over this");
+    shoot->add_option("--pyramid-turned", o.pyramidTurned, "the same for a cell of the levels above its last look (--pyramid) whose four neighbours show its own surface: such a cell is as long as it lies on the surface, by no more than 1 over this (0: as --turned)");
     shoot->add_option("--glass-opacity", o.glassOpacity, "the least a pane covers of what is behind it, however clear");
     shoot->add_option("--name", o.name, "the scene's name");
     shoot->add_option("--up-axis", o.upAxis, "Y or Z (default: the stage's)");

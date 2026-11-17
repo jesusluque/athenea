@@ -90,7 +90,11 @@ struct RenderLookParams {
     /// above its own for a parent -- cells twice as wide, which the same frame makes -- so that the cut
     /// has something coarser to draw of a surface found from near. The top level is made with 0.
     uint  pyramid;
-    uint pad2; uint pad3;
+    /// A CELL INSIDE ITS SURFACE COVERS ITS SHARE OF IT. Under `turned`, the least a facing is taken as for a
+    /// cell whose four neighbours show its own surface, in its plane: the cell's length on the surface is
+    /// then seen, and the disc is given it (renderPack). `turned` itself where there is none.
+    float inside;
+    uint pad3;
 };
 
 StructuredBuffer<float4>   colour;       // the frame: linear light, premultiplied
@@ -371,6 +375,23 @@ void writeDisc(uint row, float3 world, float3 normal, float3 eyeward, float acro
     records[row + kAtSheet] = 1.0;
 }
 
+/// Whether the cell `dx`, `dy` cells from the one whose middle is `mid` shows the same surface as it: the
+/// same material, and where it is seen there lies in the plane through `world` square to `normal`.
+bool sameSurface(uint2 mid, int dx, int dy, float3 world, float3 normal, float row) {
+    const int x = int(mid.x) + dx * int(params.footprint);
+    const int y = int(mid.y) + dy * int(params.footprint);
+    if (x < 0 || y < 0 || x >= int(params.width) || y >= int(params.height)) {
+        return false;
+    }
+    const uint p = uint(y) * params.width + uint(x);
+    const float z = depth[p];
+    if (!(z > 0.0) || !isfinite(z) || colour[p].a <= 0.5 || plane(kPlaneRow, p).x != row) {
+        return false;
+    }
+    const float3 to = toWorld(viewPoint(float(x) + 0.5, float(y) + 0.5, z)) - world;
+    return abs(dot(normal, to)) <= 0.15 * length(to);
+}
+
 /// A cell's gaussians, at their places among those made.
 [shader("compute")]
 [numthreads(16, 16, 1)]
@@ -480,7 +501,20 @@ void renderPack(uint3 tid: SV_DispatchThreadID) {
     // AS WIDE AS ITS FOOTPRINT IS AT ITS DISTANCE, and along the way the surface falls from the eye as
     // long as the footprint lies on it: across over the facing, not both ways over its root.
     const float across = discAt(z);
-    const float along = across / max(dot(normal, eyeward), params.turned);
+    // No longer than one over `turned` -- a longer disc lies across what a nearer look would find, and at a
+    // silhouette it stands out past its surface -- but for A CELL OF A LEVEL ABOVE, INSIDE ITS SURFACE
+    // (`inside`): what is drawn in place of finer gaussians has nothing laid between its rows, and a floor
+    // seen from an eye's height is met at a tenth to a third, so its rows of cells stood five cells apart
+    // with discs two long and the dark showed between them in every level of detail. Where the cells before
+    // and after it and to either side show the same surface, the cell's length on it is the surface's own.
+    const float facing = dot(normal, eyeward);
+    float least = params.turned;
+    if (params.inside > 0.0 && params.inside < params.turned && facing < params.turned &&
+        sameSurface(mid, -1, 0, world, normal, rowHere.x) && sameSurface(mid, 1, 0, world, normal, rowHere.x) &&
+        sameSurface(mid, 0, -1, world, normal, rowHere.x) && sameSurface(mid, 0, 1, world, normal, rowHere.x)) {
+        least = params.inside;
+    }
+    const float along = across / max(facing, least);
     uint row = dest[cell] * kRenderRecord;
     const float4 madeHere = plane(kPlaneMade, at);
     const bool pane = params.panes != 0 && madeHere.z > 0.02;

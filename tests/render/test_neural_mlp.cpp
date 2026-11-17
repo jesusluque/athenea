@@ -1205,6 +1205,100 @@ TEST_CASE("a render's look makes a gaussian a cell of its surface's material, as
     CHECK(through->made == 2 * through->surfaces);
 }
 
+TEST_CASE("a level's cells inside a surface seen aslant cover it from above, and at a silhouette are left as they were",
+          "[render][gpu][neural][scene][shoot][pyramid]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    auto loader = scene::CloudLoader::create(*gpu->library);
+    auto raster = render::TileRasterizer::create(*gpu->library);
+    auto discovery = render::Discovery::create(*gpu->library);
+    if (!loader) FAIL(loader.error().toString());
+    if (!raster) FAIL(raster.error().toString());
+    if (!discovery) FAIL(discovery.error().toString());
+    // A floor: discs in the plane z = 0, eight units a side.
+    test::CloudBuilder builder;
+    for (int y = -80; y <= 80; ++y) {
+        for (int x = -80; x <= 80; ++x) {
+            builder.add(0.05F * static_cast<float>(x), 0.05F * static_cast<float>(y), 0.0F, 0.99F, 0.05F, 0.05F, 0.005F,
+                        {1.0F, 0.0F, 0.0F, 0.0F}, {0.8F, 0.6F, 0.4F});
+        }
+    }
+    auto cloud = loader->upload(builder.raw, 0);
+    REQUIRE(cloud);
+    const render::SplatInstance instance{&*cloud, render::Mat4::identity()};
+    render::RenderSettings settings;
+    settings.width = 320;
+    settings.height = 240;
+    settings.depth = render::RenderSettings::Depth::Threshold;
+    settings.depthThreshold = 0.5F;
+    const uint32_t pixels = settings.width * settings.height;
+    // Every pixel's surface is the floor's: matt, of one material, its triangle facing up.
+    std::vector<std::array<float, 4>> planes(size_t{pixels} * 8, std::array<float, 4>{0.0F, 0.0F, 0.0F, 0.0F});
+    const auto fill = [&](uint32_t plane, std::array<float, 4> value) {
+        std::fill(planes.begin() + size_t{plane} * pixels, planes.begin() + size_t{plane + 1} * pixels, value);
+    };
+    fill(1, {0.0F, 0.0F, 1.0F, 0.0F});
+    fill(2, {0.0F, 1.0F, 0.0F, 1.0F});
+    fill(3, {1.0F, 1.0F, 1.0F, 1.0F});
+    fill(7, {0.0F, 0.0F, 1.0F, 0.0F});
+    auto matt = gpu::Buffer::fromSpan<std::array<float, 4>>(*gpu->device, std::span<const std::array<float, 4>>(planes),
+                                                            "test.planes");
+    REQUIRE(matt);
+    // Seen from an eye's height: the floor is met at about a sixth.
+    const render::Camera aslant = render::Camera::lookingAt({0.0, -9.0, 1.5}, {0.0, 0.0, 0.0}, {0.0, 0.0, 1.0});
+    const render::Camera above = render::Camera::lookingAt({0.0, 0.0, 9.0}, {0.0, 0.0, 0.0}, {0.0, 1.0, 0.0});
+    render::RenderTargets frame;
+    REQUIRE(raster->render(aslant, std::span<const render::SplatInstance>(&instance, 1), settings, frame));
+    // What a look's gaussians cover of a frame from `from`: its mean alpha.
+    const auto coverOf = [&](const scene::GpuSplats& made, const render::Camera& from) {
+        const render::SplatInstance one{&made, render::Mat4::identity()};
+        render::RenderTargets drawn;
+        REQUIRE(raster->render(from, std::span<const render::SplatInstance>(&one, 1), settings, drawn));
+        auto stats = render::imageStats(*gpu->library, drawn.colour, settings.width, settings.height, 0, 0,
+                                        settings.width, settings.height);
+        REQUIRE(stats);
+        return stats->mean[3];
+    };
+    const auto cellsOf = [&](float inside, uint32_t& made) {
+        render::RenderLookSettings how;
+        how.footprint = 4;
+        how.spread = 0.5F;
+        how.inside = inside;
+        auto look = discovery->fromRender(frame.colour, frame.depth, *matt, settings.width, settings.height,
+                                          render::projectionFor(aslant, settings.width, settings.height), {}, how);
+        if (!look) FAIL(look.error().toString());
+        made = look->made;
+        loader->keepFaint(true);
+        auto uploaded = loader->upload(look->records, look->made, render::Discovery::renderEncoding(), "test", 0);
+        loader->keepFaint(false);
+        if (!uploaded) FAIL(uploaded.error().toString());
+        return std::move(*uploaded);
+    };
+    uint32_t madeAsBefore = 0;
+    uint32_t madeInside = 0;
+    const scene::GpuSplats asBefore = cellsOf(0.0F, madeAsBefore);
+    const scene::GpuSplats inside = cellsOf(0.1F, madeInside);
+    const double floorAbove = coverOf(*cloud, above);
+    const double beforeAbove = coverOf(asBefore, above);
+    const double insideAbove = coverOf(inside, above);
+    const double floorAslant = coverOf(*cloud, aslant);
+    const double beforeAslant = coverOf(asBefore, aslant);
+    const double insideAslant = coverOf(inside, aslant);
+    std::printf("  a floor met at a sixth, cells of 4 pixels: %u gaussians; from above the floor covers %.3f of the frame, "
+                "its cells %.3f as they were and %.3f inside their surface; from the eye that made them %.3f, %.3f and %.3f\n",
+                madeInside, floorAbove, beforeAbove, insideAbove, floorAslant, beforeAslant, insideAslant);
+    CHECK(madeInside == madeAsBefore);
+    CHECK(madeInside > 500);
+    // From above the rows stood apart; inside their surface the cells close it.
+    // (Measured on Metal: 0.388 of the frame as they were, 0.863 inside; what is left open is the floor's rim,
+    // whose cells have a neighbour off the floor and keep their length.)
+    CHECK(beforeAbove < 0.6 * floorAbove);
+    CHECK(insideAbove > 0.8 * floorAbove);
+    CHECK(insideAslant > 1.4 * beforeAslant);
+    // And no more than the floor from the eye that made them: a cell at the floor's edge is not lengthened past it.
+    CHECK(insideAslant < 1.1 * floorAslant);
+    CHECK(insideAbove < 1.1 * floorAbove);
+}
+
 TEST_CASE("a piece's gaussians are written and read as they are, and a scene says when each snapshot was",
           "[render][neural][scene][shoot]") {
     const std::filesystem::path directory = std::filesystem::temp_directory_path() / "athenea-tests" / "shoot.aths";
