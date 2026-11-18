@@ -195,6 +195,8 @@ athenea view  pawn_gs.usdc                                 # a window on it
   `athenea:*` setting, schema and error.
 - [`docs/development.md`](docs/development.md): how the engine is made and
   changed, and the bake end to end.
+- [`docs/formats.md`](docs/formats.md): athenea's own file formats byte by
+  byte (`.athc`, `.athz`, `.athv`, `.aths`), for an independent reader.
 - [`docs/decisions.md`](docs/decisions.md): why each subsystem is the way it
   is, with the measurements and what is not done.
 - [`docs/background.md`](docs/background.md): what athenea owes to Falcor and

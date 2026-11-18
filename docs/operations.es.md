@@ -3208,6 +3208,10 @@ de quien lo ejecuta: están en
 
 ### 8.2 Formatos
 
+[`docs/formats.es.md`](formats.es.md) especifica byte a byte los formatos
+propios de athenea, para un lector independiente: `.athc`, `.athz`, `.athv`
+y `.aths`.
+
 **Nubes que se leen.** `.ply` (3DGS), `.splat`, `.spz` (Niantic, necesita
 zstd), `.sog` o un `meta.json` suelto (PlayCanvas, necesita libwebp), `.asg`
 (anchored surfel gaussians, el bitstream v1 de 3Dspace, §2.4), `.athc` (el

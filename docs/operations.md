@@ -3102,6 +3102,9 @@ running it; they are listed in [development.md §3](development.md#3-working-in-
 
 ### 8.2 Formats
 
+[`docs/formats.md`](formats.md) specifies athenea's own formats byte by byte,
+for an independent reader: `.athc`, `.athz`, `.athv` and `.aths`.
+
 **Clouds read.** `.ply` (3DGS), `.splat`, `.spz` (Niantic, needs zstd), `.sog`
 or a bare `meta.json` (PlayCanvas, needs libwebp), `.asg` (anchored surfel
 gaussians, 3Dspace's bitstream v1, §2.4), `.athc` (this engine's chunked
