@@ -3528,7 +3528,8 @@ uint32 little endian -- and then the records:
 | 14–16 | the surface's shading normal, in the world |
 | 17, 18, 19 | the metal's share, the roughness, how much goes through |
 | 20 | the material's row in the frame that made it, plus one; 0 for what was seen through glass |
-| 21, 22 | the index of refraction; 1 for a sheet with no inside |
+| 21 | the index of refraction |
+| 22 | 1 for a sheet with no inside (or nothing that bends), 0 for a solid |
 | 23–25 | what the surface lets through one crossing, r g b |
 | 26 | the width of the coarser gaussians it was laid over, 0 where over nothing: its parent's |
 | 27–29 | their colour, as a base colour is kept |

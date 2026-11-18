@@ -3639,7 +3639,8 @@ cada una, uint32 little endian -- y después los registros:
 | 14–16 | la normal de shading de la superficie, en el mundo |
 | 17, 18, 19 | la fracción de metal, la roughness, cuánto la atraviesa |
 | 20 | la fila del material en el frame que la creó, más uno; 0 para lo visto a través de vidrio |
-| 21, 22 | el índice de refracción; 1 para una lámina sin interior |
+| 21 | el índice de refracción |
+| 22 | 1 para una lámina sin interior (o nada que desvíe), 0 para un sólido |
 | 23–25 | lo que la superficie deja pasar en un cruce, r g b |
 | 26 | el ancho de las gaussianas más gruesas sobre las que se puso, 0 donde no había nada: el de su padre |
 | 27–29 | el color de estas, como se guarda un color base |
