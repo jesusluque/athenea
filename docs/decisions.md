@@ -26431,3 +26431,128 @@ was the machine that night, or something of 1080p not in this measure.
 Not done: the three scenes at 960x540 (`lamps`, `sponza_knight`, `sponza_growth`) found again -- their levels
 are cuts made before the cells were lengthened and were not looked at along a floor; a level of half a
 million that is not soft; a shoot at 1080p timed twice on a cool machine.
+
+## What a thread's memory bears: the path tracer's kernel the same from run to run (18 Nov)
+
+The defect "The paths that land on glass" left ("found beside it, not mended"), found and mended. The cause
+is how much the kernel keeps in a thread's memory: past what the device bears, Metal builds the pipeline,
+reports nothing, and runs of pixels a SIMD group wide come out with other values, not the same ones at each
+run. Nothing in the kernel was read before it was written.
+
+**Where the pixels are.** Metal (M5 Pro), 1920x1080, the materials stage, no bounce. Two runs of one build
+differ in a few places a frame (seven or eight at 32 paths), each a run of pixels the width of a SIMD group
+-- 32 threads, 16 pixels by 2 rows in quad order -- on the wall, the floor and balls of any material, in one
+or two channels. One path in one pass: bit for bit (both views of a load). 8 paths in one pass: 98–100
+pixels over two codes. 32 in passes of 8: 131–228. So it is not the accumulation, the kept paths' area or a
+buffer left from another frame; it needs a thread to run several samples. The write that changes no meaning
+(`if (sample == 0u) { gShadowDraws = 0u; }`): 1.12–1.20 M pixels differ run to run (25.9 dB; 660 000–686 000
+with the keeping off), horizontal streaks of that width over the whole frame, and the picture is 870 000
+pixels from the trunk's. The Metal source slangc writes for the two kernels is the same but for the added
+lines; `gShadowDraws` is a field of a context a thread owns, not shared. What differs is what Apple's
+compiler builds.
+
+**The cuts**, each a kernel of the copy run twice with that write, the first view of a load, pixels over two
+codes run to run:
+
+| the cut | run to run |
+|---|---|
+| none | 1 120 483 |
+| the emitting triangles never chosen | 1 463 314 |
+| paths not kept | 685 858 |
+| the lobes capped at four (another picture) | 0 |
+| six locals zeroed where declared (`first`, `found`, `cur`, `lightPoint`, `shaded`, `ms`) | 0 |
+| `found`, `cur` or `ms` alone | 1.1–1.4 M |
+| `Shaded first = {}` alone | 97 |
+| `Shaded shaded = {}` alone | 0 |
+| `Found lightPoint = {}` alone | 0 |
+| `lightPoint.valid = false` alone, the rest unwritten | 0 |
+| `shaded.stack.count = 0` alone | 1 113 180 |
+| the first hit's shading not cached (one `Shaded` less; `lightPoint` unwritten) | 0 |
+
+Every cut that gives 0 gives one picture, bit for bit, with the write, with another (`if (sample == 3u) {
+gShadowDraws = 7u; }` where the bounces are counted) and with none; it is 65 pixels from the trunk's, which
+are the trunk's own. The trunk's kernel with the second write: 131.
+
+**Not a read of something unwritten.** `lightPoint` written whole, with made-up values and `valid` true:
+1 040 160 pixels differ run to run; the same with `valid` false: 0, the one picture. A line that adds 1000 to
+the path where a target that is not valid would be shaded changes nothing in the kernel that is right: none
+is. `lightPoint` is read only on a step a vertex chose a point for, after it is written. And the made-up
+values with `valid` true and the first write: 0, the one picture. What a line there changes is the kernel the
+compiler builds, not what the kernel reads.
+
+**A thread's memory.** The kernel that is right (`lightPoint.valid = false`), with an array of floats added
+to the thread's frame, written at entry, touched each sample and read at the end, so the compiler keeps it:
+
+| added | run to run | against the one picture |
+|---|---|---|
+| 4 KB, 8 KB, 12 KB | 0 | 0 |
+| 16 KB | 33 (one SIMD group) | 33 |
+| 64 KB | 733, values up to 6e4 times the pixel's | 356 |
+| the six zeroed, 16 KB | 1 514 010 | 1 199 699 |
+
+A kernel with nothing wrong in it, made to keep more, shows the trunk's defect at the trunk's size and then
+the write's. Metal says nothing of it: the pipeline is made, `maxTotalThreadsPerThreadgroup` is 1024 for
+every kernel of the frame (256 are dispatched), with 64 KB added as without. The trunk's kernel stood at the
+edge: three `Shaded` (a stack of eight lobes of 128 bytes and the material's inputs, some 1.5 KB each) beside
+the materials' own stacks, on a stage whose OpenPBR pushes eleven lobes. What a line moved was the frame the
+compiler laid out -- its size the device does not say -- which is why the write showed it, the keeping
+changed it, and Sponza, whose materials push fewer lobes, never did.
+
+**The change.** The step's shading is written where the path keeps its vertex (`cur`); there is no `shaded`.
+A light point is shaded for its emission alone (`shadeFound`'s `emissionOnly`: the material's one call, and
+`cur` stays the vertex that chose the point); a surface the sample's lot sees through is written into `cur`
+as well, the next step shading what is behind before anything reads it. One `Shaded` less in the frame and
+one copy of it less a step; nothing else. With it the kernel is the same from run to run with either write
+and with none, and with 16, 32 and 64 KB added to its frame (three runs each at 32 and 64): where the
+trunk's bore nothing and the one-line cut 12 KB and not 16. Its picture is the one picture to a half-float
+code in a few pixels (relMSE 5e-14, no pixel a code apart).
+
+**Tried with it and taken out: `Found lightPoint = {}`.** The first form of the change also wrote the light
+point whole where it is declared. On the materials stage it changed nothing (the same picture bit for bit,
+16 and 32 KB borne). The kernel with media then drew garbage, another at each run: `the path tracer through
+an absorbing volume is Beer-Lambert's` 12 583–12 725 of 14 399 pixels beyond five deviations (mean ratio
+0.255 against 0.3946), `athenea_usd_tests`'s panel in a medium and its volume against the reference with it
+-- three tests that pass on the trunk. Without the line they pass. Zeroed, the struct is one more in the
+frame (in the Metal slangc writes, the unwritten `lightPoint` lends its storage to the temporary `found` is
+chosen through; written, it has its own), and the kernel with media stands as near the edge as the materials
+stage's did. So the cuts above that "mend" by zeroing a local mend nothing: they move the frame, to the
+right side of the edge on one kernel and the wrong side on another.
+
+Metal (M5 Pro), 1920x1080, 32 paths in passes of 8, three views of a load, the tree's build (`build/pt-exp`)
+against the trunk's kernel (the copy, its switches off); seconds are the second and third views:
+
+| | run to run | against the trunk's kernel | seconds a view, trunk -> now |
+|---|---|---|---|
+| the materials stage, no bounce | 0: five runs, the first against each, three views | 33–99 pixels: the trunk's own | 3.01–3.06 -> 2.86–2.92 (three runs of five; two at 2.91–3.20) |
+| the materials stage, three bounces | 0: five runs, the first against each, three views | no pixel a code apart (relMSE 3–4e-14; one view bit for bit) | 11.13–11.17 -> 9.73–9.92 (four runs; a fifth at 13–14 with the load average at 5.6 and no stop of the guard) |
+| Sponza with its lamps, three bounces | 0, three views | bit for bit | 23.94–24.06 -> 22.13–22.19, 23.0–23.7 (two runs) |
+| Sponza with its lamps, no bounce | 0, three views | bit for bit | 4.92–5.00 -> 4.57–4.73 |
+| flat Sponza, the glass knight, three bounces | 0 on two views; the first: one pixel, see below | bit for bit | 16.18–16.26 -> 14.52–15.12 |
+| flat Sponza, the glass knight, no bounce | 0, three views | bit for bit | 4.48–4.53 -> 4.15–4.24 |
+
+**What is left on the flat Sponza is the keeping's.** Its first view at three bounces comes out as one of two
+frames, one pixel a code apart (relMSE 1.8e-12, max relative 0.0625): this kernel's two runs gave both, the
+first form's two gave one, the trunk's one run the other. With the paths not kept, three runs are one frame;
+kept, three runs are two and one. So it is in what 1096d4d9 added and not in a
+thread's memory. Not looked into further; what the keeping leaves to a race is the slot an entry takes
+(`InterlockedAdd`), and with it which entries share a quad in the second dispatch -- where a material that
+takes a screen derivative takes it from its neighbour.
+
+`athenea_usd_tests "[repeat]"` (tests/usd/test_path_repeat.cpp) renders a stage of those materials -- seven
+OpenPBR boxes, an emitter and two glasses among them, UsdPreviewSurface plain, with a texture and with a
+normal map, a sky and a sun -- from two renderers at 1920x1080, at no bounce and at two, and asks
+`compareImages` for no code apart. On the trunk's kernel it fails at both (max 2 codes at two bounces); on
+this one it passes.
+Tests on Metal, all pass: `athenea_technique_tests` (64 cases), `athenea_material_tests` (15),
+`athenea_usd_tests "[path],[glass],[lights],[emissive]"` (63, the new one among them; 17 minutes, each
+stage's kernel built anew), `athenea_render_tests "[scene]"` (14).
+
+Not done: the flat Sponza's one pixel (above); what the device's limit is, and a check of a kernel against
+it -- the frame is the compiler's and Metal gives no figure for it, so the measure here is the array a kernel
+bears added (the switches are in `build/night/agent-det` and the copy, not in the tree); the kernel with media measured that way: it passes
+its tests with one `Shaded` less than the trunk's, and one `Found` more was enough to break it; the other
+kernels that shade (`MaterialShading`'s, the guides') -- the note in `lobes.slang` on the shadowed shading
+kernel drawing an umbra wrong when `Lobe` grew by two `float4`, "unexplained", reads like this defect; CUDA
+and Vulkan, where the same source is compiled and nothing was run; the materials' own stacks
+(`gAtheneaLobes`, `gAtheneaResult`), `first` and the five `Found` a path holds, which are what is left to
+take out of the frame.

@@ -399,6 +399,23 @@ trabajo lo deja normal (`atheneaPushLobe`): Slang no rechaza una escritura en
 un parámetro `__constref`, el compilador de Metal sí, y otro backend puede
 escribir en la variable del llamador.
 
+**Un kernel guarda en la memoria de un hilo solo lo que vuelve a leer.** Un
+struct local es memoria del hilo, y un kernel que hace shading tiene ahí
+varios de los más grandes que hay (un estado de shading es una pila de
+lóbulos y las entradas de un material, unos 1,5 KB). Pasado lo que el
+dispositivo aguanta, Metal construye igualmente el pipeline y no dice nada, y
+los hilos de un grupo SIMD leen los valores unos de otros: los fotogramas del
+path tracer diferían de una ejecución a otra en una escena de materiales
+OpenPBR, una tira de píxeles del ancho de un grupo SIMD aquí y allá, y una
+línea que no cambiaba ningún significado lo convertía en medio fotograma
+(`docs/decisions.md`, «What a thread's memory bears»). Así que un estado se
+escribe donde se guarda, no en una local que luego se copia; una local no se
+pone a cero «por si acaso» -- un `Found` puesto a cero donde se declara fue un
+struct más en la memoria del hilo e hizo que el kernel con medios dibujara
+basura, y quitar un estado de shading fue lo que lo arregló --; y a un kernel
+que dibuja con números aleatorios con clave por píxel se le exige dibujar el
+mismo fotograma dos veces (`athenea_usd_tests "[repeat]"`).
+
 **`Result<T>` y `ATHENEA_TRY`, sin excepciones.** Un renderer que lanza a través
 de un command buffer deja el dispositivo en un estado que nadie sabe
 describir. Donde una dependencia lanza — OpenUSD lo hace — la excepción se

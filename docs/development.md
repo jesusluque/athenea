@@ -386,6 +386,21 @@ function that changes its parameter as a working copy keeps it plain
 parameter, Metal's compiler does, and another backend may write through to
 the caller's variable instead.
 
+**A kernel keeps in a thread's memory only what it reads again.** A local
+struct is thread memory, and a kernel that shades holds several of the
+largest there are (a shading state is a lobe stack and a material's inputs,
+some 1.5 KB). Past what the device bears Metal still builds the pipeline and
+says nothing, and the threads of a SIMD group read each other's values: the
+path tracer's frames differed from run to run on a stage of OpenPBR
+materials, a run of pixels a SIMD group wide here and there, and a line that
+changed no meaning made it half the frame (`docs/decisions.md`, "What a
+thread's memory bears"). So a state is written where it is kept, not into a
+local and copied; a local is not zeroed "to be safe" -- a `Found` zeroed where
+it is declared was one struct more in the thread's memory and made the kernel
+with media draw garbage, and taking a shading state out was what mended it --;
+and a kernel that draws by random numbers keyed by pixel is held to drawing
+the same frame twice (`athenea_usd_tests "[repeat]"`).
+
 **`Result<T>` and `ATHENEA_TRY`, no exceptions.** A renderer that throws through a
 command buffer leaves the device in a state nobody can describe. Where a
 dependency throws — OpenUSD does — the exception is caught at that module's
