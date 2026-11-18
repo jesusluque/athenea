@@ -26556,3 +26556,102 @@ kernel drawing an umbra wrong when `Lobe` grew by two `float4`, "unexplained", r
 and Vulkan, where the same source is compiled and nothing was run; the materials' own stacks
 (`gAtheneaLobes`, `gAtheneaResult`), `first` and the five `Found` a path holds, which are what is left to
 take out of the frame.
+
+## ixwin, 18–19 Nov: what CUDA and Vulkan say of the two days' commits
+
+A subagent, RTX 3070 Laptop (8 GB), WSL2 Ubuntu / CUDA and native Windows / Vulkan, both trees brought from
+5ee7f9e1 to 141593d9 (their code the commit's, file for file by content); scripts and logs in
+`build/night/agent-ix6`, outputs on the machine under `D:\neural-win\agent6` and `~/neuralAthenea/build/agent6_*`.
+Three path tracers were built on each: 5ee7f9e1's (which is the commit before the kept paths, 1096d4d9^, in
+`PathTracer.cpp`), 1096d4d9's under the head's other files (the commit before 12de7684), and the head's.
+
+**What it found: the keeping, compiled in and never taken, cost Vulkan a fifth to two fifths of a frame.**
+The paths kept (1096d4d9) are off outside Metal, but the kernel was generated with the keeping's code wherever
+rays are inline, Vulkan among them, its capacity zero at run time. The materials stage, 1280x720, 16 paths in
+passes of 2, one view, frame time in ms, runs after the first, 30–40 s apart:
+
+| | no bounce | three bounces | a bounce |
+|---|---|---|---|
+| 5ee7f9e1 | 1043, 1100, 1101, 1105 | 1834, 1886, 1931, 2102 | 262–277 |
+| 1096d4d9, the keeping in the kernel | 1343, 1370 | 2660, 2687 | 430–448 |
+| 12de7684 (141593d9), one `Shaded` less | 1203, 1234, 1271 | 2316, 2371, 2442, 2518 | 371–438 |
+| the keeping left out of the kernel where no path is kept | 1045, 1055, 1116, 1116 | 1762, 1771, 1808, 1810, 1836 | 231–264 |
+
+So 12de7684 gives Vulkan what it gave Metal (7–12 % off the frame with no bounce, 6–14 % off three bounces;
+Metal 5 and 12 %), and the head was still 12 % slower than 5ee7f9e1 with no bounce and a quarter slower with
+three. The last row is a change tried there and **not committed** (the patch, three lines of
+`PathTracer::setPrograms`, is `build/night/agent-ix6/keeping-out-of-kernel.patch`): the kernel takes `kKept`
+only on Metal, `kNoKept` elsewhere -- Metal's source would be byte for byte what it is, CUDA's two routes
+already take `kNoKept`. On Vulkan its picture is bit for bit the head's with no bounce
+and with three, and it is faster than 5ee7f9e1 by what 12de7684 gives. 5ee7f9e1's figures are cb22fdb7's of
+17 Nov there (1106 and 1909 ms).
+
+**Builds**: both, no error, each of the versions and the tried change (GCC, MSVC).
+
+**Tests at 141593d9**, all passing:
+
+| | CUDA (WSL2) | Vulkan (Windows) | Metal (the sections above) |
+|---|---|---|---|
+| `athenea_technique_tests` | 917 assertions; 29 cases pass, 35 skipped of 64 | 2862 in 64 cases | 64 cases |
+| `athenea_material_tests` (`[openpbr]`, `[standardsurface]`, `[gltfpbr]` among them) | 2985 in 15 | 3087 in 16 | 15 cases |
+| `athenea_render_tests "[scene]"` (`[pyramid]` among them: 22 assertions) | 383 in 14 | 383 in 14 | 14 cases |
+| `athenea_usd_tests "[path],[glass],[lights],[emissive],[repeat]"` | 170; 7 cases pass, 56 skipped of 63 | 1028 in 63 | 63 cases |
+| `athenea_lod_tests` | 9797 in 37 | 1465 in 22 | not run for these sections |
+| `athenea_scene_tests` | 268; 9 pass, 1 skipped of 10 | 226; 8 pass, 1 skipped of 9 | not run for these sections |
+
+CUDA's skips are what they were (no rasterisation, no ray queries, no OptiX in WSL), with `[repeat]` now among
+them ("needs rasterisation and ray queries"); the scene test skipped on both is the one that wants
+openFXplayer's example cloud. With the tried change: the technique tests, the scene tests and the usd tags pass on
+both (the same counts), `[repeat]` on Vulkan among them.
+
+**Run to run.** `[repeat]` on Vulkan (1920x1080): no bounce and two bounces, twice each, p99 0, max 0, 0 of
+2 073 600 pixels over two codes. The materials stage with `athenea compare`, 1280x720, 16 paths in passes of 2,
+no bounce and three: three runs of each of the three versions on Vulkan and two on CUDA are one frame, bit for
+bit; so are two runs at 640x360 with 8 paths in one pass on Vulkan, before 12de7684 and after. **Neither
+backend ever showed the defect**: the kernel before 12de7684 is the same from run to run there, as far as
+these frames say.
+
+**Pictures across the versions**, the same frames: 5ee7f9e1, 1096d4d9 and 12de7684 are bit for bit one
+another on Vulkan, with no bounce and with three (Metal: a half-float code in a few pixels from 12de7684), and
+on CUDA, where no bounce is traced (0 and 3 bounces are one picture, as before). Sponza's first hit on CUDA,
+the frame of NEU37: bit for bit across the three and from run to run -- these two days add nothing to that
+difference.
+
+**Found scenes.** `neural-scene shoot` of the materials stage, 640x360, 12 views of the walk, 32 paths in
+passes of 8, three bounces, denoised, `--pyramid-turned` at its default; then `render` of the four held views
+and `export --levels 200000,50000,10000`:
+
+| | seconds | gaussians | held views against 128 paths, dB | the level written |
+|---|---|---|---|---|
+| Vulkan, 15 Nov (`qa_options.py`, the defaults then) | 160 | 440 900 | 25.42, 23.97, 24.84, 23.06 | -- |
+| Vulkan, 5ee7f9e1 | 30, 27 | 451 234 | 26.30, 24.66, 25.38, 23.63 | 68 147 |
+| Vulkan, 141593d9 | 32, 30 | 451 234 | the same | 47 797 |
+| Vulkan, with the tried change | 28, 26 | 451 234 | the same, the views bit for bit the head's | 47 797 |
+| CUDA, 141593d9 | 33 | 451 215 | 15.14, 15.71, 16.44, 14.37: no shadow and no bounce without OptiX | 47 793 |
+
+The scene's finest gaussians are what they were; the cells' longer discs (84788e72) show in the level, a
+third fewer gaussians. A budget of 50 000 is answered with that level and one of 10 000 with "cannot be met:
+the coarsest the scene holds draws 47 860", on both. The QA flows: 49 of 49 on CUDA; 48 of 49 on Vulkan (the head's binary and
+the tried change's alike), the one that fails being the flow that needs `athenea compare`, which has no device there
+(NEU17). The Mac: 49 of 49.
+
+**NEU35** (passes of 8 paths taking 210 s on Vulkan where passes of 2 take 7): not seen today. The materials
+stage, 1280x720, 16 paths in passes of 8: 12–13 s the run, 1023–1037 ms the frame with no bounce and 1774 ms
+with three, as in passes of 2.
+
+**A device lost once.** The first run of the technique tests with the tried change on Vulkan lost the device
+(`VK_ERROR_DEVICE_LOST` at `vkQueueWaitIdle`) a minute in, in the cylinder light's test, and the 31 cases
+after it failed with it; WSL was being started for the CUDA build at that time. The same tests alone: 64
+cases pass, twice, and a third time with WSL started 40 s into them (`nvidia-smi` then gave no answer for a
+minute, and the tests went on). The head's run, with CUDA renders beside it, lost nothing. Not explained.
+
+The laptop's GPU stood at 80–86 °C through most of this with its clock between 570 and 1815 MHz; the frame
+times above are from short runs with pauses and repeat to a tenth, the tests' and flows' seconds are not
+measures.
+
+Not done: CUDA's bounces (no OptiX in WSL), so 12de7684 and the keeping are verified on CUDA only as far as
+the first hit and the tests that run; the keeping switched on for Vulkan (it would take Metal's kernel and
+has not been run); the keeping left out of Vulkan's kernel committed -- it is measured here and waits for a
+build on Metal, where its kernel's source is unchanged;
+Sponza on Vulkan with these versions; the full usd suite; D3D12; the device lost with WSL starting, tried
+again; the shoot's and the flows' pictures against the Mac's.
