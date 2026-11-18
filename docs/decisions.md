@@ -26794,7 +26794,7 @@ bit for bit at 17.3-17.5 s a view where HEAD 21.3-22.5); `athenea_usd_tests "[pa
 CUDA and Vulkan, where the lobe was already 128 bytes and the properties are new source: nothing was
 compiled there.
 
-## The lobe of 128 bytes verified further, and the first frame's pixel narrowed to a pass's first sample (18 Nov)
+## The lobe of 128 bytes verified further, and the one pixel narrowed to a path of the fourth pass (18 Nov)
 
 What "A lobe of 128 bytes" left not done, measured on its commit (06974050); Metal, M5 Pro, 1920x1080, 32
 paths in passes of 8, the tree's build against HEAD's binary with HEAD's shaders.
@@ -26815,12 +26815,13 @@ view holds the kernel's compile and went from 36 to 94 s whichever kernel; 597 6
 **The one pixel is not the keeping's.** With the fill of the tracer's buffers as a switch (0 against
 0xffffffff, one binary, HEAD's kernel text) the first frame flips at (1004, 10) with the paths kept and with
 them not kept. It flips at 32 paths in passes of 8 and three bounces, and does not at one or two bounces, at
-8, 16 or 24 paths in passes of 8, nor at 32 paths in one pass or in passes of 16 -- which are the same
-paths, the random numbers being keyed by a path's absolute index. So it is neither a path nor the sums: it
-is one of paths 24 to 31 where they are a dispatch of their own. A thread runs a pass's samples one after
-another, and something a sample reads before it writes holds what an earlier sample of the same dispatch
-left there -- or, where none did (path 24 is the dispatch's first), what the thread's memory held, which is
-what the fills move. The committed kernel's text does not flip under the fill in one binary (five pairs) and does without
+8, 16 or 24 paths in passes of 8, nor at 32 paths in one pass or in passes of 16. A pass has its own seed
+and its own offset in the pixel (`pathSeed_`, the Halton offset: Engine.cpp), so those are other paths, and
+what the cuts say is only this: it is a path of the fourth pass of 8, one that reaches its third bounce, and
+what it does there turns on what memory holds. (A first writing of this section read passes of 16 as the
+same paths in another dispatch and concluded a sample read what its dispatch had not written; that does not
+follow.) The camera files' later views are other paths as well, so "the first view" may be no more than the
+view that has this path. The committed kernel's text does not flip under the fill in one binary (five pairs) and does without
 it in the tree's build (above): where the read lands is the layout's. The kernel with media is not that:
 HEAD's text gives the same figures to the last digit under no fill, zero, a NaN and all ones, and the text a
 renamed surface breaks draws garbage that differs from run to run under each -- its Metal source differs
@@ -26839,9 +26840,9 @@ At the camera's hit, where a group's threads are on neighbouring pixels, none of
 the textures are 1.3 s and the modules being several is 2.5 s, a fifth of the frame: a group pays each
 module any of its threads lands on. Sponza's UsdPreviewSurfaces differ in which inputs a texture feeds.
 
-Not done: which local it is that a sample reads unwritten (the next cut: the samples of a pass after the
-first made to start from the same state, a variable at a time, with 32 paths in passes of 8 against passes
-of 16 as the check that does not depend on the fill); the kernel with media's garbage; one module for every
+Not done: what that path reads (the next cut: what it does written in place of its colour -- its steps,
+its crossings, the surfaces its lot saw through -- under both fills); the kernel with media's garbage; one module for every
 UsdPreviewSurface whatever its textures (the 2.5 s); the splat-hidden light point's `continue` and a test
-for it (an emitter, its table and a cloud in one fixture); `athenea_usd_tests "[path],[glass],[lights],
-[emissive]"` whole on this commit; CUDA and Vulkan.
+for it (an emitter, its table and a cloud in one fixture); CUDA and Vulkan.
+
+`athenea_usd_tests "[path],[glass],[lights],[emissive]"` on the commit, Metal: 66 cases, all pass (1028 s).
