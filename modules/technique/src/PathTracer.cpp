@@ -688,9 +688,11 @@ float3 bakeFacing(uint at) {
 /// gold black. What it drops is the dielectric polish and the sheen, which
 /// `splat_relight` puts back at render time, from the metallic and roughness
 /// the gaussian carries, and puts back *with a direction in it*.
-LobeStack bakeBody(__constref LobeStack stack, uint at) {
-    LobeStack body = stack;
-    body.count = 0;
+///
+/// In place: the lobes kept are moved down over the ones dropped. Returned
+/// by value, the body was a second lobe stack beside the path's.
+void bakeBody(inout LobeStack stack, uint at) {
+    uint kept = 0;
     // A METAL IS WHAT THE MATERIAL SAYS IS ONE, not only what reflects like
     // one. The test below by reflectivity drops a dark metal: a car's paint
     // is OpenPBR at metalness 1 over a base of 0.05, its metal a Schlick of
@@ -729,11 +731,11 @@ LobeStack bakeBody(__constref LobeStack stack, uint at) {
         const bool metal = lobe.kind == kLobeConductor || (lobe.kind == kLobeSchlick && (f0 > 0.2 || saidMetal));
         const bool through = lobe.scatter == kScatterTransmit;
         if (diffuse || metal || through) {
-            body.lobes[body.count] = lobe;
-            body.count += 1;
+            stack.lobes[kept] = lobe;
+            kept += 1;
         }
     }
-    return body;
+    stack.count = kept;
 }
 
 
@@ -975,7 +977,7 @@ const char* kNoBake = R"(
 static const bool kBake = false;
 static const uint kCellOrigins = 4u;
 Found foundBaked(uint at, uint sample, uint mask) { return foundNothing(); }
-LobeStack bakeBody(__constref LobeStack stack, uint at) { return stack; }
+void bakeBody(inout LobeStack stack, uint at) {}
 void bakeMaterialAdd(inout MaterialSums sums, __constref LobeStack stack, uint at) {}
 bool bakeTowardFaces(uint at) { return false; }
 float3 bakeDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
@@ -1247,9 +1249,19 @@ float3 transparentPasses(__constref LobeStack stack, float3 toEye) {
     return saturate(float3(1.0) - reflected);
 }
 
+/// What a path reads again of the inputs its material was evaluated with:
+/// the point, its shading normal and where it was seen from. The whole
+/// MaterialInputs (the mesh's record, the object's frame, the footprint) was
+/// 352 bytes a shading state kept and copied for these three.
+struct ShadedPoint {
+    float3 positionWorld;
+    float3 normalWorld;
+    float3 viewPosition;
+};
+
 struct Shaded {
     LobeStack      stack;
-    MaterialInputs inputs;
+    ShadedPoint    inputs;
     float3         toEye;
     float          depth;
     uint           categoriesLo;   // the instance's, for a light's link
@@ -1299,7 +1311,9 @@ void shadeSurface(uint2 pixel, __constref Surface s, bool emissionOnly, inout Sh
     }
     out.categoriesLo = s.instance.categoriesLo;
     out.categoriesHi = s.instance.categoriesHi;
-    out.inputs = inputs;
+    out.inputs.positionWorld = inputs.positionWorld;
+    out.inputs.normalWorld = inputs.normalWorld;
+    out.inputs.viewPosition = inputs.viewPosition;
     copyStack(out.stack, gAtheneaResult);
     out.stack.emission = emission;
     out.coverage = (m.flags & (kMaterialCutout | kMaterialTransparent)) != 0;
@@ -2827,7 +2841,7 @@ R"(
                     // Seen from one place, the whole material: the polish
                     // is what that camera sees, and one direction holds it.
                     if (!bakeTowardFaces(at)) {
-                        cur.stack = bakeBody(cur.stack, at);
+                        bakeBody(cur.stack, at);
                     }
                 }
                 if (!vertexSeen) {

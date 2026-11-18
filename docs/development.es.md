@@ -402,19 +402,33 @@ escribir en la variable del llamador.
 **Un kernel guarda en la memoria de un hilo solo lo que vuelve a leer.** Un
 struct local es memoria del hilo, y un kernel que hace shading tiene ahí
 varios de los más grandes que hay (un estado de shading es una pila de
-lóbulos y las entradas de un material, unos 1,5 KB). Pasado lo que el
-dispositivo aguanta, Metal construye igualmente el pipeline y no dice nada, y
-los hilos de un grupo SIMD leen los valores unos de otros: los fotogramas del
-path tracer diferían de una ejecución a otra en una escena de materiales
-OpenPBR, una tira de píxeles del ancho de un grupo SIMD aquí y allá, y una
-línea que no cambiaba ningún significado lo convertía en medio fotograma
-(`docs/decisions.md`, «What a thread's memory bears»). Así que un estado se
-escribe donde se guarda, no en una local que luego se copia; una local no se
-pone a cero «por si acaso» -- un `Found` puesto a cero donde se declara fue un
-struct más en la memoria del hilo e hizo que el kernel con medios dibujara
-basura, y quitar un estado de shading fue lo que lo arregló --; y a un kernel
-que dibuja con números aleatorios con clave por píxel se le exige dibujar el
-mismo fotograma dos veces (`athenea_usd_tests "[repeat]"`).
+lóbulos y lo que el camino vuelve a leer de las entradas de un material,
+1,2 KB). También es lo que un kernel copia: los rebotes del path tracer fueron
+un quinto más rápidos cuando un lóbulo pasó de 224 bytes a 128 en Metal -- un
+`float3` junto a un `float` es ahí un `float4`, leído a través de propiedades
+(el `Lobe` de `lobes.slang`), porque Metal da a un `float3` dieciséis bytes
+propios. Así que un estado se escribe donde se guarda, no en una local que
+luego se copia, y `scripts/kernel-memory.py` dice lo que guarda cada kernel
+generado (sección 3.2).
+
+**A un kernel que hace shading se le exige dibujar lo mismo dos veces, y un
+cambio en uno no está bien hasta que lo hace cada variante suya.** En Metal un
+cambio que no altera ningún significado ha hecho que un kernel dibuje otros
+valores: los fotogramas del path tracer diferían de una ejecución a otra en
+una escena de materiales OpenPBR, una tira de píxeles del ancho de un grupo
+SIMD aquí y allá, y una línea que no cambiaba nada lo convertía en medio
+fotograma; un `Found` puesto a cero donde se declara, y más tarde la copia
+elegida entre dos de ellos sustituida por una escritura, hicieron que el
+kernel con medios dibujara basura mientras el kernel sin ellos dibujaba la
+misma imagen bit a bit. No es el tamaño de lo que guarda un hilo: un array de
+128 KB en la memoria de un hilo se lee como se escribió y a 256 KB Metal
+rechaza el pipeline (`athenea_gpu_tests "[threadmemory]"`), donde estos
+kernels guardan de 15 a 35 KB (`docs/decisions.md`, «What a thread's memory
+bears» y «A lobe of 128 bytes»). La causa no se conoce. Así que una local no
+se pone a cero «por si acaso», y `athenea_usd_tests "[repeat]"` dibuja con
+cada kernel que hace shading -- los caminos con y sin un medio, el raster, las
+guías, un bake -- desde dos renderers y pide que no difieran en un bit, junto
+a los tests que atan cada uno a su forma cerrada.
 
 **`Result<T>` y `ATHENEA_TRY`, sin excepciones.** Un renderer que lanza a través
 de un command buffer deja el dispositivo en un estado que nadie sabe
@@ -553,7 +567,12 @@ Para comprobar que un shader compila sin compilar nada más:
 Los shaders generados — los materiales, los kernels de sombreado y de path
 tracing — los escribe `ATHENEA_SHADER_DUMP=<dir>`, y compilan con `slangc -I
 shaders -I <dir>`, que es como se mide el tiempo de compilación de un kernel
-fuera del proceso.
+fuera del proceso. `scripts/kernel-memory.py <dir>` lee del mismo volcado lo
+que cada kernel guarda en la memoria de un hilo, sin dispositivo: slangc a
+Metal, el front end de Apple a LLVM IR (`xcrun metal -S -emit-llvm`), y cada
+local que sigue siendo memoria, sumada -- la de la entrada, la cadena de
+llamadas más profunda y todas las funciones que alcanza (`-v` lista las
+mayores y lo que contienen).
 
 ### 3.3 Mirar dentro de una ejecución
 

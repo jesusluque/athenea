@@ -43,25 +43,90 @@ public static const uint kScatterReflect = 0;
 public static const uint kScatterTransmit = 1;
 public static const uint kScatterBoth = 2;
 
+/// 128 BYTES ON EVERY TARGET: a float3 beside a float is one float4 here,
+/// each half read and written through a property under the name it had.
+/// Metal gives a float3 sixteen bytes of its own, so the same fields as
+/// members were 224 bytes there -- and a lobe is what a shading kernel keeps
+/// most of in a thread's memory: the stack a material builds, the one it
+/// leaves, and each one a path holds (docs/decisions.md, 18 Nov, "The margin
+/// of every kernel").
 public struct Lobe {
     public uint   kind;
     public uint   flags;
     public uint   scatter;
     public uint   pad0;
-    public float3 weight;       // the node's weight, times what mixing and layering made of it
-    public float  roughness;    // diffuse and sheen
-    public float3 colour0;      // diffuse colour, dielectric tint, conductor n, Schlick F0
-    public float  ior;          // dielectric
-    public float3 colour1;      // conductor k, Schlick F90
-    public float  exponent;     // Schlick
-    public float3 colour2;      // Schlick F82
-    public float  pad1;
-    public float2 alpha;        // GGX
-    public float2 pad2;
-    public float3 normal;
-    public float  pad3;
-    public float3 tangent;      // anisotropy's, or the fibre's direction
-    public float  pad4;
+    float4 weightRoughness;
+    float4 colour0Ior;
+    float4 colour1Exponent;
+    float4 colour2Pad1;
+    float4 alphaPad2;
+    float4 normalPad3;
+    float4 tangentPad4;
+    /// The node's weight, times what mixing and layering made of it.
+    public property float3 weight {
+        get { return weightRoughness.xyz; }
+        set { weightRoughness.xyz = newValue; }
+    }
+    /// Diffuse and sheen.
+    public property float roughness {
+        get { return weightRoughness.w; }
+        set { weightRoughness.w = newValue; }
+    }
+    /// Diffuse colour, dielectric tint, conductor n, Schlick F0.
+    public property float3 colour0 {
+        get { return colour0Ior.xyz; }
+        set { colour0Ior.xyz = newValue; }
+    }
+    /// Dielectric.
+    public property float ior {
+        get { return colour0Ior.w; }
+        set { colour0Ior.w = newValue; }
+    }
+    /// Conductor k, Schlick F90.
+    public property float3 colour1 {
+        get { return colour1Exponent.xyz; }
+        set { colour1Exponent.xyz = newValue; }
+    }
+    /// Schlick.
+    public property float exponent {
+        get { return colour1Exponent.w; }
+        set { colour1Exponent.w = newValue; }
+    }
+    /// Schlick F82.
+    public property float3 colour2 {
+        get { return colour2Pad1.xyz; }
+        set { colour2Pad1.xyz = newValue; }
+    }
+    public property float pad1 {
+        get { return colour2Pad1.w; }
+        set { colour2Pad1.w = newValue; }
+    }
+    /// GGX.
+    public property float2 alpha {
+        get { return alphaPad2.xy; }
+        set { alphaPad2.xy = newValue; }
+    }
+    public property float2 pad2 {
+        get { return alphaPad2.zw; }
+        set { alphaPad2.zw = newValue; }
+    }
+    public property float3 normal {
+        get { return normalPad3.xyz; }
+        set { normalPad3.xyz = newValue; }
+    }
+    public property float pad3 {
+        get { return normalPad3.w; }
+        set { normalPad3.w = newValue; }
+    }
+    /// Anisotropy's, or the fibre's direction.
+    public property float3 tangent {
+        get { return tangentPad4.xyz; }
+        set { tangentPad4.xyz = newValue; }
+    }
+    public property float pad4 {
+        get { return tangentPad4.w; }
+        set { tangentPad4.w = newValue; }
+    }
 };
 
 /// Hair keeps the Lobe at 128 bytes: colour0/1/2 are the R, TT and TRT
@@ -72,7 +137,10 @@ public struct Lobe {
 /// which hair has no use for) and pad0 (float bits in the uint). Growing the
 /// struct by two float4 made the shadowed shading kernel draw the umbra
 /// wrong on Metal (2583 pixels off a closed form that had been exact), and
-/// putting the fields here made it exact again; the cause is unexplained.
+/// putting the fields here made it exact again; the cause is unexplained --
+/// of a kind with the changes of no meaning that have made the path tracer's
+/// kernels draw other values (docs/development.md, section 2), and not
+/// checked again since the lobe was packed.
 public float3 hairAbsorption(__constref Lobe lobe) { return float3(lobe.pad1, lobe.pad2.x, lobe.pad2.y); }
 public float2 hairRoughnessTT(__constref Lobe lobe) { return float2(lobe.pad3, lobe.pad4); }
 public float2 hairRoughnessTRT(__constref Lobe lobe) { return float2(lobe.exponent, asfloat(lobe.pad0)); }

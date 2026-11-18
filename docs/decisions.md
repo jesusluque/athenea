@@ -26655,3 +26655,141 @@ has not been run); the keeping left out of Vulkan's kernel committed -- it is me
 build on Metal, where its kernel's source is unchanged;
 Sponza on Vulkan with these versions; the full usd suite; D3D12; the device lost with WSL starting, tried
 again; the shoot's and the flows' pictures against the Mac's.
+
+## A lobe of 128 bytes, and what a thread's memory does not explain (18 Nov)
+
+Asked: how much each shading kernel bears of the padding ruler of "What a thread's memory bears", and what
+is left taken out of the frames until each bears 16 KB. What was found is that the size of what a thread
+keeps is not the cause that section took it for; what was changed makes every shading kernel keep a third
+less and the path tracer's bounces a fifth to a quarter faster, the same pictures bit for bit.
+
+**What the device bears, with nothing but an array** (`athenea_gpu_tests "[threadmemory]"`,
+`shaders/athenea/test/thread_memory.slang`: an array in a thread's memory filled from a buffer, read where
+only the buffer says and compared with the buffer again; 262 144 threads, three runs a size; Metal, M5 Pro):
+1, 4, 8, 16, 24, 32, 48, 64 and 128 KB read back as written, not a word changed; at 256 KB Metal makes no
+pipeline, and says so. Two arrays in two functions, one done with before the other is filled (the front end
+inlines them: four arrays in one function), read back whole at 4 x 32 KB and are refused at 4 x 64 KB: what
+counts is the sum of the locals, and the limit is between 128 and 256 KB. Metal does not build a kernel past
+it in silence.
+
+**What each kernel keeps, read with no device** (`scripts/kernel-memory.py` over an `ATHENEA_SHADER_DUMP`:
+slangc to Metal, `xcrun metal -S -emit-llvm -O2`, and the allocas of every function the entry reaches added
+up -- the figure the array above is measured in). Bytes, HEAD -> this change:
+
+| kernel | the materials stage (4 material modules) | Sponza with its lamps (6) |
+|---|---|---|
+| the paths (`tracePaths`) | 24 685 -> 15 549 | 32 217 -> 19 693 |
+| with light groups | 24 877 -> 15 741 | 32 409 -> 19 885 |
+| with media | 25 644 -> 16 508 | 33 160 -> 20 636 |
+| a bake | 27 036 -> 16 880 | 34 568 -> 21 024 |
+| the guides (`pathGuides`) | 18 736 -> 10 672 | 25 324 -> 13 872 |
+| `shadeMaterials`, shadowed, with domes | 19 456 -> 12 080 | 26 240 -> 15 280 |
+| `shadeEvaluated` | 16 720 -> 9 728 | 23 308 -> 12 928 |
+| `drawLobes` | 16 880 -> 9 888 | 23 468 -> 13 088 |
+| the cut-out's visibility (`traceCutout`) | none on this stage | 22 684 -> 12 304 |
+| `tabulateMaterials`, `probeRows`, `meshProbe` | 15 216-15 680 -> 8 224-8 688 | 21 804-22 268 -> 11 424-11 888 |
+
+The trunk's kernel that differed from run to run (three shading states) is 26 605 by the same count. So the
+kernels that showed the defect keep a fifth of what an array is borne at, and Sponza's, which never showed
+it, kept more (32 217) than the materials stage's that did. A material module adds some 3.3 KB to every
+kernel that evaluates materials at HEAD and 2.1 KB now (its uniforms as statics, 360 bytes, and its
+functions' BSDF values): a stage's kernels grow with its distinct graphs.
+
+**The ruler does not measure it either.** The array of "What a thread's memory bears" was read at one word;
+made to check sixty-four of its words at every material (through `material_runtime`, so it rules every
+kernel that evaluates one: a shader directory, no build), the new media case of `[repeat]` fails the same
+with 16 KB added and with none on a kernel that is wrong, and the plain kernels pass both. What a kernel
+"bears" by it is whether the padding moved the compiler, not a size.
+
+**What makes a kernel draw other values is a change of no meaning, and it is still not explained.** Four
+changes were made in a copy: the three below, and the light point written into `found` (no `lightPoint`, no
+`target` chosen between the two at the shading). With all four the plain kernels drew HEAD's pictures bit
+for bit (the materials stage at 0 and 3 bounces, the flat Sponza with the glass knight, Sponza with its
+lamps, three views each) and the kernel with media drew garbage: `the path tracer through an absorbing
+volume is Beer-Lambert's` 1665-4764 of 14 399 pixels beyond five deviations and every untouched pixel
+changed, and two renders of a stage with a fog 850 000 pixels apart. Taken apart on that test, the kernel's
+text read from a file under one binary (each row with the lobe as it was and packed, the same):
+
+| the kernel's text | the absorbing volume |
+|---|---|
+| HEAD's | passes (mean z^2 0.978 and 0.955) |
+| + the shading state's three vectors | passes, the same figures |
+| + `bakeBody` in place | passes |
+| + both | passes |
+| + both, and `const Found target = lightStep ? lightPoint : found;` replaced by `if (lightStep) { found = lightPoint; }` | garbage |
+| + both, and the splat-hidden light point's `continue` restructured | passes |
+| all four changes | garbage |
+| HEAD's, `carried += 1.0e6` where a light point is shaded | passes: no light point is ever shaded in this test |
+| HEAD's, `lightPoint.valid = false` where declared | passes |
+
+So in a test where no light point exists, a line that only changes how the surface to shade is named makes
+the kernel with media wrong, and the plain kernel compiled from the same text is right. That is the defect
+of 18 Nov again (a write that changed no meaning; a zeroed `Found`), in a kernel 16 KB large. It is the
+compiler's -- Apple's, past the front end, whose IR for the kernels that work and those that do not holds
+the same locals -- or something in the kernel with media that reads what it did not write; neither is shown.
+The light point's change is not in the tree.
+
+**The change.** (1) A `Lobe` is 128 bytes on every target: a `float3` beside a `float` is one `float4`,
+each half read and written through a property under the name it had. Metal gives a `float3` sixteen bytes of
+its own, so the lobe was 224 bytes there (128 on CUDA), and a lobe is what every shading kernel keeps and
+copies most of: the stack a material builds (eleven for OpenPBR), the one it leaves, the one or two a path
+holds. No source that reads a lobe changes. (2) A path's shading state keeps the three vectors it reads
+again of the material's inputs (the point, its normal, where it is seen from) and not the whole
+`MaterialInputs`, 352 bytes. (3) A bake's `bakeBody` drops lobes in place and returns no second stack.
+
+Metal (M5 Pro), 1920x1080, 32 paths in passes of 8, three views of a load, the tree's build against HEAD's
+binary with HEAD's shaders; seconds are the second and third views, one run each way in one job with no stop
+of the guard:
+
+| | against HEAD | seconds a view, HEAD -> now |
+|---|---|---|
+| the materials stage, no bounce | bit for bit, three views | 2.79-2.92 -> 2.41-2.43 |
+| the materials stage, three bounces | bit for bit, three views | 9.83-9.85 -> 7.06-7.10 |
+| flat Sponza, the glass knight, three bounces | bit for bit on two views; the first is the keeping's one pixel (below) | 14.39-14.49 -> 12.18-12.60 |
+
+Tests on Metal, all pass on the tree's build: `athenea_technique_tests` (64 cases), `athenea_material_tests`
+(15), `athenea_render_tests "[scene]"` (14), `athenea_gpu_tests "[threadmemory]"`, and
+`athenea_usd_tests "[repeat]"`, which now renders twice from two renderers with each kernel that shades and
+asks for not a bit apart: the paths at no bounce and two (the megakernel and the kept paths), the paths
+through a fog (the kernel with media), the raster's frame (`MaterialShading`'s kernels), the denoiser's
+guides (their planes compared on the device) and a bake of 65 536 points at degree 3. All five pass on HEAD
+as well; the copy with the four changes failed the fog.
+
+**The kept paths' one pixel is a first frame reading what nothing wrote, not the quad.** The flat Sponza has
+no material that takes a screen derivative (one UsdPreviewSurface bound over everything, the knight's
+OpenPBR), so the slot order deciding a quad's neighbours changes nothing there. The pixel is (1004, 10) from
+the top, 0.00483 against 0.00453 in red, always the same two frames. With the tracer's `sum` and `moments`
+filled with a word when they are made (a copy's switch), the first view is one frame for 0 and 0x3f000000
+and the other for 0xffffffff and 0x7f7fffff, nine runs of nine and four of four; filled with 0xffffffff in
+`sum` alone, or in the squares', the flags', the heads' or the entries' part of `moments` alone, it is the
+other frame each time; every device buffer's unwritten part filled, with and without the tracer's own, the
+other frame; all of them zero, the first. Unfilled it is the first frame in most runs and the other in some.
+So what the frame turns on is memory holding something other than zero somewhere a first frame reads before
+writing, and it is not one word of the tracer's two buffers -- each part alone turns it. Which read is not
+found.
+
+**Where a bounce's time goes now** (the copy with the four changes, one piece of a step done twice, the
+second view of two; the picture bit for bit but where noted):
+
+| | flat Sponza, no knight | Sponza with its lamps |
+|---|---|---|
+| the whole kernel, three bounces | 8.39 s | 17.06 s |
+| steps a path / vertices shaded / light points shaded | 3.94 / 3.93 / 0.001 | 3.18 / 3.16 / 0.012 |
+| a vertex's material twice | + 2.94 | + 8.03 |
+| the light gathered at a vertex twice | + 1.60 | + 2.72 (another picture: the cut-outs' lots are counted) |
+| the bounce's ray twice | + 1.65 | + 0.65 |
+| the lobes' sample twice | + 0.11 | |
+
+On the textured stage a vertex's material is half the frame. Tried on these numbers and dropped: the weights
+a stack's lobes are chosen by worked out once a vertex, and a direction's response and density in one walk
+of the lobes -- 8.29 s where 8.39, inside what two runs differ by, and a picture a thousandth off in places.
+
+Not done: the cause, in either form (the first frame's read, the kernel with media's garbage); the light
+point written into `found`, which waits on it, and with it the splat-hidden light point's `continue`, which
+shades its vertex again step after step until the steps run out (found reading it; in the tree as it was);
+a material module's uniforms as locals of its function (360 bytes a module in every kernel); Sponza with
+its lamps and a `neural-scene shoot` timed on the tree's build (the copy with the four changes drew Sponza
+bit for bit at 17.3-17.5 s a view where HEAD 21.3-22.5); `athenea_usd_tests "[path],[glass],[lights],
+[emissive]"` whole; the lights' umbra with the lobe grown by two `float4` run again (lobes.slang's note);
+CUDA and Vulkan, where the lobe was already 128 bytes and the properties are new source: nothing was
+compiled there.

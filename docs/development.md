@@ -388,18 +388,32 @@ the caller's variable instead.
 
 **A kernel keeps in a thread's memory only what it reads again.** A local
 struct is thread memory, and a kernel that shades holds several of the
-largest there are (a shading state is a lobe stack and a material's inputs,
-some 1.5 KB). Past what the device bears Metal still builds the pipeline and
-says nothing, and the threads of a SIMD group read each other's values: the
-path tracer's frames differed from run to run on a stage of OpenPBR
-materials, a run of pixels a SIMD group wide here and there, and a line that
-changed no meaning made it half the frame (`docs/decisions.md`, "What a
-thread's memory bears"). So a state is written where it is kept, not into a
-local and copied; a local is not zeroed "to be safe" -- a `Found` zeroed where
-it is declared was one struct more in the thread's memory and made the kernel
-with media draw garbage, and taking a shading state out was what mended it --;
-and a kernel that draws by random numbers keyed by pixel is held to drawing
-the same frame twice (`athenea_usd_tests "[repeat]"`).
+largest there are (a shading state is a lobe stack and what the path reads
+again of a material's inputs, 1.2 KB). It is also what a kernel copies: the
+path tracer's bounces went a fifth faster when a lobe went from 224 bytes to
+128 on Metal -- a `float3` beside a `float` is a `float4` there, read through
+properties (`lobes.slang`'s `Lobe`), since Metal gives a `float3` sixteen bytes
+of its own. So a state is written where it is kept, not into a local and
+copied, and `scripts/kernel-memory.py` says what each generated kernel keeps
+(section 3.2).
+
+**A kernel that shades is held to drawing the same thing twice, and a change
+to one is not right until every variant of it does.** On Metal a change that
+alters no meaning has made a kernel draw other values: the path tracer's
+frames differed from run to run on a stage of OpenPBR materials, a run of
+pixels a SIMD group wide here and there, and a line that changed nothing made
+it half the frame; a `Found` zeroed where it is declared, and later the copy
+chosen between two of them replaced by a write, made the kernel with media
+draw garbage while the plain kernel drew the same picture bit for bit. It is
+not the size of what a thread keeps: an array of 128 KB in a thread's memory
+reads back as written and at 256 KB Metal refuses the pipeline
+(`athenea_gpu_tests "[threadmemory]"`), where these kernels keep 15 to 35 KB
+(`docs/decisions.md`, "What a thread's memory bears" and "A lobe of 128
+bytes"). The cause is not known. So a local is not zeroed "to be safe", and
+`athenea_usd_tests "[repeat]"` renders with each kernel that shades -- the
+paths with and without a medium, the raster, the guides, a bake -- from two
+renderers and asks for not a bit apart, beside the tests that hold each to
+its closed form.
 
 **`Result<T>` and `ATHENEA_TRY`, no exceptions.** A renderer that throws through a
 command buffer leaves the device in a state nobody can describe. Where a
@@ -531,6 +545,11 @@ To check that a shader compiles without building anything:
 Generated shaders — the materials, the shading and path-tracing kernels — are
 written out by `ATHENEA_SHADER_DUMP=<dir>`, and compile with `slangc -I shaders -I
 <dir>`, which is how a kernel's compile time is measured outside the process.
+`scripts/kernel-memory.py <dir>` reads from the same dump what each kernel
+keeps in a thread's memory, with no device: slangc to Metal, Apple's front end
+to LLVM IR (`xcrun metal -S -emit-llvm`), and every local that stays memory
+added up -- the entry's own, the deepest chain of calls, and every function
+it reaches (`-v` lists the largest and what they hold).
 
 ### 3.3 Looking inside a run
 
