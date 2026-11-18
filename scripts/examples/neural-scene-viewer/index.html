@@ -368,8 +368,7 @@
       let litFirst = false;
       // What is let go takes its textures with it -- its groups' light, its ids, its normals: they were left
       // on the device when a level was swapped for another.
-      const letGo = (list) => { for (const m of list) { m.mesh.parent?.remove(m.mesh); m.mesh.dispose?.(); for (const t of m.textures ?? []) t.dispose(); } };
-      let texturesMade = [];    // the textures made for the file being read, until its entry takes them
+      const letGo = (list) => { for (const m of list) { m.gone = true; m.mesh.parent?.remove(m.mesh); m.mesh.dispose?.(); for (const t of m.textures ?? []) t.dispose(); } };
       let cameras = new Map((index.cameras ?? []).map((c) => [c.name, c]));
       let shown = 0;            // parts drawn: the scene as it stood after that many
       let atEnd = true;         // the timeline is at its end: new parts are shown as they arrive
@@ -416,11 +415,21 @@
       }));
       window.__groups = groups;
       const setGroup = (g) => g.gain.value.set(g.level * g.tint[0], g.level * g.tint[1], g.level * g.tint[2]);
+      // SO MANY FILES ARE READ AT A TIME: a part's files side by side and the parts after it begun while it
+      // is read, with this many at once at most -- each is a request, a worker's decoding and its bytes held.
+      const gate = (most) => {
+        let busy = 0;
+        const waiting = [];
+        return async (work) => {
+          if (busy >= most) await new Promise((go) => waiting.push(go)); else busy += 1;
+          try { return await work(); } finally { const next = waiting.shift(); if (next) next(); else busy -= 1; }
+        };
+      };
+      const reading = gate(8);
       const groupTexture = async (file) => {
         // The group's part, read for its colours alone and let go: Spark's packed splat keeps a colour in
         // the first word of four, a byte a channel.
-        const read = await splatOf(file);
-        await read.initialized;
+        const read = await reading(async () => { const mesh = await splatOf(file); await mesh.initialized; return mesh; });
         const packed = read.packedSplats?.packedArray;
         const count = read.packedSplats?.numSplats ?? 0;
         const high = Math.max(Math.ceil(count / groupWide), 1);
@@ -436,7 +445,6 @@
         const texture = new THREE.DataTexture(texels, groupWide, high, THREE.RGBAFormat, THREE.UnsignedByteType);
         texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
         texture.needsUpdate = true;
-        texturesMade.push(texture);
         return texture;
       };
       // A LAMP OF THE PLAYER'S OWN. Where the scene was handed on with its base colours (index.base: the same
@@ -529,17 +537,21 @@
       const idsTexture = async (file, count, counted) => {
         // A file of sixteen bits a gaussian inside gzip, which the browser undoes: two bytes a texel, as they are.
         const local = window.__sceneBlobs?.get(file);
-        const packed = local ?? await (await fetch(urlOf(file))).blob();
-        const bytes = new Uint8Array(await new Response(packed.stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
-        // How many gaussians each prim has among what stands: what the panel says of one, and dims one without.
-        if (counted) for (let i = 0; i + 1 < bytes.length; i += 2) objects.gaussians[bytes[i] | (bytes[i + 1] << 8)] += 1;
+        const bytes = await reading(async () => {
+          const packed = local ?? await (await fetch(urlOf(file))).blob();
+          return new Uint8Array(await new Response(packed.stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+        });
+        // How many gaussians each prim has: what the panel says of one, and dims one without. Kept beside
+        // the texture and counted when the part comes to stand -- a part read ahead may never.
+        const tally = counted ? new Float64Array(prims.length + 1) : null;
+        if (tally) for (let i = 0; i + 1 < bytes.length; i += 2) { const prim = bytes[i] | (bytes[i + 1] << 8); if (prim < tally.length) tally[prim] += 1; }
         const high = Math.max(Math.ceil(Math.max(count, bytes.length / 2) / groupWide), 1);
         const texels = new Uint8Array(groupWide * high * 2);
         texels.set(bytes.subarray(0, texels.length));
         const texture = new THREE.DataTexture(texels, groupWide, high, THREE.RGFormat, THREE.UnsignedByteType);
         texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
         texture.needsUpdate = true;
-        texturesMade.push(texture);
+        texture.userData.tally = tally;
         return texture;
       };
       // The modifier of a mesh whose ids are `ids`; of one that has none (null), whose gaussians are no object's.
@@ -680,6 +692,9 @@
         const hold = document.createElement("button");
         hold.textContent = "Leave it here";
         const changed = () => {
+          // THE LAMP'S COLOURS ARE READ WHEN IT IS FIRST LIT: a base colour a gaussian, a file a part as large
+          // as a group's -- a quarter of what a load fetched, for a lamp that is off until it is asked for.
+          if (on.checked && !lamp.wanted) { lamp.wanted = true; readLamp(label); }
           lamp.on = on.checked;
           lamp.level = Number(level.value);
           lamp.tint = [1, 3, 5].map((at) => parseInt(tint.value.slice(at, at + 2), 16) / 255);
@@ -695,6 +710,25 @@
         // With the eye until it is left somewhere.
         setInterval(() => { if (lamp.on && !lamp.held) lamp.place.value.copy(camera.position); }, 33);
       }
+      // What stands takes the lamp's colours, a file each, side by side; what is read after it is lit reads
+      // them with its own. Until a part's are in the lamp does not light it.
+      const readLamp = async (label) => {
+        const all = () => [...meshes.flat(), ...shaded.flat(), ...outgoing].filter((m) => m.baseFile && !m.gone);
+        if (label) label.textContent = "Lamp (reading…)";
+        try {
+          await Promise.all(all().map(async (m) => {
+            const file = m.baseFile;
+            m.baseFile = undefined;
+            const base = await groupTexture(file);
+            if (m.gone) { base.dispose(); return; }
+            m.textures.push(base);
+            m.light = groupLight(m.groupTextures ?? [], base);
+            setWorld(m.mesh, m.light, m.kind ? m.applied : undefined, m.objects);
+          }));
+        } catch (error) { /* a part whose colours could not be read is not lit by the lamp */ }
+        if (label) label.textContent = "Lamp";
+        shadeStale = true;
+      };
       let shadeStale = false;   // what is shown changed: the cubes are drawn again
       let shadeBusy = false;
       let shadeFresh = false;   // a cube was just drawn: the gaussians are shaded from it
@@ -734,7 +768,7 @@
         const xs = [], ys = [], zs = [];
         for (let at = 0; at < shape.count; at += step) { xs.push(shape.centres[at * 3]); ys.push(shape.centres[at * 3 + 1]); zs.push(shape.centres[at * 3 + 2]); }
         if (xs.length === 0) return null;
-        const median = (list) => list.sort((a, b) => a - b)[list.length >> 1];
+        const median = (list) => Float32Array.from(list).sort()[list.length >> 1];
         return { at: new THREE.Vector3(median(xs), median(ys), median(zs)), count: Math.max(count, xs.length) };
       };
       // A SMOOTH NORMAL A GAUSSIAN. A gaussian's axis is its own disc's, and the discs of a surface lie a
@@ -764,7 +798,6 @@
         const texture = new THREE.DataTexture(texels, groupWide, high, THREE.RGBAFormat, THREE.UnsignedByteType);
         texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
         texture.needsUpdate = true;
-        texturesMade.push(texture);
         return { count, centres: Float32Array.from(centres), axes: Float32Array.from(axes), texels, texture };
       };
       // The normals of one kind's parts, from all of them together: `cell` is in the parts' own units.
@@ -1160,92 +1193,132 @@
           if (!file) return null;
           try { return await idsTexture(file, count, counted); } catch (error) { return null; }
         };
-        let readHere = 0;         // gaussians read of the part being read
+        let readAhead = 0;        // gaussians read of the parts being read, not yet in the scene
         const tell = () => {
           if (mine !== generation) return;
           const total = parts.reduce((sum, p) => sum + weigh(p), 0);
-          const read = parts.slice(0, meshes.length).reduce((sum, p) => sum + weigh(p), 0) + readHere;
+          const read = Math.min(parts.slice(0, meshes.length).reduce((sum, p) => sum + weigh(p), 0) + readAhead, total);
           const counted = total > 0 ? ` · ${(read / 1e6).toFixed(2)} of ${(total / 1e6).toFixed(2)} M gaussians` : "";
           report(`${keeping ? "refining" : "loading"}… ${meshes.length} of ${parts.length} parts${counted}`);
           setProgress(total > 0 ? read / total : meshes.length / Math.max(parts.length, 1));
         };
         if (meshes.length < parts.length) tell();
-        while (meshes.length < parts.length && mine === generation) {
-          const part = parts[meshes.length];
-          const own = [];
-          const beside = [];
-          readHere = 0;
-          // The part itself and, where the scene was handed on with its history, what the part's frame found
-          // that stood only for a while: each a file, with its glass and its mirrors beside it.
-          for (const span of [part, ...(part.history ?? [])]) {
+        // A PART'S FILES ARE READ SIDE BY SIDE, AND THE NEXT PARTS ARE BEGUN WHILE IT IS READ. Read one file
+        // after another, a part waited for its own file, then each group's, then its ids, then the same for
+        // its glass and its mirrors: at eight million gaussians three fifths of the load was the groups'
+        // files, each waited for alone. The parts still come to stand in their order.
+        const level = detail, lit = litFirst;   // of this load: a change of detail leaves it behind
+        const readPart = async (part, place_) => {
+          const own = [], beside = [];
+          let counted = 0;
+          const count = (n) => { counted += n; if (mine === generation) { readAhead += n; tell(); } };
+          const spans = [part, ...(part.history ?? [])];
+          const reads = [];
+          spans.forEach((span, spanOrder) => {
+            // The part itself and, where the scene was handed on with its history, what the part's frame
+            // found that stood only for a while: each a file, with its glass and its mirrors beside it.
             const until = span === part ? 0 : span.until ?? 0;
-            const spanAt = part.history ? part.history.indexOf(span) : -1;
+            const spanAt = spanOrder - 1;
             const of = (held) => {
-              const entry = (detail === 0 ? held.parts : held.levels?.[detail - 1]?.parts)?.[meshes.length];
+              const entry = (level === 0 ? held.parts : held.levels?.[level - 1]?.parts)?.[place_];
               return span === part ? entry : entry?.history?.[spanAt];
             };
             const fileOf = (entry) => typeof entry === "string" ? entry : entry?.file;
             // The light of a file of the span: the span's own (`which` undefined), its glass's or its mirrors'.
             // A GLASS AND A MIRROR TAKE THEIR GROUPS' LIGHT TOO: where the room holds nothing along a ray a
             // gaussian shows the colour it was found with, and found without the lamps that was near black.
+            // A GROUP'S LIGHT AT A LEVEL OF DETAIL: where each group was handed on with the same levels as
+            // the scene (the same gaussians in the same order, a level), the level takes its groups' light
+            // as the whole scene does. The level drawn first (`litFirst`) is the scene with its lamps on
+            // already, and takes none. A part's history takes the groups' light as the part does, where
+            // each group was handed on with its history too (the same spans, in order).
             const lightOf = async (which) => {
               const at = (held) => (which ? fileOf(of(held)?.[which]) : fileOf(of(held)));
-              const grouped = !litFirst && groups.length > 0 && groups.every((g) => at(g));
-              const based = litFirst ? undefined : at(lamp);
-              if (!grouped && !based) return undefined;
-              const textures = [];
-              if (grouped) for (const g of groups) textures.push(await groupTexture(at(g)));
-              return groupLight(textures, based ? await groupTexture(based) : null);
+              const grouped = !lit && groups.length > 0 && groups.every((g) => at(g));
+              const baseFile = lit ? undefined : at(lamp);
+              const based = lamp.wanted ? baseFile : undefined;
+              if (!grouped && !based) return { light: undefined, groupTextures: [], textures: [], baseFile };
+              const [textures, base] = await Promise.all([Promise.all(grouped ? groups.map((g) => groupTexture(at(g))) : []),
+                                                          based ? groupTexture(based) : null]);
+              return { light: groupLight(textures, base), groupTextures: textures, textures: base ? [...textures, base] : [...textures],
+                       baseFile: base ? undefined : baseFile };
             };
-            if (span.file) {
+            if (span.file) reads.push((async () => {
               // extSplats: Spark's packed splat keeps a centre in three half floats, a part in 2048 of its
               // distance from the origin -- a centimetre in a stage of centimetres twenty metres across -- and
               // gaussians a millimetre wide fell into rows with gaps between them, seen from near.
-              const mesh = await splatOf(span.file, { extSplats: true });
-              await mesh.initialized;
-              // A GROUP'S LIGHT AT A LEVEL OF DETAIL: where each group was handed on with the same levels as
-              // the scene (the same gaussians in the same order, a level), the level takes its groups' light
-              // as the whole scene does. The level drawn first (`litFirst`) is the scene with its lamps on
-              // already, and takes none.
-              // A part's history -- what its frame found that stood only for a while -- takes the groups' light as
-              // the part does, where each group was handed on with its history too (the same spans, in order).
-              const light = await lightOf();
-              // Which prim each gaussian was made from, where the scene says: the objects' modifier after the light's.
-              const marks = prims.length > 0 ? objectsOf(await idsOf(span.ids, span.gaussians ?? 0, span === part)) : undefined;
-              if (light || marks) setWorld(mesh, light, marks);
-              own.push({ mesh, until, gaussians: span.gaussians ?? 0, objects: marks, textures: texturesMade.splice(0), pick: pickOf(mesh), cut: span.spans ? cutOf(mesh, 1, span.spans) : null });
-              readHere += span.gaussians ?? 0;
-              tell();
+              const [mesh, lightOfIt, ids] = await Promise.all([
+                reading(async () => { const read = await splatOf(span.file, { extSplats: true }); await read.initialized; return read; }),
+                lightOf(),
+                // Which prim each gaussian was made from, where the scene says: the objects' modifier after the light's.
+                prims.length > 0 ? idsOf(span.ids, span.gaussians ?? 0, span === part) : null]);
+              const marks = prims.length > 0 ? objectsOf(ids) : undefined;
+              if (lightOfIt.light || marks) setWorld(mesh, lightOfIt.light, marks);
+              own.push({ order: spanOrder * 3, mesh, until, gaussians: span.gaussians ?? 0, objects: marks, light: lightOfIt.light,
+                         groupTextures: lightOfIt.groupTextures, baseFile: lightOfIt.baseFile, ids,
+                         textures: [...lightOfIt.textures, ...(ids ? [ids] : [])], pick: pickOf(mesh), cut: span.spans ? cutOf(mesh, 1, span.spans) : null });
+              count(span.gaussians ?? 0);
+            })());
+            [["glass", span.glass], ["mirror", span.mirror]].forEach(([which, made], kindOrder) => {
+              if (!made) return;
+              reads.push((async () => {
+                const [other, lightOfIt, ids] = await Promise.all([
+                  reading(async () => { const read = await splatOf(made.file, { extSplats: true }); await read.initialized; return read; }),
+                  lightOf(which),
+                  prims.length > 0 ? idsOf(made.ids, made.gaussians ?? 0, span === part) : null]);
+                const marks = prims.length > 0 ? objectsOf(ids) : undefined;
+                const light = lightOfIt.light;
+                if (light || marks) setWorld(other, light, marks);
+                const shape = shapeOf(other);
+                beside.push({ order: spanOrder * 3 + 1 + kindOrder, mesh: other, kind: which, until, gaussians: made.gaussians ?? 0, shape,
+                              groupTextures: lightOfIt.groupTextures, baseFile: lightOfIt.baseFile, ids,
+                              textures: [...lightOfIt.textures, ...(ids ? [ids] : []), shape.texture], pick: pickOf(other), heart: heartOf(shape, made.gaussians ?? 0), light, objects: marks,
+                              cut: span.spans ? cutOf(other, which === "glass" ? 2 : 3, span.spans) : null,
+                              shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1]), shape.texture) });
+                count(made.gaussians ?? 0);
+              })());
+            });
+          });
+          // All of them, whatever becomes of one: what was read is then let go together.
+          const ends = await Promise.allSettled(reads);
+          own.sort((a, b) => a.order - b.order);
+          beside.sort((a, b) => a.order - b.order);
+          const failed = ends.find((end) => end.status === "rejected");
+          if (failed) { letGo([...own, ...beside]); throw failed.reason; }
+          return { own, beside, counted };
+        };
+        const ahead = new Map();
+        const begin = (k) => { if (!ahead.has(k)) ahead.set(k, readPart(parts[k], k)); return ahead.get(k); };
+        try {
+          while (meshes.length < parts.length && mine === generation) {
+            const at = meshes.length;
+            for (let k = at; k < Math.min(at + 3, parts.length); ++k) begin(k);
+            const { own, beside, counted } = await begin(at);
+            ahead.delete(at);
+            if (mine !== generation) { letGo([...own, ...beside]); break; }
+            readAhead -= counted;
+            for (const m of [...own, ...beside]) {
+              m.mesh.visible = false;
+              (keeping ? staging : root).add(m.mesh);
+              const tally = m.ids?.userData.tally;
+              if (tally) for (let prim = 0; prim < tally.length; ++prim) objects.gaussians[prim] += tally[prim];
             }
-            for (const [which, made] of [["glass", span.glass], ["mirror", span.mirror]]) {
-              if (!made) continue;
-              const other = await splatOf(made.file, { extSplats: true });
-              await other.initialized;
-              const marks = prims.length > 0 ? objectsOf(await idsOf(made.ids, made.gaussians ?? 0, span === part)) : undefined;
-              const light = await lightOf(which);
-              if (light || marks) setWorld(other, light, marks);
-              const shape = shapeOf(other);
-              beside.push({ mesh: other, kind: which, until, gaussians: made.gaussians ?? 0, shape, textures: texturesMade.splice(0), pick: pickOf(other), heart: heartOf(shape, made.gaussians ?? 0), light, objects: marks,
-                            cut: span.spans ? cutOf(other, which === "glass" ? 2 : 3, span.spans) : null,
-                            shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1]), shape.texture) });
-              readHere += made.gaussians ?? 0;
-              tell();
+            meshes.push(own);
+            shaded.push(beside);
+            if (lamp.wanted && [...own, ...beside].some((m) => m.baseFile)) readLamp();
+            applyShading();
+            objectsShown();
+            window.__scene.parts = meshes.length;
+            if (meshes.length < parts.length) tell();
+            else { report(summary()); setProgress(null); }
+            if (!keeping) {
+              stand();
+              if (window.__player.firstMs === undefined) window.__player.firstMs = Math.round(performance.now() - began);
             }
           }
-          if (mine !== generation) { letGo([...own, ...beside]); for (const t of texturesMade.splice(0)) t.dispose(); break; }
-          for (const m of [...own, ...beside]) { m.mesh.visible = false; (keeping ? staging : root).add(m.mesh); }
-          meshes.push(own);
-          shaded.push(beside);
-          applyShading();
-          objectsShown();
-          window.__scene.parts = meshes.length;
-          readHere = 0;
-          if (meshes.length < parts.length) tell();
-          else { report(summary()); setProgress(null); }
-          if (!keeping) {
-            stand();
-            if (window.__player.firstMs === undefined) window.__player.firstMs = Math.round(performance.now() - began);
-          }
+        } finally {
+          // What was begun and will not come to stand -- the load was left behind -- is let go as it arrives.
+          for (const left of ahead.values()) left.then(({ own, beside }) => letGo([...own, ...beside]), () => {});
         }
         if (mine === generation && keeping && settings.glass && roomsWanted) {
           // The finer detail's normals before it is shown: it comes in as smooth as it will be, not in the
@@ -1630,7 +1703,8 @@
       // Where a kind's gaussians are: the middle of each part's, by how many each holds.
       const middleOf = (seen) => {
         const box = new THREE.Box3();
-        for (const s of seen) box.union(s.mesh.getBoundingBox(true).clone().applyMatrix4(s.mesh.matrixWorld));
+        // A mesh's box is asked of Spark once: it goes through every gaussian of the mesh.
+        for (const s of seen) box.union((s.box ??= s.mesh.getBoundingBox(true).clone()).clone().applyMatrix4(s.mesh.matrixWorld));
         const middle = box.getCenter(new THREE.Vector3());
         const sum = new THREE.Vector3();
         let weight = 0;
