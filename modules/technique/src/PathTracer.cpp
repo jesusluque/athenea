@@ -1284,18 +1284,24 @@ void copyShaded(inout Shaded to, __constref Shaded from) {
 /// footprint's: materialInputsAt takes it from the neighbouring pixels' rays,
 /// which is right for the camera's hit and an approximation for a bounce's.
 // Written where it is kept: a shading state returned by value is copied whole,
-// and again where it is assigned.
-void shadeSurface(uint2 pixel, __constref Surface s, out Shaded out) {
+// and again where it is assigned. `emission` is what the surface gives off,
+// and with `emissionOnly` that is all that is written: a light point is
+// shaded for its emission alone, and `out` stays the vertex that chose it.
+void shadeSurface(uint2 pixel, __constref Surface s, bool emissionOnly, inout Shaded out, out float3 emission) {
+    // A bake takes no footprint from the camera it does not have.
+    const MaterialInputs inputs = materialInputsAt(camera, toWorld, pixel.x, pixel.y, s, lookup.time, !kBake);
+    const MaterialRecord m = materials[materialRowOf(s)];
+    evaluateMaterial(m.function, inputs, m.blob);
+    // A MeshLightAPI prim's own emission, and an emission group's level.
+    emission = meshLightEmission(iesValues, meshLightWords, s.instance.flags, inputs.inside, gAtheneaResult.emission);
+    if (emissionOnly) {
+        return;
+    }
     out.categoriesLo = s.instance.categoriesLo;
     out.categoriesHi = s.instance.categoriesHi;
-    // A bake takes no footprint from the camera it does not have.
-    out.inputs = materialInputsAt(camera, toWorld, pixel.x, pixel.y, s, lookup.time, !kBake);
-    const MaterialRecord m = materials[materialRowOf(s)];
-    evaluateMaterial(m.function, out.inputs, m.blob);
+    out.inputs = inputs;
     copyStack(out.stack, gAtheneaResult);
-    // A MeshLightAPI prim's own emission, and an emission group's level.
-    out.stack.emission = meshLightEmission(iesValues, meshLightWords, s.instance.flags, out.inputs.inside,
-                                           out.stack.emission);
+    out.stack.emission = emission;
     out.coverage = (m.flags & (kMaterialCutout | kMaterialTransparent)) != 0;
     out.transparent = (m.flags & kMaterialTransparent) != 0;
     out.rowFlags = m.flags;
@@ -1546,17 +1552,23 @@ R"(float cellThrough(float3 p, float3 n, float3 wi, uint mask, bool selfTransmit
 }
 
 /// What was found, its material evaluated: the kernel's one call of it.
-void shadeFound(uint2 pixel, __constref Found f, out Shaded out) {
-    out.valid = false;
-    out.coverage = false;
-    out.transparent = false;
-    out.rowFlags = 0u;
-    out.depth = 0.0;
-    out.geometricNormal = float3(0.0, 0.0, 1.0);
+void shadeFound(uint2 pixel, __constref Found f, bool emissionOnly, inout Shaded out, out float3 emission) {
+    emission = float3(0.0);
+    if (!emissionOnly) {
+        out.valid = false;
+        out.coverage = false;
+        out.transparent = false;
+        out.rowFlags = 0u;
+        out.depth = 0.0;
+        out.geometricNormal = float3(0.0, 0.0, 1.0);
+    }
     if (!f.valid) {
         return;
     }
-    shadeSurface(pixel, f.s, out);
+    shadeSurface(pixel, f.s, emissionOnly, out, emission);
+    if (emissionOnly) {
+        return;
+    }
     out.toEye = normalize(f.eye - out.inputs.positionWorld);
     out.rayOrigin = f.rayOrigin;
     out.rayT = f.rayT;
@@ -2389,6 +2401,11 @@ R"(    bool firstShaded = false;
         uint   lightStepBounce = 0;   // and the bounce of the vertex that chose it
 )"
 R"(
+        // Declared and not written: it is read only on a step a vertex
+        // chose a point for. Zeroed here it is a struct more in the thread's
+        // memory -- Slang no longer lends its storage to a temporary -- and
+        // the kernel with media drew garbage (docs/decisions.md, 18 Nov,
+        // "What a thread's memory bears").
         Found  lightPoint;
         float3 lightScale = float3(0.0);
         bool   mediumResume = false;   // the light point was a medium collision's, and the path goes on from it
@@ -2635,25 +2652,32 @@ R"(                    }
             // every sample would answer with sample zero's eye and the
             // harmonics past the constant would come back as noise about zero.
             const bool cameraHit = !lightStep && bounce == 0 && passed == 0 && !ownRays && !kBake;
-            Shaded shaded;
+            // Into `cur`, where the path keeps its vertex: a state of its
+            // own for the step was one more lobe stack in the thread's
+            // memory, and a copy of it a step (docs/decisions.md, 18 Nov,
+            // "What a thread's memory bears"). A light point leaves `cur` as
+            // it is and gives its emission alone. A surface the sample's lot
+            // sees through is written here as well: the next step shades
+            // what is behind it before anything reads `cur`.
+            float3 lit = float3(0.0);
             if (cameraHit && firstShaded) {
-                copyShaded(shaded, first);
+                copyShaded(cur, first);
             } else {
-                shadeFound(tid, target, shaded);
+                shadeFound(tid, target, lightStep, cur, lit);
                 if (cameraHit) {
-                    copyShaded(first, shaded);
+                    copyShaded(first, cur);
                     firstShaded = true;
                 }
             }
             if (lightStep) {
                 // The light point's emission, back to the vertex that chose it,
                 // and into its emission group's output where it is in one.
-                carried += lightScale * shaded.stack.emission;
+                carried += lightScale * lit;
                 // Gathered as indirect only where a bounce came before the
                 // vertex that chose it (groupsIndirect).
                 if (kLightGroups && (path.groupsIndirect == 0u || lightStepBounce >= 1u)) {
                     addGroup(groups, meshGroupAov(iesValues, meshLightWords, meshInstanceGroup(target.s.instance.flags)),
-                             lightScale * shaded.stack.emission * opacity);
+                             lightScale * lit * opacity);
                 }
                 lightStep = false;
                 // A collision in a medium chose that point: the path goes on
@@ -2679,16 +2703,16 @@ R"(                    }
                 // (1 - p) -- has exactly that expectation, and p is held off
                 // zero so a window at opacity 0 still reflects the sky, five
                 // samples in a hundred at twenty times the weight.
-                const float o = shaded.stack.opacity;
-                const float keep = shaded.transparent ? max(o, 0.05) : o;
-                if (kTraces && shaded.coverage && o < 1.0 && passed < 64 &&
+                const float o = cur.stack.opacity;
+                const float keep = cur.transparent ? max(o, 0.05) : o;
+                if (kTraces && cur.coverage && o < 1.0 && passed < 64 &&
                     random(tid, sample, bounce, 29u + passed) >= keep) {
-                    if (shaded.transparent) {
+                    if (cur.transparent) {
                         // What goes straight through is what the surface
                         // neither covers nor reflects: the specular it keeps
                         // at full weight is light that does not also pass.
                         throughput *= (1.0 - o) / (1.0 - keep) *
-                                      transparentPasses(shaded.stack, shaded.toEye);
+                                      transparentPasses(cur.stack, cur.toEye);
                     }
                     // Coverage: for this sample the surface is not there.
                     // The ray goes on from the hit along its own direction,
@@ -2719,7 +2743,7 @@ R"(                    }
                         if (lightCount <= kMisLightLimit) {
                             for (uint k = 0; k < lightCount; ++k) {
                                 const LightRecord light = lightFor(k, tid, sample);
-                                if (!lightLinked(light.lightCategory, shaded.categoriesLo, shaded.categoriesHi)) {
+                                if (!lightLinked(light.lightCategory, cur.categoriesLo, cur.categoriesHi)) {
                                     continue;
                                 }
                                 const LightHit lh = lightHitImaged(light, o, d);
@@ -2760,23 +2784,22 @@ R"(                    }
                     --step;
                     continue;
                 }
-                if (shaded.transparent && o < 1.0) {
+                if (cur.transparent && o < 1.0) {
                     // Kept by the lot: the specular at 1/p, the diffuse at
                     // opacity/p, which with the lot's p is the whole specular
                     // and opacity of the diffuse.
-                    for (uint k = 0; k < shaded.stack.count; ++k) {
-                        const uint kind = shaded.stack.lobes[k].kind;
+                    for (uint k = 0; k < cur.stack.count; ++k) {
+                        const uint kind = cur.stack.lobes[k].kind;
                         const bool diffuse = kind == kLobeOrenNayar || kind == kLobeBurley || kind == kLobeTranslucent;
-                        shaded.stack.lobes[k].weight *= (diffuse ? o : 1.0) / keep;
+                        cur.stack.lobes[k].weight *= (diffuse ? o : 1.0) / keep;
                     }
-                    shaded.stack.emission /= keep;
+                    cur.stack.emission /= keep;
                 }
-                copyShaded(cur, shaded);
                 if (cellsMode && bounce == 0) {
                     // Before the body is kept: a glass's transmission is
                     // its dielectric, which the body drops as polish.
-                    for (uint k = 0; k < shaded.stack.count; ++k) {
-                        const Lobe lobe = shaded.stack.lobes[k];
+                    for (uint k = 0; k < cur.stack.count; ++k) {
+                        const Lobe lobe = cur.stack.lobes[k];
                         const bool passes = lobe.scatter != kScatterReflect && any(lobe.weight > float3(0.0));
                         firstTransmits = firstTransmits || passes;
                         if (passes && lobe.kind == kLobeDielectric && (lobe.flags & kFlagThinWalled) == 0u &&
@@ -3531,7 +3554,8 @@ void pathGuides(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
     const bool ownRays = kTraces && path.ownRays != 0;
     const Found found = ownRays ? foundLensSample(tid, 0u, sampleMask(tid, 0u)) : foundAt(tid, seen);
     Shaded sh;
-    shadeFound(tid, found, sh);
+    float3 gives;
+    shadeFound(tid, found, false, sh, gives);
     float4 albedo = float4(0.0);
     float4 normal = float4(0.0);
     if (sh.valid) {
