@@ -26116,3 +26116,242 @@ gaussians, which a level also draws where they have no parent (171 410 of the 0.
 level of half a million that is not soft, which wants the floor lower (the gaussians later frames lay between
 the first frame's rows, each with no parent -- a first look whose cells closed their surface would leave fewer,
 and that changes the scene whole); a real phone; CUDA and Vulkan.
+
+## The page measured: what it holds on the device, how long a load is, and what was cut (17–18 Nov)
+
+A first round of a continuing track: measure where the page's time and memory go, cut what is on top, look
+that the picture did not change, measure again. Headless Chrome 157 on the Mac and, for memory, Playwright's
+WebKit (`~/Library/Caches/ms-playwright/webkit-2359`, driven by the playwright-core already in the npx cache;
+nothing was installed). The page before is f4c65d91. Tools, logs and pictures in `build/night/agent-player4/`:
+`prof.mjs` (a load's events, bytes and requests from the DevTools protocol; the seconds of each of the page's
+reading functions by the clock; long tasks; a sampling profile; memory at marks and while a lamp is dragged),
+`inject.js` (in the page before its own script: every texture, buffer and renderbuffer the page asks WebGL for
+is counted by its format and size, and every WebGL call that takes over 30 ms is kept), `wk.mjs` (the same
+page watched in WebKit, with its processes' footprints), `gap4.mjs` (gap.mjs with a profile of the longest
+gap), `eyes4.mjs` (the three eyes and the options, each after three more passes of the rooms), `diff.py`.
+
+**How the figures are to be read.** Frame rates are not measured. A time is from the navigation; the scenes
+are served from this Mac, so a time says what the page and Spark do with the bytes, not what a line does (a
+6 MB/s line is emulated where it says so). The Mac was not quiet: another session's tests ran on the GPU
+outside the lock all night, swap stood at 6 to 7 GB of 7 to 8, and the guard stopped jobs twice. Loads of the
+same page differed by a tenth; a figure here is a range of the runs there were, and a difference smaller than
+that range is not claimed. For part of the night Chrome's GPU process died under the page, the page before
+as the page after (below); those runs are left out. `footprint` stops the process it reads: taken while a
+lamp was dragged it made GL calls of five seconds, and is now taken only at rest; from about 01:45 it did
+not answer for any process, and the footprints stop there.
+
+**The profile before** (`n_lamps`, the published `sponza_lamps`; desktop at `detail=full`, 8.37 M standing and
+1.52 M of history; the phone is 390x844 at 3x, which draws level 1, 1.93 M):
+
+| | desktop, 8.4 M | phone's emulation, 1.9 M |
+|---|---|---|
+| first gaussians drawn | 0.7–0.9 s, 18 requests, 3–13 MB | 0.8–1.0 s |
+| knights shaded by the eye | 1.7–1.9 s, 25 requests | 2.2 s (5.0 s in a run with a stall) |
+| the detail whole | 16.1–17.9 s, 436 requests, 267–284 MB | 4.0–5.3 s, 54 requests, 84 MB |
+| rooms at rest | 17.4–20.2 s | 5.1–9.7 s |
+| by the clock: the groups' and the lamp's colours | 9.4–10.2 s (180 files) | 2.2–3.2 s (18) |
+| the parts' own files | 4.0–4.5 s (122) | 1.4–1.5 s (12) |
+| normals from the neighbours | 1.7–2.9 s | 0.4 s |
+| ids | 0.5–0.7 s | 0.1 s |
+| the page's thread busy | 3.1 s; long tasks 11–14, 1.2–1.8 s in all, the longest 0.34–0.44 s | 0.5–0.6 s in all |
+| textures asked of WebGL, at rest / lamp dragged | 1303–1375 MB / 1623 MB | 260–332 MB / 332 MB |
+| the page's buffers (ArrayBuffers) | 654 MB (926 in the drag) | 146 MB |
+| GPU process footprint, at rest / in the drag | 2.8 GB / 3.1 GB | 1.4–1.5 GB |
+
+Of the page's thread: the normals 0.74 s, the loop that copies a group's colours out of Spark's packed
+gaussians 0.42 s, a mesh's box asked of Spark at every pass of the rooms 0.25 s, medians by a comparator
+0.23 s, the ids 0.18 s. Nine programs are linked in a load, whatever the number of parts: Spark shares them.
+Of the 1.3 GB of textures at rest: the page's own Spark two sets of the scene's gaussians, 480 MB (a set is
+an RGBA32UI and an RGBA8 texel a gaussian, 20 bytes, in layers of 2048 by 2048); the two rooms' Sparks a set
+each, 320 MB, and their orders, 64 MB; the files as Spark keeps them (32 bytes a gaussian), 302 MB; the
+page's own textures a gaussian (two groups' light, the lamp's base colour, ids, normals), 122 MB; the page's
+order 48 MB. While a lamp is dragged the rooms hold two sets each. WebKit's GPU process stood at 2.0 GB with
+the page at rest and 2.8 GB with a lamp at work, about twice the textures in both browsers.
+
+**What was on top was the rooms' Sparks, and the deployer's WebKit said so first**: the page of f4c65d91 at
+8.4 M lost its graphics context there a minute after the detail was in, read itself again a level coarser and
+lost it again; the page before the rooms had Sparks of their own (d73fb5c7: one Spark, 919 MB of textures in
+Playwright's WebKit here) did not. Two answers, the second the one that stands.
+
+*The first: the rooms taking turns with one set, and letting it go* (345d19fe). A kind's set was made,
+sorted only where its order did not hold, drawn into its cube and its store handed to the other kind's
+Spark; four seconds after the last pass the store, the orders and the sort workers were let go, and the
+page's own Spark let its spare sets go after two seconds without a new one. Textures at 8.4 M: 1375 -> 1139 MB
+with the detail in, 1623 -> 1139 MB in a lamp's drag, 1303 -> 675 MB at rest; WebKit's GPU process with a
+lamp at work 2.79–2.86 -> 2.24–2.26 GB. It was not published: in the deployer's three runs of 160 s each in
+WebKit the page before the rooms' Sparks was clean three times and this one lost its context once, at
+78 s, at rest; and it asked the device for a quarter of a gigabyte again at the first move after every
+rest. Half the memory was not the size that mattered.
+
+*The second: the rooms are drawn from a scene of their own, of few gaussians.* What a glass or a mirror
+shows is read from a cube through a cone of rays; it does not want the gaussians the eye is drawn. Each part
+that is read leaves one gaussian in so many of its own in a second scene -- 400 000 in all whatever the
+detail (one in 21 at 8.4 M, one in 5 at 1.9 M; `?room=<gaussians>` for another number) -- each wider by the
+root of how many it stands for, with its groups' light thinned the same way and the lamp's when it is lit.
+The rooms' Sparks see that scene and no other: a set of theirs is 8 MB where it was 160 to 240, they keep
+what they make (nothing is handed on or let go any more), and the page's own Spark is left as it was before
+any of this. In a kind's room the other kind is as it was found, not as the eye shades it, so a room no
+longer depends on the pass before it and the pass that was run again for that is gone. Spark's sort after
+every set is still put off where the order holds.
+
+| 8.4 M, textures asked of WebGL | f4c65d91 | 345d19fe | now |
+|---|---|---|---|
+| the detail just in | 1375 MB | 1139 MB | 930 MB |
+| a lamp dragged, at its highest | 1623 MB | 1139 MB | 932 MB |
+| at rest after | 1303 MB | 675 MB | 932 MB |
+| of which the rooms: sets, orders, their scene, cubes | 384–700 MB | 0–236 MB | 55 MB |
+| the page before the rooms' Sparks (d73fb5c7), in WebKit | 919 MB | | |
+| the phone's emulation, 1.9 M: the detail in / at rest | 332 / 260 MB | 220 / 133 MB | 204 / 204 MB |
+
+The bar for the page was "no worse than the page before the rooms' Sparks, over six runs each". Playwright's
+WebKit, 1280x800, `n_lamps` at `detail=full`, 160 s a run, the old page (d73fb5c7) and the new by turns,
+both from the test site: old six of six with one load and no context lost, new six of six the same; then
+100 s each with a lamp set every two seconds, the same (`ab_old_*`, `ab_new_*`). Textures in WebKit 919 MB
+old and 930 MB new at rest, 919 and 932 MB with the lamp at work. Twelve runs do not show a rate of one in
+three is gone -- the deployer's loss with the first answer was one run of three -- but the page no longer
+holds more than the old one by anything but 13 MB. In that WebKit the detail is whole 1.5 s after the
+navigation with the new page and 4.8–5.0 s with the old (the load's changes, below). In Chrome the gaps at
+8.4 M with the thinned rooms (one run): a load 407 ms, an orbit 197, a lamp's drag 169, the timeline 225;
+on the phone's emulation 323, 217, 366, 395; a finger's drag turns the eye to the same place as with the
+old page (three runs each).
+
+**What is lost with a thinned room** (`crop_rooms.png`: the page before, a room of 1.5 M, of 400 000, of
+150 000; `cmp11.png`): against the page before, each after three more passes, the three eyes differ by 1.2
+to 1.5 of 255 in the mean and 5 to 6 % of the pixels by more than 8 (0.5 % by more than 24), all in the two
+knights; a room of 1.5 M halves that (0.6–0.75, 1.3 %) and one of 150 000 adds a third (1.5–1.9, 6.4–8 %).
+To the eye the chrome's bricks are a little softer and the glass has fewer of its small bright lights; the
+shapes, the dark and the light sides are where they were. Glass off is the same to the pixel. The chrome
+seen in the glass (and the glass in the chrome) is the picture each was found with.
+
+Also in the page from the first answer and kept: **a context lost is not met with rooms again** -- lost with
+rooms' Sparks made, the page reads itself again at the same detail with `?rooms=0` in its address (no room
+is drawn, glass and chrome as they were found, said in the status line), lost again a level coarser as
+before, and with no coarser level it says so; tried with `WEBGL_lose_context` three times running and,
+unasked, by Chrome's GPU process dying under it. What Spark was waiting on when the context goes is no
+longer an unhandled rejection. **`window.__player.holds()`** says in megabytes what each Spark holds, the
+files' gaussians, the page's textures, the rooms' scene and cubes. What is let go with a level -- its
+groups' light, its ids, its normals -- takes its textures with it; they stayed on the device when the level
+drawn first was swapped for the detail.
+
+**A picture of the knights depended on how many passes the rooms had had**: the glass showed the chrome in
+its room as the chrome was shaded a pass before, and the chrome the glass, so two captures of one page
+taken after a different number of passes differed in the glass's highlights (3.6 % of the pixels in the
+glass's box by more than 8 between two runs of one page). The comparisons below are taken after three more
+passes each (`eyes4.mjs`), where two pages agree to the pixel or do not. With the other kind as found in a
+room, that dependence is gone.
+
+**Then the load: its files were read one after another.** After the rooms, the profile's top was the load
+itself: of 16 to 19 s to the detail at 8.4 M, 9.4 to 10.2 s were the groups' and the lamp's colour files --
+each a whole file of gaussians (two groups and the lamp's base: 199 of the 264 MB of `.spz` a load fetched)
+read through a SplatMesh for its colours alone -- and each was waited for before the next was asked. Three
+changes (9449338b):
+
+- **A part's files are read side by side, and the next parts are begun while it is read**: up to three
+  parts at a time, eight files at most at once (each is a request, a worker's decoding and its bytes held);
+  the parts still come to stand in their order, and what was begun for a load that is left behind is let go
+  as it arrives. A prim's count of gaussians is now taken when its part comes to stand, not when its file
+  is read.
+- **The player's own lamp's colours are read when the lamp is first lit.** They were a file a part as large
+  as a group's, 63 MB of the 284 MB a load at 8.4 M fetched and 17 of the phone's 84, for a lamp that is off
+  until it is asked for. Lit, the parts that stand read theirs side by side (2 s at level 1 here; the lamp's
+  row says "reading" meanwhile) and a part read after takes its own with it.
+- **A mesh's box is asked of Spark once.** A pass of the rooms asked for it again for each of a kind's parts,
+  and Spark goes through every gaussian for it: 0.14 s of a pass's 0.15 at 8.4 M. A pass that does not
+  sort is now 4 to 6 ms of the page's thread, and a lamp's drag gets 20 to 31 passes where it got 8.
+
+| `n_lamps`, served from this Mac | before | after |
+|---|---|---|
+| 8.4 M: the detail whole | 16.1–18.5 s (22.3 in a run with a stall) | 6.2–7.6 s (12.5 with a stall) |
+| 8.4 M: rooms at rest | 17.4–20.2 s | 8.8–10.6 s |
+| 8.4 M: requests, bytes | 436, 267–284 MB | 372–376, 205–221 MB |
+| 8.4 M on an emulated 6 MB/s line | 175 s | 55 s |
+| phone's emulation, 1.9 M: the detail whole | 4.0–5.3 s | 1.4–2.2 s |
+| phone's emulation: requests, bytes | 51–54, 82–84 MB | 45–48, 56–68 MB |
+| phone's emulation on the 6 MB/s line (the lamp's colours still read) | 34.9 s | 19.5 s |
+| `n_lights4` on the phone's emulation (level 2, 0.97 M) | 2.7 s (7.0 with a stall) | 1.4 s |
+| the lamp's colours no longer on the device, 8.4 M / the phone's 1.9 M | 32 / 8 MB | — |
+
+The first gaussians and the knights shaded come when they came (0.7–1.0 s and 1.4–2.2 s): the level drawn
+first is two files. The emulated line is DevTools' and is harder on files asked for one at a time than a
+line is -- the page before got 1.6 MB/s of its 6 -- so the 175 s is not a real line's; the bytes are.
+With parts read together and without the lamp's colours, the page's bound on a slow line is its bytes: 221 MB.
+
+**With the rooms as they were, the load's changes leave the pictures the page before's to the pixel.** The
+three eyes before the knights, glass off, glass on, the lamps out, frame 8, each after three more passes:
+f4c65d91 against the page with the first answer for the rooms and the load's changes, and with the normals'
+(below) -- the largest difference in any of the seven pictures is 1 of 255 in one pixel's channel, and 0 in
+the other six (`yb_*`, `y8_*`, `y7_*`, `y9_*`). What differs in the page now is the thinned room's, above. The lamp lit, lit
+with the glass option put off and on, and put out again, at level 1: the same to the pixel with its colours
+read at the start and read when lit (`lx3_*`, `lx5_*`, `lx7_*`). The gaps, the page before and after in one
+job at 8.4 M: a load 348 and 337 ms, an orbit 256 and 236, a lamp's drag 226 and 290, the timeline 317 and
+253; on the phone's emulation after: 252, 270, 377, 338. `materials_thin`, `sc_one`,
+`?object=/ChromeKnight&object.view=matte` (a patch of 7 by 11 pixels of the matte differs from the page
+before's),
+`?orbit=0&filter=fixed` and the standalone page build and draw (`misc8.png`).
+
+**Then the normals, which the detail waits for.** With the files read together, the largest single thing
+between the last file and the detail being shown was the normals from the neighbours: 0.6 s of arithmetic
+for the 1.3 M glass and mirror gaussians, done on the page's thread in slices of 30 ms between its frames,
+which made it 2.5 to 3.0 s by the clock. They are now worked out in a worker (the same function, whose
+source is the worker's; where a worker cannot be made it is called on the page's thread in one piece).
+Three loads each in one job, 8.4 M: the detail whole in 5.07–5.24 s where it was 6.17–6.65 s, the rooms at
+rest at 7.3 s where 8.8–9.2 s, the long tasks of a load 1.3–1.7 s in all where 1.8–2.1 s. On the phone's
+emulation (0.3 M of glass and mirror at level 1) 1.45 s against 1.43 s: no gain there, and none claimed.
+The seven pictures are the same to the pixel.
+
+**The profile after** (8.4 M): the detail whole in 5.1–5.3 s, of which the files' reading (Spark's workers)
+is most, and the rooms at rest 1.2 s after it (6.5 s; 17.4–20.2 s before); the page's thread busy 3.6 s
+under the profiler, of which 1.2 s inside WebGL calls (texture uploads, the sort's readback), 0.38 s reading
+each glass and mirror gaussian for its axis (`shapeOf`), 0.28 s keeping one gaussian in sixteen (`pickOf`),
+0.2 s of collection; the long tasks of a load 0.9 s in all. Textures 930 MB: the page's own two sets 480,
+the files as Spark keeps them 302, its order 48, the groups' light, ids and normals 94 of which the rooms'
+thinned ones 4, the rooms' sets 33, cubes 12, the rooms' scene 6; and 516 MB in the page's buffers, where
+Spark keeps each file's gaussians a second time. Reading the parts side by side does not change the
+textures' highest during a load (it is the end's); Spark's workers held 197–216 MB where they held 128–135 MB
+at the moments sampled, and what the page held between them was not sampled.
+
+**Chrome's GPU process died here for part of the night, with either page.** `[Device] is lost` and `GPU
+process exited unexpectedly: exit_code=8704` in Chrome's log: four of the six fresh starts between 00:13 and
+00:31, the page before among them, and several before that whose log was not kept; none in the thirty or so
+after 01:25. A process of another session held 6.6 GB on the GPU outside the lock in those hours, swap was at
+its limit and the guard stopped jobs for heat at 00:08 and 01:07. For an hour the losses were taken for the
+rooms' first answer (they came in lamp drags after it); the page before losing its context in the same job,
+and a loss before any room's Spark existed, say these crashes do not tell the pages apart. The deployer's
+runs in WebKit, on a machine at rest, are what did. What
+the page does when it is lost was seen for real in those runs: the same detail without rooms, then a level
+coarser, and no loop.
+
+Not done, and what the measures put next:
+- **A real browser, a real phone, Safari.** Everything is headless Chrome and Playwright's WebKit on one
+  Mac. The loss of the context the deployer saw in WebKit was never reproduced here, with any page: the
+  thinned rooms are known to hold what the old page held, not to stop that loss.
+- **The groups' files are whole files of gaussians read for three bytes each**: 133 of the 221 MB a load at
+  8.4 M still fetches, and 33 of the phone's 56. A group handed on as its colours alone (three bytes a
+  gaussian, gzipped) would be about a third of that; it is the exporter's to write and the page's to read.
+- **On a phone the level with its lamps on is drawn first and then read again with its groups** (the same
+  gaussians): 18 MB and then 38 more for lamps that may never be touched. Reading the groups when a lamp is
+  first moved, as the player's lamp now is, would leave a phone's load at the first 18 MB.
+- **The first link of Spark's programs** is the longest thing the page's thread waits for on a first visit:
+  `getProgramInfoLog` took 0.4 to 1.8 s in one call in four of the fresh starts that were timed, and a load
+  on the phone's emulation had a long task of 4.4 s at the same point before the calls were timed. three
+  asks for a program's log as soon as it is linked.
+- The history's parts (1.52 M gaussians, 112 files at 8.4 M; 3663 files in `sponza_chrome`) are read with
+  the rest, for a timeline that may not be moved. `n_lights4` at full detail, `lamps` and `sponza_chrome`
+  were not profiled after the changes: the two runs of `n_lights4` at 8.6 M (old page and new) did not end
+  in 500 s -- the profiler was stuck in `footprint`, which began to hang on Chrome's processes at about
+  01:45 -- and the rest were dropped for time.
+- Spark's second copy of every file in the page (302 MB at 8.4 M), which the page reads only while a part
+  is read; the page's own copies of its textures (90 MB) after they are on the device.
+- With the first answer for the rooms a lamp's drag at 8.4 M had a gap of 0.56–0.65 s in three runs of
+  six (one `texSubImage2D`, the page's own Spark handing its order to the device while the rooms' passes
+  kept it busy; 0.21–0.27 s before). With the thinned rooms the one drag measured had 0.24 s; it was not
+  repeated. The page's own Spark still holds two or three sets of the scene (480 MB at 8.4 M), as it did
+  before the rooms had Sparks; letting the spare go at rest was tried with the first answer and taken out
+  with it.
+- A thinned room is one gaussian in so many in the files' order, made wider: a room made from the scene's
+  own coarsest level would be better gaussians for the same number, at the price of reading that level's
+  files and its groups'.
+- `?rooms=0` shows glass and chrome as found; the single-Spark pass that held the page's frames is not
+  brought back for it. The flag is not taken out of the address by itself. The 400 000 of a room was
+  looked at beside 150 000 and 1.5 M at three eyes of one scene, not searched; `sponza_chrome`, `lamps` and
+  `n_lights4` at full detail were not looked at with the thinned rooms.
