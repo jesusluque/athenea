@@ -26422,6 +26422,12 @@ the guard inside (589 s the night before), the chrome 2017 s less its four stops
 all night and stood near its thermal limit (four stops in half an hour); the cells' test of their four
 neighbours is the other candidate. Not separated.
 
+**The cells' longer discs cost nothing, measured after.** The Sponza with knights through eight views at
+960x540, one binary, `--pyramid-turned 0.5` (the cells as they were) and the default, three runs each in
+turn, no stop of the guard on the job: the frames' seconds 71.0, 71.1, 70.8 s as they were and 71.2, 70.8,
+71.0 s now, each view within a tenth of a second, the same 597 613 gaussians. So the two long shoots' tenth
+was the machine that night, or something of 1080p not in this measure.
+
 Not done: the three scenes at 960x540 (`lamps`, `sponza_knight`, `sponza_growth`) found again -- their levels
 are cuts made before the cells were lengthened and were not looked at along a floor; a level of half a
-million that is not soft; the shoots' 10–15% timed on a cool machine, old cells against new.
+million that is not soft; a shoot at 1080p timed twice on a cool machine.
