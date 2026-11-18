@@ -801,19 +801,16 @@
         return { count, centres: Float32Array.from(centres), axes: Float32Array.from(axes), texels, texture };
       };
       // The normals of one kind's parts, from all of them together: `cell` is in the parts' own units.
-      const smoothNormals = async (entries, cell) => {
+      // WORKED OUT IN A WORKER. On the page's thread, in slices of thirty milliseconds between its frames, the
+      // 1.3 M gaussians of a scene's glass and mirrors took two to three seconds by the clock for 0.6 s of
+      // arithmetic -- a third of a load, and the detail waits for it before it is shown. The function below
+      // is the worker's whole source; where a worker cannot be made it is called here, in one piece.
+      const normalsOf = (parts, cell, turn) => {
         const slots = new Map();
         let sums = new Float64Array(6 * 4096), used = 0;
         const keyOf = (x, y, z) => (x & 4095) + (y & 4095) * 4096 + (z & 4095) * 16777216;
-        let since = performance.now();
-        const breathe = async () => {
-          if (performance.now() - since < 30) return;
-          await new Promise((done) => setTimeout(done, 0));
-          since = performance.now();
-        };
-        for (const { shape } of entries) {
-          const { centres, axes } = shape;
-          for (let i = 0; i < shape.count; ++i) {
+        for (const { centres, axes, count } of parts) {
+          for (let i = 0; i < count; ++i) {
             const key = keyOf(Math.floor(centres[i * 3] / cell), Math.floor(centres[i * 3 + 1] / cell), Math.floor(centres[i * 3 + 2] / cell));
             let slot = slots.get(key);
             if (slot === undefined) {
@@ -824,15 +821,13 @@
             const x = axes[i * 3], y = axes[i * 3 + 1], z = axes[i * 3 + 2], o = slot * 6;
             sums[o] += x * x; sums[o + 1] += x * y; sums[o + 2] += x * z; sums[o + 3] += y * y; sums[o + 4] += y * z; sums[o + 5] += z * z;
           }
-          await breathe();
         }
         // Into the world, where the shader reads them: the parts' turn is the scene's.
-        const turn = root.getWorldQuaternion(new THREE.Quaternion());
-        const normal = new THREE.Vector3();
+        const [qx, qy, qz, qw] = turn;
         const t = new Float64Array(6);
-        for (const { shape } of entries) {
-          const { centres, axes, texels } = shape;
-          for (let i = 0; i < shape.count; ++i) {
+        return parts.map(({ centres, axes, count }) => {
+          const texels = new Uint8Array(count * 4);
+          for (let i = 0; i < count; ++i) {
             const gx = centres[i * 3] / cell - 0.5, gy = centres[i * 3 + 1] / cell - 0.5, gz = centres[i * 3 + 2] / cell - 0.5;
             const ix = Math.floor(gx), iy = Math.floor(gy), iz = Math.floor(gz);
             const fx = gx - ix, fy = gy - iy, fz = gz - iz;
@@ -852,13 +847,37 @@
               if (!(length > 1e-9)) break;
               x = nx / length; y = ny / length; z = nz / length;
             }
-            normal.set(x, y, z).applyQuaternion(turn);
-            texels[i * 4] = Math.round(normal.x * 127.5 + 127.5); texels[i * 4 + 1] = Math.round(normal.y * 127.5 + 127.5);
-            texels[i * 4 + 2] = Math.round(normal.z * 127.5 + 127.5); texels[i * 4 + 3] = 255;
-            if ((i & 16383) === 16383) await breathe();
+            // Turned by the quaternion, as three's Vector3 does it.
+            const tx = 2 * (qy * z - qz * y), ty = 2 * (qz * x - qx * z), tz = 2 * (qx * y - qy * x);
+            const wx = x + qw * tx + qy * tz - qz * ty, wy = y + qw * ty + qz * tx - qx * tz, wz = z + qw * tz + qx * ty - qy * tx;
+            texels[i * 4] = Math.round(wx * 127.5 + 127.5); texels[i * 4 + 1] = Math.round(wy * 127.5 + 127.5);
+            texels[i * 4 + 2] = Math.round(wz * 127.5 + 127.5); texels[i * 4 + 3] = 255;
           }
-          shape.texture.needsUpdate = true;
+          return texels;
+        });
+      };
+      const normalsWorker = { worker: undefined, asked: 0, waiting: new Map() };
+      const smoothNormals = async (entries, cell) => {
+        const parts = entries.map(({ shape }) => ({ centres: shape.centres, axes: shape.axes, count: shape.count }));
+        const turn = root.getWorldQuaternion(new THREE.Quaternion()).toArray();
+        if (normalsWorker.worker === undefined) {
+          try {
+            const source = `const normalsOf = ${normalsOf.toString()};\nonmessage = (e) => { const texels = normalsOf(e.data.parts, e.data.cell, e.data.turn); postMessage({ id: e.data.id, texels }, texels.map((t) => t.buffer)); };`;
+            normalsWorker.worker = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
+            normalsWorker.worker.onmessage = (e) => { normalsWorker.waiting.get(e.data.id)?.(e.data.texels); normalsWorker.waiting.delete(e.data.id); };
+            normalsWorker.worker.onerror = () => { for (const answer of normalsWorker.waiting.values()) answer(null); normalsWorker.waiting.clear(); normalsWorker.worker = null; };
+          } catch (error) { normalsWorker.worker = null; }
         }
+        let texels = null;
+        if (normalsWorker.worker) {
+          texels = await new Promise((answer) => {
+            const id = ++normalsWorker.asked;
+            normalsWorker.waiting.set(id, answer);
+            normalsWorker.worker.postMessage({ id, parts, cell, turn });
+          });
+        }
+        texels ??= normalsOf(parts, cell, turn);
+        entries.forEach(({ shape }, k) => { shape.texels.set(texels[k]); shape.texture.needsUpdate = true; });
       };
       // The cones a look is read over (a part of a radian about its ray): with a smooth normal, and without.
       // HOW A KIND LOOKS, four numbers the shading reads: how far a glass's look through is the one a ball of
