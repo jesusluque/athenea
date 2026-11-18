@@ -26846,3 +26846,186 @@ UsdPreviewSurface whatever its textures (the 2.5 s); the splat-hidden light poin
 for it (an emitter, its table and a cloud in one fixture); CUDA and Vulkan.
 
 `athenea_usd_tests "[path],[glass],[lights],[emissive]"` on the commit, Metal: 66 cases, all pass (1028 s).
+
+## The page reads what is looked at: lit levels, a history on demand, its copies let go (18–19 Nov)
+
+The second round of the track the section "The page measured" began; the page before is f1e5938d (the
+published one), the page after 67413e90. Headless Chrome 157 for times, bytes and pictures, Playwright's
+WebKit for the bar on memory; tools and logs in `build/night/agent-player5/` (the first round's, with
+`eyes5.mjs`, `groups5.mjs`, `raw5.mjs`, `wsum.py`). The scenes are the published ones as they stand since
+the night of the 18th, each with levels of its own: `n_lamps9` is `sponza_lamps` (8.37 M; levels 1.92 M and
+0.99 M), `n_chrome3` is `sponza_chrome` (11.41 M standing and 2.67 M of history; 3.82, 1.96, 0.99 M),
+`n_lights6` is `sponza_lights` (8.64 M; 1.93, 0.97 M). A phone's emulation (390x844 at 3x) now draws the
+level of a million.
+
+**How the figures are to be read.** As before: no frame rates; a time is from the navigation with the
+files served from this Mac; a figure is the range of the runs there were, and a difference inside that
+range is not claimed. The Mac was shared with three other sessions' GPU jobs and its guard stopped jobs
+for heat through the evening: a run the guard stopped (one profile with 253 s of stop inside it, one gap
+run with 212 s) is left out, and loads of one page on one scene ranged from 5.9 to 9.9 s across the
+evening.
+
+**The profile before** (f1e5938d, three runs each where a range is given):
+
+| | desktop, `n_lamps9` at 8.4 M | phone's emulation, `n_lamps9` at 0.99 M |
+|---|---|---|
+| the detail whole | 5.9–9.9 s | 1.4–3.4 s |
+| requests, bytes fetched | 367–370, 205–214 MB | 22–28, 21–40 MB |
+| textures asked of WebGL, at rest / a lamp dragged | 927.5 / 931.5 MB | 122.7 / 122.7 MB |
+| the page's buffers (ArrayBuffers) at rest | 514–619 MB | 75–146 MB |
+| the page's process, footprint | 1.55–1.59 GB | 0.39–0.47 GB |
+| the GPU process, footprint | 2.08–2.22 GB | 0.86 GB |
+| programs' logs waited for, a load (the longest one) | 0.36–0.55 s (0.14 s) | 0.41 s (0.18 s) |
+
+`n_chrome3` at 11.4 M: 8.8 s, 722 requests, 116 MB, 973 MB of textures, 663 MB of buffers. `n_lights6`:
+7.3 s, 428 requests, 270 MB at 8.6 M; on the phone 1.4–1.6 s, 29–30 requests, 38 MB.
+
+What these put on top, in their order: on the phone the level read twice (the lit level, then the same
+level with its groups: nine tenths of the bytes); on the desktop the groups' files (133 of 214 MB) and the
+page's own copies of what the device already holds (514–619 MB of buffers); the history's files read for a
+timeline that opens at its end. The first link of the programs, which the first round met at 0.4–1.8 s in
+one call, was 0.18 s at its longest in every load timed tonight: not on top, and left alone.
+
+**A level is drawn from its lit files until a lamp is moved.** A level handed on with its lamps on
+(`litLevels`) is one file a part; with its groups it is that and one as large for each group. The level
+drawn first was already the lit one, and was then read again with its groups even where it was the detail
+asked for. Now any level that has lit files is drawn from them, and the first time a group's level or tint
+leaves the one it was shot with the level is read again with its groups behind what is drawn (the row says
+`reading…`). An address that sets a group reads them with the scene; the scene whole has no lit files and
+reads its groups as it did. The page's own lamp lights a lit level too (its base colours are the same
+files). Pictures on the phone's emulation, each after three more passes of the rooms (`p_b_*`, `p_v4_*`):
+with a group at 0.4, put back to 1, and with the page's lamp lit, the new page is the old one to the pixel
+(0 of 255 in every pixel); as it opens it is the lit level where the old page showed the groups summed --
+1.3 of 255 in the mean, 9 at most, no pixel over 8 but that one step, the sum of three layers each kept in
+a byte against one layer kept in a byte (`cmp_found.png`: the same to the eye). So a picture shifts by that
+much, once, when a lamp is first moved.
+
+**The history is read when the timeline first leaves its end.** At the end, where the page opens, no span
+of the history is drawn; its files (a file a part with its glass, its mirrors and their ids: 112 of the
+370 requests at 8.4 M, 347 of `n_chrome3`'s 722) were read with the rest. They are read the first time the
+timeline is at an earlier frame -- dragged, played, or asked for by the address, which then reads each
+part with its history as before -- and until they are in that frame shows holes where a later frame
+refined what stood; a file that does not come is asked for twice more (in one run three parts' files
+failed to fetch from the test server, and the frame stayed with holes: that is what the retry is for).
+The seven pictures before the knights at 8.4 M -- three eyes, glass off, glass on, the lamps out, and the
+end of the timeline again -- are the old page's to the pixel; `?frame=8` in the address the same to the
+pixel; frame 8 reached by the slider differs in 0.07 % of the pixels by more than 8 (mean 0.05), all in
+the glass knight's highlights (`cmp_f8.png`, the same to the eye). That difference was not traced: the
+same gaussians stand, read in another order.
+
+**What the page keeps of a file is let go once the device has it.** Spark keeps a file's gaussians in the
+page (32 bytes each) beside the texture it makes of them, and three keeps the array each of the page's own
+textures was made from. The page reads them only while a part is read (its points for the pointer, its
+gaussians for the rooms, a glass's axes and box -- the box is now taken there, not asked of Spark later),
+and a context that is lost is met by reading the page again, so nothing is ever sent twice. Each array is
+let go when three says its texture was sent (`onUpdate`); `?keep=1` leaves them. Spark's own ray through a
+mesh then finds nothing, and the page asks its own kept points, as it did.
+
+**A group's colours in a file of their own** (item (g): the page's side, and a script, not the exporter).
+Where a group's or the base colours' index names an `rgb` file beside a part's `file`, the page reads
+that: gzip over three bytes a gaussian in the file's order, the SPZ's colour stream as it is. The bytes go
+to the texture as they are and the shader makes of them the colour Spark makes of the same bytes
+(`(b - 127.5) × 0.2820948 / 0.15 + 127.5`, held to a byte): over 5.5 M bytes of three files Spark's colour
+and that formula differ in none (`raw5.mjs`), and the pictures of a scene read both ways are the same to
+the pixel (three eyes, the lamps out, the timeline's end; on the phone with a group at 0.4, and 1 of 255
+at most with the page's lamp lit). `scripts/examples/neural-scene-viewer/pack_colours.py <scenes> <scene>`
+writes the files from an export and names them in the groups' and the base colours' indexes -- it takes
+bytes out of one file and puts them in another, nothing is worked out -- and an index without `rgb` is
+read as before. For `sponza_lamps`: 16.9, 8.4 and 12.8 MB where the two groups' and the base colours' files
+are 92.5, 83.9 and 88.2 MB. What the exporter would write is the same file beside each part of a group
+(`"rgb"` in its entry), and then need not write the group's whole files at all once no page reads them.
+
+| | f1e5938d | 67413e90 | with `rgb` files (`n_lamps9c`) |
+|---|---|---|---|
+| phone, `n_lamps9`: the detail whole | 1.4–3.4 s | 0.51–0.80 s | 0.55 s |
+| phone: requests, bytes | 22–28, 21–40 MB | 15–16, 3.4–3.8 MB | 15, 3.4 MB |
+| phone: textures at rest / a lamp dragged | 122.7 / 122.7 MB | 95–99 / 122.7 MB | 99 / 122.7 MB |
+| phone: the page's buffers / its process | 75–146 MB / 0.39–0.47 GB | 28–35 MB / 0.24–0.25 GB | 35 MB / 0.23 GB |
+| phone, `n_lights6`: whole; requests, bytes; textures at rest / dragged | 1.4–1.6 s; 29–30, 38 MB; 125.2 / 125.2 MB | 0.50 s; 17, 3.8 MB; 93.2 / 125.2 MB | |
+| desktop 8.4 M: the detail whole | 5.9–9.9 s (three runs) | 5.3–7.0 s (two) | 4.5 s (one) |
+| desktop: requests, bytes | 367–370, 205–214 MB | 254–258, 192–202 MB | 257, 93 MB |
+| desktop: textures at rest / a lamp dragged | 927.5 / 931.5 MB | 927.5 / 931.5 MB | 927.5 / 931.5 MB |
+| desktop: the page's buffers at rest | 514–619 MB | 110 MB | 219 MB (one run) |
+| desktop: the page's process / the GPU's | 1.55–1.59 / 2.08–2.22 GB | 1.00–1.20 / 2.08–2.23 GB | 0.93 / 2.08 GB |
+| `n_chrome3` at 11.4 M: whole; requests, bytes; buffers | 8.8 s; 722, 116 MB; 663 MB | 6.6 s; 375, 102 MB; 248 MB | no groups |
+
+The desktop's time to the detail is not claimed without the `rgb` files: the ranges overlap. The phone's
+is: a third to a half, and a tenth of the bytes. Textures on the device are not higher anywhere; on the
+phone at rest they are a fifth lower until a lamp is moved, and then what they were. The history was never
+on the device while the timeline stood at its end (Spark sends a mesh when it is first drawn), so leaving
+it unread changes requests, bytes and the page's memory, not the textures.
+
+**The bar: Playwright's WebKit, old and new by turns.** 1280x800, `n_lamps9` at `detail=full`, 160 s a
+run, four of each in four jobs: the old page four of four with one load and no context lost, the new page
+four of four the same (`ab_old_*`, `ab_new_*`). Textures 927.5 MB in both; the page's process at its
+highest 0.96–1.18 GB new against 1.29–1.48 GB old; the GPU process 1.89–1.93 against 1.88–1.90 GB (the
+same); the detail whole 1.35–2.26 s against 1.53–3.0 s. As before, eight runs do not show a loss of one
+in three is absent: they show the new page holds no more than the old.
+
+**The gaps under real input** (the longest gap between drawn frames, ms; 8.4 M; the last two columns are
+the two runs of each in the one job with no other session's job beside it):
+
+| | old, five runs | new, five runs | old, the quiet job | new, the quiet job | new with `keep=1`, the quiet job |
+|---|---|---|---|---|---|
+| an orbit drag | 193–518 | 263–1926 | 193, 240 | 275, 263 | 218, 207 |
+| a lamp's drag | 182–311 | 198–268 | 182, 227 | 232, 198 | 265, 192 |
+| the timeline dragged | 186–1171 | 285–840 | 186, 272 | 285, 397 | 415, 225 |
+
+The orbit's 1926 and 723 ms of the new page came in runs whose load had gaps of 1 to 2 s as well, with
+another session's job on the GPU; in the quiet job the new page's orbit is 20 to 80 ms over the old one's,
+inside the old page's own spread across the evening, and no cause was found for it in the page (an orbit
+reads nothing the changes touch). It is not shown to be the same and not shown to be worse. The timeline's
+first move now reads the history, and in the quiet job its longest gap is 0.1 s over the old page's. On
+the phone's emulation, one run each: orbit 365 old and 217 new, a lamp 383 and 332, the timeline 388 and
+409.
+
+**Still working**, each looked at: a mouse's orbit and a finger's (the eye goes where it went),
+`?orbit=0&filter=fixed`, an object's matte (the old page's to the pixel), `materials_thin` (to the pixel)
+and `sc_one`, the context lost three times running (rooms off, then a level coarser, then the coarsest and
+no loop), the standalone page built by `make_standalone.py` and drawn.
+
+**The way back from `?rooms=0`.** The flag stayed in the address, and in an address handed on, after the
+one time the graphics were lost. With it the options show a row, `Their rooms: Draw them again`, which
+takes it out and reads the page again; the status line says where. And the address's parameters, which
+were in the page's own comment alone, are a table in the manual (operations §2.3.5, both languages).
+
+**A room's size on the other scenes** (item (e); pictures from three eyes before the knights against a
+room of 1.5 M on the desktop and of the level itself, 1 M, on the phone; mean of 255 and the share of
+pixels over 8):
+
+| | room 400 000 | room 150 000 | textures, 1.5 M (or the level) / 400 000 / 150 000 |
+|---|---|---|---|
+| `n_chrome3`, 11.4 M | 0.23–0.43, 0.25–0.57 % | 0.35–0.63, 0.67–1.34 % | 1060 / 973 / 952 MB |
+| `n_lights6`, 8.6 M | 0.73–0.97, 2.1–2.8 % | 1.16–1.58, 4.7–6.3 % | 1091 / 977 / 951 MB |
+| `lamps`, 2.1 M | 0.53–0.78, 1.1–1.8 % | 1.14–1.59, 4.8–6.4 % | 308 / 232 / 210 MB |
+| phone, `n_lamps9` | 0.18–0.21, 0.41–0.48 % | 0.36–0.43, 1.2–1.3 % | 175 / 113 / 91 MB |
+| phone, `n_chrome3` | 0.07–0.12, 0.01–0.03 % | 0.12–0.21, 0.19–0.29 % | 138 / 100 / 86 MB |
+| phone, `n_lights6` | 0.18–0.20, 0.42–0.51 % | 0.41–0.43, 1.3–1.4 % | 171 / 110 / 89 MB |
+
+On the desktop a room of 150 000 saves 2 % of the textures and doubles what is lost: 400 000 stays. On
+the phone a room is needed -- the level itself in the rooms is half as much again on the device for a
+difference of half a percent of the pixels -- and 150 000 there would take a fifth off the textures for
+about one pixel in a hundred more over 8. It was measured, not looked at by eye and not changed: the
+phone's room is still 400 000 (one gaussian in three).
+
+Not done:
+- **A real browser, a real phone, Safari**: still none. Everything is headless Chrome and Playwright's
+  WebKit on one Mac, and that Mac was hot and shared.
+- **The first link of the programs ahead of the files** (item (c)): 0.12–0.55 s a load in all tonight and
+  0.18 s at its longest, where the first round met 0.4–1.8 s in one call. To link ahead the page would
+  have to build Spark's generator for a mesh it has not read yet (a mesh of one gaussian with the same
+  modifiers) and hand its material to three's `compileAsync`; not tried.
+- **The exporter's side of the `rgb` files**: `pack_colours.py` makes them from an export; the site's
+  scenes have none until it is run on them or the exporter writes them. With them the scene whole fetches
+  93 MB where it fetches 192–214.
+- **The phone's room at 150 000**, above; and a room made from the scene's coarsest level, as the first
+  round left it.
+- **The orbit's gap** is not settled, above; **the difference at frame 8 by the slider** (0.07 % of the
+  pixels, in the glass) was not traced.
+- With `?keep=1` off, Spark's own ray through a mesh finds nothing once its file is on the device; the
+  page does not use it where it kept its points, and a part whose points could not be kept is then turned
+  about the scene's middle.
+- A group moved for the first time waits for its files with the level as found on the screen; they are
+  not read ahead while the device is idle.
+- The page's own Spark still holds two sets of the scene (480 MB at 8.4 M), and Spark's sort its two
+  buffers (96 MB in the page), as the first round left them.
