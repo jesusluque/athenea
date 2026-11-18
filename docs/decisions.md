@@ -26402,3 +26402,26 @@ stages do not show it. The cause was not found.
 
 Not done: CUDA and Vulkan (the keeping is off there; Vulkan would use the same compute kernel); the capacity
 sized from a count read back; the nondeterminism above; Sponza with no bounce measured again.
+
+## The two other 1080p scenes found again with the cells' longer discs (18 Nov)
+
+`sponza_lamps` and `sponza_chrome` found again with 84788e72 (`--pyramid-turned`) and 37d9d392 (a parent
+asked for from 0.8), by the commands that found them (build/night/held2/job_refind.sh; the release build of
+d32b9d6a, before the kept paths). Whole, the held views are what they were: the lamps 27.51 / 23.37 / 26.00 /
+24.22 dB and the same SSIM to the fourth place but one; the chrome 31.71 / 29.03 / 30.47 / 29.58 dB (one view
+a hundredth lower). The same counts: 8 365 438 and 11 410 389 gaussians.
+
+The cut now writes the levels asked for: the lamps 1.92 M and 0.99 M (it wrote 1.93 M alone); the chrome
+3.82 M, 1.96 M and 0.99 M (it wrote 3.81, 1.82, 1.40 M and could go no lower). On an emulated phone the
+levels of 0.99 M show the floor whole from a frame that looks along it and from one beside the knights; they
+take the place of the levels grafted from scenes found at half the size (0.43 M and 0.49 M), which from some
+views ruled the near floor in a grid.
+
+The shoots took longer than the ones they replace, and it is not known why: the lamps 678 s with no stop of
+the guard inside (589 s the night before), the chrome 2017 s less its four stops (1835 s). The Mac had worked
+all night and stood near its thermal limit (four stops in half an hour); the cells' test of their four
+neighbours is the other candidate. Not separated.
+
+Not done: the three scenes at 960x540 (`lamps`, `sponza_knight`, `sponza_growth`) found again -- their levels
+are cuts made before the cells were lengthened and were not looked at along a floor; a level of half a
+million that is not soft; the shoots' 10–15% timed on a cool machine, old cells against new.
