@@ -72,6 +72,11 @@ struct PathSettings {
     /// through the concave joins of a scene twenty metres across in
     /// centimetres (Sponza: bright lines where a wall meets its floor).
     float    rayMargin = 1.0e-3F;
+    /// A path whose ray lands on glass past its first vertex is kept, and
+    /// goes on in a dispatch of the kept paths alone (PathTracer.cpp, kKept):
+    /// the same paths, a pixel's samples summed in another order. Off, every
+    /// path goes on in its pixel's thread.
+    bool     keepPaths = true;
     /// WHAT A BOUNCE MEETS, WHERE IT IS KNOWN ALREADY. A cube of `cacheSide`
     /// cells an axis from `cacheMin`, each `cacheCell` across: `sceneCache`
     /// holds a float4 a cell -- the light leaving the surfaces in it, and (a)
@@ -291,6 +296,10 @@ private:
     bool                              aux_ = false;
     bool                              bake_ = false;
     bool                              bakeBuilt_ = false;   ///< the variant the kernel was built with
+    /// pathResolve: the kept paths added to their pixels (PathTracer.cpp, kKept),
+    /// and how many `moments_` has room for.
+    std::optional<gpu::ComputeKernel> resolveKernel_;
+    uint32_t                          keptRoom_ = 0;
     /// pathGuides: the denoiser's guides, a kernel apart from the paths'.
     std::optional<gpu::ComputeKernel> guidesKernel_;
     std::string                       guidesModule_;   ///< the materials it was built for

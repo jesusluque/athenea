@@ -26355,3 +26355,50 @@ Not done, and what the measures put next:
   brought back for it. The flag is not taken out of the address by itself. The 400 000 of a room was
   looked at beside 150 000 and 1.5 M at three eyes of one scene, not searched; `sponza_chrome`, `lamps` and
   `n_lights4` at full detail were not looked at with the thinned rooms.
+
+## The paths that land on glass, kept and continued in a dispatch of their own (18 Nov)
+
+What the measures of 17 Nov pointed at ("where a glass's cost to the path tracer's bounces goes"), done. A
+path whose ray lands, past its first vertex, on a row whose material transmits is not shaded there: the
+megakernel writes its state (32 words) after the planes of `moments`, in a slot taken by `InterlockedAdd`,
+and goes on to its next sample. A second dispatch of the same kernel (the uniform `keptPhase`; no second
+compile) runs a thread an entry to the path's end over the whole capacity -- threads past the count return at
+once, so the CPU reads nothing -- and a small `pathResolve`, a thread a pixel, walks the pixel's list of
+entries into `sum`, `colour`, `moments` and the light groups and clears the count. The random numbers are
+keyed by pixel, sample and bounce, so they are the same paths, summed in another order. One keeping a path;
+off for bakes, volumes and the pipeline (CUDA) route; Metal only for now. The capacity is a quarter of a
+pass's paths, at most 512 MB; a path that finds no room goes on where it is. `PathSettings::keepPaths`,
+true by default.
+
+Metal (M5 Pro), 1920x1080, 32 paths in passes of 8, seconds a view (the second and third views of one load),
+one binary with the keeping off and on; no stop of the guard in these:
+
+| | three bounces | no bounce | the picture, on against off |
+|---|---|---|---|
+| flat Sponza, the glass knight | 21.6–21.7 -> 16.4–17.5 | 4.76–4.78 -> 4.55–4.63 | one half-float code at most; bit for bit with no bounce |
+| flat Sponza, both knights | 20.9–21.0 -> 17.0–17.1 | 4.63–4.69 -> 4.53–4.55 | the same |
+| flat Sponza, no knight | 11.5 -> 11.7 | 2.9–3.0 -> 2.9–3.0 | bit for bit: no path kept |
+| Sponza with its lamps | 27.75–27.8 -> 24.0–24.2 | not measured (two views out of line, not run again) | 30–47 pixels of 2 073 600 over two codes; 8–9 with no bounce |
+| the materials stage | 12.0–12.1 -> 11.3 | 3.15–3.2 -> 3.2 | 0–1 pixel over two codes; 139–145 with no bounce |
+
+A fifth off the glass knight's frame, a seventh off Sponza's, a fifteenth off the materials stage's; nothing
+where there is no glass. 2.04 M of 16.6 M paths a pass are kept on the flat stage with the glass knight, 2.5 M
+on Sponza. Sponza's pixels are the cut-out shadows' lots, keyed by a count over the thread's life
+(`gShadowDraws`): off twice and on twice are each bit for bit. Against 512 paths, 32 paths give the same
+error off and on (the materials stage 32.42 dB both; Sponza relMSE 0.591326 and 0.591327).
+`neural-scene shoot` of the Sponza with knights, 960x540, eight views, three runs each way: 97, 94, 94 s
+off; 87, 84, 87 s on; the held views the same (32.58 / 31.21 / 31.44 / 30.36 dB), 1 751 309 gaussians each.
+Tests on Metal, all pass: `athenea_technique_tests` (64 cases), `athenea_material_tests` (15),
+`athenea_usd_tests "[path],[glass],[lights],[emissive]"` (62), `athenea_render_tests "[scene]"` (14).
+
+Tried and dropped: a path kept again each time it passes between glass and the rest, a dispatch each (2–6
+rounds): 17.7–18.3 s where one round gives 16.4.
+
+**Found beside it, not mended: the trunk's kernel is not the same from run to run on the materials stage.**
+Two runs of the same build differ in 16–161 pixels with no bounce; a write to the shadow count that changes
+no meaning (`if (sample == 0u) { gShadowDraws = 0u; }`) makes it 660 000–700 000 pixels (38.5 dB); the count
+set to zero at every sample, 16. Zeroing the bump's quad derivative does not remove it; Sponza and the flat
+stages do not show it. The cause was not found.
+
+Not done: CUDA and Vulkan (the keeping is off there; Vulkan would use the same compute kernel); the capacity
+sized from a count read back; the nondeterminism above; Sponza with no bounce measured again.
