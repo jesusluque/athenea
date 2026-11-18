@@ -498,6 +498,49 @@ caja de la escena, una décima hacia dentro de sus paredes, mirando a algún pun
 de la pieza con una lente de 20 mm. Desde ahí se ve un edificio; un objeto sobre una
 mesa se ajusta mejor con `athenea neural-fit`, cuyas cámaras se ponen a su alrededor.
 
+### 2.3.5 El player web — lo que dice su dirección
+
+`scripts/examples/neural-scene-viewer/index.html`, servido junto a un
+directorio `scenes/` (un export de `neural-scene export`, el de
+`export_groups.py` para una escena con grupos de luces), sabe qué enseñar por
+su dirección. Lo que se está mirando lo vuelve a escribir ahí, en el sitio y
+un momento después del último cambio, de modo que una dirección copiada es la
+vista entregada; el resto solo lo lee.
+
+| Parámetro | Valor | Por defecto | Lo guarda la página | Notas |
+|---|---|---|---|---|
+| `scene` | un nombre: letras, cifras, `_`, `-` | `sponza_growth` | sí | `scenes/<nombre>.json` |
+| `detail` | `auto`, `full`, o un nivel contado desde 1 | `auto` | sí | `auto` dibuja el nivel más fino dentro de lo que se le confía al dispositivo -- 1 M de gaussianas en un teléfono, 2 M en otra pantalla táctil o en una máquina que declara 4 GB o menos, la escena entera si no -- y baja un nivel donde los frames llegan a menos de 15 por segundo. Una escena exportada sin niveles se dibuja entera |
+| `frame` | entero | el final de la escena tal como creció; la primera cámara del recorrido de un nivel | donde no es el valor por defecto | de la escena entera (`detail=full`), tantos de sus frames; de un nivel, una cámara del recorrido. Un frame anterior de la escena entera lee la historia de la escena (abajo) |
+| `ride` | `1` | no | sí | se va montado en la cámara del render |
+| `light.<grupo>` | 0 a 2 | `1` | donde no es 1 | un grupo de luces a un nivel distinto del que se rodó. Dicho en la dirección, los ficheros de los grupos se leen con la escena |
+| `object` | una ruta de prim | ninguno | sí | las gaussianas hechas de los prims del stage en la ruta o bajo ella; un índice con `prims` |
+| `object.view` | `highlight`, `isolate`, `matte` | `highlight` | con `object` | el objeto teñido, solo, o su matte blanco sobre negro |
+| `glass` | `0` | sí | en el almacenamiento del navegador, con las opciones | vidrio y cromo dibujados como las imágenes con que se encontraron, no sombreados por el ojo |
+| `orbit` | `0` | sí | no | arrastrar gira la cámara donde está, no alrededor de lo que hay bajo el puntero; con Alt pulsado hace lo mismo durante un arrastre |
+| `filter` | `fixed` | según el canvas | no | el filtro de un tercio de píxel sea cual sea el canvas. Sin él, una escena cuyo índice dice `frameSize` y `antialiased: false` se filtra `1,2 × spread ×` los píxeles del canvas entre los del frame, entre 0,3 y 2 píxeles |
+| `rooms` | `0` | sí | lo pone la página | no se dibuja ninguna sala para el vidrio y el cromo, que se ven como se encontraron. La página lo pone ella misma y se vuelve a leer cuando el navegador le quita el contexto gráfico habiendo salas dibujadas; si lo pierde otra vez, lee un nivel más grueso. `Their rooms: Draw them again` en las opciones lo quita |
+| `room` | gaussianas, al menos 20000 | `400000` | no | cuántas gaussianas conserva la escena de la que se dibujan las salas, sea cual sea el detalle |
+| `keep` | `1` | no | no | la página conserva sus propias copias de las gaussianas y de sus texturas después de que el dispositivo las tenga (32 bytes por gaussiana y 4 por texel); sin él se sueltan una vez enviadas, y el rayo del propio Spark a través de una malla no encuentra nada |
+| `progressive` | `0` | sí | no | el detalle pedido según llega, sin dibujar antes un nivel más grueso |
+| `base` | una dirección `http(s)` | `./scenes/` | no | dónde están los ficheros de la escena |
+| `unit` | metros | el `unit` del índice; `0.01` donde la caja mide más de 200 de lado, si no `1` | no | la unidad de la escena |
+
+Qué lee la página, y cuándo. El nivel más grueso se dibuja primero, de sus
+ficheros con las lámparas encendidas (`litLevels`), y el detalle detrás. Un
+nivel que tiene esos ficheros se dibuja de ellos, y los ficheros de sus
+grupos -- otro tanto por cada grupo -- se leen la primera vez que se mueve el
+nivel o el tinte de un grupo (la fila dice `reading…`); la escena entera no
+los tiene y lee sus grupos con sus partes. Los colores base que quiere la
+lámpara propia de la página se leen cuando la lámpara se enciende por primera
+vez. La historia de una escena -- lo que un frame encontró y otro posterior
+quitó o refinó -- se lee la primera vez que la línea de tiempo está en un
+frame anterior, y ese frame enseña huecos hasta que ha llegado. Donde el
+índice de un grupo nombra un fichero `rgb` junto al `file` de una parte
+(`pack_colours.py <scenes> <escena>` los escribe a partir de un export: gzip
+sobre tres bytes por gaussiana, el flujo de colores del SPZ), la página lee
+ese en lugar del fichero: de una quinta a una décima parte de sus bytes.
+
 ### 2.4 `athenea convert` — un fichero de splats a USD, o a un `.athc`
 
 | Opción | Valor | Por defecto | Notas |

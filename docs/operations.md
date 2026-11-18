@@ -494,6 +494,47 @@ scene's box, a tenth in from its walls, looking at somewhere in the piece's own
 box through a 20 mm lens. That is where a building is seen from; an object on a
 table is better fitted by `athenea neural-fit`, whose cameras stand round it.
 
+### 2.3.5 The web player — what its address says
+
+`scripts/examples/neural-scene-viewer/index.html`, served beside a `scenes/`
+directory (an export of `neural-scene export`, `export_groups.py`'s for a
+scene with groups of lights), is told what to show by its address. What is
+being looked at it writes back there, in place and a moment after the last
+change, so that an address copied is the view handed on; the rest it only
+reads.
+
+| Parameter | Value | Default | Kept by the page | Notes |
+|---|---|---|---|---|
+| `scene` | a name: letters, digits, `_`, `-` | `sponza_growth` | yes | `scenes/<name>.json` |
+| `detail` | `auto`, `full`, or a level counted from 1 | `auto` | yes | `auto` draws the finest level within what the device is trusted with -- 1 M gaussians on a phone, 2 M on another touch screen or a machine that reports 4 GB or less, the scene whole otherwise -- and goes a level coarser where frames come under 15 a second. A scene exported with no levels is drawn whole |
+| `frame` | integer | the end of the scene as it grew; the first camera of a level's walk | where it is not the default | of the scene whole (`detail=full`), so many of its frames; of a level, a camera of the walk. An earlier frame of the scene whole reads the scene's history (below) |
+| `ride` | `1` | off | yes | the render camera ridden |
+| `light.<group>` | 0 to 2 | `1` | where not 1 | a group of lights at a level other than the one it was shot at. Said in the address, the groups' files are read with the scene |
+| `object` | a prim path | none | yes | the gaussians made from the stage's prims at or under the path; an index with `prims` |
+| `object.view` | `highlight`, `isolate`, `matte` | `highlight` | with `object` | the object tinted, alone, or its matte white on black |
+| `glass` | `0` | on | in the browser's storage, with the options | glass and chrome drawn as the pictures they were found with, not shaded by the eye |
+| `orbit` | `0` | on | no | a drag turns the camera where it stands, not about what is under the pointer; Alt held does the same for one drag |
+| `filter` | `fixed` | by the canvas | no | the filter a third of a pixel whatever the canvas. Without it a scene whose index says `frameSize` and `antialiased: false` is filtered `1.2 × spread ×` the canvas's pixels over the frame's, held between 0.3 and 2 pixels |
+| `rooms` | `0` | on | set by the page | no room is drawn for glass and chrome, which show as found. The page sets it itself and reads itself again when the browser takes the graphics context back while rooms were drawn; lost again, it reads a level coarser. `Their rooms: Draw them again` in the options takes it out |
+| `room` | gaussians, at least 20000 | `400000` | no | how many gaussians the scene the rooms are drawn from keeps, whatever the detail |
+| `keep` | `1` | off | no | the page keeps its own copies of the gaussians and of its textures after the device has them (32 bytes a gaussian and 4 a texel); without it they are let go once sent, and Spark's own ray through a mesh finds nothing |
+| `progressive` | `0` | on | no | the detail asked for as it comes, with no coarser level drawn first |
+| `base` | an `http(s)` address | `./scenes/` | no | where the scene's files are |
+| `unit` | metres | the index's `unit`; `0.01` where the box is over 200 across, else `1` | no | the scene's unit |
+
+What the page reads, and when. The coarsest level is drawn first, from its
+files with the lamps on (`litLevels`), and the detail behind it. A level that
+has such files is drawn from them, and its groups' files -- as large again for
+each group -- are read the first time a group's level or tint is moved (the
+row says `reading…`); the scene whole has none and reads its groups with its
+parts. The base colours the page's own lamp wants are read when the lamp is
+first lit. A scene's history -- what a frame found that a later one took out
+or refined -- is read the first time the timeline is at an earlier frame, and
+that frame shows holes until it is in. Where a group's index names an `rgb`
+file beside a part's `file` (`pack_colours.py <scenes> <scene>` writes them
+from an export: gzip over three bytes a gaussian, the SPZ's colour stream),
+the page reads that in place of the file: a fifth to a tenth of its bytes.
+
 ### 2.4 `athenea convert` — a splat file into USD, or into a `.athc`
 
 | Option | Value | Default | Notes |

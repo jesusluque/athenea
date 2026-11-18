@@ -19,8 +19,14 @@
     ?object=<prim path>      the object chosen: the gaussians made from the stage's prims at or under that path
     ?object.view=<how>       how it is shown: matte, isolate or highlight (highlight where it is not said)
     ?orbit=0                 a drag turns the camera where it stands, as it did (Alt held does the same for one drag)
-  and one thing said only there:
+  and things said only there (docs/operations.md has the table):
     ?filter=fixed    the filter a third of a pixel whatever the canvas (as it was before the index said frameSize)
+    ?rooms=0         no room is drawn: glass and chrome as found (the page sets it after a lost graphics context;
+                     a line in the options takes it out)
+    ?room=<n>        gaussians in the scene the rooms are drawn from (400000)
+    ?keep=1          the page keeps its copies of what is on the device
+    ?progressive=0   the detail asked for as it comes, no coarser level first
+    ?base=<url>      where the scenes are, when not beside the page
 -->
 <head>
   <meta charset="utf-8">
@@ -60,6 +66,7 @@
     .options h3 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim);
       margin: 12px 0 4px; font-weight: 600; }
     .options .row { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+    .options .row[hidden] { display: none; }
     .options .row > span:first-child { flex: 0 0 104px; color: var(--dim); }
     .options .row select, .options .row input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
     .options .row select { background: #15151d; color: var(--fg); border: 1px solid var(--dim); border-radius: 5px;
@@ -158,6 +165,7 @@
     <div class="row"><span>Resolution</span><input type="range" id="optPixels" min="0.5" max="2" step="0.25"><output id="outPixels"></output></div>
     <div class="row"><span>Field of view</span><input type="range" id="optFov" min="20" max="100" step="1"><output id="outFov"></output></div>
     <div class="row"><span>Glass and chrome</span><input type="checkbox" id="optGlass"><span class="note">shaded by where the eye is</span></div>
+    <div class="row" id="optRoomsRow" hidden><span>Their rooms</span><button id="optRooms">Draw them again</button><span class="note">off: the graphics were lost once</span></div>
     <div id="optGroups"></div>
     <div class="row"><span>Sky</span><input type="color" id="optSky"><span class="note">behind the scene</span></div>
     <div class="row"><span>Reflections</span><select id="optCube"><option value="256">256</option><option value="512">512</option><option value="1024">1024</option></select></div>
@@ -433,6 +441,17 @@
       }));
       window.__groups = groups;
       const setGroup = (g) => g.gain.value.set(g.level * g.tint[0], g.level * g.tint[1], g.level * g.tint[2]);
+      // A GROUP'S LIGHT IS READ WHEN A LAMP IS FIRST MOVED. A level of detail handed on with its lamps on
+      // (`litLevels`) is the picture the scene was found with, in one file a part; the same level with its
+      // groups is that file and one as large for each group, read for lamps that may never be touched -- on
+      // a phone two thirds of what a load fetched. So a level is drawn from its lit files, and the first
+      // time a group's level or tint is set away from the one it was shot with the level is read again with
+      // its groups, behind what is drawn (the row says "reading" meanwhile). An address that sets a group
+      // reads them at once, and the scene whole (no level) has no lit files and reads them as it did.
+      let groupsWanted = false;
+      let readGroups = () => {};   // the page's, once there is a detail to read again
+      const groupLabels = [];
+      const sayGroups = (now) => { for (const [label, g] of groupLabels) label.textContent = `Light: ${g.name}${now ? " (reading…)" : ""}`; };
       // SO MANY FILES ARE READ AT A TIME: a part's files side by side and the parts after it begun while it
       // is read, with this many at once at most -- each is a request, a worker's decoding and its bytes held.
       const gate = (most) => {
@@ -444,7 +463,60 @@
         };
       };
       const reading = gate(8);
+      // WHAT THE PAGE KEEPS OF A FILE IS LET GO ONCE THE DEVICE HAS IT. Spark keeps a file's gaussians in the
+      // page (32 bytes each) beside the texture it makes of them, and three keeps the array a texture was
+      // made from: at eight million gaussians 300 MB of the first and 90 MB of the page's own textures a
+      // gaussian. The page reads them only while a part is read -- its points for the pointer, its gaussians
+      // for the rooms, its glass's axes and box -- and a graphics context that is lost is met by reading the
+      // page again, not by sending them a second time. So each is let go when three says it was sent
+      // (`onUpdate`). Spark's ray through a mesh then finds nothing; the page asks its own points.
+      // `?keep=1` leaves them where they were.
+      const kept = params.get("keep") === "1";
+      const onDevice = (texture, then) => {
+        const was = texture.onUpdate;
+        texture.onUpdate = (...said) => { was?.(...said); texture.onUpdate = was; setTimeout(then, 0); };
+      };
+      const forget = (texture) => {
+        if (!kept) onDevice(texture, () => { if (texture.image) texture.image.data = null; });
+        return texture;
+      };
+      const forgetFile = (mesh) => {
+        const held = mesh.extSplats;
+        if (kept || !held || !Array.isArray(held.textures) || !Array.isArray(held.extArrays)) return;
+        let left = held.textures.length;
+        for (const texture of held.textures) {
+          if (!texture?.image?.data?.length) return;   // not a texture of its gaussians: left as it is
+          onDevice(texture, () => {
+            if (mesh.extSplats !== held || !texture.image) return;   // let go meanwhile
+            texture.image.data = null;
+            if (--left === 0) held.extArrays = [new Uint32Array(), new Uint32Array()];
+          });
+        }
+      };
+      // A GROUP'S COLOURS IN A FILE OF THEIR OWN. A group's part is a whole file of gaussians -- places,
+      // shapes, opacities -- read through Spark for its colours alone: three fifths of what a load of the
+      // scene whole fetches. Where a group's (or the base colours') index names beside a part's `file` an
+      // `rgb` file, that is read in its place: gzip over three bytes a gaussian in the file's order, the
+      // bytes an SPZ keeps a colour in (its colour stream as it is). The bytes go to the texture as they
+      // are, flagged `raw`, and the shader makes of them the colour Spark makes of the same bytes.
+      const rawColours = async (file) => {
+        const local = window.__sceneBlobs?.get(file);
+        const bytes = await reading(async () => {
+          const packed = local ?? await (async () => { const got = await fetch(urlOf(file)); if (!got.ok) throw new Error(`${file}: ${got.status}`); return got.blob(); })();
+          return new Uint8Array(await new Response(packed.stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+        });
+        const count = Math.floor(bytes.length / 3);
+        const high = Math.max(Math.ceil(count / groupWide), 1);
+        const texels = new Uint8Array(groupWide * high * 4);
+        for (let i = 0; i < count; ++i) { texels[i * 4] = bytes[i * 3]; texels[i * 4 + 1] = bytes[i * 3 + 1]; texels[i * 4 + 2] = bytes[i * 3 + 2]; texels[i * 4 + 3] = 255; }
+        const texture = new THREE.DataTexture(texels, groupWide, high, THREE.RGBAFormat, THREE.UnsignedByteType);
+        texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
+        texture.needsUpdate = true;
+        texture.userData.raw = true;
+        return forget(texture);
+      };
       const groupTexture = async (file) => {
+        if (/\.rgb$/i.test(file)) return rawColours(file);
         // The group's part, read for its colours alone and let go: Spark's packed splat keeps a colour in
         // the first word of four, a byte a channel.
         const read = await reading(async () => { const mesh = await splatOf(file); await mesh.initialized; return mesh; });
@@ -463,7 +535,7 @@
         const texture = new THREE.DataTexture(texels, groupWide, high, THREE.RGBAFormat, THREE.UnsignedByteType);
         texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
         texture.needsUpdate = true;
-        return texture;
+        return forget(texture);
       };
       // A LAMP OF THE PLAYER'S OWN. Where the scene was handed on with its base colours (index.base: the same
       // gaussians with each one's base colour as its colour), a lamp is added a gaussian: the base colour
@@ -502,6 +574,11 @@
                                                : (scales.y <= scales.z ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0));
               return normalize(axis + 2.0 * cross(q.xyz, cross(q.xyz, axis) + q.w * axis));
             }
+            // A colour from an SPZ's byte, as Spark makes it and keeps it in a byte of its own: the byte is
+            // the first harmonic over 0.15 about a half, the colour that harmonic times 0.2820948 about a half.
+            vec3 rawColour(vec3 kept) {
+              return floor(clamp((kept * 255.0 - 127.5) * (0.2820948 / 0.15) + 127.5, 0.0, 255.0) + 0.5) / 255.0;
+            }
           `)],
           statements: ({ inputs, outputs }) => dyno.unindentLines(`
             ${outputs.gsplat} = ${inputs.gsplat};
@@ -512,8 +589,8 @@
               vec3 toLamp = ${inputs.place} - ${inputs.gsplat}.center;
               float far2 = max(dot(toLamp, toLamp), 0.01);
               float faces = abs(dot(discAxis(${inputs.gsplat}.quaternion, ${inputs.gsplat}.scales), toLamp * inversesqrt(far2)));
-              light += pow(texelFetch(${inputs.base}, at, 0).rgb, vec3(2.2)) * ${inputs.sends} * (faces / far2);` : ""}
-              ${textures.map((_, k) => `light += ${inputs[`gain${k}`]} * pow(texelFetch(${inputs[`light${k}`]}, at, 0).rgb, vec3(2.2));`).join("\n              ")}
+              light += pow(${base.userData.raw ? "rawColour" : ""}(texelFetch(${inputs.base}, at, 0).rgb), vec3(2.2)) * ${inputs.sends} * (faces / far2);` : ""}
+              ${textures.map((texture, k) => `light += ${inputs[`gain${k}`]} * pow(${texture.userData.raw ? "rawColour" : ""}(texelFetch(${inputs[`light${k}`]}, at, 0).rgb), vec3(2.2));`).join("\n              ")}
               ${outputs.gsplat}.rgba.rgb = pow(max(light, vec3(0.0)), vec3(1.0 / 2.2));
             }
           `),
@@ -570,7 +647,7 @@
         texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
         texture.needsUpdate = true;
         texture.userData.tally = tally;
-        return texture;
+        return forget(texture);
       };
       // The modifier of a mesh whose ids are `ids`; of one that has none (null), whose gaussians are no object's.
       const objectsOf = (ids) => dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
@@ -674,6 +751,7 @@
         row.className = "row";
         const label = document.createElement("span");
         label.textContent = `Light: ${g.name}`;
+        groupLabels.push([label, g]);
         const level = document.createElement("input");
         level.type = "range"; level.min = "0"; level.max = "2"; level.step = "0.05"; level.value = "1";
         const tint = document.createElement("input");
@@ -686,6 +764,7 @@
           g.tint = [1, 3, 5].map((at) => parseInt(hex.slice(at, at + 2), 16) / 255);
           said.textContent = g.level.toFixed(2);
           setGroup(g);
+          if (!groupsWanted && (Math.abs(g.level - 1) > 1e-6 || g.tint.some((c) => c < 1))) { groupsWanted = true; readGroups(); }
           shadeStale = true;   // what the glass and the chrome show changed with it
           keepAddress();
         };
@@ -737,6 +816,7 @@
         const thinned = new THREE.DataTexture(texels, groupWide, high, THREE.RGBAFormat, THREE.UnsignedByteType);
         thinned.magFilter = THREE.NearestFilter; thinned.minFilter = THREE.NearestFilter;
         thinned.needsUpdate = true;
+        thinned.userData.raw = texture.userData.raw;
         return thinned;
       };
       // A part as the rooms see it: one gaussian in `stride`, wider by the root of that (it stands for as many
@@ -841,8 +921,12 @@
       const shapeOf = (mesh) => {
         const centres = [], axes = [];
         const axis = new THREE.Vector3();
+        // The mesh's box of centres, as Spark's `getBoundingBox(true)` gives it: asked of Spark later, it
+        // would go through gaussians the page no longer keeps.
+        const box = new THREE.Box3();
         let count = 0;
         mesh.forEachSplat((at, centre, scales, quaternion) => {
+          box.expandByPoint(centre);
           // The shortest of the three, as the shader's `lensAxis` picks it.
           if (scales.x <= scales.y) axis.set(scales.x <= scales.z ? 1 : 0, 0, scales.x <= scales.z ? 0 : 1);
           else axis.set(0, scales.y <= scales.z ? 1 : 0, scales.y <= scales.z ? 0 : 1);
@@ -856,7 +940,7 @@
         const texture = new THREE.DataTexture(texels, groupWide, high, THREE.RGBAFormat, THREE.UnsignedByteType);
         texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
         texture.needsUpdate = true;
-        return { count, centres: Float32Array.from(centres), axes: Float32Array.from(axes), texels, texture };
+        return { count, centres: Float32Array.from(centres), axes: Float32Array.from(axes), texels, texture, box };
       };
       // The normals of one kind's parts, from all of them together: `cell` is in the parts' own units.
       // WORKED OUT IN A WORKER. On the page's thread, in slices of thirty milliseconds between its frames, the
@@ -1186,8 +1270,67 @@
       const walk = () => index.parts.map(partOf).filter((p) => cameras.has(p.camera));
       const steps = () => detail === 0 ? meshes.length : walk().length;
       let cursor = 0;           // where the timeline is: parts drawn (the grown scene), or a camera of the walk
+      // THE HISTORY IS READ WHEN THE TIMELINE FIRST LEAVES ITS END. What a part's frame found that a later
+      // frame took out or refined stands only until that frame: at the end of the timeline, where the page
+      // opens, none of it is drawn -- and it was read with the rest, a file a span with its groups' and its
+      // ids beside it (three fifths of a load's requests at eight million gaussians, a seventh of its
+      // bytes, and its gaussians held on the device). It is read the first time the timeline is at an
+      // earlier frame -- dragged, played, or asked for by the address -- behind the scene, which shows that
+      // frame without it until it is in (holes where a later frame refined what stood). A span that would
+      // stand at the end (none is written so) is read with its part.
+      let historyWanted = false, historyBusy = false;
+      let reader = null;        // the load at hand's way of reading a part: { mine, readPart }
+      const laterSpan = (span) => { const until = span.until ?? 0; return until > 0 && until <= frameOf(parts.length - 1); };
+      const byOrder = (a, b) => a.order - b.order;
+      const readHistory = async () => {
+        if (historyBusy || detail !== 0 || !reader || reader.mine !== generation) return;
+        const mine = generation;
+        const lacking = () => meshes.map((_, k) => k).filter((k) => !meshes[k].history);
+        const weight = (k) => (parts[k].history ?? []).filter(laterSpan).reduce((sum, span) => sum + countOf({ gaussians: 0, ...span }), 0);
+        const total = lacking().reduce((sum, k) => sum + weight(k), 0);
+        if (total === 0) { for (const own of meshes) own.history = true; return; }
+        historyBusy = true;
+        let read = 0;
+        const tell = (n) => {
+          read += n;
+          if (mine !== generation || loading) return;
+          report(`reading the scene's earlier frames… ${(read / 1e6).toFixed(2)} of ${(total / 1e6).toFixed(2)} M gaussians`);
+          setProgress(read / total);
+        };
+        tell(0);
+        try {
+          while (mine === generation) {
+            const next = lacking().slice(0, 4);
+            if (next.length === 0) break;
+            await Promise.all(next.map(async (k) => {
+              const standing = meshes[k];
+              standing.history = true;
+              if (weight(k) === 0) return;
+              try {
+                const { own, beside } = await reader.readPart(parts[k], k, true, tell);
+                if (mine !== generation || meshes[k] !== standing) { letGo([...own, ...beside]); return; }
+                for (const m of [...own, ...beside]) { m.mesh.visible = false; (keeping ? staging : root).add(m.mesh); }
+                meshes[k].push(...own);
+                meshes[k].sort(byOrder);
+                shaded[k].push(...beside);
+                shaded[k].sort(byOrder);
+              } catch (error) {
+                // A file that did not come is asked for again, twice; after that its frames are shown without it.
+                standing.tried = (standing.tried ?? 0) + 1;
+                if (standing.tried < 3 && mine === generation && meshes[k] === standing) { standing.history = false; await new Promise((go) => setTimeout(go, 400 * standing.tried)); }
+                else console.warn("a part's history could not be read: its frames are shown without it", error);
+              }
+            }));
+            if (mine === generation) { applyShading(); show(cursor, false); }
+          }
+        } finally {
+          historyBusy = false;
+          if (mine === generation && !loading) { report(summary()); setProgress(null); }
+        }
+      };
       const show = (count, moveCamera) => {
         cursor = Math.max(0, Math.min(count, steps()));
+        if (detail === 0 && !historyWanted && cursor < meshes.length) { historyWanted = true; readHistory(); }
         shown = detail === 0 ? cursor : meshes.length;
         let gaussians = 0;
         // THE SCENE AS IT STOOD at the frame the timeline is at: a part is drawn from its frame on, and what
@@ -1250,7 +1393,17 @@
       let fpsText = "";
       // Whether the glass and the chrome are shaded by the eye, said with the rest: a device that cannot draw
       // their room leaves them as they were found, the same from anywhere, and says so here and why.
-      let shadeNote = roomsWanted ? "" : " · glass and chrome as found, not by the eye (?rooms=0: the graphics were lost once with their rooms)";
+      let shadeNote = roomsWanted ? "" : " · glass and chrome as found, not by the eye (?rooms=0: the graphics were lost once with their rooms; Options draws them again)";
+      // THE WAY BACK FROM `?rooms=0`: the flag stays in the address, and in an address handed on, after the
+      // one time the graphics were lost; a line in the options takes it out and reads the page again.
+      if (!roomsWanted) {
+        $("optRoomsRow").hidden = false;
+        $("optRooms").addEventListener("click", () => {
+          const to = new URLSearchParams(location.search);
+          to.delete("rooms");
+          location.search = to.toString();
+        });
+      }
       const say = (text) => { statusLine.textContent = text + shadeNote + (settings.fps && fpsText ? ` · ${fpsText}` : ""); };
       let said = "loading…";
       const report = (text) => { said = text; say(text); };
@@ -1264,7 +1417,7 @@
         // of theirs -- the index gives a part's gaussians, not its bytes -- counted a file at a time, a part's
         // history and its glass and mirrors with it. It is the load at hand that is measured: the coarse
         // level drawn first fills the bar once, and the detail read behind it ("refining") fills it again.
-        const weigh = (p) => [p, ...(p.history ?? [])].reduce((sum, span) => sum + countOf({ gaussians: 0, ...span }), 0);
+        const weigh = (p) => [p, ...(p.history ?? []).filter((span) => historyWanted || !laterSpan(span))].reduce((sum, span) => sum + countOf({ gaussians: 0, ...span }), 0);
         // A file's ids, or null where it has none or they cannot be read: its gaussians are then no object's.
         const idsOf = async (file, count, counted) => {
           if (!file) return null;
@@ -1292,13 +1445,16 @@
           if (entry.room) entry.textures.push(...entry.room.textures);
           return entry;
         };
-        const readPart = async (part, place_) => {
+        // `later`: the spans of its history left for later, alone (see `readHistory`), counted by `said`.
+        const readPart = async (part, place_, later = false, said = null) => {
           const own = [], beside = [];
           let counted = 0;
-          const count = (n) => { counted += n; if (mine === generation) { readAhead += n; tell(); } };
-          const spans = [part, ...(part.history ?? [])];
+          const count = (n) => { counted += n; if (said) said(n); else if (mine === generation) { readAhead += n; tell(); } };
+          const withHistory = later || historyWanted;
           const reads = [];
-          spans.forEach((span, spanOrder) => {
+          [part, ...(part.history ?? [])].forEach((span, spanOrder) => {
+            const left = span !== part && laterSpan(span);
+            if (later ? !left : left && !withHistory) return;
             // The part itself and, where the scene was handed on with its history, what the part's frame
             // found that stood only for a while: each a file, with its glass and its mirrors beside it.
             const until = span === part ? 0 : span.until ?? 0;
@@ -1307,7 +1463,7 @@
               const entry = (level === 0 ? held.parts : held.levels?.[level - 1]?.parts)?.[place_];
               return span === part ? entry : entry?.history?.[spanAt];
             };
-            const fileOf = (entry) => typeof entry === "string" ? entry : entry?.file;
+            const fileOf = (entry) => typeof entry === "string" ? entry : entry?.rgb ?? entry?.file;   // its colours alone, where it has them so
             // The light of a file of the span: the span's own (`which` undefined), its glass's or its mirrors'.
             // A GLASS AND A MIRROR TAKE THEIR GROUPS' LIGHT TOO: where the room holds nothing along a ray a
             // gaussian shows the colour it was found with, and found without the lamps that was near black.
@@ -1319,7 +1475,7 @@
             const lightOf = async (which) => {
               const at = (held) => (which ? fileOf(of(held)?.[which]) : fileOf(of(held)));
               const grouped = !lit && groups.length > 0 && groups.every((g) => at(g));
-              const baseFile = lit ? undefined : at(lamp);
+              const baseFile = at(lamp);
               const based = lamp.wanted ? baseFile : undefined;
               if (!grouped && !based) return { light: undefined, groupTextures: [], textures: [], baseFile };
               const [textures, base] = await Promise.all([Promise.all(grouped ? groups.map((g) => groupTexture(at(g))) : []),
@@ -1343,6 +1499,7 @@
                          textures: [...lightOfIt.textures, ...(ids ? [ids] : [])], pick: pickOf(mesh), cut: span.spans ? cutOf(mesh, 1, span.spans) : null };
               // What a later frame took out or refined is in no room: a room is the scene as it stands at the end.
               own.push(until === 0 ? withRoom(entry, entry.textures, lightOfIt.base) : entry);
+              forgetFile(mesh);
               count(span.gaussians ?? 0);
             })());
             [["glass", span.glass], ["mirror", span.mirror]].forEach(([which, made], kindOrder) => {
@@ -1361,6 +1518,7 @@
                               textures: [...lightOfIt.textures, ...(ids ? [ids] : []), shape.texture], pick: pickOf(other), heart: heartOf(shape, made.gaussians ?? 0), light, objects: marks,
                               cut: span.spans ? cutOf(other, which === "glass" ? 2 : 3, span.spans) : null,
                               shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1]), shape.texture) }, null, lightOfIt.base));
+                forgetFile(other);
                 count(made.gaussians ?? 0);
               })());
             });
@@ -1371,16 +1529,18 @@
           beside.sort((a, b) => a.order - b.order);
           const failed = ends.find((end) => end.status === "rejected");
           if (failed) { letGo([...own, ...beside]); throw failed.reason; }
-          return { own, beside, counted };
+          return { own, beside, counted, withHistory };
         };
+        reader = { mine, readPart };
         const ahead = new Map();
         const begin = (k) => { if (!ahead.has(k)) ahead.set(k, readPart(parts[k], k)); return ahead.get(k); };
         try {
           while (meshes.length < parts.length && mine === generation) {
             const at = meshes.length;
             for (let k = at; k < Math.min(at + 3, parts.length); ++k) begin(k);
-            const { own, beside, counted } = await begin(at);
+            const { own, beside, counted, withHistory } = await begin(at);
             ahead.delete(at);
+            own.history = withHistory;
             if (mine !== generation) { letGo([...own, ...beside]); break; }
             readAhead -= counted;
             for (const m of [...own, ...beside]) {
@@ -1392,6 +1552,7 @@
             }
             meshes.push(own);
             shaded.push(beside);
+            if (historyWanted && !withHistory) readHistory();
             if (lamp.wanted && [...own, ...beside].some((m) => m.baseFile)) readLamp();
             applyShading();
             objectsShown();
@@ -1436,8 +1597,10 @@
             const next = window.__player.then;
             window.__player.then = undefined;
             window.__player.coarseMs = Math.round(performance.now() - began);
-            if (next !== detail || litFirst) { setDetail(next, true); return; }
+            // A level with its lamps on stays where it is the detail asked for and no group is to be moved.
+            if (next !== detail || (litFirst && groupsWanted)) { setDetail(next, true); return; }
           }
+          if (!litFirst) sayGroups(false);
           window.__player.wholeMs = Math.round(performance.now() - began);
           asked.frame = null;   // the frame the address asked for is shown: the timeline is the reader's
           // Spark's ray through the gaussians starts itself on the first one asked and answers from the
@@ -1469,7 +1632,10 @@
         atEnd = true;
         setPlaying(false);
         detail = next;
-        litFirst = first && detail > 0 && litLevels.length >= detail;
+        // An address that asks for an earlier frame of the scene as it grew reads each part with its history.
+        if (detail === 0 && asked.frame !== null && asked.frame < index.parts.length) historyWanted = true;
+        // With its lamps on where the level has such files: the level drawn first, and any level until a group is moved.
+        litFirst = detail > 0 && litLevels.length >= detail && (first || (!groupsWanted && groups.length > 0));
         parts = (detail === 0 ? index.parts : (litFirst ? litLevels : levels)[detail - 1].parts).map(partOf);
         window.__scene.loaded = false;
         window.__scene.parts = 0;
@@ -1494,7 +1660,15 @@
         return within >= 0 ? within + 1 : levels.length;
       };
       window.__player = { detail: 0, fps: 0, settings, budget, lowered: 0 };
-      window.__player.shading = () => ({ stale: shadeStale, busy: shadeBusy, loading, step: window.__player.step, glass: kinds.glass.ready, mirror: kinds.mirror.ready,
+      let started = false;   // the first detail has been asked for
+      readGroups = () => {
+        // The level drawn first is followed by the detail, which then takes its groups; a level that is the
+        // detail itself, standing or still being read, is read again with them, and stays drawn meanwhile.
+        if (!started || !litFirst) return;
+        sayGroups(true);
+        if (window.__player.then === undefined) setDetail(detail, true);
+      };
+      window.__player.shading = () => ({ stale: shadeStale, busy: shadeBusy, loading: loading || historyBusy, step: window.__player.step, glass: kinds.glass.ready, mirror: kinds.mirror.ready,
         meshes: shaded.flat().map((s) => ({ kind: s.kind, shaded: Boolean(s.applied), shown: s.mesh.visible, n: s.gaussians })) });
 
       window.__player.kinds = kinds;
@@ -1788,7 +1962,7 @@
       const middleOf = (seen) => {
         const box = new THREE.Box3();
         // A mesh's box is asked of Spark once: it goes through every gaussian of the mesh.
-        for (const s of seen) box.union((s.box ??= s.mesh.getBoundingBox(true).clone()).clone().applyMatrix4(s.mesh.matrixWorld));
+        for (const s of seen) box.union((s.box ??= s.shape?.box ?? s.mesh.getBoundingBox(true).clone()).clone().applyMatrix4(s.mesh.matrixWorld));
         const middle = box.getCenter(new THREE.Vector3());
         const sum = new THREE.Vector3();
         let weight = 0;
@@ -2117,6 +2291,7 @@
         } else {
           setDetail(wanted);
         }
+        started = true;
       }
       $("overview").addEventListener("click", () => { asked.frame = null; follow.checked = false; overview(); show(cursor, false); });
       follow.addEventListener("change", () => show(cursor, true));
