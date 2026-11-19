@@ -27147,3 +27147,19 @@ Not done: the walked rays taken out of their groups (kept and continued in a dis
 paths that land on glass are), which is what these numbers ask for and is a shadow ray's state to keep, not
 a path's; a cut-out's opacity read without the material's inputs rebuilt (a texture and a threshold in the
 row); the decals' rows told apart from cut-outs that cast shadows worth a walk.
+
+## The splat-hidden light point's `continue` is never reached (19 Nov)
+
+Read in the kernel on 18 Nov and listed as a defect: where a vertex has chosen a point on an emitting
+triangle and the cloud lets nothing of it through (`if (!(throughSplats > 0.0)) { continue; }`), the step
+loop goes round again on the same vertex -- its emission added again, the same point chosen again -- until
+the steps run out. Asked for: a test that shows the brightness grow with the bounces, and the fix. There is
+no such test to write: `throughSplats` is `packedShadowTransmittance`, a product of what each particle
+leaves, and a particle leaves at least a hundredth (`shadowAlpha`: `min(0.99, opacity * exp(...))`) while
+the walk stops once less than `splatShadowCut` (a hundredth) is left -- so what comes back is never under
+1e-4, and never zero. The branch is dead as the shadow of a cloud is computed today. It is still wrong as
+written (a cloud's shadow that could reach zero, or a NaN, would take it), and its mending -- the light
+step taken inside `if (throughSplats > 0.0)`, the path going on from the vertex otherwise -- was shown to
+leave the kernel with media right when made alone ("A lobe of 128 bytes", the table's sixth row). Not made
+in the tree: it changes the kernel's text for nothing a frame can show, and each such change has to be paid
+for with the kernel with media and every `[repeat]` case run again.
