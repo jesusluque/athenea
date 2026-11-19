@@ -27029,3 +27029,50 @@ Not done:
   not read ahead while the device is idle.
 - The page's own Spark still holds two sets of the scene (480 MB at 8.4 M), and Spark's sort its two
   buffers (96 MB in the page), as the first round left them.
+
+## The one pixel: one light sample counted none, once or twice, and what it is not (19 Nov)
+
+Not found. What stands and what is ruled out, on the flat Sponza with the glass knight (three bounces, 32
+paths in passes of 8, the first camera), HEAD's kernel text under one binary, the fill of device buffers at
+creation as the switch (a copy's; nothing of it is in the tree).
+
+**What the pixel does.** (1004, 10) from the top takes three values, 0.004532, 0.004833 and 0.005135 in
+red, 0.000301 apart, the other channels in the pixel's own proportion (1 : 0.72 : 0.42, the sphere light
+"Warm"'s colour): the frame with every buffer zero is the middle one; all ones in every buffer, or in the
+tracer's own, gives the lower; all ones in one class of small buffers with zero in every other gives the
+higher. At 40 paths in passes of 8 it is the same pixel and the same amount in the sum (0.0096). Written in
+place of the colour, a path's steps, crossings, surfaces seen through, glass layers and bounces are the
+same in both frames (4 steps, 3 bounces, no glass); the light gathered at a vertex past the first bounce is
+what differs (0.003891 against 0.003664 in luminance), and nothing is gathered there before the second
+bounce. So it is one light sample of one path -- or the pixel's whole fourth pass, which on a pixel this
+dark may be that one sample -- counted not at all, once, or twice.
+
+**What it is not.**
+- Not the kept paths: it flips with the keeping off.
+- Not the quad's derivatives: no material of the stage takes one.
+- Not adaptive stopping: off by default, and `pathDecide` is not dispatched.
+- Not the sums over passes as such: 8, 16 and 24 paths in passes of 8, and 32 in one pass or in passes of
+  16, do not flip -- but those are other paths (a pass has its own seed and offset), so they only say which
+  path it is.
+- Not memory the host uploads unwritten: every buffer made with data or written to, hashed (1412 of them),
+  is the same in a run as it is, in one with malloc's memory scribbled (`MallocPreScribble`,
+  `MallocScribble`) and in a third, and the three frames are one.
+- Not one buffer's contents: with every other buffer zero, all ones in the tracer's (`path.`), the scene's,
+  the meshes', the lights' and their tree's, the AOVs' or `target.colour` leave the frame as it is; in
+  `target.depth`, the splat rasteriser's (`splat.`, `tile.`, `radix.`, `prefix.`), the textures' records or
+  the environment's they raise the pixel -- buffers no kernel of the path tracer is bound to, most of them
+  never written in a frame without splats. What a class shares with another that moves the pixel was not
+  found; the tracer's own targets are written whole before they are read.
+- Not the light's own sampling by reading it: `sampleLight`'s sphere and its cone, `lightCone`, the tree's
+  descent and its build (two bounded lights: one node over two leaves, settled without a race), the shadow
+  walk and `gatherLight` write every value they read on every path.
+- The instrumented kernels do not all show it, and two of them show it at another pixel (85, 664), where
+  one light sample to the lamp with a cone (light 3) ends before its shadow ray in one frame and is
+  shadowed in the other: which path it is follows the kernel's layout.
+
+The kernel with media is a second thing as far as shown (above: the same figures under every fill).
+
+Not done: the cause. Next, in order of cost: the same pair of frames with the passes' dispatches each
+waited for (a race between dispatches would go); the pixel's fourth pass alone written out (`sum` before
+and after it) to say whether a sample or the pass is counted twice; Metal's validation layer and the shader
+validation on (`ATHENEA_GPU_VALIDATION`, `MTL_SHADER_VALIDATION`) for a read out of bounds.
