@@ -27071,10 +27071,20 @@ dark may be that one sample -- counted not at all, once, or twice.
 
 The kernel with media is a second thing as far as shown (above: the same figures under every fill).
 
-Not done: the cause. Next, in order of cost: the same pair of frames with the passes' dispatches each
-waited for (a race between dispatches would go); the pixel's fourth pass alone written out (`sum` before
-and after it) to say whether a sample or the pass is counted twice; Metal's validation layer and the shader
-validation on (`ATHENEA_GPU_VALIDATION`, `MTL_SHADER_VALIDATION`) for a read out of bounds.
+**Two more, and where it is left.** Under Metal's shader validation and its API validation
+(`MTL_SHADER_VALIDATION`, `MTL_DEBUG_LAYER`; the tree's build, 480x270, 32 paths, three bounces, 278 s) the
+frame is drawn and nothing is reported: no read or write out of a buffer's bounds at that size. With each
+dispatch of a pass waited for before the next is encoded (megakernel, kept paths, resolve; a copy's switch)
+the pixel still takes two of its values in three runs, so it is not a dispatch reading what another still
+writes; a pass's dispatches cover a pixel once each (the megakernel's groups by `atheneaQuadPixel`, the kept
+phase a thread an entry, the resolve a thread a pixel). And the fill stopped being a switch: in that last
+binary seven runs gave the upper value five times and the middle one twice, zero and all ones alike. What
+the fills moved in the earlier binaries they moved by what a fill does to a process beside its contents;
+the pixel is one of three values at each load, and nothing tried says which.
+
+Not done: the cause. What is left untried: the pixel's fourth pass written out alone (`sum` before and after
+it) to say whether a sample or the pass is counted twice; the validation at 1920x1080; the same frames on
+another Metal device.
 
 ## Several material modules cost a bounce nothing; one module for every UsdPreviewSurface is not worth making (19 Nov)
 
