@@ -551,8 +551,7 @@ con un momento entre ellas, y el que empezó a llegar y se para 30 segundos
 se abandona y se intenta de nuevo, igual que el que nunca tuvo respuesta
 cuando no ha llegado nada de ningún fichero en 60 segundos (el que espera su
 turno detrás de otros que están llegando no se abandona). La línea de estado
-dice entonces `a file did not come and was asked for again`, y `1 file asked
-for again` una vez la escena está entera; tras tres fallos la carga termina con
+dice entonces `a file did not come and was asked for again`, y `a file asked for again once` una vez la escena está entera; tras tres fallos la carga termina con
 `the scene is not whole: <file> did not come in three tries (…). Reload the
 page to try again`, y lo dibujado sigue dibujado. `window.__player.reading()`
 lista lo que se está leyendo, para quien pregunte por qué una carga no

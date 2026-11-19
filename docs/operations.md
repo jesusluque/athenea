@@ -544,7 +544,7 @@ moment apart, and one that began to come and then stops for 30 seconds is
 given up and tried again, as is one that was never answered once nothing
 has come from any file for 60 seconds (a file waiting its turn behind others
 that are coming is not given up). The status line then says `a file did not
-come and was asked for again`, and `1 file asked for again` once the scene
+come and was asked for again`, and `a file asked for again once` once the scene
 is whole; after three failures the load ends with `the scene is
 not whole: <file> did not come in three tries (…). Reload the page to try
 again`, and what is drawn stays drawn. `window.__player.reading()` lists what

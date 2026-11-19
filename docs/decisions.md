@@ -27543,3 +27543,27 @@ process 1.21–1.27 GB in both, the GPU's 1.89–1.96 GB.
 Not done: four runs each in WebKit as the bar was set (two each were run before the agent stopped; the
 deployer runs six each before publishing); a real phone, a real metered line; programs linked ahead of the
 files; the exporter's side of the `.rgb` files.
+
+## The keeping out of the kernels that keep nothing, and the last days' path tracer on Vulkan (19 Nov)
+
+1096d4d9 put the keeping's text into every kernel whose rays are inline, with its capacity zero where paths
+are not kept: Vulkan's kernel carried it and paid for it (ixwin, 18–19 Nov: the materials stage 1043–1105 ms
+a frame before it, 1343–1370 with it). Now the text is taken only where paths are kept -- Metal -- and the
+other backends' kernels are what they were. Metal's source does not change.
+
+The Windows machine (RTX 3070 Laptop, Vulkan), the materials stage at 1280x720, 16 paths in passes of 2, a
+frame in ms, the build of 141593d9 and this one in turn, the second and third rounds (the first carries the
+kernels' compile):
+
+| | no bounce | three bounces |
+|---|---|---|
+| 141593d9 | 1157, 1188 | 2331, 2390 |
+| now (the keeping out, a lobe of 128 bytes, the thinner shading state) | 990, 993 | 1692, 1533 |
+
+A sixth off the frame with no bounce and a third off three; the earlier figure before the keeping was
+1043–1105 and 1834–2102. Tests there, all pass: `athenea_technique_tests` 2862 assertions in 64 cases,
+`athenea_material_tests` 3087 in 16, `athenea_render_tests "[scene]"` 383 in 14, `athenea_usd_tests
+"[repeat]"` 37 in 5 (the lobe of 128 bytes had not been compiled off Metal before). On Metal with the change:
+technique 2862 in 64, `[repeat]` 37 in 5, `[scene]` 383 in 14.
+
+Not done: CUDA (WSL) built and run with these; the two changes timed apart on Vulkan; Sponza there.

@@ -3724,19 +3724,24 @@ Result<void> PathTracer::setPrograms(const MaterialPrograms& programs, bool grou
     // Splats shadow meshes only where the rays are inline: the pipeline route
     // would need the traversal again as an any hit program, and it carries two.
     const bool withSplats = traces && splats;
+    // The keeping is in the kernel only where paths are kept (Metal, below):
+    // compiled in and never taken it cost Vulkan a fifth of a frame with no
+    // bounce and two fifths with three (docs/decisions.md, 18-19 Nov, ixwin).
+    const bool keepsHere = device_->backend() == gpu::Backend::Metal;
     const std::string source = "import " + programs.module() + ";\n" +
                                (volumes ? std::string("import athenea.volume.medium;\n") : std::string()) +
                                (withSplats ? std::string("import athenea.rt.rt_shadow_packed;\n") : std::string()) + kPrelude +
                                (groups ? kGroups : kNoGroups) + (volumes ? kVolumes : kNoVolumes) +
                                (traces ? kRays : pipeline ? kRaysPipeline : kNoRays) +
                                (withSplats ? kSplats : kNoSplats) +
-                               (bake_ ? kBake : kNoBake) + (traces ? kKept : kNoKept) + kBody + kBodyRest +
+                               (bake_ ? kBake : kNoBake) + (traces && keepsHere ? kKept : kNoKept) + kBody +
+                               kBodyRest +
                                (pipeline ? kEntryRays : kEntryCompute);
     // Paths are kept where the rays are inline, the kernel draws a frame and
     // has no medium (kKept): `pathResolve` adds them to their pixels. On
-    // Metal, where it was measured; Vulkan's kernel is this one and has not
-    // been run with it.
-    const bool keeps = traces && !bake_ && !volumes && device_->backend() == gpu::Backend::Metal;
+    // Metal, where it was measured; Vulkan would take the same kernel and has
+    // not been run with it.
+    const bool keeps = traces && !bake_ && !volumes && keepsHere;
     std::vector<std::string> entries{pipeline ? "tracePathsGen" : "tracePaths", "pathDecide"};
     if (keeps) {
         entries.emplace_back("pathResolve");

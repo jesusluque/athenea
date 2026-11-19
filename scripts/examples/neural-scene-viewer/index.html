@@ -510,7 +510,7 @@
             went.then((late) => late?.dispose?.(), () => {});   // what comes after all is let go
             if (tried >= 3) throw new Error(`${what} did not come in three tries (${String(error?.message ?? error).slice(0, 80)})`);
             window.__player.retried = (window.__player.retried ?? 0) + 1;
-            readNote = ` · ${window.__player.retried === 1 ? "a file" : `${window.__player.retried} files`} did not come and ${window.__player.retried === 1 ? "was" : "were"} asked for again`;
+            readNote = ` · a file did not come and was asked for again${window.__player.retried === 1 ? "" : ` (${window.__player.retried} times)`}`;   // tries, not files: one file may be asked for twice
             retold();
             console.warn(`${what} did not come (${error?.message ?? error}): asked for again`);
             await new Promise((go) => setTimeout(go, 600 * tried));
@@ -1681,7 +1681,7 @@
           if (!litFirst) sayGroups(false);
           window.__player.wholeMs = Math.round(performance.now() - began);
           // What did not come at first is all here now: said shortly, for as long as the page is open.
-          if (readNote) { const n = window.__player.retried ?? 0; readNote = ` · ${n} ${n === 1 ? "file" : "files"} asked for again`; say(said); }
+          if (readNote) { const n = window.__player.retried ?? 0; readNote = ` · a file asked for again ${n === 1 ? "once" : `${n} times`}`; say(said); }
           asked.frame = null;   // the frame the address asked for is shown: the timeline is the reader's
           // Spark's ray through the gaussians starts itself on the first one asked and answers from the
           // second: one is asked here, so that the first finger laid on the scene finds what is under it.
