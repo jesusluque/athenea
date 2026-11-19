@@ -26869,7 +26869,7 @@ evening.
 | | desktop, `n_lamps9` at 8.4 M | phone's emulation, `n_lamps9` at 0.99 M |
 |---|---|---|
 | the detail whole | 5.9–9.9 s | 1.4–3.4 s |
-| requests, bytes fetched | 367–370, 205–214 MB | 22–28, 21–40 MB |
+| requests, bytes fetched | 367–370, 205–214 MB | 27–29, 42 MB (see the correction below) |
 | textures asked of WebGL, at rest / a lamp dragged | 927.5 / 931.5 MB | 122.7 / 122.7 MB |
 | the page's buffers (ArrayBuffers) at rest | 514–619 MB | 75–146 MB |
 | the page's process, footprint | 1.55–1.59 GB | 0.39–0.47 GB |
@@ -26880,7 +26880,7 @@ evening.
 7.3 s, 428 requests, 270 MB at 8.6 M; on the phone 1.4–1.6 s, 29–30 requests, 38 MB.
 
 What these put on top, in their order: on the phone the level read twice (the lit level, then the same
-level with its groups: nine tenths of the bytes); on the desktop the groups' files (133 of 214 MB) and the
+level with its groups: three quarters of the scene's bytes); on the desktop the groups' files (133 of 214 MB) and the
 page's own copies of what the device already holds (514–619 MB of buffers); the history's files read for a
 timeline that opens at its end. The first link of the programs, which the first round met at 0.4–1.8 s in
 one call, was 0.18 s at its longest in every load timed tonight: not on top, and left alone.
@@ -26937,10 +26937,10 @@ are 92.5, 83.9 and 88.2 MB. What the exporter would write is the same file besid
 | | f1e5938d | 67413e90 | with `rgb` files (`n_lamps9c`) |
 |---|---|---|---|
 | phone, `n_lamps9`: the detail whole | 1.4–3.4 s | 0.51–0.80 s | 0.55 s |
-| phone: requests, bytes | 22–28, 21–40 MB | 15–16, 3.4–3.8 MB | 15, 3.4 MB |
+| phone: requests, bytes (by the files on the disk) | 27–29, 42.4 MB | 16–18, 13.6 MB | 13.6 MB |
 | phone: textures at rest / a lamp dragged | 122.7 / 122.7 MB | 95–99 / 122.7 MB | 99 / 122.7 MB |
 | phone: the page's buffers / its process | 75–146 MB / 0.39–0.47 GB | 28–35 MB / 0.24–0.25 GB | 35 MB / 0.23 GB |
-| phone, `n_lights6`: whole; requests, bytes; textures at rest / dragged | 1.4–1.6 s; 29–30, 38 MB; 125.2 / 125.2 MB | 0.50 s; 17, 3.8 MB; 93.2 / 125.2 MB | |
+| phone, `n_lights6`: whole; requests, bytes; textures at rest / dragged | 1.4–1.6 s; 29–32, 50.1 MB; 125.2 / 125.2 MB | 0.50 s; 17–19, 13.4 MB; 93.2 / 125.2 MB | |
 | desktop 8.4 M: the detail whole | 5.9–9.9 s (three runs) | 5.3–7.0 s (two) | 4.5 s (one) |
 | desktop: requests, bytes | 367–370, 205–214 MB | 254–258, 192–202 MB | 257, 93 MB |
 | desktop: textures at rest / a lamp dragged | 927.5 / 931.5 MB | 927.5 / 931.5 MB | 927.5 / 931.5 MB |
@@ -26949,7 +26949,13 @@ are 92.5, 83.9 and 88.2 MB. What the exporter would write is the same file besid
 | `n_chrome3` at 11.4 M: whole; requests, bytes; buffers | 8.8 s; 722, 116 MB; 663 MB | 6.6 s; 375, 102 MB; 248 MB | no groups |
 
 The desktop's time to the detail is not claimed without the `rgb` files: the ranges overlap. The phone's
-is: a third to a half, and a tenth of the bytes. Textures on the device are not higher anywhere; on the
+is: a third to a half, and a third of the bytes.
+
+*Corrected, 19 Nov.* This section first said a phone's load was 3.4–3.8 MB against 21–40. The profiler
+counted the requests finished by the moment the detail was whole, and the level's own file, read in a
+worker, was reported finished after it: the figure left out the largest file. The bytes above are the
+files' sizes on the disk -- 3.3 MB of page and libraries, 10.3 MB of lit level, and for the old page the
+level again (9.5 MB) and its two groups (19.2 MB). Textures on the device are not higher anywhere; on the
 phone at rest they are a fifth lower until a lamp is moved, and then what they were. The history was never
 on the device while the timeline stood at its end (Spark sends a mesh when it is first drawn), so leaving
 it unread changes requests, bytes and the page's memory, not the textures.
@@ -27188,3 +27194,134 @@ kernel with media. The measure that would decide it is the dispatch alone, timed
 kernel that does nothing else.
 
 Not done: that measure; the same ceiling on Sponza with its knights and lamps (17.4 s a view).
+
+## A 1080p shoot timed on a Mac that would not cool, with the kept paths and without (18 Nov)
+
+What "The two other 1080p scenes found again" left: a shoot at 1080p timed twice on a cool machine, and
+whether anything of 1080p made last night's two shoots a tenth slower. The Sponza with lamps as groups
+(`hd9`'s command), the first eight views of its walk, 1920x1080, the release build of d32b9d6a kept as a
+binary with its shaders (`ATHENEA_SHADER_DIR`) and the build of 141593d9 -- the kept paths (1096d4d9) and the
+thread's memory (12de7684) -- twice each in turn (`build/night/agent-scenes/job1.sh`).
+
+**The Mac did not stay cool.** It was nominal with no stop for ten hours when the job began; the guard stopped
+it after four minutes and eleven times in 69, 766 s of the first run's 1219. A view's seconds with a stop
+inside, less the stop, are not a view's seconds (54.7 and 73.2 s where its neighbours take 30), so what is
+compared is the views with no stop inside and no kernel to build:
+
+| | views with no stop, seconds | median |
+|---|---|---|
+| d32b9d6a, two runs | 29.8, 29.8, 32.3, 33.7; 26.9, 31.1, 30.7, 28.2, 39.8 | 30.7 |
+| 141593d9, two runs | 37.7, 26.3, 25.1, 24.2; 24.2, 31.4, 25.3, 22.8, 33.1 | 25.3 |
+| d32b9d6a the night of 17 Nov, cool (`hd8`) | 23.8, 23.7, 24.0 | |
+
+The same 3 898 863 gaussians in the four. The median is a sixth lower with the kept paths, as the path
+tracer's own measure said (a seventh off Sponza's frame), and the two sets overlap from 26.9 to 37.7: on this
+machine today it cannot be called closer than that. The first view, which builds the kernel, took 60.9 to
+167.8 s (51.6 and 64.1 the nights before).
+
+**What of 1080p made the two shoots slower: the heat it makes.** The old binary's views take 26.9–39.8 s
+here where they took 23.7–24.0 s cool: a view at the edge of thermal pressure is a seventh to two thirds
+slower before the guard stops anything, which is more than the tenth in question, and `hd9`'s log shows it
+(22.7 s of passes at its second view, 26.9–35.6 from the third on, no stop). A 1080p shoot reaches that edge
+in four minutes; the 71 s shoots at 960x540 that cleared the cells' longer discs never did. Nothing else of
+1080p was found.
+
+Not done: the timing on a machine that stays cool (it would take a pause of minutes between views, or the
+night); the kept paths' gain at 1080p said closer than "between nothing and a third".
+
+## A look at eleven million gaussians, and a batch that made it slower (18–19 Nov)
+
+The next cost of a shoot after the path tracer. On the eight views above the split `shoot` prints is 1187 s
+of passes, 14.0 of looks, 1.8 of the groups' light kept, 0.6 of pieces brought: nothing but the path tracer.
+On the long shoot it is not so: `sponza_chrome` (60 views, 11.4 M gaussians in 363 pieces, the night of 18
+Nov) said 0.7 s of looks at its second frame, 3.5 at the thirtieth, 22.0 at the fiftieth and 36.0 at the
+last, beside 21–26 s of passes throughout -- 438 s of 2386.
+
+Two more views shot onto a copy of that scene with the look's steps timed (8 paths, no bounce; temporary
+prints, not in the tree; `job4.sh`, `job4c.sh`):
+
+| the look's step, seconds (two views) | hot (17:25) | cool (01:29) |
+|---|---|---|
+| marking what is gone and refined, a piece at a time (16 times ~60 pieces) | 33.7, 22.7 | 1.6, 1.7 |
+| the scene drawn as it is known (10 times, 4 draws each) | 5.8, 4.5 | 2.3, 2.5 |
+| everything else | 6.1, 6.2 | 3.3, 3.3 |
+| the look | 45.6, 33.4 | 7.2, 7.5 |
+
+So a look at eleven million is 7 s on a cool machine, and what took 36 s that night was the same code on a
+hot one: a submit, a wait and a read back a piece, some thousand a look, slow down five to twenty times where
+the passes slow by a third.
+
+**Tried and taken out: every piece marked in one batch.** A counter a piece, one submit and one read back
+(`markGoneAll`), and the cloud without what went not waited for. The marking fell to 3.0–4.1 s hot and cool
+alike, the counts the same to the gaussian -- and the look rose to 46–51 s on the cool machine and 39–67 s on
+the hot one, the scene's draws 29–44 s where 2.3–5.8: twice, in turn with the other binary on the same views.
+Why the draws slow was not found. Reverted; the patch is `build/night/agent-scenes/markGoneAll_timex.patch`.
+
+Not done: why the batch slows the draws that follow it (the cloud not waited for is the first suspect); the
+look's waits made fewer some other way -- on a cool machine there are 1.6 s of 7 to take, on a hot one most
+of it; the four draws of the scene as it is known made one.
+
+## A level's dashes: a parent that went later, and a cell named that was never made (19 Nov)
+
+The 960x540 scenes' level of a million (0.93 M, cells of one and two pixels) shows short dark dashes on the
+floor before the knights -- `lamps` at frame 12, `sponza_knight` at frame 30 -- where the scene whole and the
+level of half a million show none; the three 1080p scenes' levels of a million (cells of four) show none
+from the same place (`build/night/agent-scenes/shots/crop_dashes.png`, `crop_dash_1080.png`). They are the
+"short dark dashes" of 17 Nov.
+
+**What a dash is.** The engine draws them too (`render --frame 12 --lod 2.2`), with the lamps' groups off as
+well, so they are of the cut and not of the page or the light. At a dash's pixel of `sponza_knight` (frame
+30, a threshold of 2.2 pixels) 71 gaussians of the floor stand within two pixels -- last looks of a dozen
+frames, each laid over the frame before's -- and the cut draws none: each names a parent 0.7 to 1.4 pixels
+wide, under the threshold, and nothing that wide stands there. A gaussian names what it is laid over by the
+width of what stands there wider than itself when its look begins. That wider gaussian is refined, and kept
+for good, only where nine tenths of it are covered; left standing as the finest, a later look takes it out as
+gone -- a colour that changes with the eye, by glass and lamps -- and what was laid over it names a width
+nothing holds. A cut between the two widths draws neither.
+
+**`--laid-over-refined`** (shoot, off): a gaussian is laid over what of the earlier frames stands refined once
+the look has marked what it covers, and over nothing that is still the finest. Lamps in one render, 960x540,
+20 views, with it and without (`lamps4.aths`, `lamps1.aths`):
+
+| | without | with |
+|---|---|---|
+| gaussians standing | 2 112 637 | the same records but for the parent's fields (3 290 507 in 123 pieces) |
+| held views, dB | 27.53 / 23.36 / 25.90 / 24.04 | 27.53 / 23.36 / 25.89 / 24.04, the same SSIM to the fourth place |
+| name a parent | | 297 821 fewer (all but 412 of the last looks'), 796 599 another width, 4 008 more |
+| the cut's floor | 211 654 | 505 467 |
+| `--levels 1000000,500000` writes | 930 581 at 0.937 units, 493 218 at 1.646 | 985 534 at 1.164, 528 539 at 5.076 |
+| the level of a million by the knights, in the page | dashes | none (`shots/crop_dash_fix3.png`, `crop_e_f12.png`); the floor whole along it (`crop_e_f4.png`) |
+| the level under it | whole, cells of 2–4 pixels | the cut's floor: cells of 16 and 32 pixels, smeared |
+
+A hole is worse than a missing coarse level, and it is not the default because it more than doubles the
+floor: every later frame's gaussian was a child of whatever wider stood under it, and now only of what a look
+covered nine tenths of. At 1080p, where no dashes show today, it would take the level of a million away
+(`sponza_lights`' floor is 583 308; by this proportion some 1.1 M, not measured). It becomes the default when
+the floor is brought down with it on -- a parent asked for in the cell's plane, a sibling's parent, a gaussian
+whose parent went given what replaced it -- until a scene at 960x540 writes a good half million and one at
+1080p its million.
+
+**A parent named where no cell was made.** Found on the way, and mended: `heldThere` in `scene_render.slang`
+was a copy of the first test of `holds`, and `renderValid` decides whether the cell above is made by `holds`
+whole, which also calls held the scene's surface behind a disc that overhangs an edge. Where the two differ a
+gaussian named a cell that was never made. It is `holds(at2, z2, false)` now. Lamps in one render: 3 264
+standing gaussians named such a parent (2 852 of the last looks', 337 cells of two pixels), the same records
+otherwise, the same held views; the floor 214 918 where 211 654. The dashes are not these: the page shows
+them the same after it.
+
+Ruled out, each by a scene found with it: a parent that went in the very look that named it (the `before`
+picture drawn less what the look found gone: 3 gaussians of 3.29 M name another parent); the cells' longer
+discs standing out past the knights' bases (`--pyramid-turned 0.5`, and a cell lengthened only among cells
+that face as it does: the same dashes). And by counts of the records: cells left where nothing finer stands
+any more (none: every cell in a box before the knights has last-look gaussians within twice its width); dark
+cells.
+
+Tests on Metal, with both changes and the option off: `athenea_render_tests "[scene]"` 383 assertions in 14
+cases and `"[pyramid]"` 22 in one, all pass; `qa_flows.py` over the materials stage shot again at 640x360, 51
+of 51 ended well -- two flows more, a shoot with the option and an export of it.
+
+Not done: the floor brought down with the option on, and the option made the default; a gaussian given what
+replaced its parent when the parent goes; the three 1080p scenes found with it (not while it takes their
+level of a million); the level of half a million of a scene found with it, which is its floor (a red speck
+on the chrome knight's base there, in the page at frame 12, was seen and not looked into -- one mirror cell
+of 32 pixels, by its size); CUDA and Vulkan; a real phone.

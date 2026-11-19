@@ -153,6 +153,7 @@ struct SceneOptions {
     std::vector<double>      times;
     double                   timeStep = 0.0;
     bool                     freeEachFrame = false;
+    bool                     laidOverRefined = false;
     double                   coveredEnough = 0.8;
     unsigned                 pyramid = 32;
     std::vector<unsigned>    storedFrames;
@@ -422,12 +423,15 @@ Result<void> namePrims(gpu::ShaderLibrary& library, const std::filesystem::path&
 /// With `upTo`, as it stood at that snapshot: less only what had gone by then.
 Result<scene::GpuSplats> loadPiece(gpu::ShaderLibrary& library, scene::CloudLoader& loader, render::Discovery& discovery,
                                    const std::filesystem::path& directory, const io::NeuralScenePiece& piece,
-                                   uint32_t upTo = 0) {
+                                   uint32_t upTo = 0, scene::GpuSplats* whole = nullptr) {
     auto cloud = load(library, loader, directory / piece.cloud);
     if (!cloud) {
         return cloud;
     }
     ATHENEA_TRY(namePrims(library, directory, piece, *cloud));
+    if (whole != nullptr) {
+        *whole = *cloud;   // every gaussian with its opacity: the same buffers, before any is masked
+    }
     // The finest there is: less what is gone, and less what finer looks were laid over.
     for (const std::string* file : {&piece.gone, &piece.refined}) {
         if (file->empty()) {
@@ -1930,6 +1934,7 @@ int runShoot(const SceneOptions& all) {
     std::vector<gpu::Buffer> gone;           // its record, once one is needed
     std::vector<gpu::Buffer> refined;        // and its record of what finer looks were laid over
     std::vector<std::unique_ptr<render::NeuralCloud>> sizedOf;   // its cloud of sizes, made once while it is here
+    std::vector<scene::GpuSplats> whole;     // the piece with every gaussian's opacity: what is refined is drawn from it
     const auto drop = [&](size_t k) {
         instances.erase(instances.begin() + static_cast<std::ptrdiff_t>(k));
         clouds.erase(clouds.begin() + static_cast<std::ptrdiff_t>(k));
@@ -1937,6 +1942,7 @@ int runShoot(const SceneOptions& all) {
         gone.erase(gone.begin() + static_cast<std::ptrdiff_t>(k));
         refined.erase(refined.begin() + static_cast<std::ptrdiff_t>(k));
         sizedOf.erase(sizedOf.begin() + static_cast<std::ptrdiff_t>(k));
+        whole.erase(whole.begin() + static_cast<std::ptrdiff_t>(k));
     };
     // WHAT THE NEXT VIEW STILL SEES STAYS. A view is brought in by dropping the pieces its frustum does not
     // meet and reading the ones it meets that are not here: a camera a step on reads nothing, where reading
@@ -1966,7 +1972,8 @@ int runShoot(const SceneOptions& all) {
                 ++piecesLeft;
                 continue;
             }
-            auto cloud = loadPiece(library, *loader, *discovery, directory, piece);
+            scene::GpuSplats unmasked;
+            auto cloud = loadPiece(library, *loader, *discovery, directory, piece, 0, &unmasked);
             if (!cloud) return std::move(cloud).error();
             clouds.push_back(std::make_unique<scene::GpuSplats>(std::move(*cloud)));
             instances.push_back(render::SplatInstance{clouds.back().get(), render::Mat4::identity(), {}});
@@ -1974,6 +1981,7 @@ int runShoot(const SceneOptions& all) {
             gone.emplace_back();
             refined.emplace_back();
             sizedOf.emplace_back();
+            whole.push_back(std::move(unmasked));
             ++piecesRead;
         }
         return ok();
@@ -2159,6 +2167,7 @@ int runShoot(const SceneOptions& all) {
         render::RenderTargets before;
         render::RenderTargets beforeSize;
         bool hasBefore = false;
+        std::vector<std::unique_ptr<scene::GpuSplats>> laidOn;   // the earlier pieces as `before` draws them
         if (all.relight && last && !instances.empty()) {
             // THE LIGHT OF WHAT THE SCENE HOLDS, TAKEN AGAIN (--relight). Before the frame is asked what it
             // holds: each standing gaussian the frame shows at its own depth takes the frame's colour, and
@@ -2242,8 +2251,9 @@ int runShoot(const SceneOptions& all) {
         }
         if (!instances.empty()) {
             if (auto drawn = drawKnown(); !drawn) return report(drawn.error());
-            {
-                // Of what earlier frames left: this frame's gathering looks are no one's parents.
+            if (!all.laidOverRefined) {
+                // Of what earlier frames left, as it stands when the look begins: this frame's gathering
+                // looks are no one's parents.
                 std::vector<render::SplatInstance> earlier;
                 std::vector<render::SplatInstance> bySize;
                 for (size_t k = 0; k < clouds.size(); ++k) {
@@ -2449,6 +2459,44 @@ int runShoot(const SceneOptions& all) {
                     piece.movedAt = piece.revision;
                 }
             }
+            if (all.laidOverRefined) {
+                // WHAT A GAUSSIAN MADE NOW IS LAID OVER (--laid-over-refined): what of the earlier frames'
+                // gaussians stands REFINED once this look has marked what it covers, in place of what stood
+                // as the finest when the look began. A refined gaussian is out of every later look's sight and stays for a cut to
+                // draw in place of the finer ones. One that still stood as the finest -- wider than this
+                // look's, covered in part -- was named as a parent too, by its width; a later look took it
+                // out as gone, and what had been laid over it named a width nothing held any more: a cut
+                // between the two widths drew neither, short dark dashes over a floor walked towards.
+                std::vector<render::SplatInstance> earlier;
+                std::vector<render::SplatInstance> bySize;
+                for (size_t k = 0; k < clouds.size(); ++k) {
+                    const io::NeuralScenePiece& piece = scene.pieces[pieceOf[k]];
+                    if (piece.foundIn >= frameFirst || (piece.refinedCount == 0 && newlyRefined[k] == 0)) {
+                        continue;
+                    }
+                    if (auto has = recordOf(refined, k, piece.refined); !has) return report(has.error());
+                    if (auto has = recordOf(gone, k, piece.gone); !has) return report(has.error());
+                    auto kept = discovery->masked(whole[k], refined[k], 0xFFFFFFFFu);
+                    if (!kept) return report(kept.error());
+                    auto less = discovery->without(*kept, gone[k]);
+                    if (!less) return report(less.error());
+                    laidOn.push_back(std::make_unique<scene::GpuSplats>(std::move(*less)));
+                    render::SplatInstance instance = instances[k];
+                    instance.splats = laidOn.back().get();
+                    earlier.push_back(instance);
+                    auto sized = bySizeOf(k);
+                    if (!sized) return report(sized.error());
+                    sized->splats = laidOn.back().get();
+                    bySize.push_back(*sized);
+                }
+                if (!earlier.empty()) {
+                    auto drawnBefore = raster->render(camera, earlier, settings, before);
+                    if (!drawnBefore) return report(drawnBefore.error());
+                    auto sizesBefore = raster->render(camera, bySize, settings, beforeSize);
+                    if (!sizesBefore) return report(sizesBefore.error());
+                    hasBefore = true;
+                }
+            }
             // A piece nothing of which is the finest any more leaves the device: a look knows the scene by
             // its finest. The disk keeps it, each gaussian with the look it went or was refined at.
             for (size_t k = instances.size(); k-- > 0;) {
@@ -2588,6 +2636,7 @@ int runShoot(const SceneOptions& all) {
             if (auto named = keepPrims(look->prims, look->made, piece); !named) return report(named.error());
             scene.pieces.push_back(piece);
             scene.snapshots.back().pieces.push_back(id);
+            whole.push_back(*cloud);
             clouds.push_back(std::make_unique<scene::GpuSplats>(std::move(*cloud)));
             instances.push_back(render::SplatInstance{clouds.back().get(), render::Mat4::identity(), {}});
             pieceOf.push_back(scene.pieces.size() - 1);
@@ -4684,6 +4733,7 @@ void addNeuralScene(CLI::App& app) {
     shoot->add_option("--grow-exposure", o.growExposure, "--grow: stops on the scene's light before it is encoded");
     shoot->add_option("--pyramid", o.pyramid, "the widest cells, in pixels, of the levels a frame leaves above its last look where it found new surface (a power of two; 1: none)");
     shoot->add_option("--covered-enough", o.coveredEnough, "a view the scene already covers this much of takes only its last look, at one pixel (over 1: every view takes them all)");
+    shoot->add_flag("--laid-over-refined", o.laidOverRefined, "a gaussian names as its parent only what stands refined where it is made, not a wider one that is still the finest and may yet go: no level of detail is left with a hole where that one went, and more gaussians stand with no parent");
     shoot->add_flag("--free-each-frame", o.freeEachFrame, "the scene leaves the device after every frame and the next reads back what it sees, rather than keeping what the next view still sees");
     shoot->add_option("--time-step", o.timeStep, "--views: each view of the file is this much later than the last (a sequence, a frame a line)");
     shoot->add_option("--samples", o.samples, "paths a pixel the render gathers");

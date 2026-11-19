@@ -266,6 +266,14 @@ if args.stage and args.walk:
         os.path.join(out, "timed.aths"), "--views", short, "--time", "0", "--time-step", "1", "--repaint", "0.3",
         "--free-each-frame", "--samples", "8", "--pass-samples", "8", "--bounces", "2"] + common,
         [os.path.join(out, "timed.aths", "scene.json")], cwd=stage_dir)
+    # PARENTS OF WHAT STANDS REFINED: a shoot whose gaussians name no parent that may yet go, and a level of it.
+    run("shoot --laid-over-refined", ["neural-scene", "shoot", os.path.basename(args.stage),
+        os.path.join(out, "laid.aths"), "--views", short, "--time", "0", "--time-step", "1", "--laid-over-refined",
+        "--samples", "8", "--pass-samples", "8", "--bounces", "2"] + common,
+        [os.path.join(out, "laid.aths", "scene.json")], cwd=stage_dir)
+    run("export --levels, a scene shot with --laid-over-refined", ["neural-scene", "export",
+        os.path.join(out, "laid.aths"), "--by-frame", "--levels", "20000", "-o", os.path.join(out, "laid")],
+        [os.path.join(out, "laid.json")])
 
 report = ["# Every way through neural-scene: %s" % os.path.basename(os.path.normpath(scene)), "",
           "| workflow | ended | seconds | left | said |", "|---|---|---|---|---|"]
