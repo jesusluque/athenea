@@ -27406,3 +27406,47 @@ Not done:
   phone, opening the options for anything reads them.
 - What the first section left: the programs linked ahead, the exporter's side of the `rgb` files, the
   page's own Spark's two sets.
+
+## The three 960x540 scenes found again, and what was handed on (18–19 Nov)
+
+What "The two other 1080p scenes found again" left. Each by its own command, with the build of 141593d9
+(the kept paths, the thread's memory) unless said, held views at 960x540 against its reference beside the
+published scene's source drawn by the same binary, the page on an emulated phone (390x844 at three device
+pixels) from a frame that looks along the floor and from one by the knights
+(`build/night/agent-scenes`: `job2.sh`, `job2b.sh`, `shots/`).
+
+| | gaussians standing | held views, dB / SSIM | shoot, less the guard's stops | handed on |
+|---|---|---|---|---|
+| `sponza_knight` | 2 590 530, as the source of 17 Nov | 32.84 / 0.9400, 34.60 / 0.8842, 31.77 / 0.9293, 33.59 / 0.9057: the source's to the hundredth and to SSIM's fourth place | 467.9 s (782.9 by the clock, two stops; 523 on 17 Nov) | levels of 491 775 and 273 858 alone |
+| `sponza_growth` | 4 216 318, as the source | 33.46 / 0.9309, 33.69 / 0.9207, 34.12 / 0.9306, 34.11 / 0.9523: the source's | 455.2 s, no stop (434 on 17 Nov, on a Mac that had been hot all evening) | levels of 968 618 and 544 155, the second the cut's floor |
+| `lamps`, in one render | 2 112 637 | 27.53 / 0.8876, 23.36 / 0.7713, 25.89 / 0.8620, 24.04 / 0.8206 | 164.3 s, no stop | one level of 985 534, with `--laid-over-refined` |
+
+**`lamps` is not its own flow any more.** The scene without the lamps and then a pass a lamp, found again
+(648.6 s less eight stops; 2 112 486 gaussians as `clean.aths`), reads 28.22 / 0.8676, 23.14 / 0.7308, 26.22 /
+0.8289, 24.35 / 0.7802 against `clean.aths`' 27.94 / 0.8745, 22.76 / 0.7648, 25.81 / 0.8442, 24.24 / 0.8137 --
+the figures of 17 Nov again, and the lower SSIM is speckle a viewer sees, bluish dots over the dark door
+between the knights in the held view and in the page. `clean.aths` exported again with the levels the cut now
+writes (947 420 and 430 898) is ruled in rows along the floor at its coarser level: its cells were made
+before they were lengthened. The stage in one render with `--light-groups`, as `sponza_lamps` is found, has
+neither: SSIM above `clean.aths` in the four views (dB -0.41, +0.60, +0.08, -0.20), 117 prims named where
+the published scene named none, 164 s where the flow's three passes take 649.
+
+**The levels.** Without the option the level of a million of `lamps` and of `sponza_knight` (0.93 M, 0.94 M)
+is whole along the floor and shows the dashes by the knights (the section on a level's dashes); the level of
+half a million shows neither and is pebbled -- cells of two and four pixels seen as cells. So `lamps` was
+handed on found with `--laid-over-refined` (its floor 505 467: one level, 985 534, clean from both frames),
+and `sponza_knight` without it and without its level of a million (with the option its floor is 1 095 760 and
+the level it can write, 1 148 380, is over a phone's million with the glass knight a blur). `sponza_growth`
+has no glass and no lamp and its level of a million showed no dashes at frames 5 and 50; with the option it
+writes no level at all (the floor 1 492 301).
+
+**`sponza_growth` by a later build reads lower, and it is not this work's.** Found by the build of 3e84c5d7
+with the option off, its first two held views read 33.38 / 0.9249 and 33.65 / 0.9165 (the job was cut short
+there), as they do with the option on, where the build of 141593d9 gives 33.46 / 0.9309 and 33.69 / 0.9207.
+The only other change to the engine between the two builds is 06974050 (the lobe of 128 bytes). `lamps` and
+`sponza_knight` are the same records by both builds but for the parents. Passed to the path tracer's side;
+the frames themselves were not compared.
+
+Not done: a real phone; a level of a million for `sponza_knight` without the dashes; `lamps` with a level of
+half a million again (found with the option its floor is that); the half million of `sponza_growth`, which
+is its floor and smeared.
