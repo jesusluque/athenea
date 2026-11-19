@@ -27110,3 +27110,40 @@ its lot does not cover. That is where the 2.5 s are to be looked for. The one mo
 Not done: the cut-outs' cost taken apart (the shadow walk against the any-hit ray a frame without cut-outs
 takes; the opacity variant's evaluation; the steps a path spends passing through), which is the next thing
 to measure on Sponza.
+
+## What Sponza's cut-outs cost a bounce, and a first ray that did not pay (19 Nov)
+
+Sponza's own materials without its knights, the committed kernel's text under one binary with a cut made in
+it; Metal (M5 Pro), 1920x1080, 32 paths in passes of 8, the second view of two, one run each:
+
+| | three bounces | no bounce |
+|---|---|---|
+| the whole kernel | 12.28, 12.33, 12.36 s | 2.55 s |
+| a shadow ray never asks a cut-out its opacity (one ray that stops at anything) | 10.58 | |
+| a path's ray never passes through what its lot leaves uncovered | 12.05 | |
+| both | 10.20 | 2.18 |
+
+A path takes 3.62 steps and passes through 0.0044 surfaces: the paths' own rays through cut-outs are
+nothing. The shadow rays are the 1.7 s -- with both cuts the stage is at what one textured material over
+everything costs (9.9 s). A path sends 2.48 of them: 0.04 meet nothing, 2.23 are stopped by the first
+surface found, whatever else is on their way, and 0.21 first find one that might let them by (a cut-out, a
+transparent row: the dirt decals over the walls) and have to be walked surface by surface, each asked its
+opacity.
+
+**Tried and not kept: one ray that stops at anything, before the walk.** Nothing met is the answer one; a
+surface in the light's link that no cut-out's lot, invisible face or glass could let the ray by is the
+answer zero wherever it stands (read from the instance's and the row's records, no surface rebuilt); only
+the rest is walked. The pictures are the walk's bit for bit (Sponza's own materials, Sponza with its lamps,
+the flat Sponza with the glass knight but its one pixel; the materials stage to 6e-4 in one view), and the
+time is not less: 12.36 -> 12.47 s on Sponza's own materials, 17.43 -> 16.90 with its lamps and knights,
+7.36 -> 7.68 on the materials stage, 12.30 -> 11.49 on the flat Sponza with the glass knight. Nine shadow
+rays in ten no longer rebuild a surface or trace to the nearest hit, and it buys nothing: what a group pays
+is the walk and the opacity's evaluation that the tenth takes, and one thread in a group taking it is the
+group taking it (17 Nov). And with it the kernel with media drew garbage again (`the path tracer through an
+absorbing volume`, 2653 of 14 399 pixels) -- a second ray query in `shadowWalk`, in a test with no cut-out.
+Not in the tree.
+
+Not done: the walked rays taken out of their groups (kept and continued in a dispatch of their own, as the
+paths that land on glass are), which is what these numbers ask for and is a shadow ray's state to keep, not
+a path's; a cut-out's opacity read without the material's inputs rebuilt (a texture and a threshold in the
+row); the decals' rows told apart from cut-outs that cast shadows worth a walk.
