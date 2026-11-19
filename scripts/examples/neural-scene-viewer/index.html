@@ -23,7 +23,8 @@
     ?filter=fixed    the filter a third of a pixel whatever the canvas (as it was before the index said frameSize)
     ?rooms=0         no room is drawn: glass and chrome as found (the page sets it after a lost graphics context;
                      a line in the options takes it out)
-    ?room=<n>        gaussians in the scene the rooms are drawn from (400000)
+    ?room=<n>        gaussians in the scene the rooms are drawn from (400000; 150000 on a phone)
+    ?ahead=0         a group's files only when its lamp is first moved, not ahead of it
     ?keep=1          the page keeps its copies of what is on the device
     ?progressive=0   the detail asked for as it comes, no coarser level first
     ?base=<url>      where the scenes are, when not beside the page
@@ -379,7 +380,9 @@
       roomRoot.rotation.copy(root.rotation);
       roomRoot.scale.copy(root.scale);
       roomScene.add(roomRoot);
-      const roomCap = Math.max(Number(params.get("room")) || 400000, 20000);
+      // On a phone 150 000: looked at beside 400 000 from three eyes of three scenes at the level of a
+      // million a phone draws, the knights are the same to the eye, and it is a fifth off what the device holds.
+      const roomCap = Math.max(Number(params.get("room")) || (phone ? 150000 : 400000), 20000);
       let outgoing = [];
       let keeping = false;
       // The level drawn first is, where the index has one, a level of the scene with its lamps on

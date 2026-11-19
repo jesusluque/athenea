@@ -516,7 +516,7 @@ reads.
 | `orbit` | `0` | on | no | a drag turns the camera where it stands, not about what is under the pointer; Alt held does the same for one drag |
 | `filter` | `fixed` | by the canvas | no | the filter a third of a pixel whatever the canvas. Without it a scene whose index says `frameSize` and `antialiased: false` is filtered `1.2 × spread ×` the canvas's pixels over the frame's, held between 0.3 and 2 pixels |
 | `rooms` | `0` | on | set by the page | no room is drawn for glass and chrome, which show as found. The page sets it itself and reads itself again when the browser takes the graphics context back while rooms were drawn; lost again, it reads a level coarser. `Their rooms: Draw them again` in the options takes it out |
-| `room` | gaussians, at least 20000 | `400000` | no | how many gaussians the scene the rooms are drawn from keeps, whatever the detail |
+| `room` | gaussians, at least 20000 | `400000`; `150000` on a phone | no | how many gaussians the scene the rooms are drawn from keeps, whatever the detail |
 | `keep` | `1` | off | no | the page keeps its own copies of the gaussians and of its textures after the device has them (32 bytes a gaussian and 4 a texel); without it they are let go once sent, and Spark's own ray through a mesh finds nothing |
 | `ahead` | `0` | on | no | the groups' files are read only when a group is first moved. Without it they are also read once the level stands and nothing has been touched for four seconds -- on a phone, when the options are opened -- so a lamp answers when it is moved |
 | `progressive` | `0` | on | no | the detail asked for as it comes, with no coarser level drawn first |
