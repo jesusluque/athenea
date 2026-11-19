@@ -27325,3 +27325,84 @@ replaced its parent when the parent goes; the three 1080p scenes found with it (
 level of a million); the level of half a million of a scene found with it, which is its floor (a red speck
 on the chrome knight's base there, in the page at frame 12, was seen and not looked into -- one mirror cell
 of 32 pixels, by its size); CUDA and Vulkan; a real phone.
+
+## The page asks again for a file that does not come; the orbit, the lamp's wait, frame 8, a phone's room (19 Nov)
+
+What followed the section above. The page there (67413e90) was published and taken back within the hour
+on this section's first finding; the page after is 63f5c9af. Tools and logs in
+`build/night/agent-player5/` (`hang.mjs`, `flaky.py`, `ahead5.mjs`, `wsum.py`).
+
+**A load could stand for ever at "refining…", in every page there has been.** One load of five of the new
+page in a headless Chrome job never reached the detail: the level drawn first stood, the status said
+"refining… 3 of 20 parts", and nothing more came in 200 s. Caught again once in 14 loads with what was
+open written down (`hang.mjs`): no request open, nothing waiting in the page's own queue, and one file --
+a group's -- failed with `net::ERR_CONNECTION_RESET`, the test server (`python -m http.server`) having
+reset a connection. The part that file was of rejected, the loop that reads the parts threw with nobody to
+catch it, and the page was left saying it was reading. It was not the copies let go on the device (the
+failure comes before any texture exists; `?keep=1` was 0 of 14, and so was the old page 0 of 12, by chance
+alone), nor the history or its retries, which were not in play. The old page (f1e5938d) given the same
+fault on purpose stands at "refining… 5 of 20 parts" the same way: the defect is as old as the page, and a
+server that never resets a connection (the deployer's six runs in WebKit) never shows it.
+
+Now every file -- Spark's, the ids, the `rgb` -- is tried three times, 0.6 and 1.2 s apart; one that has
+begun to come and then stops for 30 s is given up and tried again (Spark says how a file is coming, so the
+stall is seen; a file that has said nothing yet is waited for, a slow line not being a stall); the status
+line says `a file did not come and was asked for again`; and when three tries fail the load ends, says
+which file (`the scene is not whole: <file> did not come in three tries … Reload the page to try again`)
+and leaves drawn what is drawn. `window.__player.reading()` lists what is being read. With `flaky.py`, a
+server that fails where it is told to:
+
+| the fault | f1e5938d | 63f5c9af's reading |
+|---|---|---|
+| five connections reset (a lit level's file, a group's, an `.ids` twice, a part's), and one more the server reset by itself | not run | all six asked for again; the scene whole in 8.0 s |
+| a group's file sent by half, then nothing | not run | given up at 30 s, asked again, whole at 35.6 s |
+| a group's file that never comes | "refining… 5 of 20 parts", for ever | said in 3.9 s, the load ended, the level drawn first still drawn |
+
+A request Spark's worker has open and that stalls cannot be taken back from outside: it is left behind,
+and what it brings later is let go.
+
+**The bar for publishing again**, headless Chrome, a fresh page each load, 63f5c9af: `n_lamps9` at full
+detail 20 of 20 reached the detail (3.6–4.8 s), the phone's emulation 20 of 20 (0.38–0.66 s), `n_chrome3`
+at full detail 8 of 8 (3.6–4.3 s). Playwright's WebKit, old and new by turns, 160 s, 1280x800, `n_lamps9`
+at full detail: old four of four with one load and no context lost, new four of four the same; textures
+927.5 MB in both, the page's process 1.15–1.25 GB new against 1.22–1.32 GB old, the GPU's 1.88–1.89 GB in
+both.
+
+**The orbit's gap is the old page's.** Old and new by turns in one job, five runs each, three drags a
+run (the longest gap between drawn frames, ms; one new run is left out of the load's figures, its load
+being the one that hung): the first drag old 188, 195, 237, 253, 254 and new 204, 214, 218, 232, 303; the
+second and third old 157–327 and new 171–228. What the device was asked in a run is the same -- some
+ninety readbacks of the order (6 s in all) and thirty-odd uploads of it (3.5 s) in both. The 1926 and
+723 ms of the evening before were another session's job on the GPU.
+
+**The first move of a lamp no longer waits where there is room.** A level drawn from its lit files read
+its groups when a lamp was first moved, and the lamp answered a second and a half later. They are now
+read behind the level once it has stood four seconds with nothing touched -- not on a phone, whose load
+is to stay the lit level's, until its options are opened, where the lamps are; `?ahead=0` leaves it as it
+was. Level 1 of `n_lamps9` on a desktop, two runs each: the lamp answers in 61 and 264 ms where it waited
+1542 and 1578 ms. Textures there go from 191.8 to 211.8 MB when the groups are in, which is what they
+were with the old page; a phone's load is the same files as before (13.6 MB).
+
+**Frame 8 by the slider was not frame 8 by the address: a history read on demand was not in the rooms.**
+The 0.07 % of pixels in the glass was a defect. A part's glass and mirrors are also in the rooms' scene,
+thinned, so that the chrome's room holds the glass that stands; read with their part they were put
+there, read later by the timeline they were not, and at an earlier frame the chrome showed a room
+without the glass of that frame. They are put there now, and frame 8 by the slider is the old page's to
+one of 255 in a channel, as are the other six pictures (0 of 255).
+
+**A phone's room is 150 000 gaussians.** Looked at beside 400 000 on the phone's emulation, three eyes
+before the knights in each of `n_lamps9`, `n_chrome3` and `n_lights6` (`room_*.png`: the knights the same
+to the eye; 0.2–0.3 of 255 in the mean and 0.2–1.0 % of the pixels over 8). Textures on the phone's
+emulation, `n_lamps9`: 84 MB at rest and 99.8 MB with a lamp dragged, where the page before this round
+(f1e5938d) held 122.7 and 122.7 MB; `n_lights6` 82.3 and 102 MB against 125.2. A desktop keeps 400 000.
+
+Not done:
+- **A real browser, a real phone, Safari**: still none.
+- A file is tried three times and then the load ends; the page does not go on to the parts that would
+  have come, nor try again by itself later. A stalled request inside Spark's worker is left open.
+- The stall's 30 s and the three tries were chosen, not searched; a line slower than a chunk in 30 s
+  would be taken for a stall.
+- The groups read ahead are read whether or not a lamp is ever moved (38 MB on a tablet's level); on a
+  phone, opening the options for anything reads them.
+- What the first section left: the programs linked ahead, the exporter's side of the `rgb` files, the
+  page's own Spark's two sets.
