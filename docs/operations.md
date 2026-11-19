@@ -520,7 +520,7 @@ reads.
 | `rooms` | `0` | on | set by the page | no room is drawn for glass and chrome, which show as found. The page sets it itself and reads itself again when the browser takes the graphics context back while rooms were drawn; lost again, it reads a level coarser. `Their rooms: Draw them again` in the options takes it out |
 | `room` | gaussians, at least 20000 | `400000`; `150000` on a phone | no | how many gaussians the scene the rooms are drawn from keeps, whatever the detail |
 | `keep` | `1` | off | no | the page keeps its own copies of the gaussians and of its textures after the device has them (32 bytes a gaussian and 4 a texel); without it they are let go once sent, and Spark's own ray through a mesh finds nothing |
-| `ahead` | `0` | on | no | the groups' files are read only when a group is first moved. Without it they are also read once the level stands and nothing has been touched for four seconds -- on a phone, when the options are opened -- so a lamp answers when it is moved |
+| `ahead` | `0` | on | no | the groups' files are read only when a group is first moved. Without it they are also read once the level stands and nothing has been touched for four seconds -- on a phone, when the options are opened -- so a lamp answers when it is moved. Never ahead where the browser says the connection saves data or is 2g (`navigator.connection`) |
 | `progressive` | `0` | on | no | the detail asked for as it comes, with no coarser level drawn first |
 | `base` | an `http(s)` address | `./scenes/` | no | where the scene's files are |
 | `unit` | metres | the index's `unit`; `0.01` where the box is over 200 across, else `1` | no | the scene's unit |
@@ -541,8 +541,11 @@ the page reads that in place of the file: a fifth to a tenth of its bytes.
 
 A file that does not come is asked for again: each is tried three times, a
 moment apart, and one that began to come and then stops for 30 seconds is
-given up and tried again. The status line then says `a file did not come and
-was asked for again`; after three failures the load ends with `the scene is
+given up and tried again, as is one that was never answered once nothing
+has come from any file for 60 seconds (a file waiting its turn behind others
+that are coming is not given up). The status line then says `a file did not
+come and was asked for again`, and `1 file asked for again` once the scene
+is whole; after three failures the load ends with `the scene is
 not whole: <file> did not come in three tries (…). Reload the page to try
 again`, and what is drawn stays drawn. `window.__player.reading()` lists what
 is being read, for whoever asks why a load stands still.

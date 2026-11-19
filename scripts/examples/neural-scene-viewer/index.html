@@ -482,15 +482,28 @@
       // too (only where its coming can be watched: a file that says nothing of its progress is waited
       // for). The status line says that a file was asked for again, and, when three tries fail, which file
       // it was -- and the load ends there, what is drawn staying drawn.
-      const stallMs = 30000;
+      // A REQUEST THAT NEVER ANSWERS AT ALL has shown nothing to time a stall by, and stood for as long as
+      // the browser let it (100 s seen). It is given up when nothing has come from ANY file for `silentMs`:
+      // a file that is only waiting its turn -- behind the six connections a browser opens to a server,
+      // or for one of Spark's workers -- is silent while the files before it come, and on a phone's slow
+      // line that is minutes; but while they come the line is not dead, and their coming keeps this one
+      // waiting. A minute of nothing at all, from a line that was asked for several files, is a request to
+      // make again.
+      const stallMs = 30000, silentMs = 60000;
+      let lastAny = performance.now();   // when a byte of any file last came
       let readNote = "";
       let retold = () => {};   // the status line said again, once there is one
       const patient = async (what, attempt) => {
         for (let tried = 1; ; ++tried) {
           let last = 0, timer = 0;
-          const went = attempt(() => { last = performance.now(); window.__player.progress = (window.__player.progress ?? 0) + 1; });
+          const asked = performance.now();
+          const went = attempt(() => { last = lastAny = performance.now(); window.__player.progress = (window.__player.progress ?? 0) + 1; });
           const stalled = new Promise((_, no) => {
-            timer = setInterval(() => { if (last > 0 && performance.now() - last > stallMs) no(new Error(`${what} stopped coming`)); }, 1000);
+            timer = setInterval(() => {
+              const now = performance.now();
+              if (last > 0 && now - last > stallMs) no(new Error(`${what} stopped coming`));
+              else if (last === 0 && now - Math.max(asked, lastAny) > silentMs) no(new Error(`${what} was not answered`));
+            }, 1000);
           });
           try { return await Promise.race([went, stalled]); }
           catch (error) {
@@ -1667,7 +1680,8 @@
           }
           if (!litFirst) sayGroups(false);
           window.__player.wholeMs = Math.round(performance.now() - began);
-          if (readNote) { readNote = ""; say(said); }   // what did not come at first is all here now
+          // What did not come at first is all here now: said shortly, for as long as the page is open.
+          if (readNote) { const n = window.__player.retried ?? 0; readNote = ` · ${n} ${n === 1 ? "file" : "files"} asked for again`; say(said); }
           asked.frame = null;   // the frame the address asked for is shown: the timeline is the reader's
           // Spark's ray through the gaussians starts itself on the first one asked and answers from the
           // second: one is asked here, so that the first finger laid on the scene finds what is under it.
@@ -1735,7 +1749,11 @@
       for (const type of ["pointerdown", "pointermove", "wheel", "keydown", "touchstart"]) {
         addEventListener(type, () => { touchedAt = performance.now(); }, { capture: true, passive: true });
       }
+      // Not on a connection that says it is metered or slow (where the browser says: `saveData`, 2g): there
+      // the groups are read when a lamp is moved.
+      const metered = () => { const line = navigator.connection; return Boolean(line && (line.saveData || /(^|-)2g$/.test(line.effectiveType ?? ""))); };
       const readAhead = () => {
+        if (metered()) return;
         if (groupsWanted || !started || !litFirst || loading || window.__player.wholeMs === undefined || document.hidden) return;
         groupsWanted = true;
         window.__player.groupsAhead = Math.round(performance.now() - began);

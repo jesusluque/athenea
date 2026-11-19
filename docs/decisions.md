@@ -27519,3 +27519,27 @@ Not done:
 - With `MTL_DEBUG_LAYER=1` the technique tests abort in slang-rhi's `clear_texture2d_uint`, which writes
   a texture made with usage 0x05 (no shader write). Not followed.
 - flat_glass's source of difference between loads: not found.
+
+## The page's request that is never answered, its note after a file came late, and no reading ahead on a metered line (19 Nov)
+
+Three small things the deployer's fault tests and the measures left, written on the 19th and verified the
+same afternoon by the main session from the jobs the page's agent had queued before it was cut off.
+
+- **A request never answered.** The stall of 30 s covered a file that had begun to come; a server that
+  answers nothing left the page at `loading… 0 of 1 parts` (the deployer: 100 s and no second try). Now a
+  request is given up as a failed try once nothing has come from *any* file for 60 s: a file only waiting its
+  turn behind others that are coming is not given up. With a server that never answers one file, on the
+  emulated phone: asked again, the scene whole at 82 s.
+- **The note stays.** After a file was asked for again the final status line keeps `1 file asked for again`
+  (it kept it only after three failures).
+- **No reading ahead where the line is metered.** Where `navigator.connection` says `saveData` or `2g` the
+  groups' files are not read ahead (the first lamp move waits 990 and 968 ms there); on `4g` they are (140 ms).
+
+The bar, headless Chrome, a fresh page a load: 20 of 20 at full detail (3.7–5.5 s), 20 of 20 on the emulated
+phone (0.38–0.87 s); a throttled line whole in 97 s with no retry. Playwright WebKit, `sponza_lamps` at full
+detail, 160 s, alternating with 63f5c9af: two runs each, all four one load and no context lost, the page's
+process 1.21–1.27 GB in both, the GPU's 1.89–1.96 GB.
+
+Not done: four runs each in WebKit as the bar was set (two each were run before the agent stopped; the
+deployer runs six each before publishing); a real phone, a real metered line; programs linked ahead of the
+files; the exporter's side of the `.rgb` files.

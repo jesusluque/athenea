@@ -524,7 +524,7 @@ vista entregada; el resto solo lo lee.
 | `rooms` | `0` | sí | lo pone la página | no se dibuja ninguna sala para el vidrio y el cromo, que se ven como se encontraron. La página lo pone ella misma y se vuelve a leer cuando el navegador le quita el contexto gráfico habiendo salas dibujadas; si lo pierde otra vez, lee un nivel más grueso. `Their rooms: Draw them again` en las opciones lo quita |
 | `room` | gaussianas, al menos 20000 | `400000`; `150000` en un teléfono | no | cuántas gaussianas conserva la escena de la que se dibujan las salas, sea cual sea el detalle |
 | `keep` | `1` | no | no | la página conserva sus propias copias de las gaussianas y de sus texturas después de que el dispositivo las tenga (32 bytes por gaussiana y 4 por texel); sin él se sueltan una vez enviadas, y el rayo del propio Spark a través de una malla no encuentra nada |
-| `ahead` | `0` | sí | no | los ficheros de los grupos se leen solo cuando se mueve un grupo por primera vez. Sin él se leen también cuando el nivel lleva cuatro segundos en pie sin que se toque nada -- en un teléfono, al abrir las opciones -- de modo que una lámpara responde cuando se mueve |
+| `ahead` | `0` | sí | no | los ficheros de los grupos se leen solo cuando se mueve un grupo por primera vez. Sin él se leen también cuando el nivel lleva cuatro segundos en pie sin que se toque nada -- en un teléfono, al abrir las opciones -- de modo que una lámpara responde cuando se mueve. Nunca por adelantado donde el navegador dice que la conexión ahorra datos o es 2g (`navigator.connection`) |
 | `progressive` | `0` | sí | no | el detalle pedido según llega, sin dibujar antes un nivel más grueso |
 | `base` | una dirección `http(s)` | `./scenes/` | no | dónde están los ficheros de la escena |
 | `unit` | metros | el `unit` del índice; `0.01` donde la caja mide más de 200 de lado, si no `1` | no | la unidad de la escena |
@@ -548,8 +548,11 @@ ese en lugar del fichero: de una quinta a una décima parte de sus bytes.
 
 Un fichero que no llega se vuelve a pedir: cada uno se intenta tres veces,
 con un momento entre ellas, y el que empezó a llegar y se para 30 segundos
-se abandona y se intenta de nuevo. La línea de estado dice entonces `a file
-did not come and was asked for again`; tras tres fallos la carga termina con
+se abandona y se intenta de nuevo, igual que el que nunca tuvo respuesta
+cuando no ha llegado nada de ningún fichero en 60 segundos (el que espera su
+turno detrás de otros que están llegando no se abandona). La línea de estado
+dice entonces `a file did not come and was asked for again`, y `1 file asked
+for again` una vez la escena está entera; tras tres fallos la carga termina con
 `the scene is not whole: <file> did not come in three tries (…). Reload the
 page to try again`, y lo dibujado sigue dibujado. `window.__player.reading()`
 lista lo que se está leyendo, para quien pregunte por qué una carga no
