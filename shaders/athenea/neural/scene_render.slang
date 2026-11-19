@@ -572,10 +572,13 @@ void renderPack(uint3 tid: SV_DispatchThreadID) {
             const float z2 = depth[at2];
             const bool there = z2 > 0.0 && colour[at2].a > 0.5 && abs(z2 - z) <= 0.05 * z &&
                                plane(kPlaneRow, at2).x == rowHere.x;
-            // Held as `holds` calls a surface held (a cover over 0.8): from 0.5 a cell the gathering look
-            // makes again was called held here, and its gaussians stood with no parent -- the cut's floor.
-            const bool heldThere = params.hasKnown != 0 && knownColour[at2].a > 0.8 &&
-                                   abs(knownDepth[at2] - z2) <= params.tolerance * z2;
+            // Held as renderValid calls that cell's middle held when it decides whether the cell is made --
+            // `holds`, the whole of it. A copy of its first test stood here: from a cover of 0.5 it called
+            // held a cell the gathering look makes again, whose gaussians then stood with no parent (the
+            // cut's floor); and without `holds`' second test -- the scene's surface behind a disc that
+            // overhangs an edge -- it named a parent where no cell was made, and a cut between the two
+            // widths had neither to draw there.
+            const bool heldThere = holds(at2, z2, false);
             if (there && !heldThere) {
                 records[row + kAtParent] = 2.0 * across;
                 // The level above is this frame's own mean over a cell twice as wide: this gaussian's
