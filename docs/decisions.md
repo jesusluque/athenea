@@ -26837,12 +26837,11 @@ without its knights):
 | Sponza's own materials (five modules) | 12.40 s | 2.55 s |
 
 At the camera's hit, where a group's threads are on neighbouring pixels, none of it costs. On the bounces
-the textures are 1.3 s and the modules being several is 2.5 s, a fifth of the frame: a group pays each
-module any of its threads lands on. Sponza's UsdPreviewSurfaces differ in which inputs a texture feeds.
+the textures are 1.3 s; the 2.5 s more of Sponza's own materials were first read here as the modules being
+several, and that is not it (the section after the next).
 
 Not done: what that path reads (the next cut: what it does written in place of its colour -- its steps,
-its crossings, the surfaces its lot saw through -- under both fills); the kernel with media's garbage; one module for every
-UsdPreviewSurface whatever its textures (the 2.5 s); the splat-hidden light point's `continue` and a test
+its crossings, the surfaces its lot saw through -- under both fills); the kernel with media's garbage; the splat-hidden light point's `continue` and a test
 for it (an emitter, its table and a cloud in one fixture); CUDA and Vulkan.
 
 `athenea_usd_tests "[path],[glass],[lights],[emissive]"` on the commit, Metal: 66 cases, all pass (1028 s).
@@ -27076,3 +27075,28 @@ Not done: the cause. Next, in order of cost: the same pair of frames with the pa
 waited for (a race between dispatches would go); the pixel's fourth pass alone written out (`sum` before
 and after it) to say whether a sample or the pass is counted twice; Metal's validation layer and the shader
 validation on (`ATHENEA_GPU_VALIDATION`, `MTL_SHADER_VALIDATION`) for a read out of bounds.
+
+## Several material modules cost a bounce nothing; one module for every UsdPreviewSurface is not worth making (19 Nov)
+
+Asked after "a textured stage's material taken apart": Sponza's own materials take 2.5 s a view more than one
+of them bound over everything, and one module for every UsdPreviewSurface whatever its textures was the
+candidate. Measured first whether the modules being several is what costs: the plain material on Sponza's
+ground floor and the textured one on the two floors above (two modules a path's bounces land on by turns,
+no cut-out, no knight), the tree's build, three bounces, the second view of two:
+
+| | seconds a view |
+|---|---|
+| the plain material over everything | 8.64 (8.63 before) |
+| the textured one over everything | 9.93 (9.90 before) |
+| the two, a floor each | 9.81 and 9.73 |
+| Sponza's own materials | 12.40 |
+
+Two modules among a group's threads cost no more than the dearer of them alone. Sponza's UsdPreviewSurfaces
+compile to two modules as it is (base colour and opacity; base colour, metalness, normal and roughness),
+and what the first brings that the test stage has not is the cut-outs: a shadow ray walked surface by
+surface with a material's opacity asked at each (`shadowCutouts`), and a path's ray going on through what
+its lot does not cover. That is where the 2.5 s are to be looked for. The one module was not made.
+
+Not done: the cut-outs' cost taken apart (the shadow walk against the any-hit ray a frame without cut-outs
+takes; the opacity variant's evaluation; the steps a path spends passing through), which is the next thing
+to measure on Sponza.
