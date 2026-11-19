@@ -424,11 +424,35 @@ misma imagen bit a bit. No es el tamaño de lo que guarda un hilo: un array de
 128 KB en la memoria de un hilo se lee como se escribió y a 256 KB Metal
 rechaza el pipeline (`athenea_gpu_tests "[threadmemory]"`), donde estos
 kernels guardan de 15 a 35 KB (`docs/decisions.md`, «What a thread's memory
-bears» y «A lobe of 128 bytes»). La causa no se conoce. Así que una local no
-se pone a cero «por si acaso», y `athenea_usd_tests "[repeat]"` dibuja con
-cada kernel que hace shading -- los caminos con y sin un medio, el raster, las
-guías, un bake -- desde dos renderers y pide que no difieran en un bit, junto
-a los tests que atan cada uno a su forma cerrada.
+bears» y «A lobe of 128 bytes»). Del kernel con medios se conoce la clase de
+causa y no el sitio: lee una local que nadie escribió. Con el compilador de
+Apple inicializando todas las locales (`ATHENEA_METAL_LOCALS=zero`) ese kernel
+sale bien a cualquier nivel de optimización y desde cualquiera de los dos
+textos, y una escena con niebla dibujada por una compilación de otra
+disposición es la misma imagen tres veces donde difería en 6.200 píxeles de
+129.600; ningún inicializador suelto en el texto del propio
+kernel lo consigue, y las matemáticas rápidas, el nivel de optimización y la
+validación de Metal solo lo mueven de sitio (`docs/decisions.md`, «The kernel
+with media reads an undefined local»). Así que una local no se pone a cero
+«por si acaso» -- un inicializador que arregla una disposición no es un
+arreglo --, y `athenea_usd_tests "[repeat]"` dibuja con cada kernel que hace
+shading -- los caminos con y sin un medio, el raster, las guías, un bake --
+desde dos renderers y pide que no difieran en un bit, junto a los tests que
+atan cada uno a su forma cerrada.
+
+**`ATHENEA_METAL_LOCALS=zero|pattern` distingue una local indefinida de una
+causa real.** Es un discriminador para quien desarrolla, leído donde se crea
+el dispositivo (`modules/gpu/src/Device.cpp`) y apagado salvo que se pida: en
+Metal todos los kernels se compilan con `-ftrivial-auto-var-init`, con sus
+locales a cero o con un patrón antes de escribirse. Un kernel que cambia entre
+dos cargas, o con una edición sin significado, y que sale bien e igual dos
+veces con `zero` lee una local indefinida; uno que sigue cambiando tiene otra
+causa (el Sponza plano con el caballero de cristal sigue cambiando un píxel
+entre cargas con él, de causa desconocida). No es una forma de ejecutar: a la
+escena de materiales le costó un 8 % por vista y al Sponza plano con cristal
+cinco minutos de compilación donde eran 50 s. La caché de shaders no sabe
+nada de él, así que pide un `ATHENEA_SHADER_CACHE` vacío. Y Vulkan y CUDA no
+tienen esa red: un kernel tiene que estar bien sin ella.
 
 **`Result<T>` y `ATHENEA_TRY`, sin excepciones.** Un renderer que lanza a través
 de un command buffer deja el dispositivo en un estado que nadie sabe

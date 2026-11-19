@@ -341,6 +341,36 @@ Result<std::shared_ptr<Device>> Device::create(const DeviceDesc& desc) {
             rhiDesc.slang.compilerOptionEntryCount = static_cast<uint32_t>(cudaEntries.size());
             rhiDesc.slang.slangGlobalSession = cudaGlobalSession();
         }
+        // ATHENEA_METAL_LOCALS=zero|pattern: a developer's discriminator, off
+        // unless asked for. Apple's compiler is then told to initialise every
+        // local of every kernel (-ftrivial-auto-var-init), with zeroes or
+        // with a pattern. A kernel whose pictures change between two loads,
+        // or with an edit that should change nothing, and that is right and
+        // the same twice under `zero` reads a local nobody wrote: the value
+        // is undefined, and the optimiser is free to make something else of
+        // every arrangement of the text. It is not a mend to ship -- it cost
+        // the materials stage 8 % a view and a cold compile of the flat
+        // Sponza with glass five minutes where 50 s -- and Vulkan and CUDA
+        // have no such net, so the kernel has to be right without it. The
+        // cache knows nothing of it either: point ATHENEA_SHADER_CACHE at an
+        // empty directory with it.
+        std::string metalLocals;
+        slang::CompilerOptionEntry metalEntry{};
+        if (backend == Backend::Metal) {
+            const std::string locals = platform::env("ATHENEA_METAL_LOCALS");
+            if (locals == "zero" || locals == "pattern") {
+                metalLocals = "-ftrivial-auto-var-init=" + locals;
+                metalEntry.name = slang::CompilerOptionName::DownstreamArgs;
+                metalEntry.value.kind = slang::CompilerOptionValueKind::String;
+                metalEntry.value.stringValue0 = "metal";
+                metalEntry.value.stringValue1 = metalLocals.c_str();
+                rhiDesc.slang.compilerOptionEntries = &metalEntry;
+                rhiDesc.slang.compilerOptionEntryCount = 1;
+                log::warn("Metal: every kernel's locals initialised ({}): a discriminator, not a way to run", locals);
+            } else if (!locals.empty()) {
+                log::warn("ATHENEA_METAL_LOCALS is 'zero' or 'pattern', not '{}': ignored", locals);
+            }
+        }
         rhiDesc.persistentShaderCache = device->shaderCache_.get();
 
         rhi::ComPtr<rhi::IDevice> made;

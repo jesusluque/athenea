@@ -27450,3 +27450,72 @@ the frames themselves were not compared.
 Not done: a real phone; a level of a million for `sponza_knight` without the dashes; `lamps` with a level of
 half a million again (found with the option its floor is that); the half million of `sponza_growth`, which
 is its floor and smeared.
+
+## The kernel with media reads an undefined local; a switch to tell that from another cause (19 Nov)
+
+**The pair that differed by one line.** `const Found target = lightStep ? lightPoint : found;` against
+`if (lightStep) { found = lightPoint; }` in the path tracer's megakernel: the first drew Beer-Lambert
+through an absorbing box (0 pixels beyond five binomial deviations, mean z² 0.978) and the second garbage
+that changed from run to run (2,600–2,900 of 14,399 pixels beyond, mean z² of 10⁸), with no light point
+ever shaded. Taken down a level, on Metal, Apple M5 Pro:
+
+- **The IR.** Both texts through `xcrun metal -S -emit-llvm`: one `alloca` of a `Found` and two memcpys
+  apart at -O0, 35 against 34 allocas at -O2; no branch on `undef`, no `unreachable`, the same counts of
+  phis, selects and float operations with an undefined operand in both. Nothing ill formed.
+- **How it is compiled** (Slang runs `metal -std=metal3.1 -fno-strict-aliasing -Os -g0`; flags were added
+  by a wrapper on `PATH`). As built: broken. `-O0`: right. `-O1`: 0 beyond, z² 846. `-O2`: 1,828 beyond.
+  Without fast math, or with NaNs honoured, at `-Os`: right -- and with NaNs honoured at `-O2` 1,964
+  beyond, with safe math at `-O2` 128 beyond, and the NaN-honouring IR optimised from its text broken as
+  before. The text that "worked" is wrong at `-O2` (10 beyond, z² 13,711) and from its IR text (2,652).
+  So no option mends it; each only arranges the code another way, and the committed text is the
+  arrangement that passes at `-Os`.
+- **Metal's shader validation** on the broken kernel at the test's size reports nothing, and the result
+  under it is right.
+- **Every local initialised by the front end** (`-ftrivial-auto-var-init=zero`): right at `-Os`, `-O2`
+  and `-O1` from the broken text and at `-O2` from the other. With `=pattern` the broken text is wrong
+  (2,887 and 2,970 beyond on two runs).
+- **A stage.** The repeat test's fog stage (`materials_medium.usda`) at 480x270, 64 paths, 2 bounces,
+  the committed text read into another build of the kernel (the experiment copy, whose compiled-in
+  text it replaces at run time): 6,224 and 6,241 of 129,600 pixels differ from the
+  first of three runs, in short runs of pixels all over the frame; with `=zero` the three are identical,
+  with `=pattern` identical, and `=zero` against `=pattern` 0 pixels over two codes.
+
+So the kernel reads a local nobody wrote. Which one was not found: the front end's 2,706 initialisations
+taken back out by ranges do not narrow monotonically (inside the megakernel it takes two sets out at
+once to break it, and either half of each alone is right); `Found lightPoint = foundNothing();` alone
+leaves it broken at every level; so do initialisers on all 35 plain uninitialised locals of the kernel's
+own text together. What that leaves is the shading states (`Shaded`, whose lobe stack has no zero
+value to write), the arrays, and the locals of the imported modules and of Slang's own making.
+
+Not it, measured on the way: PNanoVDB's HDDA dividing by a zero component of the direction (the test's
+sun runs along z), guarded: still broken everywhere.
+
+**`ATHENEA_METAL_LOCALS=zero|pattern`** (`modules/gpu/src/Device.cpp`) is that discriminator kept: a
+`DownstreamArgs` entry for Slang's `metal`, off unless asked for. It is not shipped on: every kernel
+compiled with `=zero` cost the materials stage 7.34 → 7.92 / 8.00 s a view (1920x1080, 32 paths, 3
+bounces; pictures bit for bit) and the flat Sponza with the glass knight 12.19 → 12.36 s a view and 50 →
+326 s of cold compile.
+On the fog stage alone the tree's build, as built and with the switch (147 kernels compiled, all 147
+with the flag): 480x270, 64 paths, 2 bounces, three runs each the same picture either way; a cold
+start 39.9 → 59.6 s, a warm run 8.4–9.2 against 8.1–8.5 s, and 1920x1080, 32 paths, 3 bounces 17.7–17.9
+against 18.0–18.7 s. So the tree's own arrangement is repeatable on that stage today, and the flag would cost
+the kernel with media nothing a frame there.
+
+**The one pixel of flat_glass is not this.** Under `=zero`, six loads: (1004,10) still takes two values
+and other pixels differ between loads too (up to 0.376). Nor is it the keeping's order: with a kept path taking no
+derivative from its quad and a pixel's entries added in the order of their samples (both tried from
+scratch text, not in the tree), four loads still give (1004,10) its two values on one view and nothing
+else differs; none of that stage's 24 material modules takes a quad derivative at all.
+
+Not done:
+- The local is not found, so the kernel with media is right by the arrangement `-Os` gives its present
+  text, on Metal; `[repeat]` holds it at 1920x1080 and 32 paths, where it passes. A case at
+  480x270 and 64 paths was not added: the tree's build passes it as built, so it would watch nothing
+  the present one does not.
+- One variant compiled with the flag (the volumes kernel alone): `ShaderLibrary` links with
+  `composed->link()`; `linkWithOptions` is where a program's own entry would go. Not tried.
+- Vulkan and CUDA: not run. They have no such switch here, and SPIR-V's `OpUndef` gives a compiler the
+  same freedom.
+- With `MTL_DEBUG_LAYER=1` the technique tests abort in slang-rhi's `clear_texture2d_uint`, which writes
+  a texture made with usage 0x05 (no shader write). Not followed.
+- flat_glass's source of difference between loads: not found.

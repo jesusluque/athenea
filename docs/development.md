@@ -409,11 +409,33 @@ not the size of what a thread keeps: an array of 128 KB in a thread's memory
 reads back as written and at 256 KB Metal refuses the pipeline
 (`athenea_gpu_tests "[threadmemory]"`), where these kernels keep 15 to 35 KB
 (`docs/decisions.md`, "What a thread's memory bears" and "A lobe of 128
-bytes"). The cause is not known. So a local is not zeroed "to be safe", and
-`athenea_usd_tests "[repeat]"` renders with each kernel that shades -- the
-paths with and without a medium, the raster, the guides, a bake -- from two
-renderers and asks for not a bit apart, beside the tests that hold each to
-its closed form.
+bytes"). For the kernel with media the kind of cause is known and the place
+is not: it reads a local nobody wrote. With Apple's compiler told to
+initialise every local (`ATHENEA_METAL_LOCALS=zero`) that kernel is right at
+every optimisation level and from either text, and a fog stage drawn by a
+build of another arrangement is the same picture three times where it
+differed on 6,200 pixels of 129,600; no single
+initialiser in the kernel's own text does that, and fast math, the
+optimisation level and Metal's validation each only move it
+(`docs/decisions.md`, "The kernel with media reads an undefined local"). So a
+local is not zeroed "to be safe" -- an initialiser that mends one arrangement
+is not a mend -- and `athenea_usd_tests "[repeat]"` renders with each kernel
+that shades -- the paths with and without a medium, the raster, the guides, a
+bake -- from two renderers and asks for not a bit apart, beside the tests
+that hold each to its closed form.
+
+**`ATHENEA_METAL_LOCALS=zero|pattern` tells an undefined local from a real
+cause.** It is a developer's discriminator, read where the device is made
+(`modules/gpu/src/Device.cpp`) and off unless asked for: on Metal every
+kernel is compiled with `-ftrivial-auto-var-init`, its locals zeroes or a
+pattern before they are written. A kernel that changes between two loads, or
+with an edit of no meaning, and is right and the same twice under `zero`
+reads an undefined local; one that still changes has another cause (the
+flat Sponza with the glass knight still changes a pixel between loads under
+it, cause unknown). It is not a way to run: the materials stage paid 8 % a view for it
+and the flat Sponza with glass five minutes of compiling where 50 s. The
+shader cache knows nothing of it, so it wants an empty `ATHENEA_SHADER_CACHE`.
+And Vulkan and CUDA have no such net: a kernel has to be right without it.
 
 **`Result<T>` and `ATHENEA_TRY`, no exceptions.** A renderer that throws through a
 command buffer leaves the device in a state nobody can describe. Where a
