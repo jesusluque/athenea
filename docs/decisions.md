@@ -27163,3 +27163,28 @@ step taken inside `if (throughSplats > 0.0)`, the path going on from the vertex 
 leave the kernel with media right when made alone ("A lobe of 128 bytes", the table's sixth row). Not made
 in the tree: it changes the kernel's text for nothing a frame can show, and each such change has to be paid
 for with the kernel with media and every `[repeat]` case run again.
+
+## The walked shadow rays in a dispatch of their own: its ceiling measured, not built (19 Nov)
+
+Asked for with a rule: at least a tenth off Sponza's own materials at three bounces (12.3 s a view). Before
+building it, the megakernel as it would be left: the one ray first of "What Sponza's cut-outs cost", and
+the rays it does not settle dropped where they would be kept (another picture, the walk and the opacity's
+evaluation no longer in the kernel). The committed kernel's text and that one in turn under one binary, the
+second view of two, twice each: 12.08 and 12.13 s as it is, 10.65 and 10.64 s with the rays dropped -- 1.46 s,
+12 %, before anything is paid for the rays themselves.
+
+What they would cost is not measured, only counted: 0.21 a path, 14 million a frame of 66 million paths,
+each an entry written after its path's steps (a buffer written inside the step loop is what the Metal
+compiler does not get through: `kGroups`), a walk to the nearest surface and that surface's opacity
+evaluated in a dispatch of threads that all do the same, and a pass that adds what got through to its
+pixel. A path's whole step -- a ray, a material, a light -- is some 45 ns here (2.9 s a bounce of 66 million);
+a walk with an opacity is a third of one at best: 0.2 to 0.35 s for the walks, and the entries' writes
+beside. That leaves 1.0 to 1.2 s of the 1.46: eight to ten per cent, at the rule or under it, for a second
+kernel that evaluates materials, a state for a shadow ray (its contribution before the shadow's tint, the
+light, the ray), the light groups' share and a moment's square of a sample that is no longer whole when its
+pixel's thread ends, and sums in another order (not bit for bit, and the cut-outs' lots counted otherwise).
+Not built: the rule is not clearly within reach, and each change to this kernel's text is a draw on the
+kernel with media. The measure that would decide it is the dispatch alone, timed on entries written by a
+kernel that does nothing else.
+
+Not done: that measure; the same ceiling on Sponza with its knights and lamps (17.4 s a view).
