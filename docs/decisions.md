@@ -27613,3 +27613,35 @@ Not done: the test where it belongs, in the scene's own space -- a gaussian left
 gaussian reaches its middle (a grid of the drawn ones on the device, asked by each left out); or, at the
 shoot, a pyramid whose wider gaussian is as long as its pixel is on the surface. `sponza_knight` stays
 published without its level of a million.
+
+### The dashes, where they are: a far frame's own discs, two long in rows four apart (20 Nov)
+
+The box read above was not where the dashes are. A dash of the page's frame 30, taken back to the floor
+through the page's camera, is at x 1036, y 73, by the knight. There the first frame's footprint 2 is 0.96
+wide -- over the level's 0.937, so not drawn -- and the level draws that frame's own gaussians in its place:
+0.48 wide, 0.96 long, their rows four units apart along the floor (the eye meets it at a fifth). Everything
+frames 16 to 28 laid between the rows names, link by link, those rows, and is left out for them. The level's
+band between a far frame's footprint 1 and its footprint 2 is drawn by discs `--turned` holds to twice
+their width, on a surface where their pixel is five times as long: a dash is the dark between two rows.
+`--pyramid-turned` had given the cells of the levels above their length; the look's own gaussians, which a
+level draws as well wherever a nearer frame refined past them, were left at `--turned`.
+
+**`shoot --inside-turned`** (0: off) is `--pyramid-turned` for a look's own gaussian: where its four
+neighbouring pixels show its own surface in its plane it is as long as its pixel lies on the surface, by no
+more than one over the value; at a silhouette it keeps `--turned`. `sponza_knight` found again with 0.1
+(`build/night/agent-scenes/job_in.sh`, the build of this commit, 960x540, the Mac at nominal, no stop of the
+guard), against the scene as it was found on 18 Nov:
+
+| | without | `--inside-turned 0.1` |
+|---|---|---|
+| gaussians standing | 2 590 530 | 2 362 750 |
+| the frames' seconds | 467.9 | 414.5 (426 by the clock) |
+| held views, dB / SSIM | 32.84 / 0.9400, 34.60 / 0.8842, 31.77 / 0.9293, 33.59 / 0.9057 | 32.77 / 0.9386, 34.24 / 0.8762, 31.74 / 0.9292, 33.41 / 0.9013 |
+| levels of 1 000 000, 500 000, 250 000 | 936 402, 491 775, 273 858 | 913 434, 495 348, 248 286 |
+| the level of a million on the emulated phone, frames 5, 30 and 45 | dashes by the knight | none |
+
+The held views read 0.03 to 0.36 dB lower: a long disc of a far frame lies under what nearer frames lay and
+shows where they leave it. Off by default for that; a scene whose level is ruled is found with it.
+
+Not done: the other scenes found with it (their levels of a million show no dashes as published); a real
+phone; a value between 0.1 and `--turned`.

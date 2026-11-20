@@ -149,6 +149,7 @@ struct SceneOptions {
     unsigned                 coarsest = 8;
     float                    glassOpacity = 0.05F;
     float                    turned = 0.5F;
+    float                    insideTurned = 0.0F;     // the same for a look's own gaussian that lies inside its surface (0: `turned`)
     float                    pyramidTurned = 0.1F;    // the same for a cell of the levels above that lies inside its surface
     std::vector<double>      times;
     double                   timeStep = 0.0;
@@ -2536,6 +2537,10 @@ int runShoot(const SceneOptions& all) {
         how.footprint = footprint;
         how.glassOpacity = all.glassOpacity;
         how.turned = all.turned;
+        // A look's own gaussian inside its surface, as long as its pixel lies on it (--inside-turned): from
+        // far and aslant a floor's rows stand four discs apart, and a level of detail that draws them in
+        // place of what nearer frames laid between shows the dark between the rows.
+        how.inside = all.insideTurned;
         // Glass is made as glass by the view's last look; the coarse ones before it carry its picture.
         how.panes = last;
         how.pyramid = last && all.pyramid > 1;
@@ -4758,6 +4763,7 @@ void addNeuralScene(CLI::App& app) {
     shoot->add_flag("--antialias", o.antialias, "a new scene is drawn with the Mip-Splatting 2D filter's compensation, by the looks and by whoever draws it after (kept in its manifest); without it, the default, a disc narrower than a pixel stays opaque");
     shoot->add_flag("--no-antialias", o.noAntialias, "the scene is drawn without the compensation from here on, whatever its manifest says");
     shoot->add_option("--turned", o.turned, "the least a disc's facing is taken as: it is stretched along the surface's fall by no more than 1 over this");
+    shoot->add_option("--inside-turned", o.insideTurned, "the same for a look's own gaussian whose four neighbours show its own surface: as long as its pixel lies on the surface, by no more than 1 over this (0: --turned for all)");
     shoot->add_option("--pyramid-turned", o.pyramidTurned, "the same for a cell of the levels above its last look (--pyramid) whose four neighbours show its own surface: such a cell is as long as it lies on the surface, by no more than 1 over this (0: as --turned)");
     shoot->add_option("--glass-opacity", o.glassOpacity, "the least a pane covers of what is behind it, however clear");
     shoot->add_option("--name", o.name, "the scene's name");
