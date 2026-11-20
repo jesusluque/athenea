@@ -1,6 +1,6 @@
 {
  "title": "neural athenea: what has been applied, and when",
- "note": "Engine side (branch neural of athenea) and what was published on this site, oldest at the bottom.",
+ "note": "Engine side (branch neural of athenea). Each entry: the date, what was added, and the scene that shows it where there is one. Entries for what was published on the site and when are sysop's to add from its own record of deploys.",
  "entries": [
   {
    "date": "2026-11-12",
@@ -11,23 +11,8 @@
    "what": "A file that grows while it renders, and a player for it on the web: the scene seen being made, a frame at a time, and played back."
   },
   {
-   "date": "2026-11-13",
-   "what": "Published: neural.lucab.co.uk opens with Sponza found by rendering, a walk of 100 frames, and a player that shows it growing with the render camera's frustum.",
-   "scene": "sponza_growth"
-  },
-  {
-   "date": "2026-11-13",
-   "what": "Published: a glass knight in Sponza, with glass parts apart; the player laid out for phones and turned with one finger held as the pivot.",
-   "scene": "sponza_knight"
-  },
-  {
    "date": "2026-11-14",
    "what": "Glass and chrome keep their own material and are shaded by where the eye is, in the engine (render --glass) and in the player; levels of detail and the scene's history handed on; QA of materials, time, textures, formats and workflows on Metal, CUDA and Vulkan."
-  },
-  {
-   "date": "2026-11-14",
-   "what": "Published: levels of detail chosen by the device, an Options panel, the glass and chrome knights side by side at 1080, and Play that rides the render camera on phones.",
-   "scene": "sponza_chrome"
   },
   {
    "date": "2026-11-15",
@@ -66,16 +51,6 @@
    "scene": "sponza_lamps"
   },
   {
-   "date": "2026-11-15",
-   "what": "Published: this index of what has been applied, and Sponza lit by two lamps as groups of light.",
-   "scene": "lamps"
-  },
-  {
-   "date": "2026-11-15",
-   "what": "Published: Sponza at 1080 with two lamps as groups of light, a player that draws a coarse level first and loads the detail behind it, and the player in a single file.",
-   "scene": "sponza_lamps"
-  },
-  {
    "date": "2026-11-16",
    "what": "Lamps added to a scene already found, all at once and from small frames (shoot --groups-only --light-over-base): the light is the small frame's, the texture the gaussian's own base colour. Two lamps on the 1080p Sponza scene: 182 s where a lamp took 2428 s."
   },
@@ -108,15 +83,6 @@
    "scene": "sponza_lamps"
   },
   {
-   "date": "2026-11-16",
-   "what": "OpenPBR built by one node in place of MaterialX's graph of 45 values, the same picture: Sponza at 1080p with two lamps found in about 590 s of work where it took about 1620 s."
-  },
-  {
-   "date": "2026-11-16",
-   "what": "Published: Sponza with the lights scene (sponza_lights).",
-   "scene": "sponza_lights"
-  },
-  {
    "date": "2026-11-17",
    "what": "Objects: every gaussian keeps the prim it was made from, and the player shows an object's matte, the object alone, or the object tinted (Options, Objects; the choice is kept in the address).",
    "scene": "sponza_lamps"
@@ -125,6 +91,10 @@
    "date": "2026-11-17",
    "what": "A group's light on a gaussian is read from the frame that made it. A scene with every light apart now reads as one with none apart: 28.40 dB where 27.91 (Sponza at 1080p, a view not taken), found in 270 s.",
    "scene": "sponza_lights"
+  },
+  {
+   "date": "2026-11-16",
+   "what": "OpenPBR built by one node in place of MaterialX's graph of 45 values, the same picture: Sponza at 1080p with two lamps found in about 590 s of work where it took about 1620 s."
   },
   {
    "date": "2026-11-17",
