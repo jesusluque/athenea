@@ -27567,3 +27567,49 @@ A sixth off the frame with no bounce and a third off three; the earlier figure b
 technique 2862 in 64, `[repeat]` 37 in 5, `[scene]` 383 in 14.
 
 Not done: CUDA (WSL) built and run with these; the two changes timed apart on Vulkan; Sponza there.
+
+## A level's dashes, read in the records: not a parent that went (20 Nov)
+
+The section on a level's dashes and "A level closed against the frames that made the scene" say a gaussian is
+left out of a level for a parent that a later look took out. Read in the records of `sponza_knight` as it was
+found without `--laid-over-refined` (`build/night/agent-scenes/knight.aths`, 2 590 530 standing;
+`holes.py`, an inspection script, lists what lies on a box of the floor by what the cut at a width does with
+it), that is not what happens.
+
+**What is gone.** 130 596 gaussians of the scene are stamped gone. 129 561 of them are one piece whole:
+the first frame's gathering look of footprint 2 (`k00_t0_f2_s3`), which the frame's last look replaces with
+its own pyramid, and which nothing names (every one of them was laid over nothing). 1 035 are footprint 1,
+taken out by a later frame. No gaussian the cut leaves out names one of these.
+
+**What a hole is.** On the floor before the first knight (x 840 to 960, the level of a million, a width of
+0.937 units): 3 601 gaussians drawn, 25 733 left out for what they were laid over, 1 248 refined and too
+wide. Every one left out has what it names, standing and drawn. The first frame saw this floor from far and
+aslant: its rows fall 3.15 units apart along the floor, its discs are 0.39 wide and 0.77 long, and its
+pyramid's footprint 2 sits on every other row (0.77 wide, 3.2 long). Frames 13 to 18, nearer, laid gaussians
+0.22 to 0.28 wide between those rows, and named what stood there as the finest: the first frame's footprint
+1, by its width (0.38). At a width of 0.937 those are left out for it, it is left out for its own footprint
+2, and that is drawn -- on its row, 3 units from the gaussians it is drawn in place of. The chain of names
+is whole and the level is open: a gaussian's stand-in is named by the pixel it was laid on, and from far and
+aslant a pixel is longer than what stands in it reaches.
+
+**Tried, none kept** (each exported and looked at on the emulated phone from frame 30 and frame 5; the
+level of a million without any of them is 936 402 with the dashes):
+
+| | gaussians in the level | the floor at frame 30 |
+|---|---|---|
+| closed where the level covers under 0.8 of a pixel of the gaussian's frame (19 Nov's) | 942 552 | dashes fewer, not gone |
+| the same at 0.97 | 1 281 993 | faint rows left; over a phone's million |
+| closed where the level covers a tenth less than the scene itself does from the same eye | 979 810 | two short dark dashes and faint rows left |
+| the same at three hundredths | 1 161 209 | the two gone, faint rows left; over a million |
+| that test drawn at three times the frame's size, a tenth | 1 100 386 | not looked at |
+| a gaussian drawn where what the earlier frames left and the width can draw covers under half its pixel | 1 416 079 | worse: dashes over the whole floor |
+| what its own frame's next look took out kept as refined | 938 509 | dark blots everywhere: the gathering look's gaussians are not lit |
+| a gaussian laid on the pixel of one its own look took out, named for that one's parent | 990 268 | clean -- by drawing all the first frame at every width: the floor of the cut 967 047 (273 858), `sponza_growth`'s 1 217 619 (545 028), `lamps` 1 214 661 (528 881); no level of half a million left |
+
+A test in the frame's own picture tells a hole from a thin cover by a threshold, and the two overlap: the
+skirts of two rows a disc's length apart cover four fifths of the pixel between them.
+
+Not done: the test where it belongs, in the scene's own space -- a gaussian left out drawn where no drawn
+gaussian reaches its middle (a grid of the drawn ones on the device, asked by each left out); or, at the
+shoot, a pyramid whose wider gaussian is as long as its pixel is on the surface. `sponza_knight` stays
+published without its level of a million.
