@@ -1,105 +1,119 @@
 {
-  "title": "neural athenea: what has been applied, and when",
-  "note": "Engine side (branch neural of athenea). Each entry: the date, what was added, and the scene that shows it where there is one. Entries for what was published on the site and when are sysop's to add from its own record of deploys.",
-  "entries": [
-    {
-      "date": "2026-11-12",
-      "what": "A render's result is gaussians: neural-scene shoot path traces a USD stage and leaves a scene of gaussians, found a frame at a time, with time references; pictures are a post-process."
-    },
-    {
-      "date": "2026-11-13",
-      "what": "A file that grows while it renders, and a player for it on the web: the scene seen being made, a frame at a time, and played back."
-    },
-    {
-      "date": "2026-11-14",
-      "what": "Glass and chrome keep their own material and are shaded by where the eye is, in the engine (render --glass) and in the player; levels of detail and the scene's history handed on; QA of materials, time, textures, formats and workflows on Metal, CUDA and Vulkan."
-    },
-    {
-      "date": "2026-11-15",
-      "what": "Sharper scenes: discs half a cell wide, paying the 2D filter only under the width they were made at; the player keeps a gaussian's centre whole (Spark's extended splats)."
-    },
-    {
-      "date": "2026-11-15",
-      "what": "Material apart from light: every gaussian keeps its surface's base colour apart from the light it was found under."
-    },
-    {
-      "date": "2026-11-15",
-      "what": "Lamps added to a found scene with no path traced (render --lamps): direct light with soft shadows through the scene's own gaussians, one bounce, a highlight. Sponza with two lamps: 0.4 s where the path traced stage took 954 s for four views."
-    },
-    {
-      "date": "2026-11-15",
-      "what": "A scene's light taken again a frame (shoot --relight): the gaussians keep their place and material, the light is kept as a layer a time."
-    },
-    {
-      "date": "2026-11-15",
-      "what": "Groups of lights (shoot --light-group, render --group): a layer of path traced light a group of lamps; a lamp dimmed, tinted or put out is exact and nothing is traced. Sponza: 28.8 dB at a changed state against that state path traced.",
-      "scene": "lamps"
-    },
-    {
-      "date": "2026-11-15",
-      "what": "The player sets the lamps: a level and a tint a group in Options, and a lamp of its own that rides with the eye (no shadow).",
-      "scene": "lamps"
-    },
-    {
-      "date": "2026-11-15",
-      "what": "Groups of lights found by the scene's own paths (shoot --light-groups): one render for the scene and its lamps, where each lamp took a pass of its own. Sponza at 1080p with two lamps: 2195 s where three passes took 7195 s.",
-      "scene": "sponza_lamps"
-    },
-    {
-      "date": "2026-11-15",
-      "what": "The player draws a coarse level of the whole scene first and the full detail behind it: Sponza at 1080p (8.4 M gaussians) is drawn whole after 0.8 s where it took 14 s, read from a server on the same machine; and the player as one file to open from a disk.",
-      "scene": "sponza_lamps"
-    },
-    {
-      "date": "2026-11-16",
-      "what": "Lamps added to a scene already found, all at once and from small frames (shoot --groups-only --light-over-base): the light is the small frame's, the texture the gaussian's own base colour. Two lamps on the 1080p Sponza scene: 182 s where a lamp took 2428 s."
-    },
-    {
-      "date": "2026-11-16",
-      "what": "The scene found unlit and every light a group: where a surface is and what it is made of do not wait for light, so the sky and the sun are set in the player as the lamps are. Sponza at 1080p: 380 s where it took 2195 s.",
-      "scene": "sponza_lights"
-    },
-    {
-      "date": "2026-11-16",
-      "what": "The path tracer 2.4 times faster with the same picture: a struct a shader function only reads is handed over by reference, where Slang copied it whole before every call. A bounce of 66 M paths: 7.1 s where it took 17.1 s."
-    },
-    {
-      "date": "2026-11-16",
-      "what": "Light met through a transparent surface is counted once and goes into its light's group: a bounce that crossed a pane took the light a second time, and no group held it. The scene found unlit reads 27.61 dB where 27.05 (Sponza, a view not taken)."
-    },
-    {
-      "date": "2026-11-16",
-      "what": "A part's history in one file: what a frame found that a later one took out is kept in the order of the frame it stands until, and the player draws it from a count on. The chrome scene is 379 files where it was 3868.",
-      "scene": "sponza_chrome"
-    },
-    {
-      "date": "2026-11-16",
-      "what": "A group's light on a gaussian is read from the view that sees it a pixel wide, not from the nearest eye. Sponza with every light a group, found again with the day's changes: 27.92 dB where 27.30 (a view not taken), 397 files where 857.",
-      "scene": "sponza_lights"
-    },
-    {
-      "date": "2026-11-16",
-      "what": "Sponza at 1080p with two lamps as groups, found in one render, again with the faster path tracer: 1160 s where it took 2195 s, and a little better in every view not taken.",
-      "scene": "sponza_lamps"
-    },
-    {
-      "date": "2026-11-17",
-      "what": "Objects: every gaussian keeps the prim it was made from, and the player shows an object's matte, the object alone, or the object tinted (Options, Objects; the choice is kept in the address).",
-      "scene": "sponza_lamps"
-    },
-    {
-      "date": "2026-11-17",
-      "what": "A group's light on a gaussian is read from the frame that made it. A scene with every light apart now reads as one with none apart: 28.40 dB where 27.91 (Sponza at 1080p, a view not taken), found in 270 s.",
-      "scene": "sponza_lights"
-    },
-    {
-      "date": "2026-11-16",
-      "what": "OpenPBR built by one node in place of MaterialX's graph of 45 values, the same picture: Sponza at 1080p with two lamps found in about 590 s of work where it took about 1620 s."
-    },
-    {
-      "date": "2026-11-17",
-      "what": "The three older scenes found again with today's engine: they keep their history, so an earlier frame is whole where it showed holes, and their objects can be picked. A walk of 100 frames in 443 s where it took 741 s, and 1.1 to 2.0 dB better in views not taken.",
-      "scene": "sponza_growth"
-    }
-  ]
+ "title": "neural athenea: what has been applied, and when",
+ "note": "Engine side (branch neural of athenea). Each entry: the date, what was added, and the scene that shows it where there is one. Entries for what was published on the site and when are sysop's to add from its own record of deploys.",
+ "entries": [
+  {
+   "date": "2026-11-12",
+   "what": "A render's result is gaussians: neural-scene shoot path traces a USD stage and leaves a scene of gaussians, found a frame at a time, with time references; pictures are a post-process."
+  },
+  {
+   "date": "2026-11-13",
+   "what": "A file that grows while it renders, and a player for it on the web: the scene seen being made, a frame at a time, and played back."
+  },
+  {
+   "date": "2026-11-14",
+   "what": "Glass and chrome keep their own material and are shaded by where the eye is, in the engine (render --glass) and in the player; levels of detail and the scene's history handed on; QA of materials, time, textures, formats and workflows on Metal, CUDA and Vulkan."
+  },
+  {
+   "date": "2026-11-15",
+   "what": "Sharper scenes: discs half a cell wide, paying the 2D filter only under the width they were made at; the player keeps a gaussian's centre whole (Spark's extended splats)."
+  },
+  {
+   "date": "2026-11-15",
+   "what": "Material apart from light: every gaussian keeps its surface's base colour apart from the light it was found under."
+  },
+  {
+   "date": "2026-11-15",
+   "what": "Lamps added to a found scene with no path traced (render --lamps): direct light with soft shadows through the scene's own gaussians, one bounce, a highlight. Sponza with two lamps: 0.4 s where the path traced stage took 954 s for four views."
+  },
+  {
+   "date": "2026-11-15",
+   "what": "A scene's light taken again a frame (shoot --relight): the gaussians keep their place and material, the light is kept as a layer a time."
+  },
+  {
+   "date": "2026-11-15",
+   "what": "Groups of lights (shoot --light-group, render --group): a layer of path traced light a group of lamps; a lamp dimmed, tinted or put out is exact and nothing is traced. Sponza: 28.8 dB at a changed state against that state path traced.",
+   "scene": "lamps"
+  },
+  {
+   "date": "2026-11-15",
+   "what": "The player sets the lamps: a level and a tint a group in Options, and a lamp of its own that rides with the eye (no shadow).",
+   "scene": "lamps"
+  },
+  {
+   "date": "2026-11-15",
+   "what": "Groups of lights found by the scene's own paths (shoot --light-groups): one render for the scene and its lamps, where each lamp took a pass of its own. Sponza at 1080p with two lamps: 2195 s where three passes took 7195 s.",
+   "scene": "sponza_lamps"
+  },
+  {
+   "date": "2026-11-15",
+   "what": "The player draws a coarse level of the whole scene first and the full detail behind it: Sponza at 1080p (8.4 M gaussians) is drawn whole after 0.8 s where it took 14 s, read from a server on the same machine; and the player as one file to open from a disk.",
+   "scene": "sponza_lamps"
+  },
+  {
+   "date": "2026-11-16",
+   "what": "Lamps added to a scene already found, all at once and from small frames (shoot --groups-only --light-over-base): the light is the small frame's, the texture the gaussian's own base colour. Two lamps on the 1080p Sponza scene: 182 s where a lamp took 2428 s."
+  },
+  {
+   "date": "2026-11-16",
+   "what": "The scene found unlit and every light a group: where a surface is and what it is made of do not wait for light, so the sky and the sun are set in the player as the lamps are. Sponza at 1080p: 380 s where it took 2195 s.",
+   "scene": "sponza_lights"
+  },
+  {
+   "date": "2026-11-16",
+   "what": "The path tracer 2.4 times faster with the same picture: a struct a shader function only reads is handed over by reference, where Slang copied it whole before every call. A bounce of 66 M paths: 7.1 s where it took 17.1 s."
+  },
+  {
+   "date": "2026-11-16",
+   "what": "Light met through a transparent surface is counted once and goes into its light's group: a bounce that crossed a pane took the light a second time, and no group held it. The scene found unlit reads 27.61 dB where 27.05 (Sponza, a view not taken)."
+  },
+  {
+   "date": "2026-11-16",
+   "what": "A part's history in one file: what a frame found that a later one took out is kept in the order of the frame it stands until, and the player draws it from a count on. The chrome scene is 379 files where it was 3868.",
+   "scene": "sponza_chrome"
+  },
+  {
+   "date": "2026-11-16",
+   "what": "A group's light on a gaussian is read from the view that sees it a pixel wide, not from the nearest eye. Sponza with every light a group, found again with the day's changes: 27.92 dB where 27.30 (a view not taken), 397 files where 857.",
+   "scene": "sponza_lights"
+  },
+  {
+   "date": "2026-11-16",
+   "what": "Sponza at 1080p with two lamps as groups, found in one render, again with the faster path tracer: 1160 s where it took 2195 s, and a little better in every view not taken.",
+   "scene": "sponza_lamps"
+  },
+  {
+   "date": "2026-11-17",
+   "what": "Objects: every gaussian keeps the prim it was made from, and the player shows an object's matte, the object alone, or the object tinted (Options, Objects; the choice is kept in the address).",
+   "scene": "sponza_lamps"
+  },
+  {
+   "date": "2026-11-17",
+   "what": "A group's light on a gaussian is read from the frame that made it. A scene with every light apart now reads as one with none apart: 28.40 dB where 27.91 (Sponza at 1080p, a view not taken), found in 270 s.",
+   "scene": "sponza_lights"
+  },
+  {
+   "date": "2026-11-16",
+   "what": "OpenPBR built by one node in place of MaterialX's graph of 45 values, the same picture: Sponza at 1080p with two lamps found in about 590 s of work where it took about 1620 s."
+  },
+  {
+   "date": "2026-11-17",
+   "what": "The three older scenes found again with today's engine: they keep their history, so an earlier frame is whole where it showed holes, and their objects can be picked. A walk of 100 frames in 443 s where it took 741 s, and 1.1 to 2.0 dB better in views not taken.",
+   "scene": "sponza_growth"
+  },
+  {
+   "date": "2026-11-19",
+   "what": "Path tracer: a view of Sponza with its lamps at 1080p in 18.2 to 18.4 s where it took 27.7 to 29.6 s (paths kept between bounces, a lobe of 128 bytes). On Vulkan a frame of the materials stage in 990 ms where 1157 ms, and with three bounces 1533 to 1692 ms where 2331 to 2390 ms."
+  },
+  {
+   "date": "2026-11-19",
+   "what": "Player: a room behind glass is drawn from 400 000 gaussians (150 000 on a phone), a file that does not come is asked for again, and the next groups of light are read ahead. The six scenes found again with the engine as it stands.",
+   "scene": "sponza_chrome"
+  },
+  {
+   "date": "2026-11-20",
+   "what": "A level of detail no longer ruled with dark dashes on a floor seen from far: a gaussian inside its surface is as long as its pixel lies on it (shoot --inside-turned). Sponza with the glass knight found again with it: a phone draws 0.91 M gaussians where it drew 0.49 M.",
+   "scene": "sponza_knight"
+  }
+ ]
 }
