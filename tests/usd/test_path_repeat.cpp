@@ -221,6 +221,47 @@ TEST_CASE("a path traced frame of many materials is the same frame from two rend
     }
 }
 
+// ONE RENDERER, THE VIEW AGAIN: an image is its own (docs/decisions.md, 22
+// Nov). A view's first pass took the pixel offset of the view drawn before
+// it, and a view asked for twice came back with a pass more than its total.
+TEST_CASE("a path traced view is the same view again, at once and after another view",
+          "[usd][gpu][mesh][path][repeat]") {
+    ATHENEA_REQUIRE_GPU(gpu);
+    const gpu::Caps& caps = gpu->device->caps();
+    if (!caps.rasterization || !caps.rayQuery || !caps.accelerationStructure) {
+        SKIP("needs rasterisation and ray queries");
+    }
+    auto renderer = usd::StageRenderer::open(stage());
+    if (!renderer) FAIL(renderer.error().toString());
+    (*renderer)->setPathSamples(8);
+    (*renderer)->setPathTotal(32);
+    (*renderer)->setPathBounces(2);
+    const auto view = [&]() {
+        auto image = (*renderer)->render("/Camera", 0.0, kWidth, kHeight, "rt");
+        if (!image) FAIL(image.error().toString());
+        gpu::BufferDesc desc;
+        desc.bytes = image->rgba.size() * sizeof(float);
+        desc.elementBytes = 16;
+        auto made = gpu::Buffer::create(*gpu->device, desc, image->rgba.data());
+        if (!made) FAIL(made.error().toString());
+        return std::move(*made);
+    };
+    const gpu::Buffer first = view();
+    const gpu::Buffer atOnce = view();
+    auto other = (*renderer)->framingCamera(0.0, 50.0, "rt");
+    REQUIRE(other);
+    REQUIRE((*renderer)->render(*other, 0.0, kWidth, kHeight, "rt"));
+    const gpu::Buffer after = view();
+    auto again = render::countDifferent(*gpu->library, first, atOnce, kWidth * kHeight * 4);
+    REQUIRE(again);
+    auto later = render::countDifferent(*gpu->library, first, after, kWidth * kHeight * 4);
+    REQUIRE(later);
+    std::printf("  one renderer, the view again: %llu floats differ at once, %llu after another view\n",
+                static_cast<unsigned long long>(*again), static_cast<unsigned long long>(*later));
+    CHECK(*again == 0);
+    CHECK(*later == 0);
+}
+
 // THE OTHER KERNELS THAT SHADE, each held the same way (docs/decisions.md,
 // 18 Nov, "The margin of every kernel"): what a thread's memory bears is a
 // kernel's own, and the one with media stood at the edge when the plain one

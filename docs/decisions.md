@@ -27694,3 +27694,51 @@ Not done:
 - The other two scenes found at 960x540 looked at again on the emulated phone as published (`lamps` at its
   level of 0.99 M, frames 4, 12, 17; `sponza_growth` at 0.97 M, frames 5, 30, 50, 80): no dashes on their
   floors; not found again with `--inside-turned`.
+
+## An image is its own: a view's first pass took the last view's pixel offset, and a view asked for twice came back with a pass more (22 Nov)
+
+Found looking at the one pixel of flat_glass again: the flat Sponza with the glass knight, one view drawn
+several times a load (`stage --cameras`, 1920x1080, 32 paths in passes of 8, three bounces, Metal, M5 Pro,
+the build of ff41dc88).
+
+**A view after another was not the view drawn alone.** The same view first in the file and again after
+another view: 483,096 of 2,073,600 pixels differ (23.3 %; 8-bit p99 39, the whole knight and the paths
+that reach it), the same in six loads, and the two later ones are each other bit for bit. A pass's pixel
+offset (the Halton pair that makes the mean an average over the pixel) was taken from `pathSeed_` before
+the frame knew it was starting again, where `pathSeed_` still counted the view before: so the first pass
+of every view but a load's first was drawn off the pixel's middle by the last view's count, where "the
+first pass takes no offset at all". `neural-scene shoot` draws its views that way, one after another.
+A frame that is about to start again takes no offset now: an image asked for, or a camera that is not
+the one the mean under way was drawn from.
+
+**A view asked for twice in a row came back with a pass more.** The same view four times running: the
+second, third and fourth took 4.2 s where the first's four passes take 17, and held 40, 48 and 56 paths
+(the pixel that is one light sample, 0.005135 at 32, read 0.004108, 0.003424, 0.002934: the same sum over
+more paths). `StageRenderer::render` executes once before it asks whether the frame holds its total, and
+an identical frame adds to the mean, which is what makes a viewport converge. An image now asks the engine
+for its own start (`Engine::restartPaths`), so a view rendered twice is that view twice.
+
+After both, one load each: the view first, after another view and after two are bit for bit one image, the
+other view's two the same, and four in a row the same four times (11.8–12.1 s each). `athenea_usd_tests
+"[repeat]"` has the case (one renderer: the view, the view again, another view, the view): no float differs,
+and without the two changes both of its checks fail. `athenea_usd_tests "[repeat]"`, `"[path]"` (35 cases),
+`"[glass]"` (14), `athenea_render_tests "[scene]"` (14) and `athenea_mcp_tests` (10) pass on Metal.
+
+What it changes beyond that: `stage --cameras` and `neural-scene shoot` give every view after the first
+other paths in its first pass than they did, so a scene found again is not gaussian for gaussian the scene
+found before this commit, and a second view's picture is not comparable bit for bit across it. A viewport
+that is left alone converges as it did.
+
+**The one pixel is a load's.** In those loads (1004, 10) is 0.005135 or 0.004833 -- three loads of six
+each, then one of two -- and inside a load every drawing of the view has the load's value, three of three
+and four of four. So it is not a frame's memory nor a race between a frame's dispatches: it turns on
+something a load makes once -- the acceleration structures Metal builds on the device, the lights' tree,
+the tables -- and a ray that meets an edge two triangles share, answered with one or the other, would do
+what is seen (one light sample of one path, there or not).
+
+Not done:
+- Which of a load's things it is. A kernel that hashes what a fixed set of rays hit, read in two loads,
+  would say whether the acceleration structure answers alike; not written.
+- A scene or a setting changed under a still camera still takes the old offset for its one first pass:
+  that restart is known only after the frame's visibility has been drawn.
+- The scenes published are not found again for this.

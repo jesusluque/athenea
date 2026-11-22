@@ -2731,7 +2731,22 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         }
         return out;
     };
-    if (technique == Technique::RayTraced && pathSeed_ > 0 && bake == nullptr && antialias_.load()) {
+    // The offset is the next pass's of a mean under way. A frame that is
+    // about to start its mean again -- an image asked for, a camera that
+    // moved -- is a first pass and takes none: `pathSeed_` still counts the
+    // frame before it here, and with it a view's first pass took the last
+    // view's offset, so a view drawn after another was not the view drawn
+    // alone. (A scene or a setting that changed under a still camera is not
+    // known yet at this point, and that one pass keeps the old offset.)
+    bool continues = pathSeed_ > 0 && !pathRestart_.load() && pathState_.traced &&
+                     base.focalX == pathState_.focalX && base.focalY == pathState_.focalY &&
+                     base.centreX == pathState_.centreX && base.centreY == pathState_.centreY;
+    for (int r = 0; continues && r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            continues = continues && base.worldToView.at(r, c) == pathState_.worldToView.at(r, c);
+        }
+    }
+    if (technique == Technique::RayTraced && continues && bake == nullptr && antialias_.load()) {
         projection.centreX += halton(pathSeed_, 2) - 0.5;
         projection.centreY += halton(pathSeed_, 3) - 0.5;
     }
@@ -3925,7 +3940,10 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             // scene that changed or a setting that did all start the mean
             // again, and only an identical frame adds to it. This is what
             // makes a viewport converge while it is left alone.
-            const bool same = now == pathState_;
+            // An image (StageRenderer::render) asks for its own start: left to
+            // this, a view rendered twice in a row came back the second time
+            // with a pass more than its total.
+            const bool same = !pathRestart_.exchange(false) && now == pathState_;
             paths.accumulate = same;
             if (!same) {
                 pathTracer_->restart();

@@ -596,6 +596,10 @@ public:
     /// path traced one has nothing to gather and is always finished.
     [[nodiscard]] uint32_t pathAccumulated() const noexcept;
     [[nodiscard]] bool pathConverged() const noexcept;
+    /// The next path traced frame starts its mean again though nothing
+    /// changed: an image asked for twice is the same image, not the first
+    /// with a pass more.
+    void restartPaths() noexcept { pathRestart_.store(true); }
     /// The mesh pools' generation (a repack each) and positions revision (a
     /// deformation in place each), so a host can tell which one a change was.
     [[nodiscard]] uint64_t meshGeneration() const noexcept;
@@ -1065,6 +1069,7 @@ private:
     /// Sync -- so this frame and the one that resamples are not converged,
     /// however many paths they hold.
     std::atomic<int>                          shutterSettle_{0};
+    std::atomic<bool>                         pathRestart_{false};
     /// A bit per category name, as they are first seen: a prim's mask and a
     /// light's link have to agree on the numbering, and this is the only
     /// place that sees both. Past 64 names a category cannot be represented

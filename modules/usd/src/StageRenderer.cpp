@@ -2173,6 +2173,12 @@ Result<void> StageRenderer::executeUntilGathered(uint32_t width, uint32_t height
     // for: the pass reports itself unconverged until then, and a frame that is
     // not path traced is whole at once. The cap is against a total no pass
     // count could reach.
+    // And it is its own image: the frame before it, were it the same view,
+    // is not added to.
+    if (auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
+        param != nullptr && param->GetEngine() != nullptr) {
+        param->GetEngine()->restartPaths();
+    }
     for (uint32_t pass = 0; pass < 65536; ++pass) {
         ATHENEA_TRY(execute(width, height));
         if (pathConverged()) {
