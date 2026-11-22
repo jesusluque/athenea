@@ -3726,7 +3726,7 @@ Result<void> PathTracer::setPrograms(const MaterialPrograms& programs, bool grou
     const bool withSplats = traces && splats;
     // The keeping is in the kernel only where paths are kept (Metal, below):
     // compiled in and never taken it cost Vulkan a fifth of a frame with no
-    // bounce and two fifths with three (docs/decisions.md, 18-19 Nov, ixwin).
+    // bounce and two fifths with three (docs/decisions.md, 18-19 Nov, the RTX 3070 laptop).
     const bool keepsHere = device_->backend() == gpu::Backend::Metal;
     const std::string source = "import " + programs.module() + ";\n" +
                                (volumes ? std::string("import athenea.volume.medium;\n") : std::string()) +

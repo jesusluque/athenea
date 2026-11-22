@@ -22143,7 +22143,7 @@ moved too much between these runs (77 to 158 ms for one cut) to say anything of 
 
 ## What the Morton report adds to the found scene's levels (13 Nov)
 
-`~/luc/morton/INFORME.md` (the hub of "alternatives to the Morton tree on the GPU", with athenea-research). Its
+a report kept outside the repository (the hub of "alternatives to the Morton tree on the GPU", with athenea-research). Its
 proposal 114 is the three gaps already taken up above. Two more of its ideas fit what `discoverCut` already is:
 
 - **A cut by a budget, in one pass** (its 113): a gaussian here is drawn for the thresholds between its own width
@@ -22414,7 +22414,7 @@ Not tried on a phone.
 ## Two knights at 1080, and the same shoot on Windows through Vulkan (14 Nov)
 
 The user: a crowned knight beside the first, rendered again at 1080; then, with the Mac held by its thermal
-guard, use ixwin, not through CUDA, through Vulkan.
+guard, use the RTX 3070 laptop, not through CUDA, through Vulkan.
 
 A second glass knight stands 115 cm from the first under a crown of gold made in the layer (a band whose edge
 rises to eight points, a ball on each: 688 points). The walk of 60 frames at 1920 x 1080, 32 paths at 8 a
@@ -22427,7 +22427,7 @@ pass, 3 bounces, denoised:
 
 Exported by frame: 60 parts and 60 of glass, 84 MB, the largest 8.8 MB. The page draws it (Chrome, headless).
 
-What ixwin taught:
+What the RTX 3070 laptop taught:
 
 - **CUDA under WSL cannot make this render.** No OptiX there, so no ray queries: the frame came with no
   shadows and the knights black. Known since the first CUDA run; seen again.
@@ -22451,7 +22451,7 @@ What ixwin taught:
 ## Levels of detail for a viewer, mirrors apart, and a player with its options (14 Nov)
 
 The user: not a crowned knight but one of chrome all over; the preview must fit the device, or show a level of
-detail where it cannot (a conversion after the render); every option in the player; and QA on ixwin, on Linux
+detail where it cannot (a conversion after the render); every option in the player; and QA on the RTX 3070 laptop, on Linux
 and on Windows.
 
 - **Levels, after the render** (`neural-scene export --levels N,N,...`). The scene's own structure is the
@@ -22507,7 +22507,7 @@ run: the Mac was rendering.
 ## QA of materials and of time: what a found scene made of each, and four defects (14 Nov)
 
 The user: twelve hours of QA and QC of materials and workflows; animations, textures and formats too; fetch
-the scenes that are needed; ixwin as the machine to test on, Linux and Windows.
+the scenes that are needed; the RTX 3070 laptop as the machine to test on, Linux and Windows.
 
 Two stages were made to qualify on, with nothing but text (`scripts/examples/neural-scene-qa`): fourteen balls
 of one material each -- matt, two plastics, rough gold, satin copper, chrome, clear, tinted and frosted glass,
@@ -22604,7 +22604,7 @@ its history in the page: 509 files, and the timeline at frames 1, 12 and 24 show
 middle and the right, with the chrome ball mirroring it -- and black where the mirror looks at the sky, which
 the scene does not hold.
 
-**Textures and every workflow (same day, ixwin).** The usd-wg test stages path traced through Vulkan: texture
+**Textures and every workflow (same day, the RTX 3070 laptop).** The usd-wg test stages path traced through Vulkan: texture
 coordinates the right way round, JPEG (RGB, grey, CMYK) and PNG (8, 16 and 32 bit) all read, normal maps,
 roughness. `stage --frame-all` now says where its camera stands (`framed: eye ... target ... up ...`) and
 `qa.py --frame` makes an arc of looks and three held views about a stage that brings none: five of them shot
@@ -22716,7 +22716,7 @@ Not done, and seen here:
 - **A rough metal** (roughness over 0.12) stays the picture the look left.
 
 **The chrome on the three backends.** The plate's test and the rest of `[scene]` -- 238 assertions in 10
-cases -- pass on Metal (M5 Pro), on CUDA under Linux and on Vulkan under Windows (ixwin, RTX 3070): the plate
+cases -- pass on Metal (M5 Pro), on CUDA under Linux and on Vulkan under Windows (the RTX 3070 laptop): the plate
 reads (0.72, 0.04, 0.01) from the right and (0.04, 0.04, 0.20) from the left on all three.
 
 **The materials stage with its chrome a mirror.** Shot again with the metal's colour kept (538 s, 1 003 600
@@ -23092,7 +23092,7 @@ floor 1.0) and :185 (p99 5 for 4) fail, beside the refit case of NEU18; none of 
 
 ## The options of shoot on Windows through Vulkan, the new commit on the three backends, four more stages (15 Nov)
 
-**`qa_options.py` on ixwin (RTX 3070 Laptop, Vulkan), the materials stage at 640x360**, 12 views of the walk,
+**`qa_options.py` on the RTX 3070 laptop (Vulkan), the materials stage at 640x360**, 12 views of the walk,
 at the defaults of the section before last (no made width yet). All 26 rows end well. Those that say something:
 
 | option | seconds | gaussians | h0: dB, SSIM, held | h3: dB, SSIM, held |
@@ -23724,7 +23724,7 @@ scene handed to its picker, the scene whole after 13.6 s with no error (coarse a
 server. The automation hands the files to the input as files, not as a directory: the browser's own folder dialog
 and a folder dropped on the page were not exercised.
 
-**The night's commits on the other two backends** (ixwin, RTX 3070, at ba2cc3f1): the scene tests pass on CUDA
+**The night's commits on the other two backends** (the RTX 3070 laptop, at ba2cc3f1): the scene tests pass on CUDA
 under WSL and on Vulkan on Windows (295 assertions in 12 cases each), and the QA flows on Vulkan, 40 of 40.
 
 ## Several lamps added to a scene found, for one path tracing of the walk (`shoot --groups-only`, 16 Nov)
@@ -23746,7 +23746,7 @@ with the lamps off (548 s), then this (562 s) -- reads as the three passes do. A
 what glows, so the `dark` group a pass of `--light-group` wants is not wanted here.
 
 **The player's frame rate.** Headless Chrome on the Mac gave 18 frames a second for the whole 1080p scene and 10
-for its level of detail, then 6 for both a run later: not a measure. Chrome on ixwin (RTX 3070, the published
+for its level of detail, then 6 for both a run later: not a measure. Chrome on the RTX 3070 laptop (the published
 page): 60 for the whole scene and 60 for the level, both at the display's rate.
 
 **Not done.** `--groups-only` at 1080p. More groups than two. A lamp moved is its group shot again: there is no
@@ -24011,7 +24011,7 @@ With six lamps sharing 32 paths a pixel each has a sixth of them; what that cost
 ## The player's earlier frames show holes: the published scenes carry no history (16 Nov)
 
 The user: the scene on the web "loads and goes on to the next, and looks as if pieces were missing". Reproduced on
-the published page (Chrome on ixwin, pictures a second apart): loading is whole from the overview -- the coarse
+the published page (Chrome on the RTX 3070 laptop, pictures a second apart): loading is whole from the overview -- the coarse
 level, then the scene -- but the scene as it stood at an earlier frame, which is what Play and the timeline show,
 has holes in its floor and walls. Every published scene was exported with `--by-frame` and no `--history`: a part
 holds what its frame found *that still stands*, and what a later frame refined is in no part, so at that earlier
@@ -24067,7 +24067,7 @@ On CUDA and Vulkan this change has not been run.
   `sponza_lamps` 774, `sponza_lights` 857. The site holds 6477 of the 20 000 a version of its host admits (NEU33).
 
 **Not done.** The page as published was not looked at by me after db95db61 (an agent checks it from Chrome on
-ixwin). A part's history in one file.
+the RTX 3070 laptop). A part's history in one file.
 
 ## The player: its chrome from near, a bar while it reads, its view in its address (16 Nov)
 
@@ -24106,7 +24106,7 @@ shown as the parts that reach it are read, through the coarse level and the deta
 hand, whose address had become that one. Not done: the free camera's own place and aim, a group's tint, the
 player's lamp; Safari and Firefox, and the one-file player, were not opened with it.
 
-**The published page from Chrome on ixwin** (RTX 3070, version db95db61, by another agent): the four scenes with
+**The published page from Chrome on the RTX 3070 laptop** (version db95db61, by another agent): the four scenes with
 history load with no error; ridden at frames 2, 6 and 11 the frame is whole in `sponza_lamps`, `sponza_lights` and
 `lamps`, the knights not black; `sponza_lights` has its day as a group and at nothing the sun leaves the floor;
 `sponza_lamps` at rest is 48 frames a second whole (8.37 M) and 60 at its level of detail (1.93 M). `sponza_chrome`
@@ -24379,7 +24379,7 @@ picture to the eye.
 
 Not done: the scenes on the site handed on again in this form (`sponza_chrome` is the one with 3868 files);
 frame rate with a history drawn this way against meshes switched off -- a gaussian without opacity is still
-sorted -- not measured; a real Chrome on ixwin and a phone.
+sorted -- not measured; a real Chrome on the RTX 3070 laptop and a phone.
 
 ## A layer's word from the view that sees the gaussian a pixel wide (16 Nov)
 
@@ -24453,10 +24453,10 @@ Handed on with its history in one file a part: 330 files where 774. In Chrome on
 camera, frames 4, 12 and 20 draw the same counts as the published one. Not done: `lamps` (the 960x540 scene)
 found again; where the other half of a view's time goes at 1080p, now that the paths are not most of it.
 
-## The day's two path tracer changes on ixwin: CUDA and Vulkan (16 Nov)
+## The day's two path tracer changes on the RTX 3070 laptop: CUDA and Vulkan (16 Nov)
 
 A subagent, on the RTX 3070 Laptop (WSL2 Ubuntu / CUDA and native Windows / Vulkan), the trees there brought
-from e7406db4 to 52e7b23a; scripts and outputs in `build/night/agent-ixwin2`.
+from e7406db4 to 52e7b23a; scripts and outputs in `build/night/agent-win2`.
 
 - **Builds**: both, no shader or C++ error from the `__constref` parameters, and no kernel refused at run time
   in anything that ran. `athenea_usd_tests` did not compile under MSVC before or after: `test_ray_margin.cpp`
@@ -24490,7 +24490,7 @@ anything there. `athenea compare` still has no device on Windows/Vulkan (NEU17);
 the WSL build.
 
 Not done: the full usd suite there (62 of about 195 cases by tag); D3D12; the later commits of the day (a
-part's history in one file, a layer's view) on ixwin.
+part's history in one file, a layer's view) on the RTX 3070 laptop.
 
 ## A found scene's mattes by object: each gaussian keeps its prim (16 Nov)
 
@@ -24815,7 +24815,7 @@ line (`shoot` now prints, a view: the scene brought and its cover drawn, the fra
 groups' light kept, the scene written). All but a few seconds of a view are the frame's passes, 23-29 s a view
 -- and two views of the twenty took 174 s and 184 s. Not the views: the same camera is 27 s by `athenea stage`
 and 29 s as the second view of a short shoot, with or without light groups or the denoiser. It is the GPU
-queue's guard (`~/luc/athenea-gpu/guard.sh`), which stops a job while the Mac's thermal pressure is off nominal
+queue's guard (`guard.sh`, outside the repository), which stops a job while the Mac's thermal pressure is off nominal
 and for 60 s after: two stops of about 150 s in each of these shoots, written in its log.
 
 So the day's shoot times, wall and with the stops the guard's log gives each job taken off (the log names the
@@ -24838,11 +24838,11 @@ are of this kind and were not looked up one by one.
 Flat Sponza after OpenPBR as one node, the frame-12 view, 66 M paths: 2.2 s the first hit and 5.5 s a bounce
 with the knights' own materials (3.5 s and 7.9 s before), 1.8 s and 3.0 s without the knights.
 
-## The afternoon's commits on ixwin: CUDA and Vulkan at 35c47360 (16 Nov)
+## The afternoon's commits on the RTX 3070 laptop: CUDA and Vulkan at 35c47360 (16 Nov)
 
 A subagent, RTX 3070 Laptop, both trees brought from 52e7b23a to 35c47360 (the shading state written in place,
 a part's history in one file, a layer's view, the test's `far`, mattes by object, stacks copied by their
-count); scripts and outputs in `build/night/agent-ixwin3`.
+count); scripts and outputs in `build/night/agent-win3`.
 
 - **Builds**: both, no error; `athenea_usd_tests` now compiles under MSVC.
 - **Tests, all passing**: the scene tests 361 assertions in 13 cases on each (with `[matte]`);
@@ -25183,10 +25183,10 @@ included (889 s for `sponza_lamps`).
 Not done: the other scenes on the site found again (they carry no ids, and the player shows no Objects control
 for them); a phone; a real Chrome.
 
-## OpenPBR as one node and its test on ixwin: CUDA and Vulkan at cb22fdb7 (17 Nov)
+## OpenPBR as one node and its test on the RTX 3070 laptop: CUDA and Vulkan at cb22fdb7 (17 Nov)
 
 A subagent, RTX 3070 Laptop, both trees brought from 35c47360 to cb22fdb7; scripts and outputs in
-`build/night/agent-ixwin4`.
+`build/night/agent-win4`.
 
 - **Builds**: both, no error. (On Windows the first `cmake --build` stopped at step 43 of 46 with a return of
   0 and three binaries not relinked; the same command again finished. Not explained.)
@@ -25210,7 +25210,7 @@ A subagent, RTX 3070 Laptop, both trees brought from 35c47360 to cb22fdb7; scrip
   is: the difference is under a code, and Metal and Vulkan are bit for bit.
 
 Not done: CUDA's bounces (no OptiX in WSL), so the node inside a bounce is unverified on CUDA past the first
-hit; the commits after cb22fdb7 (the prims' ids in an export, the making-width rule) on ixwin.
+hit; the commits after cb22fdb7 (the prims' ids in an export, the making-width rule) on the RTX 3070 laptop.
 
 ## The older scenes of the site found again: history, ids, and what the levels lose (17 Nov)
 
@@ -25250,7 +25250,7 @@ its first pass, and the page drew it on its side. And the published `lamps` expo
 (315 files where 723) is not the same picture at frame 4 -- the spot's pool is on the floor where the published
 has none -- and which is right was not checked against the engine.
 
-**Not done.** A phone and ixwin; the levels side by side; a coarser level for the chrome (a shoot with wider
+**Not done.** A phone and the RTX 3070 laptop; the levels side by side; a coarser level for the chrome (a shoot with wider
 cells); CUDA and Vulkan.
 
 ## Standard Surface's lobes built by one node, held to MaterialX's graph by a test (17 Nov)
@@ -25522,11 +25522,11 @@ it read Y. The scene tests (361 assertions) and the 49 QA flows pass.
 Not done: the other half of NEU38 -- the published `lamps` scene exported again differs at frame 4 from the
 export on the site, and which is right is not checked.
 
-## The night's commits on ixwin: CUDA and Vulkan at 5ee7f9e1 (17 Nov)
+## The night's commits on the RTX 3070 laptop: CUDA and Vulkan at 5ee7f9e1 (17 Nov)
 
 A subagent, RTX 3070 Laptop, both trees brought from cb22fdb7 to 5ee7f9e1 (the prims' ids in an export, the
 making-width rule, Standard Surface and glTF PBR as one node each with the `compileDocument` fix); scripts and
-outputs in `build/night/agent-ixwin5`.
+outputs in `build/night/agent-win5`.
 
 - **Builds**: both, no error. Writing `.ids` (gzip) works on Windows. (The Windows build that "stopped early
   with a return of 0" has its cause: `cmake --build --target` handed a PowerShell array built the last name
@@ -26557,11 +26557,11 @@ and Vulkan, where the same source is compiled and nothing was run; the materials
 (`gAtheneaLobes`, `gAtheneaResult`), `first` and the five `Found` a path holds, which are what is left to
 take out of the frame.
 
-## ixwin, 18–19 Nov: what CUDA and Vulkan say of the two days' commits
+## The RTX 3070 laptop, 18–19 Nov: what CUDA and Vulkan say of the two days' commits
 
 A subagent, RTX 3070 Laptop (8 GB), WSL2 Ubuntu / CUDA and native Windows / Vulkan, both trees brought from
 5ee7f9e1 to 141593d9 (their code the commit's, file for file by content); scripts and logs in
-`build/night/agent-ix6`, outputs on the machine under `D:\neural-win\agent6` and `~/neuralAthenea/build/agent6_*`.
+`build/night/agent-ix6`, outputs kept on that machine and under `build/agent6_*`.
 Three path tracers were built on each: 5ee7f9e1's (which is the commit before the kept paths, 1096d4d9^, in
 `PathTracer.cpp`), 1096d4d9's under the head's other files (the commit before 12de7684), and the head's.
 
@@ -27547,7 +27547,7 @@ files; the exporter's side of the `.rgb` files.
 ## The keeping out of the kernels that keep nothing, and the last days' path tracer on Vulkan (19 Nov)
 
 1096d4d9 put the keeping's text into every kernel whose rays are inline, with its capacity zero where paths
-are not kept: Vulkan's kernel carried it and paid for it (ixwin, 18–19 Nov: the materials stage 1043–1105 ms
+are not kept: Vulkan's kernel carried it and paid for it (the RTX 3070 laptop, 18–19 Nov: the materials stage 1043–1105 ms
 a frame before it, 1343–1370 with it). Now the text is taken only where paths are kept -- Metal -- and the
 other backends' kernels are what they were. Metal's source does not change.
 

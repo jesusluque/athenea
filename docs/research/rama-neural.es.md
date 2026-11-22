@@ -268,7 +268,7 @@ Cada punto con su medida y contra qué. El detalle está en `docs/decisions.md`,
 
 Assets usados: Khronos CarConcept (CC BY 4.0) e Intel Sponza (CC BY 4.0, Frank Meinl y Anton Kaplanyan).
 
-**Incidente.** Cronometrando ese recorrido en CUDA se escribieron los frames a 4K dentro de WSL en ixwin y se llenó
+**Incidente.** Cronometrando ese recorrido en CUDA se escribieron los frames a 4K dentro de WSL en el portátil con la RTX 3070 y se llenó
 el disco D:, con lo que la distribución dejó de arrancar. `render --views` ya no necesita escribir para cronometrar.
 
 ## 12. Por dónde seguir (escena descubierta)
