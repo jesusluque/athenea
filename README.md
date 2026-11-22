@@ -18,6 +18,25 @@ athenea's web side runs at [sparkwebgpu.lucab.co.uk](https://sparkwebgpu.lucab.c
 | [![The whole Corvette, streamed](docs/media/web-corvette-5120.jpg)](https://sparkwebgpu.lucab.co.uk/pieces.html?set=car-compact-tx) | [![The relightable pawn](docs/media/web-pawn.jpg)](https://sparkwebgpu.lucab.co.uk/pawn.html) | [![The animated sparrow](docs/media/web-sparrow.jpg)](https://sparkwebgpu.lucab.co.uk/sparrow.html) |
 | **[The whole Corvette, streamed](https://sparkwebgpu.lucab.co.uk/pieces.html?set=car-compact-tx)**<br>149 M Gaussians in pages by level of detail; switch the HDRI and paint, chrome and glass follow. | **[The relightable pawn](https://sparkwebgpu.lucab.co.uk/pawn.html)**<br>1.4 M Gaussians with a glass head that acts as a lens. | **[The animated sparrow](https://sparkwebgpu.lucab.co.uk/sparrow.html)**<br>1.5 M skinned Gaussians, 12 animations, relit as it moves. |
 
+## A render whose result is gaussians
+
+`athenea neural-scene shoot` path traces a USD stage along a walk of views and
+what it leaves is not pictures but the scene itself, as gaussians: each frame
+adds what it found, laid over the coarser gaussians a farther look left, with
+its material, its normal and the lights it was found under. The scene is then
+drawn from any view in milliseconds, cut to a level of detail, relit by groups
+of lights, and exported for the web.
+
+Scenes found that way, growing frame by frame, are at
+[neural.lucab.co.uk](https://neural.lucab.co.uk): Intel's Sponza with the ASWF
+Open Chess Set's knight in glass is 2.36 M gaussians from 60 frames at 960x540
+(414 s of path tracing on an Apple M5 Pro), with levels of 0.91 M, 0.50 M and
+0.25 M for a phone. The player is
+[`scripts/examples/neural-scene-viewer`](scripts/examples/neural-scene-viewer),
+the commands are in [`docs/operations.md`](docs/operations.md) §2.3.4 and
+§2.3.5, and the directory a scene is kept in (`.aths`) is in
+[`docs/formats.md`](docs/formats.md) §6.
+
 ## Where athenea comes from
 
 athenea comes from NVIDIA's [Falcor](https://github.com/NVIDIAGameWorks/Falcor).
@@ -184,6 +203,8 @@ athenea stage pawn_gs.usdc --camera /World/Camera -o out.exr
 athenea stage shot.usda --technique rt --path-total 96 --denoise -o pt.exr   # the path traced reference
 athenea compare out.exr pt.exr                             # measured on the GPU
 athenea view  pawn_gs.usdc                                 # a window on it
+athenea neural-scene shoot shot.usda scene.aths --views walk.txt --size 960x540 --samples 32 --bounces 3 --denoise   # a scene found by rendering
+athenea neural-scene export scene.aths --by-frame --levels 1000000,500000 -o web/scenes/shot   # for the web player
 ```
 
 ## Documentation

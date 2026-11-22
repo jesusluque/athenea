@@ -81,6 +81,9 @@ a ray tracing pipeline fails with `Failed to locate OptiX headers (optix.h)`.
 | `ATHENEA_BACKEND` | which device to open, as a comma-separated order: `metal,cuda,vulkan,d3d12`. Unknown words warn and are skipped. |
 | `ATHENEA_GPU_VALIDATION` | any value: the graphics API's validation and debug layers (D3D12's needs Windows' Graphics Tools), for a failure the driver otherwise gives no reason for, such as a pipeline it cannot make. Slow. |
 | `ATHENEA_METAL_LOCALS` | `zero` or `pattern`, Metal only: every kernel is compiled with its locals initialised (`-ftrivial-auto-var-init`), to tell a kernel that reads an undefined local from one with another cause (`docs/development.md` §2). Not a way to run: slower by several per cent a frame, and a first compile that takes minutes. The shader cache does not know of it: use an empty `ATHENEA_SHADER_CACHE` with it. Any other value is warned about and ignored. |
+| `ATHENEA_MTLX_DUMP` | a directory's path, ending in its separator: the MaterialX document made from each material's network is written there, one `.mtlx` a material named by its prim path with `/` as `_`. For a material that arrives grey |
+| `ATHENEA_SHADOW_DEBUG` | set to anything: a frame that bakes the clouds' shadow map logs its casters, lights, texels and mean transmittance |
+| `ATHENEA_VISIBILITY_DEBUG` | set to anything: a frame that measures the clouds' visibility by part logs the clouds, slots and lights and the share of factors under a half |
 | `ATHENEA_GPU_BUDGET` | the device memory this run may hold, in MiB. Without it the budget is Metal's recommended working set (`recommendedMaxWorkingSetSize`); on CUDA and Vulkan there is none unless this sets one. The device prints the one in use (`GPU memory budget: N MiB`). An allocation past it fails as `OutOfMemory` before it is made, streaming budgets and splat shadows are sized against what it leaves (§3.3, §9), and it is how a run is held below what other jobs on the same GPU leave. On Apple silicon an allocation must also fit the physical memory the system has free less 1.5 GiB kept for the rest of the machine -- free counting what it hands back on demand (inactive, purgeable and speculative pages, and the file cache) -- whatever the budget says: past it the machine swaps the GPU's memory and stops drawing its windows. |
 | `ATHENEA_VOLUME_PLY` | a path: every frame a medium of gaussians draws (§3.3's media, `primvars:athenea:splat:volume`) also writes that medium as a 3DGS PLY with the light the frame baked for it: each gaussian's radiance (emission, the lights' single scattering through the cloud shadow map, the dome) through Reinhard (x / (1 + x) a channel) and the sRGB curve as its base colour, ln sigma and the temperature in `f_rest_0` and `f_rest_1`, positions in the cloud's own space (the prim's transform not applied), one record a record of the stage, a dead or dropped one a speck at the origin with ln sigma -10 -- the layout of `vdb2splat --cloud`, so `video-encode --volume` takes it. A second medium is written as `<stem>_1.ply`, and so on. Overwritten each frame: meant for one frame a run (`athenea stage`). |
 | `ATHENEA_VOLUME_PLY_EXPOSURE` | stops on the radiance before the curve, for `ATHENEA_VOLUME_PLY`; default 0. |
@@ -506,6 +509,13 @@ being looked at it writes back there, in place and a moment after the last
 change, so that an address copied is the view handed on; the rest it only
 reads.
 
+The page imports three.js and Spark from beside itself, by the paths of its
+import map: `vendor/three/three.module.min.js` (with `three.core.min.js`),
+`vendor/three/addons/` and `vendor/spark/150d926a74f3/spark.module.min.js`
+with the modules and the `.wasm` it loads beside it, Spark's build at that
+commit. Neither is in the repository: both are MIT
+licensed and are put there by whoever serves the page.
+
 | Parameter | Value | Default | Kept by the page | Notes |
 |---|---|---|---|---|
 | `scene` | a name: letters, digits, `_`, `-` | `sponza_growth` | yes | `scenes/<name>.json` |
@@ -655,6 +665,19 @@ athenea convert pawn.asg pawn.usdc --no-camera
 | `--cut-occlusion` | flag | off | `--cut-error`: leave out the nodes whose occlusion mask is closed toward `--camera` |
 | `--mark-closed` | path | -- | the input is a merge tree: a file of prim paths, one a line, whose nodes are closed shells (`primvars:athenea:splat:closed`, by `cryptoObject`) |
 | `--mark-material-roughness` | path | -- | the input is a merge tree: a file of `prim-path roughness` lines; each node gets its part's material roughness (`primvars:athenea:splat:materialRoughness`, by `cryptoObject`; -1 for a part not named) |
+| `--camera-stage` | path | the input | `--camera` is read from this stage and not from the input: a view the cloud was not baked for |
+| `--cut-budget` | gaussians | `0`: off | `--tree`: only the cut a renderer would draw from `--camera` with at most this many gaussians is kept (with `--ratio 1` nothing more merges) |
+| `--cut-pixels` | pixels | `0`: off | `--tree`: the cut whose merges are no wider than this on `--camera`'s screen, in place of `--cut-budget` |
+| `--cut-coverage` | flag | off | `--cut-error`: a kept merge's opacity is what its leaves really cover, composited on its plane |
+| `--cut-pages` | gaussians a page | `0`: off | `--cut-error`: the tree is paged at this size and the count the cut's pages hold is printed |
+| `--pages-by-facing` | flag | off | `--cut-pages`, `--tree-pages`: a band's nodes are grouped by the way they face before where they stand |
+| `--tree-report` | flag | off | `--tree`: prints the tree's roots a part, which is where it stopped merging |
+| `--object-groups`, `--object-group` | a count; 0 .. count - 1 | `0`: off; `0` | only one group of the asset's parts is decimated: those whose `cryptoObject` modulo the count is the group. For an asset too large for one pass |
+| `--occlusion-by-part` | flag | off | `--occlusion-group`: the codebook is shared out by part (`cryptoObject`), not by tree |
+| `--transfer-basis` | path | — | a clustered PCA basis (f32): the transfer is coded with it and decoded again before anything else, so the output draws what that codec keeps |
+| `--transfer-clusters`, `--transfer-components`, `--transfer-bits` | 1..65536; 1..16; `8` \| `4` | `256`; `8`; `8` | `--transfer-basis`: its centroids, its axes a block, and the bits a weight |
+| `--shadow-codebook`, `--shadow-rounds` | 0..65536; rounds | `0`: none; `12` | the shadow bits replaced by the nearest of this many centroids (Hamming k-means on the GPU), so the output draws what an index a gaussian and a codebook keep; and the k-means' rounds |
+| `--quantize` | gaussians a chunk | `0`: off | the geometry at a phone chunk's bits, in chunks of this many (8192 is the web format's): 16 bit positions in the chunk's box, 8 bit scales, 32 bit rotations, 8 bit opacity and colour, 16 bit normals, 8 bit curvature -- decoded again, so the output draws what that chunk keeps |
 
 **By pairs** (`--ratio`). Each pass, every gaussian -- or merge so far -- weighs
 a merge with its 16 neighbours along two Morton orders of the centres, and

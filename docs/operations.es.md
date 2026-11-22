@@ -82,6 +82,9 @@ máquina las descarga ella misma (`include\` de github.com/NVIDIA/optix-dev, tag
 | `ATHENEA_BACKEND` | qué dispositivo abrir, como un orden separado por comas: `metal,cuda,vulkan,d3d12`. Las palabras desconocidas avisan y se saltan. |
 | `ATHENEA_GPU_VALIDATION` | cualquier valor: las capas de validación y depuración de la API gráfica (la de D3D12 necesita las Graphics Tools de Windows), para un fallo del que el driver no da motivo, como un pipeline que no puede crear. Lento. |
 | `ATHENEA_METAL_LOCALS` | `zero` o `pattern`, solo Metal: todos los kernels se compilan con sus locales inicializadas (`-ftrivial-auto-var-init`), para distinguir un kernel que lee una local indefinida de uno con otra causa (`docs/development.md` §2). No es una forma de ejecutar: varios puntos por ciento más lento por frame, y una primera compilación de minutos. La caché de shaders no sabe de ella: úsese con un `ATHENEA_SHADER_CACHE` vacío. Cualquier otro valor se avisa y se ignora. |
+| `ATHENEA_MTLX_DUMP` | la ruta de un directorio, acabada en su separador: el documento MaterialX hecho de la red de cada material se escribe ahí, un `.mtlx` por material con el nombre de su prim y `/` como `_`. Para un material que llega gris |
+| `ATHENEA_SHADOW_DEBUG` | con cualquier valor: un frame que hace el bake del mapa de sombras de las nubes registra sus casters, luces, texels y la transmitancia media |
+| `ATHENEA_VISIBILITY_DEBUG` | con cualquier valor: un frame que mide la visibilidad por partes de las nubes registra las nubes, los slots y las luces y la parte de factores por debajo de un medio |
 | `ATHENEA_GPU_BUDGET` | la memoria del dispositivo que puede ocupar esta ejecución, en MiB. Sin ella el presupuesto es el working set recomendado de Metal (`recommendedMaxWorkingSetSize`); en CUDA y Vulkan no hay ninguno salvo que esta lo ponga. El dispositivo imprime el que usa (`GPU memory budget: N MiB`). Una reserva que lo pase falla como `OutOfMemory` antes de hacerse, los presupuestos de streaming y las sombras de splats se dimensionan con lo que deja (§3.3, §9), y es como se mantiene una ejecución por debajo de lo que dejan otros trabajos en la misma GPU. En Apple silicon una reserva además debe caber en la memoria física que el sistema tiene libre menos 1,5 GiB guardados para el resto de la máquina -- contando como libre lo que devuelve cuando se le pide (páginas inactivas, purgables y especulativas, y la caché de ficheros) -- diga lo que diga el presupuesto: pasado eso la máquina manda a swap la memoria de la GPU y deja de dibujar sus ventanas. |
 | `ATHENEA_VOLUME_PLY` | una ruta: cada frame que dibuja un medio de gaussianas (los medios de §3.3, `primvars:athenea:splat:volume`) escribe además ese medio como un PLY de 3DGS con la luz que el frame horneó para él: la radiancia de cada gaussiana (emisión, el single scattering de las luces a través del cloud shadow map, el domo) pasada por Reinhard (x / (1 + x) por canal) y la curva sRGB como su color base, ln sigma y la temperatura en `f_rest_0` y `f_rest_1`, las posiciones en el espacio propio de la nube (sin la transformación del prim), un registro por cada registro del stage, uno muerto o descartado una mota en el origen con ln sigma -10 -- la disposición de `vdb2splat --cloud`, así que `video-encode --volume` lo toma. Un segundo medio se escribe como `<stem>_1.ply`, y así sucesivamente. Se sobrescribe en cada frame: pensado para un frame por ejecución (`athenea stage`). |
 | `ATHENEA_VOLUME_PLY_EXPOSURE` | pasos de exposición sobre la radiancia antes de la curva, para `ATHENEA_VOLUME_PLY`; por defecto 0. |
@@ -510,6 +513,13 @@ su dirección. Lo que se está mirando lo vuelve a escribir ahí, en el sitio y
 un momento después del último cambio, de modo que una dirección copiada es la
 vista entregada; el resto solo lo lee.
 
+La página importa three.js y Spark de su lado, por las rutas de su import
+map: `vendor/three/three.module.min.js` (con `three.core.min.js`),
+`vendor/three/addons/` y `vendor/spark/150d926a74f3/spark.module.min.js`
+con los módulos y el `.wasm` que carga a su lado, el build de Spark en ese
+commit. Ninguno está en el repositorio: los dos tienen
+licencia MIT y los pone ahí quien sirve la página.
+
 | Parámetro | Valor | Por defecto | Lo guarda la página | Notas |
 |---|---|---|---|---|
 | `scene` | un nombre: letras, cifras, `_`, `-` | `sponza_growth` | sí | `scenes/<nombre>.json` |
@@ -665,6 +675,19 @@ athenea convert pawn.asg pawn.usdc --no-camera
 | `--cut-occlusion` | flag | apagado | `--cut-error`: deja fuera los nodos cuya máscara de occlusion está cerrada hacia `--camera` |
 | `--mark-closed` | ruta | -- | la entrada es un árbol de merges: un fichero de rutas de prim, una por línea, cuyos nodos son cascos cerrados (`primvars:athenea:splat:closed`, por `cryptoObject`) |
 | `--mark-material-roughness` | ruta | -- | la entrada es un árbol de merges: un fichero de líneas `ruta-de-prim rugosidad`; cada nodo recibe la rugosidad del material de su pieza (`primvars:athenea:splat:materialRoughness`, por `cryptoObject`; -1 para una pieza no nombrada) |
+| `--camera-stage` | ruta | la entrada | `--camera` se lee de este stage y no de la entrada: una vista para la que la nube no se hizo |
+| `--cut-budget` | gaussianas | `0`: apagado | `--tree`: solo se guarda el corte que un renderer dibujaría desde `--camera` con no más de estas gaussianas (con `--ratio 1` no se funde nada más) |
+| `--cut-pixels` | píxeles | `0`: apagado | `--tree`: el corte cuyas fusiones no son más anchas que esto en la pantalla de `--camera`, en lugar de `--cut-budget` |
+| `--cut-coverage` | flag | apagado | `--cut-error`: la opacidad de una fusión que se guarda es lo que sus hojas cubren de verdad, compuestas sobre su plano |
+| `--cut-pages` | gaussianas por página | `0`: apagado | `--cut-error`: el árbol se pagina a este tamaño y se imprime cuántas tienen las páginas del corte |
+| `--pages-by-facing` | flag | apagado | `--cut-pages`, `--tree-pages`: los nodos de una banda se agrupan por hacia dónde miran antes que por dónde están |
+| `--tree-report` | flag | apagado | `--tree`: imprime las raíces del árbol por parte, que es donde dejó de fundir |
+| `--object-groups`, `--object-group` | un número; 0 .. número - 1 | `0`: apagado; `0` | solo se decima un grupo de las partes del asset: aquellas cuyo `cryptoObject` módulo el número es el grupo. Para un asset demasiado grande para una pasada |
+| `--occlusion-by-part` | flag | apagado | `--occlusion-group`: el codebook se reparte por parte (`cryptoObject`), no por árbol |
+| `--transfer-basis` | ruta | — | una base PCA por clusters (f32): el transfer se codifica con ella y se decodifica otra vez antes de nada más, de modo que la salida dibuja lo que ese códec conserva |
+| `--transfer-clusters`, `--transfer-components`, `--transfer-bits` | 1..65536; 1..16; `8` \| `4` | `256`; `8`; `8` | `--transfer-basis`: sus centroides, sus ejes por bloque y los bits por peso |
+| `--shadow-codebook`, `--shadow-rounds` | 0..65536; rondas | `0`: ninguno; `12` | los bits de sombra sustituidos por el más cercano de estos centroides (k-means de Hamming en la GPU), de modo que la salida dibuja lo que conservan un índice por gaussiana y un codebook; y las rondas del k-means |
+| `--quantize` | gaussianas por chunk | `0`: apagado | la geometría a los bits de un chunk de móvil, en chunks de este tamaño (8192 es el del formato web): posiciones de 16 bits en la caja del chunk, escalas de 8, rotaciones de 32, opacidad y color de 8, normales de 16, curvatura de 8 -- decodificada otra vez, de modo que la salida dibuja lo que ese chunk conserva |
 
 **Por pares** (`--ratio`). En cada pasada, cada gaussiana -- o fusión hasta
 entonces -- pesa una fusión con sus 16 vecinas a lo largo de dos órdenes de
