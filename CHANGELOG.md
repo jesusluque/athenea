@@ -6,6 +6,29 @@ pass). The version lives in one place, the top-level `project()` line, and is
 what `athenea --version` and `athenea info` print. A minor version is a set of
 merged work; a patch version fixes what a minor one shipped.
 
+## Unreleased
+
+The `neural` branch, merged on 2026-11-22. No version and no tag yet: the
+whole `ctest` has not been run on the merged tree with each backend.
+
+- **Scenes found by rendering** (`athenea neural-scene`, `.aths`): a scene
+  kept in pieces. `shoot` path traces a USD stage along a walk of views and
+  what it leaves is gaussians, found as the frames gather, each laid over the
+  coarser ones a farther look left; `render` draws the scene from any view,
+  glass and mirrors by the eye; `export` writes it for the web with levels of
+  detail a phone can hold, a part a frame and its history; lights in groups
+  that can be relit; `bake` freezes it into an `.athc`. The format is in
+  `docs/formats.md`.
+- **A web player** for those scenes (`scripts/examples/neural-scene-viewer`).
+- **`neural-fit`, `wall-fit`, `lift`**: a cloud's colours learnt by a latent a
+  gaussian and one network; where each gaussian reads an LED wall's picture;
+  a mask carried to the gaussians and keyed from another camera.
+- **Path tracer**: paths that land on glass are continued in a dispatch of
+  their own on Metal; a lobe is 128 bytes; OpenPBR, Standard Surface and glTF
+  PBR are one node each, held to MaterialX's graphs by tests. An image is its
+  own: a view's first pass no longer takes the pixel offset of the view drawn
+  before it, and a view rendered twice is the same image twice.
+
 ## 0.5.0 — 2026-11-08
 
 - **D3D12**: the engine runs on Direct3D 12 with DXC (carried in the Windows
