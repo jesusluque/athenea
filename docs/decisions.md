@@ -27645,3 +27645,52 @@ shows where they leave it. Off by default for that; a scene whose level is ruled
 
 Not done: the other scenes found with it (their levels of a million show no dashes as published); a real
 phone; a value between 0.1 and `--turned`.
+
+## The kernel with media reads no unwritten local: written with any value it draws the same (22 Nov)
+
+The section of 19 Nov concluded that the kernel reads a local nobody wrote, from this: left as they are the
+locals give garbage in one text of the megakernel, zeroed by the front end they give the right picture, and
+with `=pattern` garbage again. Taken further, on Metal, Apple M5 Pro, the build of 57e0b99a.
+
+Every local is written by the front end (`-ftrivial-auto-var-init=zero`) and, in the unoptimised IR, the
+value its initialisation writes is changed before the optimiser sees it
+(`build/night/agent-local/irpat.py`, through the same wrapper on `PATH`). The program stays defined, so a
+picture that changes names a local read before the kernel's own text wrote it. The absorbing box of the
+test (14,399 pixels whose light crosses it), the text in the tree and the text that drew garbage
+(`if (lightStep) { found = lightPoint; }`, in the experiment's copy):
+
+| what the locals are written with | the tree's text | the text that drew garbage |
+|---|---|---|
+| zero | 0 beyond, z² 0.978 / 0.955 | 0 beyond, z² 0.978 / 0.955 |
+| floats 3.0, integers and bools 1, structs bytes of 0x3F (2,097 of the megakernel's 2,107 sites) | the same | the same |
+| floats -7.5, integers 5, structs bytes of 0xBF | -- | the same |
+| every float NaN | the same | the same |
+| every struct bytes of 0xFF | the same | the same |
+| the initialisations taken out again | -- | 2,656 beyond, z² 4.8·10⁸ |
+| as built | 0 beyond, z² 0.978 / 0.955 | 2,728 beyond, z² 7.8·10⁸ |
+
+And the fog stage (`materials_medium.usda`, 480x270, 64 paths, 2 bounces, all its kernels through the
+wrapper, the tree's build): the pictures with 3.0 / 1 / 0x3F, with NaN floats and with 0xFF structs are bit
+for bit the picture with zero (0 of 129,600 pixels over 1e-6), as a second run with zero is.
+
+So no value an unwritten local holds reaches the picture, not as data and not through arithmetic that a
+zero would have hidden (a NaN would have come through). The garbage needs a local left *undefined*: what
+breaks is what Apple's optimiser makes of an undefined value that is carried and never used, with fast
+math on, and the kernel's text gives it nothing to read. That is why the search of 19 Nov by taking
+initialisations out did not narrow: there is no one local to find. `=pattern` breaking the same text is not
+evidence of a read either: it writes other things than these (pointers that are not null among them), and
+with the values above the text is right.
+
+What stands from 19 Nov: the kernel with media is right on Metal by the arrangement `-Os` gives its
+present text, `[repeat]` holds it, and `ATHENEA_METAL_LOCALS=zero` is the switch that takes the compiler's
+freedom away when a text is in doubt.
+
+Not done:
+- Which undefined local the optimiser turns into garbage in that text, and by which fold: not looked for;
+  it would name a compiler's fault, not the kernel's.
+- The volumes kernel alone compiled with the flag (`linkWithOptions`), which would hold it whatever the
+  text: still not tried.
+- Vulkan and CUDA: not run.
+- The other two scenes found at 960x540 looked at again on the emulated phone as published (`lamps` at its
+  level of 0.99 M, frames 4, 12, 17; `sponza_growth` at 0.97 M, frames 5, 30, 50, 80): no dashes on their
+  floors; not found again with `--inside-turned`.
