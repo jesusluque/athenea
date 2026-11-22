@@ -15,6 +15,8 @@ athenea_add_module(io
         src/Sog.cpp
         src/Ies.cpp
         src/SplatWriters.cpp
+        src/NeuralFile.cpp
+        src/NeuralScene.cpp
     PUBLIC_LIBS
         athenea::core
     PRIVATE_LIBS

@@ -44,6 +44,7 @@ inline void setFrame(rhi::ShaderCursor cursor, const FrameCommon& f) {
     p["orthographic"].setData(uint32_t{f.projection->orthographic ? 1u : 0u});
     // The frame's own; a cloud's projection sets its own (setCloudSpace).
     p["antialias"].setData(uint32_t{f.settings->antialiasOverride.value_or(f.settings->antialias) ? 1u : 0u});
+    p["paidAt"].setData(0.0f);
     p["surfels"].setData(uint32_t{f.settings->surfels ? 1u : 0u});
     // The lens, where the camera authored one: the projection carries it for
     // the path tracer, and the raster spreads the covariance by it instead of
@@ -74,6 +75,8 @@ inline void setFrame(rhi::ShaderCursor cursor, const FrameCommon& f) {
     p["ior"].setData(0.0F);
     // No matte unless the dispatch that wants one says so after this.
     p["cryptoMode"].setData(uint32_t{0});
+    p["matteHard"].setData(uint32_t{0});
+    p["matteThreshold"].setData(0.5F);
     p["hasUnderCrypto"].setData(uint32_t{0});
     p["tileBits"].setData(bitsFor(f.tilesX * f.tilesY));
 }
@@ -106,7 +109,11 @@ inline bool antialiasOf(const scene::GpuSplats& splats, const RenderSettings& se
 /// projection dispatch.
 inline void setCloudSpace(rhi::ShaderCursor cursor, const scene::GpuSplats& splats, const RenderSettings& settings) {
     cursor["params"]["linearCloud"].setData(uint32_t{splats.linear ? 1u : 0u});
-    cursor["params"]["antialias"].setData(uint32_t{antialiasOf(splats, settings) ? 1u : 0u});
+    const bool whole = antialiasOf(splats, settings);
+    cursor["params"]["antialias"].setData(uint32_t{whole ? 1u : 0u});
+    // Made a spread wide and drawn without the compensation: what a disc of that size would pay (TileRasterizer.h).
+    const float made = settings.madeSpread * settings.madeSpread;
+    cursor["params"]["paidAt"].setData(!whole && made > 0.0f ? made / (made + 0.3f) : 0.0f);
 }
 
 /// What moves during the shutter, per instance. Called at every projection

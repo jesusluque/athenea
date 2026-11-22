@@ -14,6 +14,7 @@
 // has taken.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -65,6 +66,32 @@ struct PathSettings {
     /// False: glass stops a shadow ray, and a lamp behind its lens lights
     /// only what the material's rays find through it.
     bool     glassShadows = true;
+    /// How far a ray that crosses nothing leaves its surface, as a share of
+    /// the position's distance from the origin (`athenea:rayMargin`): along the
+    /// normal and along the ray, with a TMin as long. A thousandth lets light
+    /// through the concave joins of a scene twenty metres across in
+    /// centimetres (Sponza: bright lines where a wall meets its floor).
+    float    rayMargin = 1.0e-3F;
+    /// A path whose ray lands on glass past its first vertex is kept, and
+    /// goes on in a dispatch of the kept paths alone (PathTracer.cpp, kKept):
+    /// the same paths, a pixel's samples summed in another order. Off, every
+    /// path goes on in its pixel's thread.
+    bool     keepPaths = true;
+    /// WHAT A BOUNCE MEETS, WHERE IT IS KNOWN ALREADY. A cube of `cacheSide`
+    /// cells an axis from `cacheMin`, each `cacheCell` across: `sceneCache`
+    /// holds a float4 a cell -- the light leaving the surfaces in it, and (a)
+    /// over 0 where it holds any -- then `cachePlanes - 1` more planes of the
+    /// same cells, the light of light groups 1.. alone. A path that reaches a
+    /// surface in a cell that holds light, by a direction drawn from a broad
+    /// lobe, takes that light and ends: the surface is not shaded, lit nor
+    /// bounced off again. Null: every path goes its bounces. The buffer is
+    /// copied into the tracer's own when `cacheRevision` changes.
+    const gpu::Buffer*   sceneCache = nullptr;
+    uint32_t             cacheSide = 0;
+    uint32_t             cachePlanes = 0;
+    std::array<float, 3> cacheMin{0.0F, 0.0F, 0.0F};
+    float                cacheCell = 0.0F;
+    uint64_t             cacheRevision = 0;
 };
 
 /// How much of a frame has converged, for the adaptive gate: pixels the
@@ -79,14 +106,27 @@ struct PathProgress {
 /// frame, since they do not depend on the sample.
 /// One buffer of two planes, the albedo's first, the normal's after it,
 /// written by a kernel of their own before the paths.
+/// And six planes after them of what the first hit is made of, for whoever
+/// makes something of a frame other than a picture (render::Discovery):
+/// `material` (the metal's share, the roughness, how much goes through),
+/// `materialRow` (the row + 1, whether it is a sheet, its index), and where
+/// the eye is let through `throughPosition` (the first surface behind that
+/// lets nothing through, world, along the pixel's ray bent at every face;
+/// w 0 where there is none), `throughTint` (what the faces crossed let
+/// through between them), `transmissionColour` (what this surface lets
+/// through one crossing, before Fresnel) and, last, the triangle's own normal
+/// (world, facing the eye): where the surface lies, whatever a normal map says.
 struct PathAux {
-    gpu::Buffer planes;   ///< float4 a pixel, twice: the lobes' directional albedo at the view direction, then the shading normal, unit, facing the eye
+    static constexpr uint32_t kPlanes = 8;
+    gpu::Buffer planes;   ///< float4 a pixel, kPlanes times: the lobes' directional albedo at the view direction, then the shading normal, unit, facing the eye, then the four above
     uint32_t    width = 0;
     uint32_t    height = 0;
     [[nodiscard]] bool valid() const noexcept { return planes.valid(); }
     /// Where the normal's plane starts, in float4 entries (and in bytes).
     [[nodiscard]] uint64_t normalOffset() const noexcept { return uint64_t{width} * height; }
     [[nodiscard]] uint64_t normalOffsetBytes() const noexcept { return normalOffset() * 16; }
+    /// Where plane `plane` starts, in float4 entries.
+    [[nodiscard]] uint64_t planeOffset(uint32_t plane) const noexcept { return uint64_t{plane} * width * height; }
 };
 
 /// Where a bake starts from: one ray a point, and the grid they are dispatched
@@ -256,10 +296,17 @@ private:
     bool                              aux_ = false;
     bool                              bake_ = false;
     bool                              bakeBuilt_ = false;   ///< the variant the kernel was built with
+    /// pathResolve: the kept paths added to their pixels (PathTracer.cpp, kKept),
+    /// and how many `moments_` has room for.
+    std::optional<gpu::ComputeKernel> resolveKernel_;
+    uint32_t                          keptRoom_ = 0;
     /// pathGuides: the denoiser's guides, a kernel apart from the paths'.
     std::optional<gpu::ComputeKernel> guidesKernel_;
     std::string                       guidesModule_;   ///< the materials it was built for
     uint32_t                          sumPlanes_ = 1;   ///< 1 + 2 * light groups
+    uint64_t                          cacheEntries_ = 0;    ///< float4 after the planes: PathSettings::sceneCache, copied
+    uint64_t                          cacheRevision_ = 0;   ///< which copy that is
+    std::optional<gpu::ComputeKernel> cacheCopy_;
     gpu::Buffer                       sum_;           ///< float4 a pixel: the paths added so far
     gpu::Buffer                       moments_;       ///< words: the second moment's float bits a pixel, then the done flags a pixel
     gpu::Buffer                       progress_;      ///< [covered, converged]

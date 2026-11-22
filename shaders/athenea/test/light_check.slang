@@ -43,7 +43,7 @@ float2 sampleAt(uint i) {
 
 /// A cone light's axis and the cosine of its half angle, or false where the
 /// light is not a cone.
-bool coneOf(LightRecord l, out float3 axis, out float cosMax) {
+bool coneOf(__constref LightRecord l, out float3 axis, out float cosMax) {
     axis = float3(0.0, 0.0, 1.0);
     cosMax = -1.0;
     if (l.kind == kLightDistant) {
@@ -88,7 +88,7 @@ uint coneBinOf(float3 axis, float cosMax, float3 w) {
 /// Bins over a cylinder's lateral surface: the angle about its axis, then
 /// the height along it, at the point where the direction meets it. A cell
 /// on the far side never receives a sample; its expectation says so.
-uint cylinderBinOf(LightRecord l, float3 w) {
+uint cylinderBinOf(__constref LightRecord l, float3 w) {
     float t;
     float3 normal;
     float along;
@@ -105,7 +105,7 @@ uint cylinderBinOf(LightRecord l, float3 w) {
 }
 
 /// Whether the light is an area one, and its half extents in its own axes.
-bool areaOf(LightRecord l, out float2 half) {
+bool areaOf(__constref LightRecord l, out float2 half) {
     half = float2(0.0, 0.0);
     if (l.kind == kLightDisk) {
         half = float2(l.sizeX, l.sizeX);
@@ -119,7 +119,7 @@ bool areaOf(LightRecord l, out float2 half) {
 }
 
 /// A point in the light's own axes, or false where the ray misses its plane.
-bool areaHit(LightRecord l, float3 w, out float2 at) {
+bool areaHit(__constref LightRecord l, float3 w, out float2 at) {
     at = float2(0.0, 0.0);
     const float3 normal = -lightAxisZ(l);
     const float denominator = dot(w, -normal);
@@ -138,7 +138,7 @@ bool areaHit(LightRecord l, float3 w, out float2 at) {
 /// Bins over the light's own surface, where a sampler uniform in area must
 /// fill the histogram uniformly. A grid in world angles cuts a straight edge
 /// diagonally, and then the statistic measures the grid.
-uint areaBinOf(LightRecord l, float2 half, float3 w) {
+uint areaBinOf(__constref LightRecord l, float2 half, float3 w) {
     float2 at;
     if (!areaHit(l, w, at)) {
         return params.thetaBins * params.phiBins;
@@ -156,7 +156,7 @@ uint areaBinOf(LightRecord l, float2 half, float3 w) {
 /// work: a sampler following luminance must fill a bin in proportion to the
 /// luminance in it. Angles in world axes cannot resolve a sun a few texels
 /// wide, which is the artefact that made a cone's statistic meaningless.
-uint domeBinOf(LightRecord l, float3 w) {
+uint domeBinOf(__constref LightRecord l, float3 w) {
     const float2 uv = domeUv(l, w);
     const uint u = min(uint(uv.x * float(params.phiBins)), params.phiBins - 1);
     const uint v = min(uint(uv.y * float(params.thetaBins)), params.thetaBins - 1);

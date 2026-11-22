@@ -278,7 +278,9 @@ public:
     [[nodiscard]] gpu::ShaderLibrary& library();
 
     /// The last frame's `aov` ("color", "depth", "primId", "instanceId",
-    /// "elementId", "Neye", "normal") as DisplayTransform reads it. An AOV no
+    /// "elementId", "Neye", "normal", and a path traced frame's "albedo",
+    /// "shadingNormal", "material", "materialRow", "throughPosition",
+    /// "throughTint", "transmissionColour": technique::PathAux) as DisplayTransform reads it. An AOV no
     /// mesh drew, or one not requested, has no buffer: it shows as the background.
     [[nodiscard]] Result<technique::DisplaySource> displaySource(const std::string& aov);
 
@@ -309,6 +311,8 @@ public:
 
     /// 'Y' or 'Z'.
     [[nodiscard]] char upAxis() const;
+    /// The stage's metersPerUnit, USD's fallback (0.01) included.
+    [[nodiscard]] double metersPerUnit() const;
     [[nodiscard]] double endTimeCode() const;
 
     /// How renders find what meshes a pixel sees: "automatic" (the default:
@@ -525,6 +529,14 @@ public:
     /// (`athenea:glassShadows`, on by default): a lamp behind its lens lights
     /// what stands in front by next event estimation. Off: glass stops them.
     void setGlassShadows(bool glass);
+    /// Whether the path tracer lights a stage that has no light from the eye
+    /// (`athenea:headlight`, on by default). Off, such a stage is dark but for
+    /// what glows: what a scene shot with its lamps switched off wants.
+    void setHeadlight(bool headlight);
+    /// How far the path tracer's rays leave a surface that is no crossing, as a
+    /// share of the position's distance from the origin (`athenea:rayMargin`,
+    /// 1e-3 by default): smaller for a scene far from its origin or in small units.
+    void setRayMargin(float margin);
     /// athenea:domeVisible: false leaves the background transparent.
     void setDomeVisible(bool visible);
     /// athenea:screenSpaceReflections: the meshes that reflect show what the
@@ -685,6 +697,25 @@ public:
     /// it, background included.
     [[nodiscard]] Result<void> setLightOn(const std::string& prim, bool on);
 
+    /// WHAT A PATH'S BOUNCE MEETS, WHERE IT IS KNOWN ALREADY (technique::
+    /// PathSettings::sceneCache): `cells` holds, a cell of a cube of `side`
+    /// an axis from `min` and `cell` across, the light leaving the surfaces
+    /// there (float4; a over 0 where it holds any), then `planes - 1` planes
+    /// more for the light groups asked for, in their order. A path traced
+    /// frame's bounce that lands in a cell holding light takes it and ends.
+    /// An invalid buffer: none. Set between frames; each call is read anew.
+    void setSceneCache(const gpu::Buffer& cells, uint32_t side, uint32_t planes, const std::array<float, 3>& min,
+                       float cell);
+
+    /// The light at `prim` put in the light group `group` (`athenea:lightGroup`),
+    /// as a session opinion: what it lights is gathered in the output
+    /// `lightGroup:<group>` of a frame that asks for it (requestOutputs), and
+    /// `displaySource("lightGroup:<group>")` is that plane.
+    /// `displaySource("lightGroupRest")` is what no group asked for holds of
+    /// a path traced frame (the lights in none, what glows), from the same
+    /// paths: the frame is that and the groups' planes.
+    [[nodiscard]] Result<void> setLightGroup(const std::string& prim, const std::string& group);
+
     /// THE STAGE'S LAMPS (LightGroups.h): its light groups and states, read
     /// from its Scopes when it was opened or a variant recomposed it.
     [[nodiscard]] const LightRig& lightRig() const;
@@ -766,5 +797,27 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+/// A LAMP AS A FILE AUTHORS IT, for whoever lights something other than a
+/// stage with it (`neural-scene render --lamps`): where it stands in the
+/// world, the way it sends (UsdLux's -z), and its radiance -- intensity
+/// times two to the exposure times colour, which is what a light that is not
+/// normalised sends.
+struct StageLamp {
+    std::string           prim;
+    bool                  distant = false;      ///< a DistantLight; otherwise a SphereLight
+    std::array<double, 3> position{};
+    std::array<double, 3> sends{0.0, 0.0, -1.0};
+    float                 radius = 0.0F;        ///< a sphere's, in the world's units
+    float                 cone = -1.0F;         ///< shaping:cone:angle, degrees; under 0: none
+    float                 angle = 0.0F;         ///< a distant light's, degrees across
+    std::array<float, 3>  radiance{};
+};
+
+/// The sphere and distant lights of the USD file at `file`, at `time`, in
+/// prim order. `skipped` counts the lights that are neither, or that are
+/// normalised, or switched off: nothing is made of those.
+[[nodiscard]] Result<std::vector<StageLamp>> readStageLamps(const std::filesystem::path& file, double time,
+                                                            uint32_t& skipped);
 
 }   // namespace athenea::usd

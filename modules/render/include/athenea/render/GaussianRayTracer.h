@@ -89,6 +89,22 @@ struct ShadowScene {
     uint32_t                     instances = 0;
 };
 
+/// THE TREE OVER ONE CLOUD'S PARTICLES, for a kernel that casts a ray of its
+/// own through it (rt_glass.slang's `glassExit` and `glassNearest`): the
+/// ComputeBvh route's LBVH as the last `render` or `prepare` left it. Not
+/// valid on the Hardware route, whose structure is the device's, nor for a
+/// cloud that was not among the instances.
+struct ParticleTree {
+    const gpu::Buffer* frames = nullptr;     ///< float4 * 4 a particle; the third lane of the last is its transmission
+    const gpu::Buffer* boxes = nullptr;
+    const gpu::Buffer* children = nullptr;
+    const gpu::Buffer* leaves = nullptr;
+    uint32_t           nodeBase = 0;
+    uint32_t           base = 0;             ///< the cloud's first particle in `frames` and leaf in `leaves`
+    uint32_t           particles = 0;
+    [[nodiscard]] bool valid() const noexcept { return frames != nullptr && particles != 0; }
+};
+
 class GaussianRayTracer {
 public:
     /// Whether `device` can take the Hardware route. ComputeBvh runs anywhere.
@@ -122,6 +138,9 @@ public:
     /// The structures the last render or prepare built, for a ray that only
     /// needs transmittance (rt_shadow.slang). Valid until the next of either.
     [[nodiscard]] ShadowScene shadowScene() const noexcept;
+
+    /// The tree the last render or prepare built over `cloud` (ComputeBvh).
+    [[nodiscard]] ParticleTree treeOf(const scene::GpuSplats& cloud) const noexcept;
 
 private:
     /// Which cloud, and what its structure's shape depends on. Not the pose:

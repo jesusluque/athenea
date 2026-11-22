@@ -20135,3 +20135,7610 @@ passes (half draws what float draws, p99 0).
   the program and on `PATH`, not beside NVRTC: `athenea.exe` has the builtins
   in its own folder, Blender does not. The engine now puts the package's
   `bin` first on `PATH` when it points `CUDA_PATH` at it.
+
+## A pixel says which gaussians it is made of: the trace (11 Nov)
+
+The first step of the `neural` branch, and the one that needs none of the rest of it: a frame that asks
+(`RenderSettings::trace`) keeps beside its colour, for every pixel, the four gaussians that weighed most in it --
+which (the projected slot), the weight each blended with (transmittance times alpha) and the view depth it stood at
+-- with two more numbers: `rest`, the weight of everything the list had no room for, and `under`, what the surface
+that closed the walk took (the layer under the splats, an opaque disc). So the weights, `rest` and `under` sum to
+the pixel's coverage whatever it is made of. It is what carries a mask painted on one camera's screen to the
+gaussians, and from them to another camera's screen (a matte with no chroma, a virtual product placed once and seen
+by every tracked camera), which is the next step and not in this one.
+
+**Against the Cryptomatte list.** `CryptoList` in the blend is the same walk kept per prim: it sums under one id,
+and what its lightest rank gives up is lost, which the specification allows. The trace is per gaussian -- a
+gaussian is in a pixel's walk once, so there is nothing to sum and no search for a name -- and it may not lose
+weight: a soft edge is fifty faint gaussians and not four, and a matte lifted from a list that dropped them is too
+thin exactly where a matte is hard. Hence `rest`. In the test's frame 16 283 of the 29 728 covered pixels leave
+something out of four ranks.
+
+**What it is.** `shaders/athenea/splat/splat_trace.slang` holds the list (`TraceList`: a free rank or the lightest,
+found by one search over four, in registers), the layout and its reader. `RenderTargets::trace` is eleven uints a
+pixel, plane after plane as the matte is: four slots (`kTraceNone` where empty), four depths as floats, the four
+weights as halves in two words, and (`rest`, `under`) as halves in the last. A slot is the index every per-slot
+buffer of the frame is read by; `FrameStats::slotBases` gives each instance's first slot, so a slot is (instance,
+gaussian in its cloud). Four more entry points of the blend keep it, the traced twins of the four walks (`splatBlendTrace`,
+`...Composite`, `...Crypto`, `...CompositeCrypto`): `traced` is a constant at each call site as `composite` and
+`matte` are, so a frame that keeps no trace runs the kernels it ran.
+
+**What checks it.** `[trace]` in `athenea_render_tests`: two overlapping clouds, 200 x 150. The colour with and
+without the trace is the same to the bit (`compareImages`, max 0). `ReferenceRenderer` keeps the trace of its exact
+walk (`referenceBlendTrace`), and `athenea/test/trace_check.slang` counts, against it and against the frame: ranks
+naming a slot the frame has not, pixels whose ranks do not descend, pixels naming a gaussian twice, pixels whose
+weights, rest and under miss the pixel's alpha by more than 2e-3, ranks that are not the reference's and pixels
+whose rest or under is not the reference's. All zero (Apple M5 Pro, Metal).
+
+**What it costs** (`athenea bench --trace`, Apple M5 Pro, Metal, release; best of 30 frames, and the blend alone
+from `--stages`). A capture of the pawn, 325 833 gaussians of which 119 778 are in view, and a car of 786 095, all
+in view and many deep:
+
+| cloud | size | frame, plain | frame, traced | blend, plain | blend, traced |
+|---|---|---|---|---|---|
+| pawn | 1920 x 1080 | 4.05 ms | 4.51 ms | 1.83 ms | 2.25 ms |
+| pawn | 3840 x 2160 | 6.79 ms | 8.82 ms | 4.07 ms | 5.92 ms |
+| car | 1920 x 1080 | 33.4 ms | 37.4 ms | 23.9 ms | 27.8 ms |
+| car | 3840 x 2160 | 99.1 ms | 110.9 ms | 74.7 ms | 86.4 ms |
+
+Half a millisecond at 1080p and two at 4K where the frame is light; an eighth of the blend where it is heavy. At 4K
+the trace is 365 MB written a frame (44 bytes a pixel), which is most of the pawn's two milliseconds. The first
+version cost three times this -- the pawn's 4K blend 7.41 ms, the car's 122 ms -- for two reasons, both removed:
+it searched the four ranks for the lightest at every gaussian of the walk, where now the lightest and its weight
+are kept and a gaussian too light for the list (most of a walk, once four are in) costs one comparison; and it
+kept the trace only in the composite walk, which costs the blend half as much again in a frame with nothing under
+its splats, where now each of the four walks has its traced twin.
+
+**On CUDA** (an RTX 3070 Laptop under WSL2, the same build of the same commands, best of 30): the pawn's frame
+was 3.90 ms plain and 4.62 traced at 1920 x 1080, 6.23 and 10.36 at 3840 x 2160 -- 0.7 ms and 4.1 ms where Metal
+gave 0.46 and 2.0. `[trace]` passes there with Metal's own counts.
+
+**And half of that again, three ways** (the pawn, the least of five runs of a hundred frames, since a laptop's
+timings wander by a millisecond):
+
+| | Metal, 1080p | Metal, 4K | CUDA, 1080p | CUDA, 4K |
+|---|---|---|---|---|
+| a plain frame | 4.06 ms | 6.87 ms | 2.44 ms | 4.25 ms |
+| traced, as above | +0.46 | +2.0 | +0.94 | +4.15 |
+| traced, now | +0.05 | +0.62 | +0.68 | +2.23 |
+
+- A pixel nothing reached writes one word and not eleven (`kTraceEmpty` in its first, and it is read as empty
+  whatever the rest hold): most of a frame of one object is that.
+- The walk no longer carries each rank's depth -- four values a pixel in the engine's hottest loop -- but reads
+  it where the list is written, from the record the rank's slot names.
+- A gaussian's slot is read from the group's memory only where it enters the list, which most of a walk does not.
+
+A pixel's eleven words kept together, rather than a plane a word as the matte is, was tried between these and
+undone: no faster on the 3070 and a millisecond slower at 4K on Metal. The millisecond at 4K this step was allowed
+is met on Metal and not on the 3070, where what is left is the list itself in a walk of many gaussians a pixel.
+
+### Not done
+
+- Nothing reads it yet outside the test: no AOV, no lift of a mask to the gaussians, no matte drawn from them.
+- The ray traced route keeps none.
+- A gaussian of a light catcher is not in it (it adds light and takes no coverage, as the matte has it), and a
+  medium's gaussians are, each with the alpha of its chord.
+- Four ranks is a constant of the shader and of `TileRasterizer.h` (`kTraceSlots`); eight is not tried.
+
+## A mask made on one camera is the matte another camera draws: the lift (11 Nov)
+
+What the trace is for. A mask over a frame -- a key, a segmentation -- is carried to the gaussians as a weighted
+mean, `s = sum(weight * mask) / sum(weight)` over the pixels a gaussian weighed in (the soft form of FlashSplat's
+assignment and LUDVIG's lift), and from them to any other camera's frame of the same instances: a pixel is in the
+matte as far as the gaussians it is made of are. `render::SplatLift` keeps the two sums and not the quotient (two
+uints a slot, in 1/1024 of a pixel: integers, since Metal has no atomic floats), so every further camera adds its
+mask to the same gaussians.
+
+**Two ways to lift, one way back.** `liftMask` reads a frame's trace: the four gaussians a pixel names.
+`liftWhileBlending` sets a frame's settings so the blend itself adds the mask to every gaussian of every pixel's
+walk -- a third `contributionMode`, beside the two `athenea decimate` prunes by, with the mask in `liftMask`.
+`drawMatte` goes back through the trace: the listed gaussians by their share, and what the list had no room for
+(`rest`) and the gaussians no camera lifted taken to be in the mask as far as the pixel's known ones are; `under`
+is not a gaussian and is left out. `MatteSettings::hard` makes a gaussian in or out at a threshold.
+
+**Measured** (`[lift]`, Apple M5 Pro, Metal): two clouds of 1200 random gaussians each, one prim each, standing
+into each other, 200 x 150, some 29 900 covered pixels. The mask is the one a person would paint -- a pixel is in
+where the left prim is most of what covers it -- and the truth, from any camera, is that prim's Cryptomatte
+coverage.
+
+| lifted from | gaussians no camera saw | measuring camera | pixels further than 0.25 | mean abs(matte - coverage) |
+|---|---|---|---|---|
+| 1 camera | 1237 of 2400 | the same | 129 | 0.036 |
+| 1 camera | 1237 | another | 3886 | 0.114 |
+| 1 camera, by the trace | 1340 | another | 3668 | 0.110 |
+| 2 cameras | 958 | another | 1326 | 0.072 |
+| 4 cameras | 180 | another | 1289 | 0.085 |
+| 8 cameras | 69 | another | 247 | 0.066 (hard: 0.040) |
+| 8 cameras, by the trace | -- | another | 241 | 0.060 |
+
+What it says: the four ranks of a trace are not what limits a lift -- lifting by the trace and lifting every
+gaussian of the walk measure the same -- what limits it is what the lifting cameras saw. One camera sees half of
+two opaque clouds, and the other half has no opinion when a second camera looks at it; a ring of eight leaves 3%
+untold and the camera that was not among them is then wrong by more than a quarter in 0.8% of its pixels. What
+is left is the mask's own: where one prim stands in front of the other on a lifting camera's screen, a flat mask
+calls both the same (some 15% of the gaussians seen are told the wrong prim in this scene, which is two clouds
+inside each other and so the worst there is), and no lift of flat masks removes that.
+
+**`athenea lift`** is the lift as a command: `--from` cameras with a painted mask each (`--mask`) or one rectangle
+of all their frames (`--rect`), and the `--eye` camera's frame written keyed by the matte. The masks and the key
+are kernels (`splat_lift_mask.slang`). On a capture of the pawn (325 833 gaussians) a rectangle round its head on
+the front camera's frame keys the head, the collar and the neck out of a raised camera's frame at 1280 x 720; from
+one camera the far side of the neck is the guess, from four round it it is not.
+
+**How much a key shimmers as the camera goes by** (`athenea lift` says it of every key it makes: three frames
+half a degree apart round the target, the middle against the mean of its neighbours, `compareFlicker`, for the
+keyed frames and for the whole frames they were keyed from; the pawn's head keyed by a rectangle, Apple M5 Pro).
+The whole frames are what the cloud itself does under that move, parallax and all; a key covers fewer pixels, so
+its relMSE over the frame is smaller for that alone, and the worst pixel is the fairer of the two to read.
+
+| the key | relMSE, keyed | max, keyed | relMSE, whole | max, whole |
+|---|---|---|---|---|
+| 4 lifting cameras, lifted while blending, 960 x 540 | 0.000002 | 36 | 0.000008 | 8 |
+| the same, 1920 x 1080 | 0.000002 | 31 | 0.000011 | 23 |
+| the same, 3840 x 2160 | 0.000003 | 33 | 0.000012 | 28 |
+| the same at 1080p, a gaussian in or out (`--hard`) | 0.000006 | 69 | 0.000011 | 23 |
+| the same at 1080p, lifted by the trace's four ranks | 0.000020 | 255 | 0.000011 | 23 |
+| one lifting camera, 1080p | 0.000151 | 255 | 0.000011 | 23 |
+
+p99 is one code value in every row. A key lifted from four cameras while blending holds as still as the cloud it
+is cut from, but for its worst pixel (31 to 36 code values against 8 to 28); a hard one doubles that. The two that
+do not hold are the ones the lift's own section warned of: lifted by the trace a pixel's fifth gaussian and beyond
+were told nothing, and from one camera half the gaussians were -- and a gaussian with no opinion takes its
+pixel's, which changes with the pixel. Those flash: a worst pixel of 255, and from one camera fourteen times the
+cloud's own shimmer.
+
+### Not done
+
+- No AOV carries a trace or a matte, and a stage has no lift: `athenea lift` is splat files through the
+  rasteriser, as `athenea render` is.
+- Lifting while blending is not timed.
+- The matte goes back through four ranks and a `rest`; drawing a gaussian's share as the blend draws a colour
+  (every gaussian of the walk, as the lift has) is not done, and would be the exact one.
+- The scene is random clouds. The measures a paper would be read against (NVOS, SPIn-NeRF, LERF-Mask's boundary
+  IoU, Replica with half the cameras held out; athenea-research proposal 111) and a temporal one are not run.
+- A lift is of one list of instances in one order; a level of detail's cut, whose clouds change by the frame, has
+  no slot that stays the same gaussian.
+
+## A small network in a kernel: what runs, what it costs, and who differentiates it (11 Nov)
+
+Before a gaussian carries a latent and a decoder reads it, the question the engine could not answer: does a small
+perceptron run a pixel at a time in a compute kernel on Metal and CUDA, at what cost, and can it be trained there,
+since nothing here is computed on the CPU. `[neural]` in `athenea_render_tests`
+(`shaders/athenea/test/neural_mlp.slang`) is a 16 -> 32 -> 32 -> 3 network with ReLUs, 1699 weights in a buffer,
+its forward pass and two backward passes: the one Slang's automatic differentiation writes (`bwd_diff`), and the
+same derivatives written out by hand.
+
+**Measured** (Apple M5 Pro, Metal, floats, no matrix acceleration; best of six dispatches):
+
+| | 1920 x 1080 | 3840 x 2160 |
+|---|---|---|
+| forward | 3.5 ms | 13.0 ms |
+| backward to the features, by hand | 7.1 ms | 27.0 ms |
+| backward, by Slang 2026.14.1 | 505 ms | -- |
+
+**Slang's derivative of it is wrong here, and seventy times dearer.** Against central differences (a step of
+2e-3 on one feature a pixel, 19 200 pixels) the hand-written pass is off in 463 pixels -- a ReLU's kink inside the
+step, the one place a derivative and a difference may part -- with a mean magnitude of 0.1275 against the
+differences' 0.1275. `bwd_diff` of the same function is off in 19 089 of them, mean magnitude 0.0739, whether a
+weight is read through a function with a custom backward derivative or as a constant. The network is written with
+local arrays filled in nested loops, which is how a kernel writes one; that form is what this Slang gets wrong
+(and stores by the iteration, which is the cost). So the decoder's backward pass is written by hand: for a
+perceptron it is forty lines, it is the derivative, and where its sums go is ours to choose.
+
+It is a known bug, since fixed (found by athenea-research, proposal 109): shader-slang/slang#13000, "bwd_diff
+through nested [MaxIters] loops produces wrong input gradients". The reverse pass keeps each iteration's values in
+an array with a dimension a loop, and its size and its index walked those dimensions in opposite orders; the
+gradient with respect to the input is wrong as soon as the two loops' counts differ, which the 16 -> 32 and 32 -> 3
+layers here do. It reproduces from 2025.21 to 2026.12 and is merged in v2026.20; this engine's 2026.14.1 has it.
+`[ForceUnroll]` on both loops is correct and compiles in minutes. When Slang moves to 2026.20 or later, `[neural]`
+is where to look again.
+
+**What it says of the plan.** A deferred decoder of this size is 3.5 ms a 1080p frame and 13 ms a 4K one on this
+machine as plain multiply-adds, over the 2 ms the first milestone allowed it: per pixel it wants either the matrix
+acceleration Slang's experimental `neural` module reaches for (`import slang.neural` compiles for Metal with
+`-experimental-feature`; not run through the engine), a smaller network, fewer pixels, or to run once a gaussian in
+view rather than once a pixel -- which is what is measured next.
+
+**On CUDA** (RTX 3070 Laptop, WSL2): forward 4.9 ms at 1920 x 1080 and 13.7 at 3840 x 2160, backward by hand 8.1
+and 33.8, and Slang's 1184 ms at 1080p with the same wrong derivative (19 104 of 19 200 pixels off).
+
+### Not done
+
+- Halves, and the `neural` module's cooperative matrices, are not tried.
+- The weights' own gradient summed over pixels is not timed by hand (Slang's pass adds 1699 atomics a pixel).
+
+## A cloud drawn from a latent a gaussian and one network (11 Nov)
+
+The first of the two ways the `neural` branch means to try, and the cheaper: a gaussian's colour decoded once a
+gaussian in view, before the blend, which then runs as it always did (Hahlbohm et al., arXiv 2609.05255). The
+other -- features blended and decoded once a pixel -- waits on what the network section above measured.
+
+**What it is.** `shaders/athenea/neural/neural_appearance.slang`: eight features and a base colour a gaussian (11
+floats, where harmonics of degree 3 are 48), and one perceptron a cloud, 32 -> 16 -> 16 -> 3 with ReLUs and no
+biases, 816 weights (960 since the lit section below: nine more inputs, zero where a cloud is not lit). Its input
+is the view direction's harmonics of degrees 0 to 3 and the features' sines and
+cosines; its output goes through a tanh and is added to the base. The forward pass keeps what each layer held and
+the backward pass is written out beside it (`neuralBackward`: each layer's error, and the gaussian's own
+derivatives), for the fit that is not here yet. `render::NeuralCloud` holds the two buffers, as floats;
+`makeNeuralCloud` starts one where a fit starts -- features zero, the base each gaussian's own colour made light,
+the network's last layer zero. `SplatInstance::neural` names one, and the rasteriser then runs `neuralShade` after
+that cloud's projection, over the colours its harmonics gave the frame's records.
+
+**What checks it.** `[neural]`: a cloud drawn from a neural cloud just started is, to the bit, the cloud drawn by
+its first harmonic alone (`maxShDegree` 0), and is not the cloud drawn by all its harmonics (p99 28 code values).
+
+### Not done
+
+- Nothing fits it: the network adds nothing yet.
+- No file carries it, no USD schema names it, the ray traced route does not read it, and a level of detail's cut
+  has no latents. The projection still evaluates the harmonics it then overwrites.
+- Not timed.
+
+## A cloud's harmonics learnt by its latents, on the device (11 Nov)
+
+The fit the neural appearance waited for, and the first thing in the engine that learns. `render::NeuralFit::step`
+is one camera: the cloud drawn by its harmonics is what the cloud drawn from its latents should be, and the latents
+and the network move towards it -- a cloud's appearance distilled into eleven numbers a gaussian, gaussian for
+gaussian, its geometry as it is. Nothing is computed on the CPU and nothing is differentiated by Slang.
+
+**How a step goes** (`shaders/athenea/neural/neural_fit.slang`).
+1. Two frames from the camera: by the harmonics, by the latents.
+2. `neuralFitError`: the squared error, and its derivative at each pixel.
+3. The frame by the latents again, with the blend's fourth `contributionMode`: a pixel is the sum of weight times
+   colour, so the derivative with respect to a gaussian's colour is the weight times the pixel's, summed over its
+   pixels -- the lift of the trace section, with an error where the mask was. Three signed words a slot in 1/16384,
+   each addition rounded up or down by a hash so that what is smaller than a step survives on average.
+4. `neuralFitBackward`, once a gaussian the frame drew: the network walked backwards (`neuralBackward`), the
+   gaussian's own derivatives written, and what each layer held and each layer's error kept (100 floats).
+5. `neuralFitWeights`, one thread a weight: its layer's error times its layer's input, summed over the gaussians by
+   reading. No thread adds into another's sum, so no float is added atomically (Metal cannot) and the sum is the
+   same every run.
+6. `neuralFitAdam` for the latents (only those the frame saw) and for the weights.
+
+**Measured** (`[fit]`, Apple M5 Pro, Metal): 3000 random gaussians whose harmonics are random too -- no two
+alike, which is the worst a shared network can be asked -- 320 x 240, 1500 steps from cameras on a ring, 25 s.
+The frame's relMSE goes from 0.0165 to 0.0027. From a camera no step used, against the harmonics' own frame: the
+first harmonic alone relMSE 0.0119, the latents 0.0030.
+
+**On a capture** (`athenea neural-fit`, the pawn: 325 833 gaussians with harmonics of degree 3, 960 x 540, eight
+held-out cameras, the mean against the harmonics' frames):
+
+| steps | time | relMSE | p99, code values | max |
+|---|---|---|---|---|
+| 0 (the base colour alone) | -- | 0.01451 | 34.4 | 120 |
+| 500 | 19 s | 0.00158 | 17.1 | 156 |
+| 2000 | 78 s | 0.00084 | 11.0 | 151 |
+| 5000 | 195 s | 0.00033 | 7.0 | 112 |
+
+The same cloud with fewer harmonics, against its own degree 3 on the same cameras: degree 1 (12 numbers a
+gaussian) relMSE 0.00783, p99 35.5, max 83; degree 2 (27 numbers) relMSE 0.00188, p99 16.8, max 77. So eleven
+numbers and a network are, after 5000 steps, a sixth of degree 2's relMSE at two fifths of its numbers, and under
+half its p99 -- and still worse at their worst pixel (112 against 77).
+
+A frame costs what it did: 6.83 ms by the latents against 6.86 by the harmonics at 1920 x 1080, 9.38 against 9.28
+at 3840 x 2160 (best of twenty; at 960 x 540, 5.99 against 4.17). The network runs once a gaussian in view -- 120
+thousand of them here -- where a decoder a pixel was 3.5 ms at 1080p for a network four times this one, and the
+projection still evaluates the harmonics it then overwrites.
+
+39 ms a step: three frames, a backward pass over the gaussians, and the network's gradient from an eighth of them,
+a different eighth each step (from all of them a step was 133 ms: 816 threads reading 326 thousand records each).
+Eleven floats a gaussian where the harmonics are forty-eight.
+
+**Two things it got wrong first, kept here.**
+- *The error.* As a plain squared difference in linear light the fit's own error fell to a ninth while the
+  held-out measures got worse: the pawn's glass is thirty times its marble's level, so the sum was the glass, and
+  the marble -- most of the picture -- drifted. The error is now the squared difference over the squared level of
+  what the pixel should be plus a hundredth, which is the relMSE the engine measures by; the colour gradients are
+  kept in 1/256 for it.
+- *The cameras.* The golden angle for the azimuth and the golden ratio for the height are the same number: every
+  camera fell on one turn of a spiral, the held-out ones on the spiral's far side, and the fit learnt the spiral
+  (its own error a twentieth, the held-out one unmoved). The cameras are now the R2 sequence, whose two
+  coordinates are independent.
+
+### Not done
+
+- Only this: one cloud, one instance, its own harmonics as the pictures. No photographs, no path-traced
+  reference, no light in the network's input.
+- Three frames a step where two would do if the first by the latents kept what its blend walked.
+- The rates are constants found by trying twice; no schedule, no regulariser, no halves.
+- A p99 of 7 code values and a max of 112 are not the harmonics: a few gaussians are still far off (the collar
+  under the glass), and how far 20 000 steps, a schedule or more features take it is not tried.
+
+## A lit neural cloud: how a gaussian answers a light, learnt (11 Nov)
+
+The step from a cloud that holds its light to one that answers a light, which is what the latent was for.
+`NeuralCloud::lit`: a gaussian's base is then what it is made of, and the network -- the same network, with nine
+more inputs, the harmonics of degrees 0 to 2 of the direction a light comes from -- says how the base answers a
+unit of light from there: `colour = radiance * base * softplus(network + c)`, with `softplus(c) = 1` so that a
+cloud that has learnt nothing answers with its base. It is linear in the light, as light is: two lights are two
+evaluations summed. One light a frame for now (`SplatInstance::neuralLight`: where it comes from and its
+radiance).
+
+**Several lights are several evaluations summed** (`SplatInstance::neuralLightCount`, up to eight a frame, the
+directions and radiances in the kernel's constants; where the frame casts shadows they are its lights in that
+order). `[lights]` holds the linearity it rests on: a lit cloud under a red light and a blue one each at half is,
+to the code value, the mean of it under each alone (max 0, where the two alone differ by 99).
+And it is so against the engine: the pawn's cloud fitted under one white sun a frame, then drawn under three suns
+of three colours at once (`athenea neural-fit --relight` measures it at the end; shadows from a map of 1024),
+against the engine's relighting under the same three with its rays: relMSE 0.00052, p99 13.6, max 116, where
+under one sun it measured 0.00068, 14.0 and 104.
+
+**The light is given in the gaussian's own frame** (`neuralLocalLight`): along its two longer axes and along its
+normal -- its shortest axis, turned towards the eye, as `splatNormal` turns it for the engine's relighting. Given
+in the cloud's space the fit learnt the mean of all lights and nothing of each (a held-out light relMSE 0.48, and
+0.68 told the wrong light: hardly worse): which way a gaussian faces was left for eight features to find. In its
+own frame, in front, behind and along are the same three numbers for every gaussian.
+
+**What it is fitted to** is the engine's own relighting of the same cloud (`SplatInstance::relight`, a distant
+light, no shadow): `NeuralFit::step` takes the frame's light both as the rasteriser's `SplatLights` and as the
+neural cloud is told it. So nothing is learnt here that the engine does not already compute; what is shown is
+that the latent, the network and the fit carry a light.
+
+**Measured** (`[relight]`, Apple M5 Pro, Metal): 3000 random gaussians, a sun from a different direction each of
+3000 steps (lights and cameras by four independent low-discrepancy sequences), 320 x 240. From a camera and under
+two suns no step used, against the engine's relighting: relMSE 72 before (the base under three units of light),
+0.0040 after; told the other sun than the one that shone, 0.42.
+
+**On a capture** (`athenea neural-fit --relight`, the pawn's 325 833 gaussians, 960 x 540, eight held-out cameras
+each under a sun no step used, against the engine's relighting): relMSE 2.2 before, 0.0100 after 300 steps,
+0.0014 after 1500, 0.0010 after 3000 (124 s); p99 19 code values, max 108. A frame is 5.8 ms by the latents where
+the engine's own relighting of it is 2.7: here the network is the dearer of the two, a perceptron a gaussian
+against a dot product and a lobe.
+
+**With the cloud's shadow on itself** (`--shadows`: the engine's relighting casts a ray a gaussian through the
+cloud's own gaussians, the ray tracer's structures built once). The neural cloud is told nothing more -- where
+the light comes from and no more -- and what it learns is the shading without the shadow's edge: held-out relMSE
+0.0025 after 3000 steps where the unshadowed picture gave 0.0010, p99 34 code values where it gave 19, and in the
+frames the pawn's head no longer darkens a sharp patch of its base but a blur of one. Eight features and the
+light's harmonics of degree 2 hold how open a gaussian is towards a direction only as far as degree 2 says it,
+which is what a transfer of nine coefficients holds too. What it costs is the other half: a frame by the latents
+is 6.0 ms, the engine's with its rays 28.3.
+
+**Told what reaches each gaussian** (`NeuralCloud::shadowed`, `--reached`). The transmittance the engine's shadow
+ray finds for a gaussian and a light -- the factor a relit splat already takes; the rasteriser now also casts it
+for a shadowed neural cloud and hands it to `neuralShade`, and `NeuralFit` reads it back for the backward pass --
+multiplies the network's answer: the network says what the light does where it arrives, the engine how much of it
+arrives. That is the plan's `z = [m | e]` in its first form: `m` learnt, `e` recomputed every frame by the engine.
+The same fit, the pawn, held-out cameras and suns, against the engine's shadowed relighting:
+
+| the neural cloud is told | relMSE | p99, code values | a frame at 960 x 540 |
+|---|---|---|---|
+| nothing learnt yet | 2.4 (0.54 with the transmittance) | 231 (157) | -- |
+| where the light comes from | 0.0025 | 34 | 6.0 ms |
+| and what of it reaches each gaussian | 0.00052 | 10.6 | 29.9 ms |
+| (the engine's own shadowed relighting) | 0 | 0 | 27.3 ms |
+
+The shadow's edge is back, and so is its price: the rays are the frame. A step of the fit is 124 ms where it was
+66.
+
+**And from a map instead of a ray** (`--reached map`). `technique::SplatShadowMap` -- the cloud's optical depth
+from the light, seven coefficients so that a gaussian inside the cloud reads its own depth, no ray anywhere --
+fills the same factor a gaussian a light, and comes in through the door a baked visibility field already uses
+(`SplatLights::visibilityFactors`): a shadowed neural cloud now reads it there, and `NeuralFitLight::student` is
+the lights its frames are drawn with where they are not the picture's. The picture is still the rays'. Same fit:
+
+| what reaches a gaussian comes from | relMSE | p99 | a frame by the latents | and before it |
+|---|---|---|---|---|
+| nowhere: the direction alone | 0.0025 | 34 | 6.0 ms | -- |
+| a shadow map, 2048 a side | 0.00081 | 15.5 | 4.1 ms | 18.9 ms the map |
+| a shadow map, 1024 a side | 0.00068 | 14.1 | 3.6 ms | 8.2 ms the map |
+| a ray a gaussian | 0.00052 | 10.6 | 29.9 ms | -- |
+| (the engine's shadowed relighting) | 0 | 0 | 27.6 ms | -- |
+
+The map's time is a wait for it alone, so an upper bound on what it adds to a frame it is queued with; and it is
+the light's, not the camera's: a second camera, or a light that has not moved, pays the 3.6 ms and no map. At
+1024 a side the edge is nearly the rays' at two fifths of their frame.
+
+### Not done
+
+- The baked visibility fields are not tried, nor a map of fewer coefficients.
+- The transmittance only multiplies. As an input too, the network could say what a gaussian in shadow still
+  shows -- what bounced, what came through -- which a product cannot.
+- The picture it learns is the engine's analytic relighting, with no shadow, no interreflection and no sky: a
+  path-traced reference, a shadow term in the network's input, and a dome are the next three.
+- A light that is not at infinity is a direction a gaussian, and is not done. A dome or a wall of light as so many
+  directions is the same loop below and is not tried; the fit itself is still one light a frame, which a linear
+  answer makes enough.
+- On a capture a gaussian's colour is light it was photographed under and not what it is made of: the pawn
+  above is relit as the engine relights it, which takes the one for the other.
+
+## A neural appearance on disk: `.athn` (11 Nov)
+
+What a fit made was lost when the command ended. `athenea neural-fit --save` writes it and `athenea render
+--neural` draws a cloud by it: a file beside the cloud's own, of it gaussian for gaussian (`io/NeuralFile.h`).
+
+**What it holds.** The latents as halves, packed on the device (`neural_pack.slang`: eleven numbers into six
+words, 24 bytes a gaussian) and read back as words; the weights as the floats they are; a header of six words. The
+harmonics of degree 3 it stands for are 45 floats a gaussian in a 3DGS PLY, 180 bytes, and 90 as this engine holds
+them. The pawn's is 7.8 MB beside an 80.8 MB PLY.
+
+**A sidecar, not a field of a cloud's formats.** The other road -- a `latent` channel through the records, the
+loader, USD's schema, the `.athc`, the levels of detail and the decimation -- is some fifteen files and a format
+version, and is the right one once it is known what a gaussian should carry; that is still moving (eight features
+or sixteen, lit or not, one network a cloud or a part). A file of its own costs nothing to change.
+
+**What checks it.** `[file]`: a cloud fitted for sixty steps, written, read and drawn again, is the frame it drew
+to a code value (halves for floats). On the pawn, `athenea render --neural` against `athenea render` from a camera
+of neither's choosing, by `athenea compare`: relMSE 0.00038, p99 7 code values, PSNR 42.7 dB, SSIM 0.994.
+
+**How much it shimmers** (`athenea neural-fit --load ... --steps 0`, which measures a saved appearance without
+fitting): three frames of the pawn half a degree apart round it, the middle one against the mean of its
+neighbours (`compareFlicker`; the camera moves, so both have parallax in it and it is the one against the other
+that is read). By the harmonics relMSE 0.000005 and p99 1 code value at 960 x 540, 0.000007 and 1 at 1920 x 1080;
+by the latents 0.000018 and 2, 0.000045 and 3. Four to six times the harmonics' and still two or three code values
+at the 99th percentile: a network a gaussian turns with the view less smoothly than nine or sixteen polynomials
+do. The same runs time a frame at 6.09 ms by the latents against 4.19 by the harmonics at 960 x 540 and 7.01
+against 5.01 at 1920 x 1080 -- two milliseconds more, where an earlier run of the same measure gave them equal at
+1080p: it is run to run, and the latents are not the cheaper.
+
+### Not done
+
+- It is of a cloud by order alone: a cloud reordered, decimated or cut by its levels of detail is another cloud,
+  and nothing but the count says so.
+- A lit appearance is written and read, and `athenea render` refuses it: it has no light to tell it.
+- USD knows nothing of it, and neither does `athenea view`.
+
+## A lit fit to what the path tracer baked: first numbers, and a wrong turn (11 Nov)
+
+The picture a lit neural cloud learnt so far was the engine's own analytic relighting. `athenea neural-fit
+--pictures` takes instead what the path tracer made: one mesh converted by `athenea mesh2splat` into the same
+gaussians under one sun after another, each cloud's harmonics the light of its sun -- three bounces, shadows and
+the colour a floor throws back -- and each cloud the picture of its sun (`NeuralFitLight::picture`). Twenty-four
+clouds to learn from and four held out, whose suns are not shown.
+
+**The scene** is the chess set's pawn in a clay material on a red floor, 100 thousand gaussians, a sun between
+20 and 80 degrees up. Two things made the first attempts black, both worth knowing: the pawn's own materials are
+a metal and a glass, whose bake holds the body's light alone (the polish and what a glass bends are the frame's
+to add), so drawn by its harmonics such a cloud is black; and a `DistantLight` of intensity 3 and one degree
+across is an irradiance of thousandths -- 12 540 is three.
+
+**Measured** (Apple M5 Pro, Metal, 960 x 540, 3000 steps, eight held-out cameras under each of the four held-out
+suns, against those suns' baked clouds):
+
+| the neural cloud is told | relMSE, held-out suns | p99 | relMSE, the suns it learnt from |
+|---|---|---|---|
+| nothing learnt yet | 3.4 | 205 | -- |
+| where the light comes from | 0.0298 | 88 | 0.0141 |
+| and the cloud's shadow map from it, the product alone | 0.0078 | 80 | 0.0054 |
+| the map, and a second answer for light that did not have to arrive | 0.0045 | 38 | 0.0034 |
+
+Told the direction alone, the cloud has learnt its twenty-four suns and not the sun: a held-out sun's floor carries
+the ghosts of the shadows it was shown, which is what 24 lights are to a network asked for a shadow's edge. With
+the map the floor is clean and the shadow is the path tracer's.
+
+**A second answer.** With the transmittance multiplying everything, what a shadow still shows was put out: the
+neck under the pawn's head black where the path tracer has it lit by the floor. The network now gives six numbers
+where it gave three -- `colour = radiance * base * (reached * direct + bounced)` -- and only the first three are
+the light that has to arrive. That is the last row: p99 from 80 to 38.
+
+**A wrong turn, kept here.** A held-out sun's frame drawn before any step showed two shadows, and the map was
+blamed for an hour: its coefficients, its bias, sixteen readings of the sun's two angles, the light table's
+upload. The map was right. A lit cloud's base starts as its gaussians' own colour, and here that colour is the
+first cloud's -- the mesh already lit by the first sun, its shadow in it. The second shadow was the first sun's,
+in the base, for the fit to unlearn.
+
+**What it is not short of** (the same scene, the shadow map and the second answer throughout):
+
+| | relMSE, held-out suns | p99 | relMSE, the suns it learnt from |
+|---|---|---|---|
+| 24 suns, 3000 steps | 0.0045 | 38 | 0.0034 |
+| 48 suns, 3000 steps | 0.0041 | 37 | 0.0039 |
+| 48 suns, 8000 steps | 0.0063 | 35 | 0.0056 |
+| 48 suns, 8000 steps, the rates falling to a tenth (`--rate-decay 0.1`) | 0.0033 | 34 | 0.0029 |
+| the same, to a hundredth | 0.0042 | 38 | 0.0038 |
+| the same to a tenth, the transmittance an input of the network as well | 0.0032 | 34 | 0.0029 |
+
+Not suns: twice as many buy a tenth. Not steps, unless the rates fall. Not the bakes' noise: the same sun baked
+with 96 paths a gaussian and with 1024 differ by relMSE 0.00006 and p99 9, a fiftieth of what is left. And not
+what it has seen against what it has not: the suns it learnt from measure what the held-out ones do, so it is the
+model that does not hold the picture, not the fit that has too little of it. A difference image says where: a
+line along every shadow's edge, where the map's edge is not the path tracer's; the pawn's collar and neck, thin
+and shadowing themselves, where a map of the whole cloud has least to say; and single gaussians of the floor.
+Giving the network the transmittance to read as well as to be multiplied by moves none of it (and is not kept).
+
+So the lit fit against a path tracer stands at relMSE 0.0033 and p99 34, five times the analytic picture's 0.00071
+and its p99 of 15, and what separates them is the engine's shadow term and not the network.
+
+(A cloud converted with `--no-bake`, to start the base from the material rather than from a sun's picture, does
+not hold the same gaussians: a bake drops those it could not bake, 99 792 kept of 99 820 where the unbaked keeps
+99 799. A manifest's `base` line is read and refused where the counts differ, which is always, today.)
+
+(And a note for whoever measures against "the path tracer": the baked cloud drawn by the engine and the mesh path
+traced from the same camera are relMSE 0.060 and p99 92 apart, at 96 paths a gaussian or 1024. The pictures here
+are the clouds.)
+
+### Not done
+
+- A base that starts as what the gaussians are made of: the unbaked conversion's colours carried to the baked
+  cloud's gaussians through `GpuSplats::origin`, which both keep.
+- A shadow term that is the path tracer's at an edge and on a thin thing: more of the map's terms, the baked
+  visibility fields, or a ray where the map is unsure.
+
+## The neural branch on CUDA: what holds, and what costs more (11 Nov)
+
+Everything above was measured on Metal. The same tree built under WSL2 for CUDA (an RTX 3070 Laptop, no OptiX),
+`[trace]` and `[neural]` passing with the counts Metal gave, and the pawn fitted there.
+
+**What holds.** The fit: after 5000 steps the pawn's latents are relMSE 0.00029, p99 7.0 and max 88 against its
+harmonics on the held-out cameras (Metal: 0.00033, 7.0, 112), against degree 2's 0.00188 and 16.8. The shimmer:
+0.000016 and p99 2 by the latents against 0.000005 and 1 by the harmonics at 960 x 540 (Metal: 0.000018 and 2).
+
+**What costs more.** A step of the fit is 60.5 ms where Metal's is 39. And a frame by the latents is not what a
+frame by the harmonics is there: 9.4 ms against 2.6 at 960 x 540, 9.8 against 2.6 at 1920 x 1080, 12.7 against 2.7
+at 3840 x 2160 -- seven to ten milliseconds for the network a gaussian in view, where Metal's was two or none.
+(The harmonics' 2.6 ms is what the frame's own clock says without waiting for the device, which `athenea bench`
+does: bench times the same cloud at 3.9 and 6.2 ms. The difference between the two columns is the one to read.)
+(Wrong: see "Once a gaussian or once a pixel" below. Timed by `athenea bench` the two are a frame of 2.5 and 2.6
+ms.)
+
+**What is not there.** `--shadows` is refused: the rays a relit splat's shadow takes want a device that traces,
+and CUDA under WSL has no OptiX. So the shadowed fits are Metal's alone; the shadow map's route needs no ray and
+is the one CUDA could take, but its picture here is the rays'.
+
+**Half of it was the weights.** `neuralShade` read the network's 960 weights from their buffer once a gaussian;
+it now copies them into its group's memory once a group of 64 and reads them there (`INeuralWeights`: the passes
+take whichever). On the 3070 a frame by the latents goes from 9.8 to 4.9 ms at 1920 x 1080 and from 12.7 to 6.3 at
+3840 x 2160, against 2.0 by the harmonics on that run: three milliseconds for the network where it was seven. On
+Metal nothing moves (6.8 ms against 4.5 by the harmonics at 1080p, as before), whose buffer reads were not what
+it cost.
+
+The lit fit without shadows comes to the same there as on Metal: relMSE 0.00100, p99 19.4 after 3000 steps
+(Metal: 0.00100, 19.2), 0.00079 under three coloured suns at once (Metal with shadows from a map: 0.00052), a frame
+7.6 ms against the engine's own relighting at 2.5 before the weights moved. `--shadows` is refused, as said.
+
+### Not done
+
+- An L4, and Windows' own CUDA with OptiX.
+- The network still walks every gaussian of the cloud to find those in view, and the projection still evaluates
+  the harmonics it overwrites.
+
+## Once a gaussian or once a pixel: the two ways to decode, timed (11 Nov)
+
+The branch set out to blend features and decode them once a pixel; it has decoded once a gaussian since, because a
+network a pixel measured 3.5 ms at 1080p before anything was blended. This puts the two side by side on a frame.
+`RenderSettings::neuralFeatures` (8, 16 or 32): a neural cloud's gaussians give the walk their features
+(`neural_pixel.slang`: sines and cosines of the latent, two halves a word a slot), the blend sums them with the
+weights it blends the colour with -- three more entry points, each for its own count, the sums registers a pixel
+-- and a 16 + channels -> 32 -> 32 -> 3 perceptron runs on each covered pixel, its weights in the group's memory.
+Nothing fits it: the network is zeros, and what is measured is the frame.
+
+**Measured** (`athenea bench --neural ... --features N`, the pawn, 325 833 gaussians, 119 778 in view; Apple M5
+Pro, Metal; the least of five runs of a hundred frames, which waits for the device):
+
+| the frame is drawn by | 1920 x 1080 | 3840 x 2160 |
+|---|---|---|
+| its harmonics | 3.95 ms | 7.02 ms |
+| a network a gaussian | 4.09 ms | 7.09 ms |
+| 8 channels blended, a network a pixel | 6.27 ms | 15.57 ms |
+| 16 channels | 6.95 ms | 18.16 ms |
+| 32 channels | 9.19 ms | 26.38 ms |
+
+A network a gaussian is a tenth of a millisecond over the harmonics at either size. (`athenea neural-fit` had been
+saying two: it reads the frame's own clock without waiting for the device, and the harmonics' frame was the one
+that clock flattered. `athenea bench` is the one to read, and the earlier sections' "5.0 against 7.0" is not.
+`athenea neural-fit` now waits for the device stage by stage when it times a frame, which costs every frame the
+waits and says the same of the two: 8.0 ms by the harmonics and 8.0 by the latents at 1080p, 10.6 and 10.9 at 4K.)
+Once a pixel is 2.3 to 5.2 ms over at 1080p and 8.6 to 19.4 at 4K: it grows with the pixels, four times from one
+size to the other, where once a gaussian grows with the gaussians in view and so not at all. Of 16 channels to 32
+the walk and the network pay a third more at 1080p and nearly half more at 4K.
+
+So for a cloud's colour the branch decodes once a gaussian, and what once a pixel is still for is what only a
+pixel has: a vector to key by, a light that falls on a pixel and not on a gaussian.
+
+**On CUDA** (RTX 3070 Laptop, WSL2, the same measure):
+
+| the frame is drawn by | 1920 x 1080 | 3840 x 2160 |
+|---|---|---|
+| its harmonics | 2.60 ms | 4.58 ms |
+| a network a gaussian | 2.48 ms | 4.97 ms |
+| 8 channels blended, a network a pixel | 3.17 ms | 10.34 ms |
+| 16 channels | 4.90 ms | 13.75 ms |
+| 32 channels | 8.01 ms | 24.75 ms |
+
+The same there: a network a gaussian is the harmonics' frame at 1080p and 0.4 ms over it at 4K, and once a pixel
+is 0.6 to 5.4 ms over at 1080p and 5.8 to 20.2 at 4K. **The CUDA section above is wrong where it says a frame by
+the latents is three times and more a frame by the harmonics** (9.8 against 2.6 ms, then 4.9 against 2.0): those
+were the unwaited clock's, which stopped the harmonics' frame early. The weights in the group's memory were worth
+keeping all the same; what they were said to buy is not measured by a clock that can be read.
+
+### Not done
+
+- Not fitted, so nothing says what a pixel's network buys in quality for its milliseconds.
+
+## The relit frames, timed again by a clock that waits (11 Nov)
+
+The frame times in the lit sections above were read as the unlit ones were, before the device had finished.
+Timed again waiting for it stage by stage (`athenea neural-fit`, the pawn, 960 x 540, Apple M5 Pro; the waits are
+in every number, so it is the one against the other that is read):
+
+| the pawn relit | the engine's relighting | the latents |
+|---|---|---|
+| no shadow | 7.3 ms | 7.3 ms |
+| shadows; the latents told the direction alone | 32.3 ms | 7.4 ms |
+| shadows; the latents with a shadow map of 1024 | 32.5 ms | 7.4 ms, and 4.1 for the map |
+| shadows; the latents with a ray a gaussian | 32.4 ms | 32.6 ms |
+
+So, where the sections above say otherwise: without shadows the latents cost what the engine's own relighting
+costs, not twice it; with shadows by a map they are 11.5 ms against the rays' 32.5, the map included, and 7.4
+where the map stands from a frame before; and with a ray a gaussian they are the engine's frame, since the rays
+are.
+
+## The matte summed by the blend, and the trace out of the keying frame (11 Nov)
+
+A key read the frame's trace: four gaussians a pixel told their share of the mask, and the rest of the pixel a
+guess. The blend now sums the matte itself (`RenderSettings::matteLift`, `render::matteWhileBlending`): what the
+lift told each gaussian is read as it is blended, over every gaussian of the walk, into one float a pixel
+(`RenderTargets::matte`). No trace is kept by a frame that keys. `athenea lift` keys this way;
+`--matte-by-trace` is the old one.
+
+**Measured** (the pawn's head keyed from four lifting cameras, RTX 3070 Laptop, CUDA; three frames half a degree
+apart as before, and a frame's time waited for, the least of a hundred):
+
+| | 1920 x 1080 | 3840 x 2160 |
+|---|---|---|
+| the cloud's own worst pixel under that move | 23 | 28 |
+| the key's, its matte read off the trace | 31 | 33 |
+| the key's, its matte summed by the blend | 23 | 28 |
+| a plain frame | 5.72 ms | 7.00 ms |
+| with its matte summed by the blend | 6.29 ms | 8.08 ms |
+| keeping a trace to read one from | 6.26 ms | 8.60 ms |
+
+The key's worst pixel is the cloud's own, at both sizes: it shimmers as what it is cut from does and no more, and
+its relMSE halves (0.000001 against 0.000002 to 0.000003). At 4K it is a millisecond over a plain frame where the
+trace is 1.6. So the trace is what it should have been from the start: for asking what a pixel is made of -- a
+pick, a debug view -- and not in the frame a camera goes to air with.
+
+What it does not mend: a key lifted from one camera still flashes (a worst pixel of 255), since the gaussians
+that camera never saw are a guess whoever sums them.
+
+### Not done
+
+- The Metal numbers, and the lift's test taught the blend's matte.
+- The trace packed into fewer words, now that it is not in the keying frame, matters less and is not done.
+
+## A colour held to itself a degree off: what it buys, measured (11 Nov)
+
+The network's colour shimmers under a moving camera three to six times as much as the harmonics' does (the section on
+the key's stability), and the cause is plain: a harmonic of degree three cannot change fast with the direction, and
+a network of two layers can. So the fit can now hold it: each visible gaussian is evaluated a second time from a
+direction `viewStep` (a degree) off, turned about an axis the step picks, and the difference of the two colours is
+pulled on as an error of its own, `--view-smooth` times as heavy as the pixels' error on that gaussian. The pull
+goes back through both evaluations, so a gaussian keeps two records for the weights' sums and not one, and the
+blend's fourth contribution mode carries a fourth word per slot, the weight the gaussian was seen with, which is
+what the pull is scaled by: a gaussian no pixel saw is not held.
+
+The pawn, 4000 steps at 960 x 540 on an RTX 3070, the same seed; the shimmer is the middle of three frames half a
+degree apart against its neighbours' mean, and the harmonics' own is relMSE 0.000005 with a p99 of 1:
+
+| `--view-smooth` | relMSE against the teacher | p99 | max | shimmer, relMSE | shimmer, p99 |
+|---|---|---|---|---|---|
+| 0 | 0.00069 | 9.8 | 108 | 0.000014 | 2 |
+| 1 | 0.00039 | 7.6 | 105 | 0.000012 | 2 |
+| 4 | 0.00054 | 9.4 | 120 | 0.000017 | 2 |
+| 16 | 0.00059 | 9.5 | 105 | 0.000010 | 2 |
+| 64 | 0.00054 | 9.0 | 117 | 0.000009 | 1 |
+
+At 64 the shimmer is 1.6 times less than unheld and its p99 is the harmonics' own; it is still 1.8 times theirs in
+relMSE. The quality column does not order by the weight: the runs differ by more than the term costs (the
+gradients are rounded stochastically, and 0.00039 to 0.00069 is the spread), so what it says is only that holding
+the colour costs nothing this measure can see. The default stays 0, which also skips the second evaluation.
+
+### Not done
+
+- The step's time with and without the term: the laptop's times rose run after run (52.7 to 116.6 ms a step in the
+  order they ran), which is its heat and not the term.
+- A weight above 64, and a step other than a degree.
+- The spread between runs with one seed, measured rather than read off this table.
+- Metal.
+
+## A gaussian reads its shadow as a disc and not a point (11 Nov)
+
+Against the path tracer's bakes the lit cloud's error sits at the edges of shadows, and one cause is in how a
+gaussian is told what reaches it: `SplatShadowMap::factors` read the map at the gaussian's centre, so a gaussian
+lying across an edge was wholly in the shadow or wholly out of it. `ShadowMapCaster::receiverSpread` reads it where
+it lies instead: the centre and four points that many of its own standard deviations along its two longer axes,
+each at its own depth in the map (so a surface does not shadow itself by being read off its own plane), the centre
+counted twice, and their mean. The option is `athenea neural-fit --map-spread`; 0, the default everywhere, is the
+centre alone and what a relight has always read.
+
+The clay pawn, 24 suns baked by the path tracer and 4 held out, 4000 steps at 960 x 540, a map of 1024 with seven
+coefficients, on an RTX 3070. Held-out suns from held-out cameras, against the baked clouds:
+
+| `--map-spread` | relMSE | p99 | max | against 0 |
+|---|---|---|---|---|
+| 0 | 0.00442 | 38.2 | 198 | |
+| 0.5 | 0.00394 | 36.3 | 184 | 1.12 times less |
+| 1 | 0.00397 | 36.0 | 194 | 1.11 |
+| 2 | 0.00363 | 37.1 | 163 | 1.22 |
+| 3 | 0.00337 | 35.5 | 158 | 1.31 |
+| 4 | 0.00339 | 35.9 | 152 | 1.30 |
+| 6 | 0.00373 | 38.9 | 150 | 1.18 |
+
+It bottoms at three to four standard deviations, a third less error and a worst pixel 40 code values lower, and
+past that the disc is wider than the gaussian and blurs shadows that are sharp. The p99 hardly moves, 38 to 36:
+most of what is wrong at a shadow's edge is not this.
+
+### Not done
+
+- One run a value: the spread between runs of one value is not measured, and the steps between 0.5 and 1 are
+  inside it.
+- More than five reads, or reads weighted as the gaussian is.
+- The relight's own use of it (`athenea stage` with splat shadows): the field is there and nothing sets it.
+- Metal: the kernel compiles and the `[neural]` tests pass there; these numbers are CUDA's.
+
+## An LED wall as a texture each gaussian reads (11 Nov)
+
+A wall of light is a light whose picture is known every frame, and what it does to a gaussian is linear in that
+picture: a row of numbers, one a texel. The row is not kept. A gaussian keeps `lobes` reads of the wall's mip
+chain -- u, v, a level, the log of a gain a channel, six numbers a read -- and its colour under a picture is the
+sum of its reads of that picture (after Azzarelli et al., who learn a gaussian's texture coordinate on a known
+display). `render::NeuralWall` holds the reads and the pictures as pyramids, `SplatInstance::wall` adds the wall's
+light to the gaussians in view after the projection, and `NeuralWall::step` moves the reads through the read's own
+derivatives (bilinear in u and v, the difference of two levels in the level), the blend's fourth contribution mode
+carrying each pixel's error back. A read starts where the gaussian's normal meets the wall, wide and faint.
+
+What it learns from is the path tracer: the clay pawn on its red floor, 99 820 gaussians, baked 32 times with one
+texel of an 8 x 4 wall lit each time (a `RectLight` 6 cm square, 14 cm behind the pawn). Light adds, so the frame
+under any picture is those clouds drawn and summed times the picture's texels, and that sum is both what a
+whole-picture step is fitted to and what the fit is held against: five pictures it is never shown, from four
+cameras it never stood at. 4000 steps at 960 x 540 on Metal (an M-series Mac):
+
+| what a gaussian keeps | fitted to | relMSE | p99 | max | window | white |
+|---|---|---|---|---|---|---|
+| a gain alone, on the wall's mean (`--frozen`) | single texels | 0.0498 | 75.3 | 165 | 0.0717 | 0.0447 |
+| one read | single texels | 0.0224 | 59.9 | 140 | 0.0271 | 0.0207 |
+| two reads | single texels | 0.0154 | 48.5 | 134 | 0.0171 | 0.0147 |
+| two reads | a colour a texel, every step | 0.0035 | 20.5 | 95 | 0.0106 | 0.00007 |
+| a gain alone | pictures of every grain, every step | 0.0123 | 36.5 | 102 | 0.0394 | 0.0023 |
+| one read | the same | 0.0064 | 27.0 | 123 | 0.0207 | 0.0011 |
+| two reads | the same | 0.0040 | 23.9 | 126 | 0.0113 | 0.0008 |
+| four reads | the same | 0.0035 | 22.0 | 119 | 0.0093 | 0.0007 |
+
+Two things it says. A texel alone is a dim frame, and what each gaussian is off by under one texel adds up under a
+picture that lights all thirty-two: fitted to single texels even the white wall, which asks only that the gains
+sum right, was off by 0.0147, and fitted to whole pictures it is 0.00007 -- two hundred times less. And where a
+gaussian reads matters: against the gain alone under the same fit, four reads are 3.5 times less error over the
+five pictures and 4.2 times less under the window, the one picture that is mostly somewhere.
+
+Pictures of every grain (a colour a texel, a colour a block of two and of four, one texel in four lit) were meant
+to teach the reads where to be, and did not beat a colour a texel: 0.0040 against 0.0035 for two reads, the window
+0.0113 against 0.0106. They are the default all the same, one run each being no ground to choose on.
+
+The wall costs a frame nothing a clock can see: 6.73 ms against 6.65 with four reads, 5.08 against 5.01 with two.
+A whole-picture step costs 182 ms where a single texel's costs 24, being a frame a texel.
+
+What the frames show that the numbers do not: seams and blotches on the pawn and a mottled floor under the window.
+Neighbouring gaussians learn their reads alone, and two that read different texels of an 8 x 4 wall differ by a
+texel's worth of light.
+
+### Not done
+
+- Anything that holds neighbouring gaussians' reads together, which is what the seams ask for.
+- A read that depends on the view: a shiny thing reflects the wall elsewhere from another camera, and these reads
+  are a matt thing's. The pawn is clay.
+- A wall of more than 8 x 4, and a picture that is a frame of video or a render (`NeuralWall::picture` takes one
+  and nothing has given it one).
+- The wall's own units: a picture's texel is in units of the bake's light (a patch at intensity 20), not nits.
+- The reads in a file. They live as long as the command.
+- The row itself -- 32 gains a channel a gaussian -- as what the reads are measured against: the baked clouds are
+  that row, with the view in it.
+- CUDA for the fit against bakes; the `[wall]` test passes on both.
+
+## Two networks: what is the same from everywhere, and what the view adds (11 Nov)
+
+One network given the view cannot keep apart what a gaussian looks like from everywhere and what turns with the
+eye, so nothing it says can be kept from one camera to the next, or from one frame to the next while the camera
+moves. A split cloud (`NeuralCloud::split`, `athenea neural-fit --split`) has two networks of the same shape. The
+first is run with its sixteen view inputs at zero (`kNeuralMatt`) and its answer is the colour as one network's
+is; the second is given the view (`kNeuralShine`) and its first three outputs are what the view adds -- lit, light
+that arrived and left towards the eye, `base * reached * softplus(o - 3)`; unlit, `tanh(o)` either way. The colour
+is their sum, so the fit asks each the same and a gaussian's latents are pulled by both; a gaussian's two records
+are then the two networks' (the view-smoothness term, which used the second record, is not applied to a split
+cloud). Nothing is cached yet: this is what a cache would need, measured first for what it costs.
+
+| | one network | two | |
+|---|---|---|---|
+| the captured pawn, unlit, 4000 steps, Metal: relMSE | 0.00086 | 0.00052 | 1.65 times less |
+| its p99, max | 10.0, 118 | 7.9, 188 | |
+| its shimmer (relMSE, p99; the harmonics' is 0.000005, 1) | 0.000013, 2 | 0.000012, 1 | |
+| a step of that fit | 56.5 ms | 122.7 ms | 2.2 times as long |
+| the clay pawn lit, the path tracer's bakes, held-out suns, CUDA: relMSE | 0.00337 | 0.00293 | 1.15 times less |
+| its p99, max | 35.5, 158 | 33.2, 153 | |
+| that fit | 132 s | 169 s | 1.28 times as long |
+
+So splitting costs no quality: it is a little better both ways, with the worst pixel of the unlit fit worse (188
+against 118). It is not a fair fight for quality -- two networks are twice the weights -- and is not meant as one;
+what it buys is that the first network's answer is a gaussian's own.
+
+A correction to two sections above (the colour held a degree off, the shadow read as a disc): they say the spread
+between runs of one setting is not measured and may be what their tables show. It is none. The lit fit with one
+network here repeats the earlier run of the same settings to every digit printed; the stochastic rounding is
+seeded by the step. What differs between two settings is the settings, though a small change of one can still move
+the result either way.
+
+### Not done
+
+- The cache itself: the first network's answer kept a gaussian while it and its light stand, and across the
+  cameras of a frame. Until then a split cloud is two evaluations a gaussian a camera.
+- A frame's time. Only the fit's step is timed.
+- One network of 2016 weights, which is what would say whether the gain is the split or the size.
+- The view's network held small (a weight decay on it, or the view-smoothness term on it alone), which is where
+  the shimmer now lives.
+- `.athn`: a split cloud is neither saved nor loaded.
+
+## The matt part kept, and a stamp a chunk for what changed (11 Nov)
+
+A split cloud's first network has no eye in it once the light it is told is in the gaussian's own frame and not in
+one turned to face the eye (`neuralLocalLight`'s `faceEye`; the lit fit against the path tracer is relMSE 0.00292
+that way against 0.00293, so which side of a gaussian is out is something its features can say). Its answer is
+then a gaussian's own, and `RenderSettings::neuralKeep` keeps it: `neuralMatt` says it for every gaussian of the
+cloud, in view or not, into a buffer the rasteriser holds for that cloud, and `neuralShade` reads it and runs only
+the view's network. It is said again when the frame's lights are others (a number made of their directions, their
+radiance, the cloud's place and, where the cloud is shadowed, the lights' `revision`), or for the chunks that
+changed: a cloud carries a stamp a chunk of 1024 gaussians (`NeuralCloud::chunkChanged`, `touch`), the stamp at
+which one of them last did, and a chunk no newer than what was kept is left alone. A cloud shadowed by rays this
+frame casts keeps nothing, nor does one whose lights carry no revision; a fit's frames do not ask.
+
+The captured pawn, 325 833 gaussians, 960 x 540 on Metal, after 1500 steps of each fit; the least of the frames
+timed, the clock waiting for the device:
+
+| | a frame |
+|---|---|
+| by the harmonics | 7.00 to 7.14 ms |
+| one network | 7.20 ms |
+| two networks, nothing kept | 7.65 ms |
+| two networks, the matt part kept, two cameras taking turns | 7.43 ms |
+| the frame that fills what is kept | 9.43 ms |
+
+The kept frame is the frame that keeps nothing to the code value (max 0), from a camera other than the one that
+filled it. And it buys 0.22 ms of 7.65, a thirty-fifth. That is the finding: here the network is not where a
+frame goes -- one network costs 0.1 ms over the harmonics -- so keeping half of it cannot buy much, and two
+networks kept are still 0.23 ms dearer than one. What is kept for all 325 thousand gaussians costs 2 ms once, a
+quarter of a frame, where a frame decodes only those in view.
+
+Where it would pay is where the first network is run many times a gaussian: a lit cloud under eight lights is
+eight evaluations of each network, and the matt half of those is kept. That is not timed.
+
+### Not done
+
+- The lit case timed, one light and eight.
+- Anything that calls `touch`: nothing edits a neural cloud outside a fit yet, so the chunk stamps are exercised
+  by no command and no test.
+- What a frame is mostly made of -- projection, sort, blend -- kept from frame to frame: a still camera's tiles
+  that no changed chunk touches, which is where a stamp a chunk would save most.
+- The wall's light and the shadow factors kept the same way.
+
+## A still frame: the last frame's geometry, and only colours and blend again (11 Nov)
+
+Where a frame goes, on the captured pawn at 1920 x 1080 on Metal, each stage waited for: projection 0.80 ms, the
+depth sort 0.74, the counts 0.85, the pairs' emission 0.47, the tile sort and ranges 0.90, the blend 2.01, of
+5.79. Two thirds of it is deciding what is in view, in what order and in which tiles, and none of that changes
+while the camera and the gaussians stand still -- which is a set with a fixed camera before an LED wall, where
+what changes every frame is the wall's picture and so the gaussians' colours.
+
+`RenderSettings::still` is the caller saying so. The rasteriser checks what a number can (the projection, the
+frame's size, each cloud's `revision` and place) against the last frame it drew, and where they hold it skips the
+projection, the counts and their readback, both sorts, the emission and the ranges, runs the kernels that write
+colours (`neuralShade`, the wall's) and blends. Only frames whose clouds are all drawn by their latents, since
+those colours are written whole by a kernel of their own; with no points and nothing under them. The clouds'
+edits and the other settings are the caller's word. A rasteriser holds one camera's frame, so two still cameras
+are two rasterisers.
+
+The clay pawn before its wall, two reads a gaussian, the wall showing another picture each frame, Metal:
+
+| | a frame drawn whole | a still frame | |
+|---|---|---|---|
+| 1920 x 1080 | 6.06 ms | 2.80 ms | 2.2 times as fast |
+| 3840 x 2160 | 11.11 ms | 7.12 ms | 1.6 times |
+
+and the still frame is that picture's frame drawn whole to the code value (max 0) at both sizes. At 4K the blend
+is most of a frame and the saving is the same four milliseconds, a smaller share.
+
+### Not done
+
+- A camera a tile at a time: gaussians that move in some tiles while the rest stand, which is what the stamp a
+  chunk is for. A frame is still or it is not.
+- Several still cameras in one rasteriser (a set of buffers a camera).
+- Clouds drawn by their harmonics, relit ones, and frames with meshes under the splats.
+- CUDA.
+
+## A grid of weights over the wall, a picture finer than the fit, and a car (12 Nov)
+
+**The seams were not seams.** The section on the wall's reads blames what its frames show on neighbouring
+gaussians learning alone. Holding each read to where it started (a prior on u and v, weights 0.3, 3 and 30) moved
+nothing -- relMSE 0.00547, 0.00537, 0.00602 on the pawn against 0.00548 unheld -- and the frames with and without
+it show the same thing, which is not a seam: a hard edge across the pawn's sphere where the path tracer has a soft
+fall. What a matt thing takes from a wall is most of the wall, more from one side than the other, and a read or two
+of a mip chain is not that shape. The prior is not in the code.
+
+**A grid.** With `--grid L` a gaussian keeps, in place of reads, a weight for each texel of level L of the wall's
+pictures and a gain a channel, all as logs; its colour is the gain times the sum of weight times texel. The clay
+pawn before its 8 x 4 wall, 2000 steps on an RTX 3070, pictures and cameras the fit never saw, and then the wall
+showing a picture of its own (below):
+
+| what a gaussian keeps | numbers | relMSE | p99 | max | showing Sponza |
+|---|---|---|---|---|---|
+| two reads | 12 | 0.00548 | 27.7 | 143 | 0.00773 |
+| a grid of 4 x 2 | 11 | 0.00293 | 17.1 | 75 | 0.00571 |
+| a grid of 8 x 4 | 35 | 0.00228 | 15.8 | 61 | 0.00362 |
+
+At the same size the grid is 1.9 times less error than the reads and its worst pixel half theirs; the whole row,
+which is the most anything without the view in it can say at this wall, is 2.4 times less. A frame costs the same
+(7.03 ms against 6.97 without the wall).
+
+**A picture finer than the fit** (`--show`, `NeuralWall::finer`). A wall is fitted at few texels because each is a
+bake, and shows pictures of thousands. The reads and the grid are in the wall's own coordinates, so the pictures'
+pyramid is simply given more levels below the fit's, and a level a read learnt counts from the fit's. What the
+frame should be is still the baked clouds summed, times the picture brought down to the fit's texels -- so a
+picture's detail finer than a texel of the fit is not in what it is measured against. The picture shown here is
+Intel's Sponza (CC BY 4.0, Frank Meinl and Anton Kaplanyan) path traced by the engine at 128 x 64: a render of a
+scene as what the wall shows, which is what a wall on a set is.
+
+**A car, and what the wall cannot do.** The Khronos concept car (CC BY 4.0; carmine metallic paint under a coat,
+glass, chrome), 299 404 gaussians on a matt floor, a wall of 6 x 3 texels eight metres by three beside it, baked
+eighteen times. 2000 steps on Metal:
+
+| what a gaussian keeps | numbers | relMSE | p99 | max | showing Sponza |
+|---|---|---|---|---|---|
+| a gain on the wall's mean | 3 | 0.0821 | 128 | 234 | 0.0618 |
+| a grid of 3 x 1 | 6 | 0.0363 | 119 | 222 | 0.0686 |
+| two reads | 12 | 0.0273 | 117 | 243 | 0.0501 |
+| a grid of 6 x 3 | 21 | 0.0212 | 115 | 228 | 0.0221 |
+
+The whole row is four times less error than no picture and still a p99 of 115 code values, on a white wall as on
+any other: a tenth of the pawn's accuracy with everything a gaussian can be told that has no eye in it. The car's
+paint is a mirror under a coat, the bakes hold its light as harmonics of the view, and none of these keeps a
+number for where the eye is. That is the limit this section finds, and it is the one the section on the reads
+listed as not done.
+
+A still frame of the car is 3.25 to 3.40 ms against 6.8 to 7.4 drawn whole, the same frame to the code value.
+
+**Records a bake emptied.** A bake leaves some gaussians with no opacity and no size (267 of the car's), and one
+more under some lights than under others; the loader dropped them, and the clouds of one mesh then held different
+gaussians at one index. `scene::CloudLoader::keepFaint` keeps every record whose position is finite, in its place
+and drawn by nothing; `wall-fit` loads with it. Off everywhere else. About 1200 of the car's gaussians (0.4%) also
+change shape from bake to bake, which is left as it is.
+
+### Not done
+
+- A part that turns with the eye: a read whose place on the wall is the mirror of the view about the gaussian's
+  normal, beside the grid. The car asks for it.
+- The lights a car carries (its lamps emit in every bake, so they scale with the sum of the wall).
+- The grid's weights held smooth over the wall, and a grid in a file.
+- CUDA for the car; Metal for the pawn's grid.
+
+## A neural scene: a directory of pieces under a manifest (12 Nov)
+
+A building is not one cloud. It is too large to convert, to fit or to hold at once, parts of it change and most do
+not, and what it is drawn by is fitted to the part. So a scene is kept in pieces: `<name>.aths` is a directory
+with a manifest, `scene.json`, and a piece's gaussians and neural appearance beside it (`io/NeuralScene.h`;
+`athenea neural-scene add | camera | fit | render | info`). What was decided, and why:
+
+- **A directory and a JSON manifest**, not one binary. The pieces are files other tools already write and read (a
+  USD ParticleField, a `.ply`, a `.athn`), a piece is replaced by replacing a file, and the manifest is small,
+  read by a person and merged by a version control. Paths are relative to the directory, so it moves as one.
+- **A network a piece.** A piece is fitted alone and loaded alone, and a network is a thousand numbers; sharing
+  one over a scene would tie every piece's fit to every other's. Nothing stops two pieces naming one file.
+- **The reader and the writer compute nothing.** Counts and bounds are what the device said when the piece was
+  added, the measures what it said when the piece was fitted.
+- **What changed, and what kind of change.** `revision` goes up whenever a piece is written; `movedAt` and
+  `paintedAt` are the revisions at which it last moved and at which what it is made of last changed, since the
+  two ask different work again of a renderer (the section on the matt part kept; the one on the still frame).
+  `static` says its gaussians do not move from frame to frame.
+- **Where a piece came from.** `origin` is converted (from geometry, whole), discovered (the gaussians one camera
+  saw at one time, placed in the world) or generated (filled in by another system), and `snapshots` is the
+  scene's history, each a time, a camera and the pieces it brought. This is room made for a scene that is found
+  a look at a time rather than converted once -- a render as a discovery of the world and not a final picture --
+  and nothing fills it yet: every piece today is converted.
+- **Keys are read with defaults**, so a manifest written before a key existed still loads; the version rises only
+  when an older reader would draw the scene wrong.
+- **A piece is fitted from inside the scene**: eyes in the scene's box, a tenth in from its walls, looking at
+  points of the piece's box through a 20 mm lens, each from an additive sequence that fills its box evenly. Round
+  an object's centre, where `neural-fit` stands, is outside a building looking at the back of its walls.
+
+`.athn` gains a flag for a split cloud (bit 1), its weights then two networks'; `athenea neural-fit --split
+--save` writes one.
+
+Run end to end on CUDA with two small pieces: one fitted with two networks and drawn by its latents beside one
+drawn by its harmonics, in one frame.
+
+### Not done
+
+- A building. Intel's Sponza is converted a floor a piece (395 to 399 thousand gaussians a floor, 4.6 minutes
+  each, most of it reading a 436 MB stage) and not yet fitted: with no bake a floor's harmonics are its albedo
+  alone, and the bake fell over for want of memory while another job held fifteen of the machine's 24 GB -- with
+  a segmentation fault after the engine's own out-of-memory warning, which is a fault of its own.
+- A render discovered into pieces: the step from a camera's frame to the gaussians it saw.
+- Pieces fitted to pictures rather than to their own harmonics, which wants every piece in the frame at once.
+- The scene's lights read by anything; a piece's transform other than identity drawn by `fit`.
+- Pieces loaded as a camera needs them. `render` loads them all.
+
+## A look: what one camera found at one time (12 Nov)
+
+A render is treated as a final picture. It can be kept as something else: one camera's look at the world at one
+time, whose yield is which gaussians it saw, added to a scene that is known a look at a time. The next look then
+has to find only what the ones before could not see, and a renderer -- or another system that fills what no
+camera has seen -- is told exactly what is known and what is not.
+
+`athenea neural-scene look` is that step over a scene's pieces (`render/Discovery.h`,
+`shaders/athenea/neural/scene_discover.slang`). The look's frame is drawn with the blend summing what each
+gaussian gave it (`RenderSettings::contribution`, mode 1: blending weight over its pixels, in 1/4096 of a pixel);
+a gaussian that gave at least `--threshold` (0.05 of a pixel) is seen, and one no look had seen is stamped with
+the look's place in the scene's `snapshots`. A piece's record is its `.seen`, a uint32 a gaussian. `neural-scene
+render --discovered --up-to N` draws the scene as it was known after look N: a piece's gaussians that no look had
+found are given no opacity (their positions' fourth number), the piece otherwise the same buffers.
+
+The clay pawn on its floor, 99 792 gaussians, 960 x 540, CUDA:
+
+| look | saw | new | the scene already held | the scene holds |
+|---|---|---|---|---|
+| 1, from the front | 67 025 | 67 025 | 0% | 67.2% |
+| 2, the same camera later | 67 025 | 0 | 100% | 67.2% |
+| 3, from the side | 66 154 | 13 845 | 79.1% | 81.0% |
+| 4, from behind | 67 989 | 12 614 | 81.4% | 93.7% |
+
+Two floors of Intel's Sponza, 793 965 gaussians, 1920 x 1080, Metal, a camera walking down the atrium, turning
+round, then going upstairs:
+
+| look | saw | new | the scene already held | the scene holds |
+|---|---|---|---|---|
+| 1 | 59 711 | 59 711 | 0% | 7.5% |
+| 2, five metres on | 36 562 | 4 160 | 88.6% | 8.0% |
+| 3, four metres on | 13 349 | 1 382 | 89.6% | 8.2% |
+| 4, turned round | 37 226 | 37 177 | 0.1% | 12.9% |
+| 5, upstairs | 44 038 | 19 457 | 55.8% | 15.4% |
+
+A camera that moves on finds a tenth of what it sees; one that turns round finds all of it; and five looks into a
+building know a sixth of it. That last number is the room there is for whatever fills the rest.
+
+What this is not yet. The looks are taken of a scene that was converted whole, so a look selects among gaussians
+that exist; it does not make them from the frame. Every look still draws its whole frame, so the share the scene
+already held is a measure of what could be saved and not a saving. And a gaussian that is known is not checked
+for having changed since: that is what a piece's `movedAt` and `paintedAt` are for, and nothing compares them to
+a look yet.
+
+The Sponza frames themselves are not worth showing: its ground floor is missing (below), the floors are converted
+at 19 cm a gaussian, and with no bake they are albedo with no light.
+
+### Not done
+
+- Gaussians made from a look's frame (its depth and its trace), which is the step that turns a renderer's output
+  into the scene.
+- A look that draws only what it does not know, and reuses the rest: tiles no unknown gaussian touches.
+- A known gaussian checked against its piece's stamps.
+- What is not known, written for another system to fill: today it is the zeros of a `.seen`.
+- Sponza's ground floor (`mesh2splat` stops with "the output picture is on the heap, not on the device" on its
+  first mesh, twice, while two floors with the same material convert), a bake, and a density worth looking at.
+
+## Gaussians made from a frame: a render as a discovery of the scene (12 Nov)
+
+The section before this one takes looks at a scene that was converted whole. This is the step it listed first as
+not done: the scene made from the look. `athenea neural-scene discover` takes a frame -- any renderer's, an EXR
+with its colour and its view depth, through a camera that is known -- and leaves a piece of gaussians, one a pixel
+(`Discovery::fromFrame`, `shaders/athenea/neural/scene_frame.slang`): where the pixel's surface is in the world, a
+disc lying in that surface (its normal from its neighbours' depths, where the surface goes on to them) as wide as
+the pixel is at its depth and a tenth as thick, the pixel's colour as its first harmonic. No geometry is
+converted, and what made the frame is not asked.
+
+A later frame adds only what the scene does not hold. The scene as it stands is drawn through the new frame's
+camera, and a pixel whose surface it already has within 3% of the frame's depth makes nothing; which pixels make
+one is a mask, a prefix sum and a pack, all on the device. The piece is written as a 3DGS PLY (62 floats a
+gaussian, 128 MB a frame of 960 x 540), `origin` discovered, with its camera and its time, and the look goes into
+the scene's snapshots.
+
+The clay pawn's own frames (the engine's rasteriser, 960 x 540), from nothing, CUDA:
+
+| frame | pixels with a surface | the scene already held | gaussians made |
+|---|---|---|---|
+| from the front | 189 563 | 0% | 189 563 |
+| the same frame again | 189 563 | 98.7% | 2 427 |
+| from the side | 185 456 | 70.1% | 55 434 |
+| from behind | 189 563 | 76.5% | 44 515 |
+
+Intel's Sponza, the whole mesh path traced by `athenea stage` (128 paths, denoised, a sun and a sky, 960 x 540, a
+minute a frame), Metal -- a building that could not be converted on this machine tonight, found from four frames:
+
+| frame | the scene already held | gaussians made | the scene through its camera against the frame |
+|---|---|---|---|
+| down the atrium | 0% | 518 400 | relMSE 0.0198, p99 164 |
+| five metres on | 65.8% | 177 118 | 0.0145, 121 |
+| turned round | 7.1% | 481 441 | 0.0200, 158 |
+| to one side | 44.3% | 288 490 | 0.0272, 172 |
+
+1 465 449 gaussians, and from a camera that took no look the building stands where the looks saw it and is black
+where none did.
+
+What the measures say and do not. Pixel for pixel the scene made from a frame has the frame's depth and, where it
+is covered, its colour; what is off is the cover (0.90 to 0.99 inside a surface at a standard deviation of 0.7
+pixels, so the frame comes back a tenth darker) and a line a pixel wide at every silhouette, which is most of a
+p99 of 100 to 170 code values and of a PSNR of 29 dB. Wider discs close the cover and paint past the silhouettes
+(relMSE 0.050 at 0.8 pixels, 0.096 at 1.0, 0.161 at 1.2, the rim's discs already halved); 0.8 is kept. "Already
+held" is by depth alone: a surface that is where it was and has changed colour counts as held.
+
+### Not done
+
+- What turns with the eye. A gaussian holds the colour one camera saw, so a highlight is painted where that camera
+  saw it. Fitting the pieces' appearance to several frames is what the neural appearance is for, and wants every
+  piece in a frame at once.
+- A held surface checked for having changed, and replaced where it has.
+- The rim: gaussians for the partly covered pixels of a silhouette, and a cover that reaches one without spill.
+- One gaussian a pixel whatever the surface: a wall a metre away and one thirty metres away get the same count a
+  frame, and looks that overlap at different distances keep the first's density.
+- A lighter piece on disk than a PLY's 62 floats for gaussians that use 14.
+- Depth that is not the view's (a renderer that writes distance along the ray), and frames with no depth at all,
+  which is where a depth model would stand.
+
+## Sponza from ten frames, and a fit to the frames that made it worse (12 Nov)
+
+Ten looks rather than four, the discs a pixel wide rather than 0.8 (Sponza has no black behind a silhouette for a
+wider disc to paint): 2 346 951 gaussians, each frame given back through its own camera at relMSE 0.007 to 0.016
+and a p99 of 107 to 131, where four looks at 0.8 gave 0.015 to 0.027 and 121 to 172. What each look found falls as
+the scene fills: the first four held 0%, 74.6%, 7.3% and 47.2% of what they saw, the six after them 81.7%, 54.5%,
+48.2%, 67.6%, 79.1% and 87.1%.
+
+From two cameras that took no look the scene as found is the path tracer's frame, a little soft: relMSE 0.0173.
+The p99 there is 243, which is the lamps and windows -- a few pixels of light a hundred times the wall's -- a disc
+too wide or a pixel off.
+
+**A fit that made it worse, and is not in the code.** The pieces' colours are each one camera's, so the next step
+looked plain: every piece in the frame at once, drawn by latents started from those colours, and the error against
+each of twenty frames carried back to a piece a step in turn (3000 steps, 45 ms each). The held-out frames did not
+move, 0.0173 to 0.0170, and the fitted ones got worse, 0.0243 to 0.0290, with noise and torn surfaces to look at.
+Not understood, and not pursued tonight; what is known is that the scene's error is where gaussians are and how
+wide, which a colour cannot mend, that a surface found by several looks is several layers of gaussians each pulled
+alone, and that the loss is relative on frames that are nearly black. On the pawn with two frames it had done the
+same (0.086 to 0.121 held out). The step and its option were written and are removed.
+
+### Not done
+
+- That fit, understood: one piece of one look first, then layers.
+- A surface found twice kept once: later looks add beside what is there where depths differ by more than 3%, and
+  the scene keeps both.
+
+## The found scene drawn: a frame's time, against the frames it was found from (12 Nov)
+
+`athenea neural-scene render --views` walks a file of views through a scene loaded once. The Sponza found from ten
+frames, 2 346 951 gaussians drawn by their first harmonic, 140 views down the atrium at 1280 x 720 on Metal: 22.1
+ms a frame at least and 43.8 on average, the clock waiting for the device. The frames it was found from took the
+path tracer about a minute each at 960 x 540 (128 paths a pixel and a denoise; timed by the files' own times, not
+by a clock in the engine), so a view of what is known costs some thousandth of the frame that found it -- and
+shows nothing where no look reached, which the walk makes plain.
+
+### Not done
+
+- The same walk timed on CUDA, and at the sizes a set uses.
+- The found scene's cost brought down: ten layers of gaussians a pixel wide are many more than the surface needs
+  from any one view, and none has a level of detail.
+
+## What a frame sees through is taken out: a scene that changes between looks (12 Nov)
+
+A look that only adds leaves a ghost of everything that moved. So `neural-scene discover` takes out before it
+adds. The scene as it stands is drawn through the new frame's camera; where it has a surface nearer than the
+frame's by more than the tolerance, or something where the frame has nothing, the frame is looking past what used
+to be there (`Discovery::seenThrough`). That mask is carried to the scene's gaussians by the blend -- the lift a
+key is carried by, `contributionMode` 3 -- and a gaussian most of whose weight fell on seen-through pixels is
+stamped with the look in its piece's `.gone` (`Discovery::markGone`) and drawn by nothing after
+(`Discovery::without`: no opacity, the piece's other buffers as they were). Then the frame's own pixels are found
+as before, and what stands in the moved thing's new place is new.
+
+It is done a layer at a time, up to eight: taking out what stood in front shows what it hid, and the frame may see
+through that too. A cloud of 6000 gaussians before an empty frame loses 1915 in one pass and its cover stays 0.955;
+repeated until nothing more is seen through, 4364 and 0.009.
+
+Two pawns on their floors, the second moved 32 cm between two frames from one camera, 960 x 540, CUDA:
+
+| look | the scene already held | taken out | made |
+|---|---|---|---|
+| the frame at T0, from nothing | 0% | — | 121 356 |
+| the same frame again | 99.8% | 1 385 | 187 |
+| the frame at T1, the second pawn moved | 63.7% | 43 066 | 44 306 |
+
+What stood still is held, what moved is taken out where it was and made where it is, and the two counts are the
+same thing moved. The same frame again takes out 1385 gaussians: those are the discs that painted past a
+silhouette, which the frame, having nothing there, sees through -- and the scene through that camera goes from
+relMSE 0.107 to 0.075 for it. So a second look from the same place is also what trims the first.
+
+A piece that loses gaussians has its `revision` and `movedAt` raised, which is what a renderer that kept its
+geometry is told by.
+
+### Not done
+
+- A few gaussians at a moved thing's old rim stay: their weight on seen-through pixels was under a half.
+- What moved, moved rather than remade: the frame does not say that the pawn here is the pawn that was there, so
+  44 thousand gaussians are thrown away and made again. That wants motion from the renderer (its vectors, or the
+  prim a pixel belongs to).
+- A change of colour with no change of depth, still held as it was.
+- Gaussians behind what a frame sees, which no look from that side can find gone.
+
+## A surface that is where it was and is another colour (12 Nov)
+
+Held by depth alone, a scene keeps the colours of the look that found it: a light that turns between two frames
+leaves the old frame's shading on every surface the new one sees. `neural-scene discover --repaint` holds a
+surface by its colour as well. Where the scene, through the frame's camera, is at the frame's depth and its colour
+(taken off its cover) is off the frame's by more than the share given, in any channel, against the brighter of
+the two plus a fiftieth, the pixel is not held: it joins the mask of what is taken out, and makes a gaussian of
+the frame's colour.
+
+One pawn on its floor baked under two suns, the same surfaces through the same camera, 960 x 540, CUDA:
+
+| | `--repaint 0` | `--repaint 0.3` |
+|---|---|---|
+| the second sun's frame: the scene already held | 99.9% | 82.1% |
+| pixels found repainted | — | 34 594 |
+| gaussians taken out, made | 150, 183 | 33 939, 33 967 |
+| the scene through that camera against the new frame, relMSE | 0.137 | 0.096 |
+| its p99 | 214 | 99 |
+
+With it the scene is as close to the new frame as a first look is to its own (0.096), and four fifths of it were
+not touched: the part of the picture the light did not change. Off by default, since what a frame is off its own
+scene by is also a difference of colour: the same frame looked at again finds 3630 pixels repainted at 0.3 that
+were not, 1.9% of its surfaces, and remakes them.
+
+### Not done
+
+- A colour that changed because the eye moved, told from one that changed in the world: from another camera a
+  highlight is a repaint. Only frames through one camera, or of matt things, are safe with this.
+- The share chosen from what the scene is off its own frame by, rather than given.
+- A surface repainted in place: its gaussians are taken out and made again, where their colour alone could be
+  written.
+
+## A statue moved in Sponza: what a second look holds of a building (12 Nov)
+
+The building with a statue 1.8 m tall on its floor, path traced twice through one camera with the statue two
+metres apart, 960 x 540, Metal:
+
+| look | the scene already held | seen through | taken out | made |
+|---|---|---|---|---|
+| T0, from nothing | 0% | — | — | 518 400 |
+| the same frame again | 96.3% | 18 964 pixels | 25 093 | 19 082 |
+| T1, the statue moved | 95.8% | 16 470 pixels | 15 283 | 21 819 |
+
+After both frames the scene has the statue where the second frame has it and not where the first did, and the
+second look held 95.8% of the frame. But the same frame looked at again is itself not held at 3.7% of its pixels:
+at every edge of depth -- an arch against the wall behind it -- the nearer surface's discs reach a pixel past the
+edge, the scene's depth there is between the two, and the frame is taken to see through. So of the four in a
+hundred that the second look remade, most are that and not the statue, which is some hundred pixels wide. In a
+building a look's own noise at its edges of depth is as large as a thing moving in it. That is what is to be
+mended before the share held means what it should.
+
+### Not done
+
+- An edge of depth held: the scene's depth at a pixel taken from its nearest heavy gaussian (the trace has it)
+  rather than from the blend's mean, and the rim's discs kept inside their surface.
+
+## The edge of depth, half mended (12 Nov)
+
+Two changes to what the section before found. The scene's depth at a pixel, in `discover`, is its first surface's
+(`RenderSettings::Depth::Threshold`, where half the pixel is covered) and not the blend's mean, which at an edge
+lies between two surfaces and is neither. And a disc on a surface seen edge-on is widened by at most the square
+root of two, not by two: it was those that reached past their surface's rim.
+
+Sponza and its statue again, the same two frames:
+
+| | before | first surface's depth | and narrower discs edge-on |
+|---|---|---|---|
+| the same frame again: seen through | 18 964 pixels | 11 184 | 5 175 |
+| the same frame again: held | 96.3% | 98.2% | 98.6% |
+| T1, the statue moved: held | 95.8% | 97.3% | 97.8% |
+| the first look through its camera against its frame, relMSE | 0.01125 | 0.01125 | 0.01047 |
+
+A look's own noise falls from 3.7% of the frame to 1.0% seen through and 1.4% not held, and the frame comes back a
+little closer. The statue's move is now about a third of what the second look remakes rather than lost in it.
+
+### Not done
+
+- The 1.4%: pixels the scene does not cover well enough to be held (its cover is under a half there), which is
+  the gap between discs and not an edge.
+
+## How wide a disc: 1.3 pixels, measured on the building (12 Nov)
+
+A found gaussian's width was set on the pawn, where a wider disc paints the black past a silhouette and the
+measure punishes it. A building has no black. Sponza's first look given back through its own camera, and how much
+of the same frame looked at again is taken to be seen through:
+
+| a disc's standard deviation | relMSE | p99 | seen through, the same frame again |
+|---|---|---|---|
+| 0.8 pixels | 0.0198 | 164 | — |
+| 1.0 | 0.0105 | 125 | 1.0% |
+| 1.3 | 0.0059 | 76 | 2.4% |
+| 1.6 | 0.0060 | 48 | 4.1% |
+| 2.0 | 0.0075 | 53 | 7.2% |
+
+1.3 is the default: the frame's error at its least, 1.8 times less than at 1.0, before the noise at edges of depth
+grows faster than the cover closes. (0.8 was measured before the two changes of the section above.)
+
+Sponza found again from the same ten frames at 1.3: 2 151 672 gaussians where 1.0 made 2 346 951 -- wider discs
+cover more of the next look, which then holds more: 80.4%, 7.7%, 48.7%, 89.3%, 60.2%, 52.4%, 70.0%, 83.8% and
+92.4% for the nine after the first. From the two cameras that took no look, against the path tracer's frames:
+relMSE 0.0054 and 0.0256, PSNR 34.4 and 27.3 dB, SSIM 0.90 and 0.82; their mean relMSE is 0.0155 where 1.0 gave
+0.0173. The walk is 22.8 ms a frame at least and 31.1 on average at 1280 x 720.
+
+### Not done
+
+- A width chosen by the scene rather than given: a thing against black wants 0.8, a room 1.3.
+- The second held-out view's 27 dB looked at: whether it is what no look saw, or what was seen badly.
+
+## Found from far, seen from near: a closer look makes it again, finer (12 Nov)
+
+The second held-out view's 27 dB was looked at, and it is not what no look saw. It is an arch found from fifteen
+metres and seen from four: a gaussian a pixel of the far look is a hand's width, and from near the surface is soft
+and ridged. A closer look did not mend it, because the surface was where the scene had it and so was held.
+
+`discover --refine` (on, at 2) holds a surface by how fine it is as well. The scene is drawn a second time through
+the frame's camera with each gaussian's largest standard deviation as its colour -- a neural cloud whose base is
+the size and whose network is zeros (`Discovery::sizes`), so the frame is the size of what each pixel is made of,
+blended as it is -- and a pixel whose scene is more than twice as wide as the disc this look would make there is
+not held: it joins what is taken out, and is made again from the frame.
+
+Sponza from the same ten frames, discs of 1.3 pixels, against the path tracer from the two cameras that took no
+look:
+
+| | held however coarse | `--refine 2` |
+|---|---|---|
+| view A: PSNR, SSIM | 34.4 dB, 0.900 | 34.6 dB, 0.905 |
+| view B: PSNR, SSIM | 27.3 dB, 0.822 | 28.3 dB, 0.848 |
+| gaussians | 2 151 672 | 2 977 844 |
+| the walk, a frame at 1280 x 720: least, mean | 22.8, 31.1 ms | 25.0, 37.1 ms |
+
+A decibel on the view that wanted it, for 38% more gaussians and a fifth more time a frame. Less than it should
+be: a look flags up to 364 thousand pixels as coarser and takes out 70 thousand gaussians, since a coarse gaussian
+goes only when most of its weight is on flagged pixels and the passes stop at eight, so fine ones are laid over
+coarse ones that stay.
+
+### Not done
+
+- The coarse gaussians under the fine ones taken out: by size against the new look's, a gaussian at a time, rather
+  than by where their weight fell.
+- A coarse gaussian that reaches past the frame's edge is taken out whole and leaves a gap there.
+- The looks ordered: the same ten frames nearest first would make the scene once.
+
+## A coarse gaussian under a finer look goes on a fifth of its weight (12 Nov)
+
+What the section before left: fine gaussians laid over coarse ones that stay. `Discovery::markGone` now knows a
+gaussian's size against the look's own disc at its depth; one wider than `--refine` discs goes when a fifth of its
+weight in the scene's frame fell on flagged pixels, where others still want most of it.
+
+The same Sponza, ten frames, discs of 1.3 pixels, `--refine 2`:
+
+| | before | now |
+|---|---|---|
+| view A: PSNR, SSIM | 34.6 dB, 0.905 | 34.6 dB, 0.905 |
+| view B: PSNR, SSIM | 28.3 dB, 0.848 | 28.6 dB, 0.851 |
+| the walk, a frame at 1280 x 720: least, mean | 25.0, 37.1 ms | 23.8, 35.5 ms |
+
+Of 2 978 177 gaussians the looks made, 316 409 are gone and 2 661 768 stand. (The count the section before gave,
+2 977 844, was of gaussians made, gone ones among them; a piece's file keeps them and its `.gone` says which.)
+Against no refining at all the view that wanted it is 1.3 dB better (27.3 to 28.6) for a quarter more gaussians
+standing.
+
+### Not done
+
+- A piece's file written without what is gone, once enough is.
+
+## What a view still wants: the scene's cover as the mask of what is known (12 Nov)
+
+`athenea neural-scene render` prints how much of its view the scene holds -- the frame's mean cover -- and the
+alpha of the EXR it writes is that cover a pixel. That is the other half of a look: before a renderer draws a
+frame, or another system fills a world, the scene says where it already has something from there and where it
+has nothing. Nothing is computed for it; it is the alpha the blend makes.
+
+Sponza found from ten frames, from views no look took: 81.2%, 95.8%, 89.0% and 91.8% along the walk the looks were
+taken on, and 58.4% from the upper floor, where none went. So a frame from a new place on the walk wants a tenth
+to a fifth of its pixels from a renderer, and the rest is there in some thirty milliseconds.
+
+### Not done
+
+- That saving had: a renderer given the mask and drawing only where it is empty. `athenea stage` draws whole
+  frames.
+- Cover that says how well and not only whether: a pixel held by gaussians a metre wide counts as held.
+
+## The fit to the frames again: what made it worse, and that mended it does nothing (12 Nov)
+
+The fit of a found scene's pieces to the frames, which made Sponza worse and was not understood, was put back with
+one change and measured again on the scene found at 1.3 pixels with refining. What made it worse was the rates:
+they are an appearance's on a pawn whose colours are 0.3 to 0.6, and Sponza's frames are 0.02 to 0.1, so a step
+moved a colour by several hundredths of itself and the pieces were left as noise.
+
+| 3000 steps | held-out frames, relMSE | fitted frames, relMSE |
+|---|---|---|
+| as found | 0.01520 | 0.02166 |
+| the three rates at a twentieth | 0.01507 | 0.02161 |
+| at a hundredth | 0.01519 | 0.02164 |
+
+No harm, and no gain: under one in a hundred. The p99 stays 253 either way. A found scene's error is where its
+gaussians are and how wide -- the rim of a surface, a lamp a pixel across -- and a colour moves none of that. The
+step and its option are out of the code again; what a fit of colour would be for is what turns with the eye, and
+that wants a scene whose gaussians are first in the right place.
+
+### Not done
+
+- Rates that follow the level of what is fitted, for any fit: `neural-fit` has the same rates whatever the cloud's
+  brightness.
+
+## Finer looks: Sponza from frames of 1440 x 810, and a regression run (12 Nov)
+
+What limits a found scene from near is how fine the looks were. Seven frames of 1440 x 810 in place of ten of
+960 x 540 (the path tracer, 128 paths a pixel and a denoise), `--refine 2`, discs of 1.3 pixels: 6 158 927
+gaussians made, 5 697 463 standing. Against the path tracer at 960 x 540 from the two cameras that took no look:
+
+| | ten looks of 960 x 540 | seven of 1440 x 810 |
+|---|---|---|
+| view A: PSNR, SSIM | 34.6 dB, 0.905 | 35.4 dB, 0.912 |
+| view B: PSNR, SSIM | 28.6 dB, 0.851 | 29.2 dB, 0.874 |
+| gaussians standing | 2 661 768 | 5 697 463 |
+| the walk, a frame at 1280 x 720: least, mean | 23.8, 35.5 ms | 25.3, 39.6 ms |
+| on disk | 0.7 GB | 1.4 GB |
+
+Better on both views with fewer looks, so the gain is the looks' fineness and not their number; and twice the
+gaussians cost a tenth more a frame, since what a frame costs is what is in view and in its tiles. A look gives
+back its own frame at relMSE 0.002 to 0.010. This is not a clean pair -- seven looks are not the ten -- and is
+given as what it is.
+
+**A regression run**, Metal, with everything above in: `athenea_scene_tests` 10 of 10 cases, `athenea_technique_tests`
+64 of 64, `athenea_render_tests` 65 of 68 -- the three that fail being the posed cloud's refit and flatten's two,
+which fail the same way in release 0.5 (its CHANGELOG lists them). The whole `ctest` was not run again.
+
+## A walk only timed, and the walk's times given again (12 Nov)
+
+`neural-scene render --views` without `-o` writes nothing. It had to write its frames to be timed, and a walk of
+140 frames at 3840 x 2160 is nine gigabytes of them: run inside WSL on the Windows machine, with the disk that
+holds its image nearly full, it filled the disk and the distribution stopped mounting. That is an operator's
+mistake -- no look at the space first -- and the command should not have asked for it.
+
+It also made the times wrong. The clock is the frame's own, but a frame drawn while the last one is being read
+back and written is not a frame drawn alone. The Sponza found from seven frames of 1440 x 810, 6 158 927 gaussians
+made and 5 697 463 standing, the same 140 views, Metal:
+
+| | written as it goes | only timed |
+|---|---|---|
+| 1280 x 720: least, mean | 25.3, 39.6 ms | 15.5, 26.1 ms |
+| 1920 x 1080 | 37.6, 73.6 ms | 18.4, 30.2 ms |
+| 3840 x 2160 | 136.3, 657.6 ms | 36.2, 52.5 ms |
+
+The second column is the scene's. Every walk time in the sections above (22 to 44 ms, 23 to 31, 25 to 37, 24 to
+35 at 1280 x 720) was taken written as it went and is that much too long; they are left as measured and are
+corrected by this table's ratio, not re-run.
+
+### Not done
+
+- The walk on CUDA: it was what filled the disk, and has no time.
+
+## What a look costs (12 Nov)
+
+`neural-scene discover` run whole on a frame of 960 x 540 of Sponza, Metal, the command timed from outside: 5.2 s
+for the first look (518 400 gaussians made), 5.1 s for the second (169 843), 4.4 s for the third (99 929). That
+is a process started, a device made, the scene's pieces read from their files, the scene drawn through the
+frame's camera up to nine times, the gaussians made and read back, a PLY written and read again, and the scene
+drawn once more against the frame. The path tracer took about a minute for each of those frames.
+
+### Not done
+
+- The look itself, apart from the files: the scene kept on the device from one look to the next, which is most of
+  those seconds.
+
+## Several looks in one run: 0.4 s a look (12 Nov)
+
+`neural-scene discover --views` takes a file of views, as `athenea stage --cameras` does, each with its frame, and
+keeps the scene on the device from one look to the next: the pieces are read once, and each look's new piece joins
+them as it is made. The same three Sponza frames of 960 x 540 as the section before, Metal: the same shares held
+(0%, 67.2%, 80.7%) and the same gaussians made (518 400, 169 843, 99 929), and a look takes 0.38, 0.40 and 0.49 s
+where a run each took 5.2, 5.1 and 4.4. The whole run is 4.8 s, most of it starting.
+
+So a look is about a hundred-and-fiftieth of the path tracer's minute for the frame it is given, and what is left
+of it is the frame read, the piece written as a PLY and read again, and the scene drawn through the frame's camera
+up to nine times.
+
+### Not done
+
+- The new piece taken from the device rather than written and read back.
+
+## Sponza from ten frames in one run: 8.5 seconds (12 Nov)
+
+The ten frames of 960 x 540 through `discover --views`, Metal: 8.45 s for the run, each look 0.39 to 0.64 s, and
+the scene the same gaussian for gaussian as when each look was a run of its own (2 978 177 made). The ten frames
+took the path tracer some ten minutes.
+
+## A look that trims itself: tried, and not kept (12 Nov)
+
+A second look from the same place takes out what the first painted past its surfaces' rims, so a look was made to
+do that to itself: after its piece is made, the same frame is held against the scene once more and what it sees
+through is taken out. On Sponza's ten frames it took out six to thirteen thousand gaussians a look and changed
+nothing that was measured -- the two held-out views 34.61 and 28.62 dB where they were 34.64 and 28.59, each look
+through its own camera the same to the third figure -- for twice the time a look (0.6 to 1.2 s where 0.4 to 0.6).
+On a thing against black it did help the look's own frame (the pawn, relMSE 0.107 to 0.075), which the next look
+does anyway. Not in the code.
+
+## discover's settings, measured where it counts: views no look took (12 Nov)
+
+The width of a found gaussian was chosen by how a look's own frame comes back through its own camera, and that
+measure is the wrong one: it rewards cover, and a wider disc covers. What a found scene is for is the views nobody
+looked from. With looks in one run a scene is found in seconds, so the settings were swept on the seven Sponza
+frames of 1440 x 810 against the path tracer from the two cameras that took no look (960 x 540):
+
+| a disc | `--refine` | `--tolerance` | standing | view A: PSNR, SSIM | view B: PSNR, SSIM |
+|---|---|---|---|---|---|
+| 1.6 px | 2 | 0.03 | 5.63 M | 34.52 dB, 0.902 | 28.30 dB, 0.852 |
+| 1.3 (as it was) | 2 | 0.03 | 5.70 M | 35.35, 0.912 | 29.19, 0.874 |
+| 1.15 | 2 | 0.03 | 5.74 M | 35.76, 0.916 | 29.72, 0.882 |
+| 1.0 | 2 | 0.03 | 5.79 M | 36.03, 0.915 | 30.07, 0.888 |
+| 0.85 | 2 | 0.03 | 5.96 M | 35.99, 0.909 | 30.68, 0.889 |
+| 0.7 | 2 | 0.03 | 6.26 M | 35.46, 0.890 | 30.73, 0.882 |
+| 1.3 | 0 | 0.03 | 4.56 M | 35.37, 0.914 | 28.21, 0.850 |
+| 1.3 | 1.5 | 0.03 | 6.35 M | 35.38, 0.913 | 29.52, 0.877 |
+| 1.3 | 3 | 0.03 | 4.81 M | 35.30, 0.912 | 28.21, 0.851 |
+| 1.3 | 2 | 0.015 | 5.70 M | 35.37, 0.913 | 29.19, 0.874 |
+| 1.3 | 2 | 0.06 | 5.70 M | 35.37, 0.912 | 29.61, 0.876 |
+| 1.0 | 1.5 | 0.03 | 6.38 M | 36.04, 0.915 | 30.53, 0.893 |
+| 1.0 | 2 | 0.06 | 5.79 M | 36.02, 0.914 | 30.50, 0.890 |
+| **1.0** | **1.5** | **0.06** | 6.38 M | **36.03, 0.913** | **31.11, 0.895** |
+| 0.85 | 1.5 | 0.06 | 6.46 M | 35.97, 0.905 | 31.36, 0.895 |
+
+The defaults are now a disc of one pixel, refining at 1.5 and a tolerance of 0.06: 0.7 dB and 1.9 dB over what
+they were. A narrower disc is sharper from elsewhere and leaves more gaps; refining sooner and holding a surface
+within a wider depth both help the view that sees from near what was found from far.
+
+Two cautions. Two views are little to choose three settings on, and they are of one building. And the relative
+error went the other way: relMSE 0.0160 and 0.0299 for the chosen settings against 0.0083 and 0.0246 at 1.3 --
+that measure is over the level of the frame, which in Sponza is nearly black, and a gap between discs is a pixel
+of nothing where there should be little. PSNR and SSIM, of the frame as it is shown, are what the defaults follow.
+
+The scene as it now stands, seven frames: found in 13.5 s, 7 310 842 gaussians made and 6 384 158 standing, and
+the walk only timed, on Metal: 16.6 ms a frame at least (28.0 on average) at 1280 x 720, 19.3 (32.4) at
+1920 x 1080 and 33.8 (54.4) at 3840 x 2160.
+
+The sections above on a moved statue, on the edge of depth and on refining were measured at the settings they
+name, not at these.
+
+### Not done
+
+- The sweep on more views and another scene, and the settings chosen by the scene (the pawn against black wanted
+  0.8 by the other measure).
+- The moved statue and the same-frame-again share at the new defaults.
+
+## The moved statue at the new settings (12 Nov)
+
+Sponza and its statue, the same two frames of 960 x 540, with a disc of one pixel, refining at 1.5 and a tolerance
+of 0.06: the same frame looked at again is held at 98.8% (it was 98.6%), and the frame with the statue moved at
+98.0% (97.8%), 10 379 gaussians made for it. A look takes 0.36 to 0.42 s.
+
+## The settings held against fourteen views, not two (12 Nov)
+
+The caution of the section on the sweep, answered. The same seven looks, held against the path tracer's frames
+from fourteen cameras that took none (960 x 540):
+
+| | PSNR: mean, least, most | SSIM: mean, least |
+|---|---|---|
+| a disc of 1.3, refine 2, tolerance 0.03 | 31.46, 23.58, 35.52 dB | 0.8647, 0.7066 |
+| a disc of 1.0, refine 1.5, tolerance 0.06 | 32.03, 23.72, 36.03 dB | 0.8692, 0.7166 |
+
+The new settings are better on the fourteen as on the two, by 0.6 dB on average where the two said 0.7 and 1.9:
+the two were among the views that gained most. And the mean over fourteen, 32 dB, is the number to quote for
+this scene, not the 36 of its best view; the worst, under 24 dB, is a view the seven looks saw little of.
+
+### Not done
+
+- The worst views looked at: how much of each the scene holds, against how far off it is.
+
+## How much of a view the scene holds does not say how close it is (12 Nov)
+
+The fourteen held-out views of the found Sponza, each with the share of it the scene covers and its PSNR against
+the path tracer: the worst view (23.7 dB) is covered 74%, one covered 54% is 34.6 dB, and the best (36.0 dB) 89%.
+Cover is the mask of what a renderer need not draw; it is not a measure of how well the rest is drawn. The three
+views under 27 dB are the first of the walk, close to the wall behind the first camera, where what is covered was
+found from far.
+
+## A ray's margin is the frame's to say (12 Nov)
+
+The user saw strange lines in Sponza and asked for another renderer beside it. Blender's Cycles, on the same USD
+from the same camera with a sky of the same colour, has none of them: the path tracer drew a bright line wherever
+a wall meets its floor, round every column's foot and along the mouldings of the door. The frames the found Sponza
+was made from and measured against all carry them.
+
+The cause is how far a ray leaves its surface. One that crosses nothing starts off it by a thousandth of how far
+the position is from the origin, along the normal and along the ray, with a TMin as long (`shadowWalk`,
+`pathThrough`, `splatVisibility`, the bounce): the millimetre a bake's point needs in a scene of metres at its
+origin. Sponza is in centimetres and reaches two thousand of them, so there it is two centimetres and two more: at
+a concave join every ray towards the next wall starts past it, and what it finds is the dome. A pixel on the line
+read 0.031 where its neighbours read 0.002, with the wall's own depth -- a lit surface, not a miss.
+
+`PathSettings::rayMargin` (`athenea:rayMargin`, `athenea stage --ray-margin`) is that share, a thousandth by
+default so that no frame changes. At 2e-5 Sponza's lines are gone and the frame is Cycles' but for its tone. The
+slit round the door and the lattice of the window stay: they are gaps in the asset, and Cycles shows the sky
+through them as well.
+
+`[margin]` (tests/usd/test_ray_margin.cpp): a closed box of six walls two thousand units from the origin under a
+dome of 1. Its inside reads 0.00670 on average with the default and 0.000195 at 2e-5, 34 times less.
+
+### Not done
+
+- The default itself. A ray from a traced hit needs a hair (`rayMargin()`, 1e-5) and only a bake's point or a
+  gaussian's the millimetre, and the share should not grow with the distance from the origin at all: it is every
+  scene's leak twenty metres out, not Sponza's. That is release-0.5's code and its frames' to re-measure.
+- What is left at 2e-5: the pixels on a join itself.
+- Sponza's lanterns, blue in Cycles (a blue glass of opacity 0.6 round an emitting bulb) and dark here; and the
+  tone, warmer in Cycles, whose importer's units for the sun are not this engine's.
+- The found Sponza's frames drawn again without the lines, and its numbers with them.
+
+## A render whose result is gaussians (12 Nov)
+
+The user's turn of the idea: the render's product is the scene -- gaussians in the world, each as wide as its
+pixel is at its distance, found while the render gathers, of their surface's material, kept with the time each
+came and went -- and the PNG or EXR is made of the scene afterwards. `athenea neural-scene shoot` is that, on the
+engine's own path tracer; `neural-scene discover` stays for another renderer's frames.
+
+**What the render gives beside its picture.** `pathGuides`, the kernel that already wrote the denoiser's albedo and
+normal at the camera's hit, writes six planes more into the same buffer (`technique::PathAux`, eight planes):
+the metal's share, the roughness and how much goes through (`materialSampleOf`, the reduction a mesh's conversion
+uses, and the material row's own transmission); the row, whether it is a sheet and its index; and where the
+surface lets the eye through, the first surface behind that does not -- along the pixel's own ray, bent at every
+face as a path's is, up to eight faces -- with what the faces let through between them, and what this face lets
+through a crossing; and the triangle's own normal. No buffer is added to the kernel that traces, which on Metal has none to spare. They are AOVs
+as `albedo` is (`material`, `materialRow`, `throughPosition`, `throughTint`, `transmissionColour`) and a host takes
+them on the device from `StageRenderer::displaySource`.
+
+**A gaussian of its pixel's material** (`scene_render.slang`, `Discovery::fromRender`). The disc lies in the
+triangle -- its own normal, an eighth plane -- and not square to a normal guessed from the depth's differences;
+what the gaussian keeps as its normal is the shading one. It is as wide as its cell is at its distance across the
+way the surface falls from the eye, and that over the facing along it (the facing taken as no less than a half:
+`--turned`), where `discover` grew it both ways by the root, capped at 1.41. Its colour is the mean of its cell's
+pixels that show the same material at the same depth and whose four neighbours do: a pixel a silhouette crosses,
+which the renderer mixed, is left out, and a lone one takes its inner neighbour's. The record is 26 floats where a
+PLY's is 62, and stays on the device: the piece is drawn from the buffer the kernel wrote, and the file
+(`.athg`) is that buffer.
+
+**Glass.** A sheet -- thin walled, or a UsdPreviewSurface's opacity -- is made apart from what it shows: the pane
+with its transmission, tint and index, and at `throughPosition` a gaussian with the pixel's light over what the
+glass kept. Blending covers and cannot multiply, so the pane covers what the glass's darkest channel took and is
+coloured by what the others kept over that; over the gaussian behind, the two give the look's pixel back. Its
+discs overlap -- a pixel lies under 2 pi spread^2 of them -- and each has the opacity that makes the whole cover
+that. A solid is a lens: what it shows is where the bent rays end, and nothing straight behind gives that back
+to a rasteriser. It keeps its picture and says what it is made of (transmission, index, not a sheet). What its
+rays reached is not made: a lens's pixel is of that place only as one eye saw it through two faces, and made
+from it the thing behind was shards of the wrong colour on what the lens hid. Glass that keeps under half of a
+channel -- dark, or met near edge on, where the pixel is mostly what it reflects -- keeps its picture too.
+
+Two things found by looking from a second side. The ray sent on through the glass went from the world's origin
+and not from the eye -- a hit read from the visibility buffer has no `eye` of its own -- so what stood behind a
+pane was made off to its side: `-toEye` is the way. And a second look took out the floor behind a pane: the
+scene's depth goes past a pane, the mask of what the frame sees through reached everything under those pixels,
+and the pane's cover seen aslant passes a half. Nothing found before is now taken out through glass
+(`renderSparePanes`); this frame's own coarse looks still are, by the mask whole.
+
+**Found as the render gathers.** The render is drawn a pass at a time and looked at whenever a footprint's paths
+are in: cells of 8 pixels at a sixty-fourth of the paths, then 4, 2 and 1, so that every look's gaussians hold as
+many paths, the last when the frame is whole and denoised. A finer look takes out the coarser gaussians it
+replaces by the machinery a nearer look already had (`frameSeenThrough`'s `again`, the lift, `discoverGone`).
+Glass is made as glass by the last look alone: the coarse looks carry its picture, since a finer look takes a
+disc out by its depth and the scene's depth does not stop at a pane.
+
+**Kept, with its times.** A look is a snapshot: the stage's time, the camera, the paths a pixel, the footprint,
+the clock. A piece says the snapshot it came in at and each gaussian the one it went at, and nothing leaves the
+disk: `neural-scene render --at T` (or `--snapshot N`) draws the pieces in by then less the gaussians gone by
+then (`discoverMask` with a last look). The manifest is version 2 and reads version 1.
+
+**Each frame stored, and the device left free** (the user's: "lo lógico sería que cada frame se almacene y libere
+la GPU"). The first shoot of Sponza ran out of memory at its fifth view: the stage being rendered holds some
+twelve of the device's eighteen gigabytes in textures, and the shoot kept the whole scene found so far beside it.
+Now a look's gaussians go to the disk as they are made, the frame is written into the manifest (`frames[]`: its
+time, camera, size, paths, the snapshots that are its looks), and when a view is done everything of the scene
+leaves the device. The next view reads back the pieces whose boxes its frustum meets -- eight corners through
+the camera, the files' bookkeeping -- and a piece every gaussian of which has gone is not read at all. What a
+shoot can hold is then the disk's, not the device's. `neural-scene render --frame N` draws a stored frame again:
+its camera, its size, the scene as it stood at its last look; and one view of a found scene reads only the
+pieces in its frustum as well.
+
+**The picture afterwards.** `neural-scene render -o x.png` puts the frame through the display transform on the
+device; `.exr` is the frame as it is.
+
+Measured on Metal (Apple M5 Pro), a room of 8 m with two boxes, a gold ball, a glass ball and a pane of green
+glass, 960 x 540, 64 paths a pixel, four bounces, denoised. The first frame: a scene to draw 3.7 s after the
+shoot starts and the whole look after 42.5 s (the frame alone takes 43 s by `athenea stage`); 8 002, 31 769 and
+127 106 gaussians at cells of 8, 4 and 2, each taken out whole by the next, and 601 334 at one pixel, 92 856 of
+them behind the pane; a look itself 0.01 to 0.5 s. A second frame from the side: the scene already held 59.3% of
+its surfaces and 199 003 gaussians were made, 17 661 behind the pane; one piece was read back for it and the
+device left free after. That second frame drawn again from the scene (`render --frame 2`) against the path
+tracer's, where the scene covers: PSNR 29.6 dB, SSIM 0.962. The pane is a pane from both sides, with the box,
+the ball and the floor behind it where they stand.
+
+**The building.** Sponza, the seven looks of 1440 x 810 at 128 paths, denoised, rays leaving by 2e-5, held
+against the path tracer from the fourteen cameras that took none (960 x 540):
+
+| | PSNR: mean, least | SSIM: mean | on the disk |
+|---|---|---|---|
+| `discover`, from the same looks' frames (no lines) | 33.50, 23.85 dB | 0.884 | 1.7 GB |
+| `shoot`, the stage's maps other than colour at 1024 | 33.05, 23.47 dB | 0.892 | 0.96 GB |
+| `shoot`, every map whole, frames stored and the device freed | 32.94, 23.17 dB | 0.883 | 0.96 GB |
+
+As close, by fewer bytes: half a decibel under and the same SSIM (6.02 million gaussians standing). It is not the gain the plan hoped the surface's
+own normal and material would bring, and the worst view is where it was. Laying the disc by the shading normal
+rather than the triangle's cost 0.04 of SSIM (0.848 to 0.892, at 16 paths); how far a disc is stretched matters
+little (a least facing of 0.15, 0.3, 0.5: 33.00, 32.63, 32.69 dB at 16 paths). With every map at 4096 the stage and the scene found so far did not fit the device together -- the shoot
+stopped at its fifth view -- and the second row is a copy of Sponza with its normal, roughness and metalness maps
+at 1024; with each frame stored and the scene off the device between views, the third row is the stage whole:
+seven frames, no view short of memory, twelve pieces read back for the last and three left on the disk. A first look of a view is in 1 to 2.5 s after the first, whose 30 to 60 s are the stage's load.
+
+`[shoot]` (tests/render/test_neural_mlp.cpp): a look from twice as far makes gaussians 2.41 times as wide (the
+far look sees more of the cloud near edge on), a look at cells of four pixels a sixteenth as many and 3.96
+times as wide, both covering the frame; against itself as what is known a look makes nothing; a frame that is all
+pane makes two gaussians a pixel. And the piece's file and the manifest's new keys written and read.
+
+### Not done
+
+- **The light behind glass, measured and not divided out.** The gaussian behind a pane carries the pixel over
+  what the glass kept, so whatever the glass reflected is in it: a wall found through the pane is brighter than
+  the same wall found beside it. The path tracer has the number -- the light a path gathers after it crosses
+  its first surface -- and summing it into a plane of `sum_` would cost no buffer.
+- **Refraction drawn.** The record says transmission, index, sheet and tint; `rt_shade` refracts by a cloud's
+  index and `pbr`. A piece's glass given to the gaussian ray tracer as a cloud of its own with that index is
+  the step from carrying the material to drawing by it.
+- **Reflections.** A mirror's image is a lens's: painted on the surface, right from one eye.
+- **A pane refined.** A pane and what is behind it are held by a later look and never made finer, nor taken
+  out when the glass moves: the scene's depth goes past them.
+- **What a lens hides.** Nothing is made of where a solid's bent rays end.
+- **Which pieces a view reads** is by their boxes, and a look's box is most of what its camera saw: in a
+  building's inside nearly every piece meets nearly every frustum. Pieces cut by place rather than by look
+  would be read by need.
+- **The material's name.** A gaussian keeps its material's row in the frame that made it, which another frame
+  numbers otherwise; the path the row came from is the engine's to hand over.
+- **Emission**, which the record has no field for: an emitter's gaussian carries its light as a colour.
+- **Drawing only what is not held** (the plan's fifth step): the path tracer still draws whole frames.
+- **Motion**: something that moved is still taken out and made again, though the render knows its prim.
+
+## The render's looks on CUDA (12 Nov)
+
+The branch as it stands built in WSL on the RTX 3070 Laptop (`linux-x86_64-release`), by the user's leave to take
+the machine. `[shoot]`, `[discover]`, `[gone]`, `[look]` and `[scene]` pass there with the numbers Metal gives (a
+look from twice as far 2.41 times as wide, cells of four 3.96 times). The room of the section before, shot from
+its two views at 960 x 540 and 64 paths: the second frame is whole 3.2 s after it starts, a look 0.2 to 0.3 s,
+and the scene of 724 754 gaussians drawn at 1920 x 1080 in 11.1 ms a frame at least. The second frame drawn
+again from the scene against the frame `athenea stage` draws there, where the scene covers: PSNR 30.9 dB, SSIM
+0.976.
+
+That is not the comparison Metal's is. This CUDA device has no ray queries -- OptiX's library is not found in
+the WSL distribution -- so the path tracer there traces nothing past the first hit, `[margin]` skips, and
+`pathGuides`' walk through glass (`kTraces`) does not run: the look counts 125 289 pixels that let the eye
+through and makes nothing behind any of them. Every pane keeps its picture, as a lens does.
+
+### Not done
+
+- Glass made as glass on CUDA: it wants ray queries, which is OptiX here or the L4.
+- Sponza shot on CUDA: eight gigabytes do not hold its stage.
+
+## A sequence of a hundred frames (12 Nov)
+
+The user's test: a hundred frames. A camera walking Sponza's length, a step a frame and the stage's time with it
+(`neural-scene shoot --views --time-step 1`), 960 x 540, 32 paths a pixel at eight a pass, denoised, into one
+scene; then every stored frame made a picture (`render --frame N -o NNNN.png`) and the pictures a video. Metal,
+Apple M5 Pro.
+
+What the first eight frames showed, and what was changed for it:
+
+- **A camera a step on kept half the scene and made the rest again**: 49 to 61% of a frame held, 200 to 260
+  thousand gaussians made of its 518 400 pixels, as many taken out. Two causes. A gaussian's size, for the
+  question whether it is coarser than the look, was its largest scale -- and a disc is now stretched along the
+  way its surface falls from the eye, so every floor and wall seen aslant read as coarse the frame after it was
+  made. Its width is its middle scale (`discWidth`, `discoverSizes` and `discoverGone`), which for a round disc
+  is what it was. And a frame's coarse looks lay discs in the gaps, each over its neighbours, under which the
+  fine gaussians of the frame before read as coarse too: what earlier frames found is now judged against the
+  frame as it stood without this frame's own looks, which are judged in the scene whole.
+- **A frame took 110 s**, of which the paths were few: a pass of the path tracer here costs a second or more
+  whatever it gathers, and 32 paths at one a pass are 32 of them. `--pass-samples 8`.
+
+Then, over the hundred frames:
+
+| | |
+|---|---|
+| the shoot | 2353 s: 23.4 s a frame on average, 7 s at the start and 30 to 39 at the end, 70.7 at most |
+| the path tracer's frame alone (`athenea stage`) | 4.5 to 5.1 s |
+| a scene to draw, from a frame's start | 2 s at the start, 10 to 16 at the end |
+| of a frame's surfaces, already held | 94.4% on average, 82.7% at least |
+| gaussians made a frame, after the first | 29 222 of 518 400 pixels |
+| the scene at the end | 2.56 million gaussians standing, 400 pieces and snapshots, 416 MB |
+| the hundred pictures | 434 s, 4.3 s each |
+| a stored frame against the path tracer's (frames 26, 51, 76, 100) | PSNR 32.1, 38.5, 32.8, 31.9 dB; SSIM 0.939, 0.961, 0.969, 0.958 |
+| of a stored frame, covered | 98.4% on average, 97.4% at least |
+
+The frame's cost grows with the scene and should not: by the end a view reads 283 pieces back from the disk,
+which is four fifths of its time. A piece is a look's, and in a building's inside a look's box meets nearly every
+frustum; and the device, freed after every frame, is filled again for the next from files. The path tracing
+itself stays at five seconds.
+
+What the pictures show beside the path tracer's: softer, and on walls the camera is drawing near to a dotting --
+gaussians made from far, a pixel wide there, that the nearer looks have not yet made again: a surface is made
+finer when what holds it is half as wide again as the look's disc (`--refine 1.5`), and gaps open before that.
+
+### Not done
+
+- **Pieces by place.** A look's gaussians cut into cells of the world, so that a view reads the cells it meets
+  and a walk keeps the ones it still sees on the device rather than reading them again each frame.
+- **`--refine` for a camera that draws near**: 1.5 leaves gaps; what it costs to make finer sooner is not measured.
+- **The 6% a step makes again**: mostly the surface's rim and what turns from the eye, not measured apart.
+- **A stage that moves.** The time went on and nothing in Sponza did; the sequence measures a moving camera.
+- The four frames compared are each one the scene had just been given; no frame of the walk was held out.
+- The pictures written in one run, the scene read once, rather than a process a frame.
+
+## A sequence's frame does not grow with the scene (13 Nov)
+
+The user's answer to the hundred frames: solutions that do not slow it. The same walk, the same settings, three
+ways (Metal; the stage a copy of Sponza with its maps other than colour at 1024, another session's tests on the
+same device leaving no room for the whole one):
+
+| | the shoot | a frame, on average | frames 2 to 11 | the last ten | pieces at the end | the hundred pictures |
+|---|---|---|---|---|---|---|
+| the scene off the device after every frame, read back for the next | 2353 s | 23.4 s | 7 s | 30 to 39 s | 400 | 434 s |
+| what the next view still sees stays; a frame's coarse looks end with its last; the sizes kept | 1070 s | 10.6 s | 6.7 s | 13.3 s | 400 | 12.5 s |
+| and a view the scene already covers takes its last look alone | 912 s | 9.0 s | 5.6 to 5.8 s where nothing else ran | 8.0 s | 103 | 11.3 s |
+
+The path tracer's frame alone is about 5 s, so a frame's gaussians now cost one to three seconds over it, at the
+hundredth frame as at the second. The stored frames against the path tracer's are what they were (32.05, 38.60,
+32.83, 31.85 dB; SSIM 0.939, 0.960, 0.968, 0.957), 93.5% of a frame held on average and 28 423 gaussians made.
+
+- **What the next view still sees stays on the device** (`bringInView`). A view drops the pieces its frustum does
+  not meet and reads the ones it meets that are not there; a camera a step on reads nothing, where reading 283
+  files was most of a frame. The device is still bounded by what one view sees, not by the scene.
+  `--free-each-frame` is the other way.
+- **A frame's coarse looks end with its last.** What the take-out left of their discs -- a few of thousands, each
+  a file -- is stamped gone when the look at one pixel is in: every pixel is by then held by what was there or
+  made finer.
+- **A piece's cloud of sizes is made once** while the piece is on the device, not for every draw.
+- **A view the scene covers takes one look** (`--covered-enough 0.8`, the frame's mean cover drawn before a path
+  is traced): the coarse looks are for a render with nothing to show, and 98 of the hundred frames had a scene
+  already. Four snapshots a frame become one.
+- **The pictures in one run** (`render --frames FIRST LAST`): 0.11 s a frame, 39 ms of it drawing, where a process
+  a frame was 4.3 s.
+- The manifest is written a frame, not a look.
+
+### Not done
+
+- The few seconds left are the look's draws of the whole scene in view (the scene as known, where it begins, its
+  sizes, the lift): a walk's hundred pieces are a hundred instances. Pieces merged as they settle would draw as one.
+- Two sessions on one device without the queue between them: this shoot ran out of memory twice beside another
+  session's tests, and its times above carry their spikes (a frame of 21 s among frames of 6).
+
+## The found scene and levels of detail (13 Nov)
+
+The user's question: a zoom or a dolly raises the detail, so trees of levels could be made of it -- how should
+the information be kept? The analysis is the plan of that date; in short. A gaussian a look makes is born at a
+scale, its pixel at its distance, and that scale is an octree level: the scene is a sparse pyramid built by
+looking, not a flat cloud with stamps. Three relations now share the one stamp `gone` and want one each: time (the
+surface changed), detail (finer gaussians came; the coarse one is still right from far, and is their parent) and
+freshness (the children were repainted and the parent is from before). With the scale as the level no pointers
+are needed: a gaussian is drawn where it is alive at the time asked, its parent's projected size is over the
+threshold, and its own is under it or nothing finer came. A look then asks whether its cell holds a node at its
+own level, which is a yes or a no where `--refine` is a ratio that leaves gaps; a frame's coarse looks are the
+levels above its last and are kept, not ended; and pieces are cut by place, each with its levels coarse to fine.
+
+What the engine has (`modules/lod`): Morton order and a merged gaussian a cell a level, the cut by a cell's
+projected edge, `.athc` and its streaming. Its builder takes a cloud whole, its leaves are all at the finest
+level, its parents are computed and never observed, ten levels of a scene's cube are 3 cm in a building, and a
+`.athc` carries no stamps.
+
+**The first step, taken: `neural-scene bake`.** The scene as it stood at a snapshot frozen into a `.athc` by the
+builder as it is -- records read, those gone by then left out, one cloud, `LodBuilder::build`, `writeAthc`. The
+sequence's scene: 2 578 221 gaussians, a `.athc` of 170 MB (the pieces are 368 MB). Drawn whole from the
+three-quarter view at 1920 x 1080 (`athenea bench --lod` at a threshold of nothing): 31.4 ms a frame.
+
+### Not done
+
+- **The cut measured.** The thresholds of 1, 2 and 4 pixels, from far and from inside, against the scene drawn
+  flat: the run stopped at its second command, when the toolchain the binaries load (`~/tools/usd-26.08-mx`, slang,
+  OpenColorIO, OIDN) left the disk under it. Nothing of this branch removed it.
+- Everything after the first step: the scale as the level and the stamp `refined`, the cut a gaussian, the frame's
+  pyramid, pieces by place, stale parents.
+- **Three gaps athenea-research found in the plan** (its proposal 114), each to be settled as the second step
+  is written. (1) "Does my cell hold a live node at my level?" asked of a scene on the device wants something to
+  ask: a binary search of a brick's sorted run by the key (level, class, local Morton) and a walk of its tail of
+  additions, compacted when the tail passes a quarter of the run; while the pieces are still a look's, the
+  question is asked in the look's own frame, of the scene drawn with each gaussian's level as its colour.
+  (2) The key: a brick of a sixteenth of the scene's cube and thirty bits of Morton code inside it are cells of
+  1.8 mm in thirty metres, in two uint32. (3) **`refined` is one bit and a parent's children may cover part of
+  it**: a zoom that saw half a wall would have the cut drop the whole parent and leave the other half open. To
+  stamp `refined` only where the children cover nine tenths of the parent's 2 sigma, a mask of eight bits an
+  octant, or levels that add (below); to be measured on the dolly and on a zoom that sees part, as the share of
+  pixels covered under a half where the path tracer sees a surface.
+- **Adding in place of replacing.** The cut above draws a parent or its children. SHIN (arXiv 2611.10652, noted
+  by athenea-research) has levels that add to what is drawn, with a delta of opacity on what was there: an
+  observed parent that goes on being drawn and children that complete it. It would spare the seam where a
+  parent's colour, seen by one eye, gives way to its children's, at the price of drawing both; to be weighed
+  when the cut is measured.
+
+## A gaussian's width is its level: refined, not gone, and a cut with no tree (13 Nov)
+
+The second step of the plan for levels of detail, on the Intel building. On CUDA (RTX 3070 Laptop, WSL), the
+Mac's toolchain being rebuilt; that device has no ray queries, so its path tracer's frames are direct light alone
+and the numbers against it are between renders of that kind.
+
+**Refined is not gone.** `frameSeenThrough` says which of its reasons a mask is of (`only`): what says the world
+changed -- seen past, nothing where something was, another colour -- and what says only that the look is finer
+than what holds the surface. The first stamps `.gone` as before. The second stamps a record of its own,
+`.refined`, and only where nine tenths of a gaussian's weight lie under finer ones (`discoverGone`'s `most`), so
+that a parent a look covered part of stays the surface's where the look did not reach -- the gap athenea-research
+named. A frame's own coarse looks are refined by its last, not ended: they are the levels above it. A look still
+knows the scene by its finest: a piece all gone or refined leaves the device and is not read by a later view.
+
+**A gaussian keeps its parent's width** (the record's twenty-seventh float): what the scene held there, by its
+sizes drawn before the look took anything out, where that was wider than the gaussian by a fifth.
+
+**The cut** (`Discovery::cut`, `discoverCut`): a gaussian is drawn where it stands at the look asked for, what it
+was laid over would be over the threshold on the screen (or it was laid over nothing), and it is under the
+threshold itself or nothing finer came. Each decides alone, from its own record: no tree is walked and none is
+stored, and the tree may be as ragged as the looks left it. Gathered (a prefix sum and a copy of positions,
+shape and harmonics): what is not drawn costs nothing.
+
+Measured: a dolly of forty frames down Sponza's nave to its far wall (960 x 540, 16 paths at eight a pass,
+denoised), 136 s in all. 5.05 million gaussians on the disk in 42 pieces, 558 MB: 3.16 million the finest, 1.83
+million refined, 66 thousand gone. The scene then drawn at 1920 x 1080:
+
+| from | threshold | gaussians drawn | a frame | against the scene drawn flat (at 960 x 540) |
+|---|---|---|---|---|
+| the dolly's first camera, the farthest | none (flat) | 3.16 million (4.91 million handed over) | 178 to 187 ms | -- |
+| | 1.2 px | 2.45 million | 81 to 111 ms | PSNR 34.0 dB, SSIM 0.945 |
+| | 1.5 px | 1.71 million | 77 to 82 ms | 34.0 dB, 0.945 |
+| | 2 px | 1.35 million | 48 to 54 ms | 29.0 dB, 0.815 |
+| outside the building, three quarters, 45 m off | none | the same 4.91 million | 151 to 155 ms | -- |
+| | 1.2 px | 0.56 million | 41 ms | 37.8 dB, 0.987 |
+| | 1.5 px | 0.51 million | 25 ms | 36.5 dB, 0.985 |
+| the dolly's last camera, the nearest | 1.5 px | 3.16 million: the finest, all of it | as flat | 42.3 dB, 0.986 |
+
+From the first camera, against the path tracer's frame from there: flat 27.08 dB and SSIM 0.767; at 1.2 and
+1.5 px, 27.05 dB and 0.764. So a threshold of a pixel and a half draws half as many gaussians from inside and a
+tenth as many from outside, two to six times as fast, and is as close to the path tracer as the scene drawn
+whole; from two pixels up it is what it says, a picture drawn with gaussians two pixels wide. The frame times
+above move by a third between runs on that machine.
+
+`[lod]` (tests/render/test_neural_mlp.cpp): a look from 12 refined by a look from 6, cut at 1.5 px: from far all
+49 754 coarse gaussians are drawn and none of the 76 800 fine; from near none of the coarse and all the fine;
+with no threshold the finest everywhere; and as the scene stood before the second look, the coarse ones.
+
+### Not done
+
+- **The low 27 dB**: on that device the scene's frames are darker and flatter than the path tracer's own (the
+  dolly's first frame drawn back from the scene), which they are not on Metal. Not looked into.
+- **A frame's coarse looks are noisy parents**: taken at a sixty-fourth and a sixteenth of the paths, undenoised,
+  they carry fireflies, seen at thresholds of two pixels and over. The levels above a frame's last look should
+  be made of the whole frame when it is in (the plan's pyramid), and the looks taken while it gathered ended.
+- **Parents above eight pixels**: a view from very far has nothing coarser to draw than a frame's widest cells.
+- The question "does my cell hold a node at my level" is still `--refine`'s ratio, asked on the screen.
+- A walk cut for each view reads its pieces again from the disk for every view.
+- Metal: nothing of this section has run there.
+
+## A frame's pyramid (13 Nov)
+
+The looks taken while a frame gathers are for something to draw before it is whole, and make noisy parents: they
+end with the frame's last look again, as they did, and the levels above that look are made of the whole frame.
+Where the last look found surface the scene did not hold, the frame also leaves cells of 2, 4, 8, 16 and 32
+pixels (`--pyramid`), each the mean of its pixels that show the one surface: `fromRender` at those footprints,
+held however coarse the scene is there, so that a level is laid only where there was nothing. A gaussian laid
+over nothing takes the level above for its parent -- twice its width -- where that level's cell is made (its
+middle shows the same surface, unheld); the pieces are written refined and no look reads them. Two things the
+first run of it showed: the last look had lost the parents earlier frames left (the scene "before" is now of
+earlier frames' pieces alone, at every look), and a parent was named where the level above made no cell.
+
+The same dolly, with the pyramid: 5.83 million gaussians on the disk in 242 pieces, 642 MB (5.05 million and
+558 MB without), 0.78 million of them the pyramid's; the shoot 88 s. The cut then:
+
+| from | threshold | gaussians drawn, without and with the pyramid | against the scene drawn flat, without and with |
+|---|---|---|---|
+| the farthest camera, inside | 1.2 px | 2.45 and 2.55 million | 34.0 and 33.9 dB |
+| | 1.5 px | 1.71 and 1.81 million | 34.0 and 32.9 dB |
+| | 3 px | 0.82 and 1.01 million | 26.5 and 27.5 dB |
+| outside, 45 m off | 1.2 px | 0.56 and 0.63 million | 37.8 and 34.6 dB |
+| | 1.5 px | 0.51 and 0.49 million | 36.5 and 32.4 dB |
+| | 3 px | 0.41 and 0.26 million | 31.5 and 28.2 dB |
+
+Against the path tracer from the farthest camera: 27.05 dB at 1.2 and 1.5 px without the pyramid, 26.78 and
+26.32 with. So the pyramid does what it is for only far out and at coarse thresholds -- a third fewer gaussians
+from outside at three pixels -- and at a pixel and a half it draws about as many and is further from the scene
+drawn whole, by one to four decibels. It is not yet a gain where it matters most. Frame times on that machine
+moved too much between these runs (77 to 158 ms for one cut) to say anything of them.
+
+### Not done
+
+- **Why a pyramid's parent is further off than an earlier frame's gaussian**: a cell's mean leaves out the
+  pixels a silhouette crosses and is laid square to the middle pixel's triangle; whether that, or parents named
+  for gaussians the level above only part covers, is not looked into.
+- The pyramid stops at 32 pixels of the frame that made it, and its levels are not merged across frames: from
+  very far each frame's top level is drawn beside the next's.
+- The frame times of a cut, on a machine that holds still.
+
+## What the Morton report adds to the found scene's levels (13 Nov)
+
+a report kept outside the repository (the hub of "alternatives to the Morton tree on the GPU", with athenea-research). Its
+proposal 114 is the three gaps already taken up above. Two more of its ideas fit what `discoverCut` already is:
+
+- **A cut by a budget, in one pass** (its 113): a gaussian here is drawn for the thresholds between its own width
+  on the screen and its parent's -- an interval -- so a histogram of those intervals' ends and a prefix sum give how
+  many are drawn at every threshold at once, and the threshold for "no more than N gaussians" with no readback.
+- **A node moved towards its parent across the threshold's band** (its 116C), opacity compensated, in place of
+  the step from a parent to its children; beside the levels that add (SHIN), noted above.
+
+### Not done
+
+- Either.
+
+## The cut by a budget, moved towards its parent, and as one cloud (13 Nov)
+
+The user's "implement it", of the Morton report's two ideas; and what the Mac's numbers then asked for.
+
+**A budget** (`render --budget N`, `Discovery::spans`, `thresholdFor`). A gaussian is drawn for the thresholds
+between its own width on the screen and nine tenths of its parent's -- a span. Each adds one into a histogram of
+differences where its span begins and takes one where it ends (256 thresholds, sixteen to the octave from an
+eighth of a pixel; every piece in view into the one histogram), and the running sum is the cut's size at every
+threshold at once. The finest threshold within the budget is read off it -- 257 counts, the one thing read back
+-- with no cut made to find it.
+
+**Moved towards its parent** (`--morph`, in `discoverGather`). A gaussian keeps its parent's colour beside its
+width (three floats more: a record is 30), and across a band above the point where the parent is drawn in its
+place it widens to the parent's width, takes its colour, and gives up opacity as it comes to lie over its
+neighbours. The parent is not read.
+
+**As one cloud** (`planCut`, `cutCloud`, `gatherCut`; `cutScene` in the command). The cut gathered a piece at a
+time handed the rasteriser a cloud a piece, 243 of them, and drew a twentieth of the gaussians in no less time
+than the scene whole. Every piece in view is planned, room is made for what they draw together, and each is
+gathered into it at its place.
+
+Metal, Apple M5 Pro, the path tracer whole; Sponza's dolly of forty frames (960 x 540, 32 paths at eight a pass,
+denoised, 287 s): 5.97 million gaussians on the disk in 243 pieces, 733 MB -- 3.22 million the finest, 2.67
+million refined (0.8 million of them the pyramids'), 68 thousand gone. The scene then drawn at 960 x 540:
+
+| from | how | gaussians drawn | a frame | against the path tracer |
+|---|---|---|---|---|
+| the farthest camera, inside | flat, a cloud a piece | 3.22 million (4.99 handed over) | 63.1 ms | PSNR 34.56 dB, SSIM 0.951 |
+| | the finest, as one cloud | 3.22 million | 45.2 ms | the same picture |
+| | cut at 1.2 px | 1.00 million | 14.1 ms | 34.25 dB, 0.953 |
+| | cut at 1.5 px | 1.04 million | 15.4 ms | 34.00 dB, 0.945 |
+| | a budget of 2 million: 0.75 px | 1.84 million | -- | 34.21 dB, 0.953 |
+| | a budget of 1 million: 1.27 px | 0.96 million | -- | 34.19 dB, 0.951 |
+| | a budget of 500 thousand: 2.54 px | 0.49 million | 10.0 ms | 32.02 dB, 0.911 |
+| | a budget of 250 thousand: 9.31 px | 0.24 million | -- | 28.31 dB, 0.815 |
+| outside, 45 m off | the finest, as one cloud | 3.22 million | 46.0 ms | -- |
+| | cut at 1.2 px | 0.33 million | 9.3 ms | 46.5 dB against the scene drawn flat |
+| | a budget of 500 thousand: 0.79 px | 0.48 million | 9.9 ms | 49.5 dB against flat |
+| the nearest camera | the finest, as one cloud | 3.22 million | 11.7 ms | 26.48 dB, 0.870 |
+| | cut at 1.2 px | 3.25 million | 12.5 ms | 26.41 dB, 0.870 |
+
+So from where the scene was made from nearer than it is seen, a threshold of a pixel and a fifth draws a third
+of the gaussians, three times as fast as the finest level in one cloud and four and a half as fast as a cloud a
+piece, 0.3 dB from the scene drawn whole against the path tracer and of the same SSIM; from outside, a tenth of
+the gaussians and five times as fast. From the nearest camera there is nothing coarser to draw and nothing is
+gained. At 1920 x 1080 from the farthest camera: 41.3 ms the finest in one cloud, 34.3 ms at 1.2 px (2.60
+million), 27.4 at 1.5 px.
+
+A budget is met to within four hundredths under it, and not at all where it asks for fewer gaussians than
+have no parent: from the nearest camera a budget of a million found no threshold under 8000 pixels and drew
+1.97 million, at 25.6 dB.
+
+The morph, as a still, softens by what it moves (CUDA, against the scene drawn flat, at 1.5 px: 32.9 dB with
+none, 32.2 at a half, 28.8 at one). What it is for was looked for and not found: the eye drawing off a
+hundredth of the nave at a time over eight frames, each frame against the one before, reads 36.0 to 36.3 dB
+drawn flat, 36.4 to 36.6 cut at 1.5 px with no morph, 36.7 to 37.3 at a quarter and 37.1 to 37.9 at a half. The
+cut alone is steadier frame to frame than the scene drawn flat -- its gaussians under a pixel shimmer -- so there
+is no step here for the morph to hide, and what it adds is the steadiness of a softer picture.
+
+### Not done
+
+- A cut that keeps on the device what the view before it drew: a walk cut for each view reads its pieces from
+  the disk and gathers them again for every view; the frame times above are the drawing's alone.
+- A budget where nothing has a parent: it wants coarser levels made (merged, as `lod::LodBuilder` makes them),
+  not only found.
+- The morph's use, on a scene where the cut's step shows; `--morph` is off unless asked for.
+- `neural-scene shoot` still knows the scene by its finest gaussians, drawn a cloud a piece: its own looks do
+  not use the cut.
+
+## A found scene on the web (13 Nov)
+
+The user asked for a scene the web could show, at neural.lucab.co.uk, and that it be the generated one. `athenea
+neural-scene export` hands the scene on as standard splat files: the finest gaussians standing, a render's record
+laid out as the engine's flattened record is (`scene_export.slang`: the same position, shape and first
+harmonic, an opacity for its logit, the light scaled by `--exposure` before it is encoded) and packed as SPZ by
+what `athenea flatten` already packs with (`FlattenPack::spz`), with no harmonics above the first -- a gaussian a
+look made has one colour -- in parts under a host's limit a file, and a JSON beside them naming the parts, the
+box, the up axis and the cameras.
+
+The walk of a hundred frames: 2 578 221 gaussians in three parts, 22.3 MB (10.3, 10.7 and 1.3 MB; 8.6 bytes a
+gaussian where the scene's own files are 104), exposed 4.64 stops. The page that shows it is Spark's WebGL
+renderer and three.js, vendored, as the sites beside it are built; it turns the stage's z up to its own y,
+scales centimetres to metres, opens on the first rendered frame through that frame's lens, is walked with the
+keyboard, and replays the cameras the frames were rendered from. Seen whole in a headless Chrome driven over its
+debugging port. Publishing it is sysop's, with the user's leave to it.
+
+### Not done
+
+- The scene's unit: the manifest does not take the stage's `metersPerUnit`, and the page's index was given it
+  by hand.
+- Levels of detail on the web: the export is the finest level, drawn whole.
+- Glass, which the page draws as the picture a pane kept or the cover it was given.
+
+## A file that grows, and the scene watched as it is made (13 Nov)
+
+The user: an interface to see the creation, a kind of growing file, the reconstruction as it renders; and the
+frustum of the camera being processed.
+
+The scene's index for a viewer (`<stem>.json`) names its parts in order, and a part may be a frame's: its file,
+how many gaussians, the frame, its time, the camera it was rendered through, what it took. `neural-scene export
+--by-frame` writes a scene that way after the fact -- a part a frame, what that frame found and still stands.
+`neural-scene shoot --grow <stem>` writes it while it renders: when a frame is whole its part is written and the
+index is put in place again, written whole and renamed, saying `growing`; a reader never sees half an index, and
+when the shoot ends the index says so. The page (`scripts/examples/neural-scene-viewer`, Spark and three.js)
+reads the parts in order and keeps the first N visible: a timeline over the frames, a play at ten frames a
+second, and while the index says `growing` it reads it again every two seconds and shows what came. The camera of
+the frame the timeline is at is drawn as a frustum, with the path of every frame's eye; "ride the render camera"
+looks through it instead, and an overview stands outside to watch it work.
+
+The walk of a hundred frames by frame: 100 parts, 22.6 MB, the first 233 485 gaussians and the rest 16 to 30
+thousand each. A shoot of twelve frames of Sponza with `--grow`, the page open on it: twelve parts, 0.87 million
+gaussians, 113 s. The first export of the walk is published at neural.lucab.co.uk, by sysop with the user's leave.
+
+### Not done
+
+- **What a later frame takes out.** A part holds what its frame found and, written live, is not gone back to: the
+  growth shown is of what was added, and the few hundredths later frames stamped gone stay in the earlier parts
+  until the scene is exported again when it is whole.
+- **Within a frame.** The page grows a frame at a time; the coarse looks a frame takes while it gathers are not
+  written to the file.
+- **Live on the web.** A shoot is followed where its files are served; the published page plays a growth back.
+- The frame's aspect, which the page takes as sixteen by nine, and the scene's unit, which it guesses from the box.
+
+## Glass that is its own, and what it shows worked out a view (13 Nov)
+
+The user: the glass has the material that is its own and refracts what it sees; if the camera changes
+something else must appear; the properties are intrinsic to the object, and what is seen depends on the point
+of view; the scene must hold what is behind, which it reflects and refracts.
+
+A solid of glass in a found scene was a picture: the gaussians a look made of it kept what that look saw in
+it, and from any other eye the knight in Sponza showed the first eye's room. What was already in the record
+(scene_render.slang) is what is the glass's own -- its transmission, its index, what one crossing tints, the
+way its surface faces -- and those do not depend on the eye. So:
+
+- **Where the attributes live.** As the engine keeps them for every cloud: `scene::GpuSplats::pbr`
+  (transmission, roughness, metal) and `normals`, which `Discovery::renderEncoding` already filled for a
+  piece; and beside the cloud a float4 a gaussian, `matter` -- the tint of a crossing and the index (0 where
+  nothing bends: an opaque surface, a sheet) -- laid out of the records when a piece is read. A cut's cloud
+  keeps all three (`SceneGlass::room`, `gather`, beside `Discovery::gatherCut`). No change to `.athg`.
+- **What it shows** (`render::SceneGlass::see`, `scene_glass.slang`, `neural-scene render --glass`). The
+  scene is cut for the view as one cloud, glass and room together and the pieces outside the view too. The
+  gaussian ray tracer builds its tree over that cloud (the compute route's LBVH; `GaussianRayTracer::treeOf`
+  hands it to a kernel, which is all that was added to the tracer), and for each glass gaussian two rays are
+  cast with the walks the engine's own glass uses (`rt/rt_glass.slang`): the mirror of the eye's ray, to the
+  first gaussian that is not glass and stands clear of this one's plane; and the eye's ray bent in at the
+  gaussian's normal, to the far face of the glass (`glassExit`), bent out there -- or turned back in, past
+  the critical angle -- and on to the first gaussian that is not glass. Its colour is
+  `F mirrored + (1 - F)(1 - F') tint^2 behind`. A ray that meets nothing keeps the stored picture.
+- **The engine's relit glass was not used.** `rt_shade.slang` does this for a cloud that asks to be relit,
+  inside a shading that wants lights, a dome and a transfer; a found scene carries light, not an albedo, and
+  has none of those. The walks and the tree are the engine's; the shading is the three lines above.
+- **A lens is a surface like any other to the looks.** Solid glass was held as a sheet is -- where the scene
+  begins, never made again -- so the knight stayed the 5 963 gaussians of the first look that saw it, from
+  ten metres, each some six pixels wide from near. Its gaussians are opaque and the scene's depth is theirs:
+  a nearer look now lays finer ones over it (`renderValid`), and the masks spare only sheets and what lets
+  the eye through with no index (`renderSparePanes`). Its colour still says nothing of whether it changed.
+
+Measured, Metal, 960 x 540. The test (`[glass]`): a slab of 3 362 glass gaussians whose picture is green, a
+wall behind it red on the left and blue on the right, a grey one behind the eye; seen from the right the
+slab's middle is (0.75 0.06 0.06), from the left (0.06 0.06 0.75), where 0.92 of the wall and 0.04 of grey
+give 0.75; every ray through met the wall. The knight in Sponza (60 frames, 2.13 million gaussians standing):
+
+| | before | now |
+|---|---|---|
+| glass gaussians of the knight standing | 13 721 | 130 630 |
+| a frame of `shoot` | 28.4 s | 28.2 s (1 690 s the sixty; 30.5 s in a run that held every transmitting surface as a lens) |
+| a view drawn | 12 ms (the cut, one cloud) | 0.56 s with `--glass`: the tree 0.48 s, the rays 0.06 s, the frame 0.012 s |
+| three views no look took, against the path tracer at 8 bounces (PSNR; SSIM) | the picture: 29.31, 32.67, 32.72 dB; 0.857, 0.835, 0.864 | `--glass`: 29.31, 32.60, 32.69 dB; 0.851, 0.833, 0.861 |
+
+No nearer the path tracer by the numbers, then, and it is said as it is: the knight is now see-through and
+what it shows moves with the eye, where the picture was a bright knight pasted on; but it is noisier than the
+picture, and it has none of the bright rims the reference has (the reference's knight reaches 0.5 to 1.0
+where ours reaches 0.2).
+
+### Not done
+
+- **Holes in a wall.** Black patches on a pillar's face beside the knight, in the stored picture and with
+  `--glass` alike, in both shoots made after a lens was let be refined. Not looked into: whether the shoot
+  before had them was not seen, its views looked elsewhere. Sponza has a second transmitting material (row 19,
+  index 1.0, 39 360 gaussians), which is held as a sheet is.
+- **The highlights.** A mirror ray reads a gaussian's colour, and no gaussian is a lamp: the bright rims are
+  the lights themselves and the sunlit court seen at grazing angles. The scene would have to keep its lights
+  (or the emission a look saw) for a glass to mirror them.
+- **Noise.** One ray each way a gaussian, read from the one gaussian it meets nearest its middle: neighbours
+  land on different gaussians. Not filtered by the glass's roughness, nor by the footprint of the gaussian
+  that casts the ray.
+- **What is only ever seen through the glass.** Nothing is made behind a lens (the path tracer's
+  `throughPosition` is there): what stands behind the knight is in the scene because other looks saw it
+  directly. A room seen only through its glass would show the stored picture.
+- **The far face.** `glassExit` takes the farthest glass along the bent ray, of any glass: a horse's ear in
+  front of its neck is crossed as one solid, and two glass objects in line as one.
+- **The tree every view.** 0.48 s of the 0.56 s. The cut is a new cloud a view, so the tree is built anew;
+  a scene that stands still wants it built once over the finest level, and refitted or not at all.
+- **CUDA** not run. The compute route is the one used, which runs there.
+- `--repaint` over glass: a lens's colour is the eye's, and is left out of that test; `seenThrough`'s own
+  repaint is not, and with `--repaint` set would take a lens out every frame.
+
+## The glass on the web page (13 Nov)
+
+The user: in the web preview it does not appear as glass. The page drew the picture a look saw in the knight.
+
+`neural-scene export` and `shoot --grow` now set a part's solid glass apart: `<stem>_NNN_glass.spz` beside the
+part, named in the index with the glass's index and tint (`glass`: `file`, `gaussians`, `ior`, `tint`). Which
+records are a lens's is read off their fields as a stamp is (transmission, not a sheet, an index over one). The
+files are ordinary SPZ with the picture in them, so a viewer that knows nothing of `glass` draws what it drew.
+
+The page (`scripts/examples/neural-scene-viewer`) shades them by the eye. Spark draws the scene without its
+glass into a cube from the middle of the glass that is shown (`renderCubeMap`, 512 a face), again whenever
+what the timeline shows changes; each glass gaussian then takes its colour in Spark's own per-gaussian pass (a
+`dyno` world modifier): its disc's short axis turned to the eye is its normal, the eye's ray is mirrored and
+bent there, and the cube is read along both, each as a ray from where the gaussian is to a ball about the
+cube's middle. Schlick's share mirrored, the rest tinted twice. The cube is light and a gaussian's colour is
+display encoded: encoded on the way back, which a frame of both showed is what matches the wall beside it.
+
+Seen in Chrome (headless, the knight scene exported by frame: 2.13 million gaussians, 130 630 of them glass in
+55 files, 41 MB of scenes against 45): the knight shows the bricks behind it bent, and they move as the camera
+does. Not measured against the path tracer: there is no reading back from the page.
+
+### Not done
+
+- **It is not the engine's glass.** One bend at the near face and a room read from one point, where `render
+  --glass` walks to the far face and meets the scene's own gaussians: what is near the glass is in the wrong
+  place, and the glass does not show itself.
+- **Patches.** A gaussian has one colour, and those of the knight that only far looks made are wide: seen
+  near, the glass is a mosaic. The normal is the disc's axis; the shading normal the record keeps is not in an
+  SPZ.
+- **One glass a scene**, in effect: one cube, from the middle of all the glass shown; and one index and tint a
+  part, the first lens's.
+- The cube is drawn again on every step of the timeline, playing included.
+
+**The eye that moved (same day).** The user, of the page: turning the camera, nothing is seen through the
+gaussians. Spark makes a gaussian's colour when its mesh says it changed, and a value handed to the shader does
+not say so: the glass kept the colours of the eye it was first shaded from. The page now tells each glass mesh
+(`updateVersion`) whenever the camera's position changed or a cube was drawn. Checked by driving the page:
+the camera set at one place and then another gives, pixel for pixel, the frame of the page opened at the
+second.
+
+**The page on a phone (same day).** The user, with a picture from an iPhone: the text took the top third, the
+credits lay over the controls and the controls ran off the right edge. Under 640 px the text is folded to its
+title (an `i` opens it) with the credits inside it; the controls are a bar at the bottom in two rows, the
+timeline across the first, clear of the browser's bar (`env(safe-area-inset-bottom)`, `100dvh`), each 44 px
+high; and a touch screen is told its own gestures in place of the keys. Seen at 500 px in Chrome; not on a
+phone.
+
+**Turning about a point, by touch (same day).** The user: one finger fixes the point of rotation and a second
+turns about it. A first finger kept within ten pixels for 280 ms fixes the point -- the gaussian under it by
+Spark's ray through the splats, or as far along the finger's ray as the scene's middle where there is none --
+and a ring marks it; a second finger then turns the camera about it, sideways about the scene's up and up and
+down about the camera's right, short of the poles. Spark's own gestures are off while the point is held, and
+what they kept of the fingers is dropped on both sides so the view does not jump. Driven with synthesized
+touches in Chrome: the point lands on the knight under the finger (2.67 m), and after a drag the eye has moved
+(8.8 1.1 -1.2 to 9.83 0.62 -2.39) at the same 2.669 m with the point at the same place on the screen. Spark's
+ray starts itself on the first one asked and answers from the second: the page asks one when the scene is in.
+Not tried on a phone.
+
+## Two knights at 1080, and the same shoot on Windows through Vulkan (14 Nov)
+
+The user: a crowned knight beside the first, rendered again at 1080; then, with the Mac held by its thermal
+guard, use the RTX 3070 laptop, not through CUDA, through Vulkan.
+
+A second glass knight stands 115 cm from the first under a crown of gold made in the layer (a band whose edge
+rises to eight points, a ball on each: 688 points). The walk of 60 frames at 1920 x 1080, 32 paths at 8 a
+pass, 3 bounces, denoised:
+
+| | Metal (M5 Pro) | Vulkan, native Windows (RTX 3070 Laptop, 8 GB) |
+|---|---|---|
+| a frame | 2.2 min with the guard's pauses (8 080 s the sixty; 28 s at 960 x 540 with one knight) | 5.5 min (327 to 339 s, frames 4 to 6) |
+| the scene | 15.2 million gaussians on disk in 363 pieces, 1.8 GB; 8.9 million standing, 1.45 million of them glass | still rendering when this was written |
+
+Exported by frame: 60 parts and 60 of glass, 84 MB, the largest 8.8 MB. The page draws it (Chrome, headless).
+
+What the RTX 3070 laptop taught:
+
+- **CUDA under WSL cannot make this render.** No OptiX there, so no ray queries: the frame came with no
+  shadows and the knights black. Known since the first CUDA run; seen again.
+- **Vulkan under WSL is llvmpipe.** No NVIDIA ICD in the distribution: the only GPU route in WSL is CUDA.
+- **Native Windows builds and runs.** `windows-x64-release` with MSVC, the branch as it is, no change:
+  `ATHENEA_BACKEND=vulkan` gives ray queries and the frame is the Mac's to the eye (two glass knights, the
+  crown). The 27 colour maps of 4096 were made 2048 for the 8 GB card (6.7 GB held before, 4.8 after).
+- **A stage frame on Vulkan read as 80 s a pass of 8 paths at 960 x 540** (99 s for 8 paths, 257 s for 24),
+  which a shoot at four times the pixels does not bear out (84 s a pass). Not understood: the shader cache
+  is there between runs and the memory fits. PowerShell's handling of a native program's stderr -- MaterialX
+  prints a line a node -- was suspected and a run with both streams sent to files took as long.
+- **D3D12 ran out of memory** on the same stage; not looked into.
+
+### Not done
+
+- The crown is a size too large for the head and was not fitted again.
+- The Vulkan shoot against the Metal one, gaussian for gaussian or frame for frame.
+- Why `stage` on Vulkan takes what it takes a pass.
+- Nine million gaussians on a phone: the page reads every part; a scene this size wants the cut on the web.
+
+## Levels of detail for a viewer, mirrors apart, and a player with its options (14 Nov)
+
+The user: not a crowned knight but one of chrome all over; the preview must fit the device, or show a level of
+detail where it cannot (a conversion after the render); every option in the player; and QA on the RTX 3070 laptop, on Linux
+and on Windows.
+
+- **Levels, after the render** (`neural-scene export --levels N,N,...`). The scene's own structure is the
+  tree: a look's gaussians keep the width of what they were laid over, and the coarse ones a finer look
+  refined are still on disk. `Discovery::cut`'s rule asked with widths in the scene's units in place of
+  pixels (`Discovery::worldWidths`: a depth of one, a focal length of one) is a level whatever the eye; the
+  width for a budget is read off the same histogram of spans the budget of a view uses. No merge is made and
+  nothing is fitted: a level is gaussians a look left.
+- **Chosen on the device.** Which records a level draws and which are lenses, mirrors or the rest is a kernel
+  (`scene_level.slang`, `Discovery::recordsOf`); the export that picked lenses by reading fields on the CPU
+  is gone. What comes back is laid end to end for a part's file.
+- **Mirrors apart**, as glass was: polished metal (metallic from 0.5, roughness to 0.12) in
+  `<stem>_NNN_mirror.spz`, named `mirror` in the index. The page shades it as a mirror from a cube.
+- **The page.** It draws the level the device is trusted with -- a phone a million gaussians, a touch screen
+  or a machine of 4 GB two, anything else the scene as it grew -- and where four seconds of frames come under
+  fifteen a second it goes a level coarser and says so; a graphics context the browser takes back reads the
+  page again a level coarser. Glass and chrome each have their own cube, drawn with the other in it, so the
+  chrome shows the glass. The options are a panel: scene (`scenes/scenes.json`), detail, resolution, field of
+  view, shading by the eye, the cube's size, move speed, the frustum, the path, the pivot's marker, the rate
+  of playback and its loop, the frame rate read out, and a reset; kept between visits.
+
+Measured on the eight frames at 1080 the Windows shoot left (2 187 142 gaussians standing):
+
+| budget | width, scene units (cm) | gaussians | parts |
+|---|---|---|---|
+| the scene | -- | 2 187 142 | 8, by frame |
+| 2 000 000 | 0.788 | 1 693 122 | 2 |
+| 1 000 000 | 1.576 | 843 810 | 1 |
+| 500 000 | 2.229 | 429 515 | 1 |
+| 250 000 | 4.269 | 214 270 | 1 |
+
+37 MB with the levels against 20 for the scene alone. CUDA under Linux and Vulkan under Windows write the
+same counts at every level. The page in Chrome on that machine (RTX 3070): the scene at 56 frames a second;
+as a phone (390 px, touch) it reads level 2 by itself, 0.84 million, at 60; `?detail=4` reads the fourth and
+the panel changes it. On the Mac, under a shoot that held the GPU, the page drew two frames a second, went a
+level coarser by itself, and then lost its context: which is how the two fallbacks were first seen to work.
+
+QA, `[scene]` (nine cases, 218 assertions): passed on CUDA under WSL and on Vulkan under Windows. Metal not
+run: the Mac was rendering.
+
+### Not done
+
+- **A level is not a merge.** Where only one look ever saw a surface there is nothing coarser to draw: the
+  level keeps the fine gaussians and goes over its budget there. `LodBuilder`'s merge would fill that in.
+- **The device is guessed** from the pointer, the screen and `deviceMemory`, which Safari does not give; the
+  frame rate is what corrects the guess, after the scene is in.
+- **A level has no timeline**: the scene whole, no frames.
+- **`shoot --grow`** still sets lenses apart on the CPU and no mirrors.
+- **The chrome in the engine**: done since (below); a mirror ray reads one gaussian, so a mirror in a mirror is the other's picture.
+- **One cube a kind**, from the middle of all of that kind: two glass things far apart share it.
+- A real phone. Chrome's emulation is what was driven.
+
+## QA of materials and of time: what a found scene made of each, and four defects (14 Nov)
+
+The user: twelve hours of QA and QC of materials and workflows; animations, textures and formats too; fetch
+the scenes that are needed; the RTX 3070 laptop as the machine to test on, Linux and Windows.
+
+Two stages were made to qualify on, with nothing but text (`scripts/examples/neural-scene-qa`): fourteen balls
+of one material each -- matt, two plastics, rough gold, satin copper, chrome, clear, tinted and frosted glass,
+water, a lamp, a coat, a texture, a normal map -- on a chequered floor before a wall of stripes; and a stage
+that moves: a ball that crosses, a cube that turns, a chrome ball that stays. `qa.py` path traces views no
+look takes, shoots the walk, draws the scene from those views as found and with `--glass`, measures the frame
+where the scene holds something and each ball's window, and hands the scene on; `qa_time.py` shoots a frame a
+time code and measures the scene as it stood at a frame against the stage at that time. The usd-wg assets
+(the shader ball, the texture and roughness tests) were fetched and are not run yet.
+
+### What it found
+
+1. **A ball half eaten from any view the walk had left.** A gaussian is drawn a couple of pixels past where
+   its surface ends. At a silhouette that fringe lies on pixels where the frame sees what is behind, and a
+   gaussian just round the far side of a ball -- hidden but for its fringe -- had all the weight it showed on
+   such pixels: taken out as seen through. Every frame of a walk took another strip of the side the eye was
+   leaving. The same judged `refined`. Now a gaussian is stamped only where the frame speaks of it, at its
+   own middle, by the frame's own depth there: gone, where the frame sees past its place at the middle and
+   two pixels each way; refined, where the frame's surface is where it is (`discoverGone`, `centred`). On the
+   materials stage a frame took out 3 800 to 6 900 gaussians of a scene that had not moved; now none after
+   the first. The black holes on a pillar of Sponza were this; not shot again to see.
+2. **The path tracer did not start again when a mesh moved under a camera that stood still** -- the engine's,
+   not the shoot's: `Engine::setMesh` did not touch the revision the path state is compared by, and only new
+   points did, when committed. A ball that crossed the floor was the mean of everywhere it had been, and a
+   frame took 3.1 s because it was "whole" at once. `setMesh`, `setInstancer`, `removeInstancer` and `remove`
+   bump it. 9.6 s a frame, and the ball where it is. Backlog NEU15, for main.
+3. **A coarse look left glass with no transmission.** The looks a frame takes while it gathers make no panes,
+   and wrote 0: a level of detail drawn from them was a matt picture of the glass. The material's is written
+   whatever the look. Scenes shot before keep it until shot again.
+4. **The page read back a modifier Spark only takes** and never shaded glass or chrome again after the first
+   time; it keeps what it set.
+
+And three that stand: a shoot through Vulkan at 960 x 540 and 32 paths that slows from 27 s a frame to 450 and
+dies at the twenty-first with no word, where 640 x 360 and 16 paths run 24 frames in 80 s (NEU16); `athenea
+compare` with no backend under Vulkan (NEU17: the scripts take `--compare-backend`); and `compare --window`
+bounding the means and nothing else, so a ball is said by its mean light.
+
+### A stage that moves, and colour
+
+Depth alone does not say the foot of a ball left the floor it rolled over: the floor is within the tolerance
+behind it. `--repaint` now reaches `shoot`'s taking out as well as its making: where the frame's surface is
+where a gaussian is and the mask is set at its middle, the gaussian goes, so what is made over a flagged
+pixel is made in its place. The first try compared a pixel of the scene with a pixel of the frame and flagged
+a tenth of a still view at every edge of the chequer; made over and not taken out, the scene went from 0.52 to
+2.59 million in 24 frames. Both `repainted` now compare means over five pixels by five.
+
+### Measured, Metal, 960 x 540 (and Vulkan under Windows at 640 x 360)
+
+| | Metal | Vulkan |
+|---|---|---|
+| `[scene]`, nine cases, 218 assertions | pass | pass (CUDA under Linux: pass, before the last two changes) |
+| materials, a frame of `shoot` | 22.2 s | 3.3 s |
+| the frame where the scene holds something, four views no look took: PSNR | 24.32, 22.46, 23.96, 22.27 dB | 22.93, 21.80, 23.01, 21.75 dB |
+| the same with `--glass` | 23.95, 22.17, 23.53, 21.99 dB | 22.69, 21.61, 22.70, 21.58 dB |
+| before the first fix (whole frame, sky and all) | 10.99, 20.50, 22.54, 13.80 dB | -- |
+
+A ball's mean light over the reference's, Metal: matt 0.95, rough plastic 1.08, glossy plastic 1.02 (its worst
+channel 2.04), rough gold 0.96, satin copper 0.96, chrome 0.93, clear glass 1.06, tinted 1.02, frosted 1.04,
+lamp 0.97, coated 1.20 (1.67), water 1.08, textured 1.04, normal-mapped 1.02. With `--glass`: clear 1.16,
+tinted 0.85, frosted 0.88, water 0.99, the rest as they were. 55 321 gaussians of the million are lenses and
+some 23 thousand mirrors.
+
+Over time (24 frames, one camera, `--repaint 0.3`): 9.6 s a frame; the scene as it stood against the stage at
+that time 24.25, 24.33, 24.23, 24.24, 24.30 dB at frames 1, 6, 12, 18, 24, and frame 24 against the stage at
+frame 1's time 21.55; 518 to 588 thousand gaussians standing, some 45 thousand made and 43 thousand taken out
+a frame. With its history: 24 parts, 588 thousand standing and 992 thousand that stood a while, 276 files of
+history, 10.4 MB. At 0.15 the cube is cleaner and 115 thousand are made and taken out a frame.
+
+### Not done
+
+- **24 dB is the scene against a reference of 128 paths and 8 bounces** from a shoot of 32 and 3, on a chequer
+  of two greys: how much is the bounces, how much the floor's pattern and how much the scene is not taken
+  apart. Sponza's held views read 32 to 33 dB.
+- **Highlights are a picture.** The glossy and the coated balls are off in one channel by half to double:
+  what a look saw of a light is kept at the gaussian and seen from everywhere.
+- **`--glass` darkens tinted and frosted glass** (0.85, 0.88 of the reference where the picture reads 1.02,
+  1.04) and is a few tenths of a dB under the picture on every view: one ray, no roughness, and the tint
+  taken twice where the path tracer's ball takes more ways through.
+- **A thin trail where a ball met the floor** and a turning cube that is not clean: what is narrower than the
+  five pixels the colours are averaged over does not flag.
+- **No sky.** A found scene holds none; the measures leave it out and say how much of the frame is held.
+- **`export --levels` on a scene of one walk at one distance** has one coarser width to offer: the looks a
+  frame takes while it gathers. Budgets between two widths are the same level, now written once.
+- The usd-wg assets, the texture tests, PLY and GLB read back, and the page on the history: not run.
+
+**Formats and the history, read back (same day, CUDA under Linux and Chrome under Windows).** The materials
+scene handed on as SPZ, PLY and GLB: 3.9, 107.5 and 102.3 MB for 454 326 gaussians, glass and mirrors apart in
+each. Read back by `athenea render --splats` and drawn from a held view against the scene drawn itself: the PLY
+is the same frame, pixel for pixel; the SPZ is 50.51 dB and SSIM 0.9996 once turned half a turn about x
+(`--rotate-x 180`: the engine's reader takes an SPZ as it takes a capture, and the export writes the scene's
+own axes, which is what Spark wants), its light clipped at 2.3 where the lamp reaches 4.9. The GLB is glTF 2
+with one primitive under `KHR_gaussian_splatting`; the engine has no reader for it. The animated scene with
+its history in the page: 509 files, and the timeline at frames 1, 12 and 24 shows the ball at the left, the
+middle and the right, with the chrome ball mirroring it -- and black where the mirror looks at the sky, which
+the scene does not hold.
+
+**Textures and every workflow (same day, the RTX 3070 laptop).** The usd-wg test stages path traced through Vulkan: texture
+coordinates the right way round, JPEG (RGB, grey, CMYK) and PNG (8, 16 and 32 bit) all read, normal maps,
+roughness. `stage --frame-all` now says where its camera stands (`framed: eye ... target ... up ...`) and
+`qa.py --frame` makes an arc of looks and three held views about a stage that brings none: five of them shot
+and measured, 12 frames in 11 to 15 s each, the found scene the reference's to the eye -- texture, text and the
+textured brass teapot -- and 12 to 20 dB where it holds something, at 640 x 360, small things with fine print
+on black. The standard shader ball framed black because `--frame-all` stands outside the box it is lit in: through its own camera it is drawn as it should be (64 paths, 6 bounces), and it is not shot, since the QA's looks are made about a framing camera.
+
+`qa_flows.py` takes a found scene through every subcommand and option that reads it and a short shoot that
+grows a file: 26 of 26 through Vulkan under Windows (reading an SPZ is not in that build, made without zstd),
+24 of 24 through CUDA under Linux (no shoot there). A look taken while a frame gathers is not a time the scene
+stood at: `--snapshot` of one draws and hands on nothing, by design, and the script asks for a frame's last.
+
+**A sky, in the page's options.** A found scene holds no sky and a mirror that looked past the scene showed
+black. The page has a colour for what is behind the scene (black as it was, kept between visits); the cubes
+glass and chrome read are drawn over it, so a mirror shows it. It is also what shows through where no camera
+has seen -- which reads as sky where it is floor nobody looked at. The scene's own sky is not kept by `shoot`
+(the manifest's `lights` is empty), so the colour is the viewer's to choose.
+
+**The chrome knight shot again with the day's fixes** (Metal, 60 frames at 1080, 6 244 s). 9.72 million
+gaussians standing where the shoot before left 8.90: 565 thousand of glass (423 before), 1.34 million of
+chrome. The black holes on the pillar beside the knights are gone from the held views. Levels of 3.73, 1.78,
+0.96 and 0.53 million, and glass in every one of them (90, 37, 28 and 22 thousand gaussians): in the page a
+coarse level's glass knight is shaded as glass where it was a milky picture. Levels 1 and 3 at 60 frames a
+second in Chrome on the RTX 3070. `render --glass` on it: 565 thousand glass gaussians, the tree over 9.7
+million 2.7 s, the rays 0.23 s.
+
+**The other two scenes shot again, and a walk that holds twice what it did (same day).** The walk of a hundred
+frames: 750 s, 4.88 million gaussians standing where the shoot of 13 Nov left 2.58, and one level of detail
+(0.96 million) where there was none. Against the four references of that walk, its own views: 31.99, 39.54,
+32.41, 31.37 dB where the old scene reads 32.76, 38.74, 32.94, 31.85. The glass knight: 1 778 s, 2.44 million
+(2.13), three levels. Over time under Vulkan (640 x 360): 23.15 to 22.98 dB at every frame measured, 21.00
+against the first frame's time. Every workflow through Metal: 26 of 26.
+
+Why twice: not found. Forty frames of the walk under each rule for `refined` -- by the frame's depth at the
+gaussian's middle, and by weight alone as before -- stand at 1.81 and 1.76 million and read the same 31.8 dB:
+it is not that rule. A frame of the walk now flags 54 thousand pixels as wanting finer gaussians where the
+shoot of 13 Nov flagged 21 thousand, and makes 62 thousand gaussians where that made 29. A surface behind a
+disc that overhangs an edge was made again every frame, behind the overhang (`holds` asked the scene's depth
+alone): the scene's depth where it is opaque past any fringe (`KnownScene::last`, a third draw of the known
+scene) holds it, and that is 7% of the forty frames' gaussians, 1.68 million for 1.81. What is left is thought
+to be a parent a look covers part of: it stays, by the nine-tenths rule, the pixels it is under read coarse
+with the finer ones over them, and are made finer again the next frame. Not shown.
+
+**The last pass of the day, with the code as it stands** (after `KnownScene::last`). `[scene]`: Metal, Vulkan
+under Windows and CUDA under Linux, nine cases and 218 assertions each. The materials stage through Vulkan at
+640 x 360: 24 frames in 73 s, 444 thousand gaussians, 22.98, 21.90, 23.07 and 21.82 dB at the four held views.
+Every workflow: 26 of 26 through Metal and through Vulkan, 24 of 24 through CUDA.
+
+**Play (same day).** The user: the Play button does not work. On a phone the page draws a level of detail,
+which has no frames, and Play was disabled; on a desktop the page went a level coarser by itself in the middle
+of a playback and stopped it. At a level the timeline is now the walk the scene was rendered along -- every
+part drawn, the timeline at one of the frames' cameras -- and Play rides it; the button says Pause and takes
+the accent's colour while it plays; six a second by default; and the frame rate does not change the level
+while something plays. Driven in Chrome as a phone: camera 14 of 60 after 2.5 s, 52 after 5, then Play again.
+
+**A view shot again makes six thousand gaussians every time.** One view of Sponza, a nearer one, and that one
+three more times: 98.8% held, 6 428, 6 589 and 6 127 gaussians made, at 8 700 pixels where the frame sees
+past the scene, and under ten taken out. Over a walk of a hundred frames that is the half million and more
+the count grew by. Finer-wanting pixels are a few hundred: it is not refinement again. Counting a disc's
+overhang towards `refined` changed nothing (6 244) and was taken back. What those pixels are was not looked
+at; fine things -- leaves cut by an alpha, a grille -- whose pixels are surface in one frame and hole in the
+next, and whose gaussians the five taps keep, are what it is thought to be.
+
+**The 24 dB is not the shoot's paths.** The materials stage shot at the reference's own 128 paths and 8
+bounces (105 s a frame for 22): 23.83, 22.30, 23.58 and 21.96 dB at the four held views, where 32 paths and 3
+bounces read 24.32, 22.46, 23.96 and 22.27; every ball's light within a hundredth or two of what it was. And a
+frame drawn again through its own camera reads 24.25 on the stage that moves. What is left is what a gaussian
+a pixel makes of a chequer of two greys seen along the floor, and the highlights kept as pictures.
+
+**The chrome in the engine (14 Nov).** `render --glass` shades a polished metal as it shades a lens: metallic
+from a half and roughness to 0.12 (the bound of an export's mirrors), one ray along the mirror direction to
+the first gaussian that is not glass, guarded by height over the gaussian's own plane as a lens's mirror ray
+is, times the metal's base colour head on and white at grazing (Schlick). The base colour is kept by `shoot`
+in the record's tint, which a metal left black; a scene shot before has none and its metal is a white mirror.
+A test lays a plate that reflects (0.9, 0.9, 0.25) before a wall red on one side and blue on the other: from
+the right the plate reads (0.72, 0.04, 0.01), from the left (0.04, 0.04, 0.20), nothing of its green picture;
+`[scene]` is 238 assertions in 10 cases, where it was 218 in 9.
+
+Measured on the chrome knight's scene (9.72 M gaussians, 1.34 M of polished metal, 565 k of glass), two views
+the walk did not take, 960x540, against the stage path traced at 128 paths and 8 bounces (229 s a view),
+where the scene holds something: 27.67 and 28.02 dB with `--glass`, 27.53 and 27.90 without; SSIM 0.812 and
+0.801 against 0.813 and 0.802; relMSE 0.0044 and 0.0060 against 0.0061 and 0.0074. A tie on the frame, as the
+glass knight's was: the knights are a small share of it. The rays take 0.36 to 0.65 s a view and the tree
+2.2 to 2.7 s, which is paid a view.
+
+Not done, and seen here:
+- **The scene's mean light is under the reference's, and it is the reference's brightest pixels**: 0.64
+  and 0.77 of it in these two views, and 0.74 and 1.08 from two views the walk took (k10, k45). Not the
+  bounces: the reference path traced at the shoot's 3 reads as at 8 (27.52 and 27.89 dB). With each pixel
+  held to 0.02 (ten times the mean; `oiiotool --clamp`, a statistic of the files and no kernel's) the scene
+  holds 0.95 and 1.01 of the reference in the two views not taken and 1.01 and 1.10 in the two taken: the
+  light is the same, less a few pixels. Side by side at one gain, the reference draws white lines along
+  edges -- arches, door frames, the step, where meshes meet -- up to 2.3 where the frame's mean is 0.003,
+  and the scene keeps little of them (its brightest is 0.2 to 0.9). Whether those lines are the stage's (sun
+  through a seam) or the path tracer's is not found (NEU19); a frame measured against them loses what they
+  weigh, in dB too.
+- **Over each knight alone** (view k45, which the walk took; the frame cut to the knight with `oiiotool
+  --cut` and the cuts compared, since `compare --window` bounds only the means): the chrome knight 25.25 dB,
+  SSIM 0.702 with `--glass` against 24.99 and 0.695 as the picture kept; the glass knight 30.77 dB and relMSE
+  0.0017 against 29.81 and 0.0066, SSIM 0.748 against 0.774. A quarter of a dB and one dB: what a mirror ray
+  reads is one gaussian's colour, a grain a gaussian, where the path traced chrome is smooth; the grain is
+  what SSIM takes back on the glass.
+- **Four rays a gaussian, tried and taken back**: the rays sent from four points of the disc, six tenths of
+  its width out, and averaged. The chrome knight 25.25 dB and SSIM 0.703 where one ray reads 25.25 and 0.702;
+  the glass knight 30.84 and 0.754 against 30.77 and 0.748; the rays 2.09 s a view against 0.54. The grain is
+  not where on the gaussian the ray leaves from: neighbouring gaussians send their rays apart, which is their
+  normals', and those are not looked at.
+- **The tree is built again each view** though the scene does not change between views of a walk.
+- **A rough metal** (roughness over 0.12) stays the picture the look left.
+
+**The chrome on the three backends.** The plate's test and the rest of `[scene]` -- 238 assertions in 10
+cases -- pass on Metal (M5 Pro), on CUDA under Linux and on Vulkan under Windows (the RTX 3070 laptop): the plate
+reads (0.72, 0.04, 0.01) from the right and (0.04, 0.04, 0.20) from the left on all three.
+
+**The materials stage with its chrome a mirror.** Shot again with the metal's colour kept (538 s, 1 003 600
+gaussians, 27 353 of polished metal) and drawn with `--glass` from the four held views: 23.91, 22.29, 23.56
+and 22.19 dB, relMSE 0.0764, 0.1241, 0.0946 and 0.1162, where the mirrors left as pictures read 23.95, 22.17,
+23.53 and 21.99 dB and 0.0773, 0.1310, 0.0992 and 0.1283; the mirror rays that met the scene went from 21 747
+(the lenses' alone) to 32 867. The chrome ball's light is 0.93 of the reference's either way, and the frame
+drawn as found reads 24.35, 22.53, 23.98 and 22.32, so `--glass` still costs the frame a fifth to a half of a
+dB here: the tinted and the frosted glass it darkens (0.85 and 0.88 of the reference's light) are untouched
+by this.
+
+**The workflows after it.** `qa_flows.py` over the build with the mirrors: 26 of 26 on Metal, 26 of 26 on
+Vulkan under Windows (the `.spz` handed on is not read back there: that build has no zstd) and 24 of 24 on
+CUDA under Linux (no `shoot` there), as before the change.
+
+**The white lines are the path tracer's ray margin, and the references above had them.** View k10 path traced
+with no denoiser draws the same lines (mean light 0.00313 against 0.00317 denoised), and with `--ray-margin
+2e-5` they are gone but for the door's own lit frame (0.00262): at the default margin, on this stage, light
+leaks where meshes meet. Every Sponza reference of this section was drawn at the default. Against the two
+taken views path traced again with the margin (128 paths, 8 bounces):
+
+| | reference with the lines | reference with the margin |
+|---|---|---|
+| k10, the frame as found | 28.56 dB, SSIM 0.820 | 30.12 dB, SSIM 0.865 |
+| k10, with `--glass` | -- | 30.09 dB, SSIM 0.861 |
+| k45, the frame as found | 28.03 dB, SSIM 0.775 | 28.93 dB, SSIM 0.797 |
+| k45, with `--glass` | 28.29 dB, SSIM 0.772 | 29.25 dB, SSIM 0.792 |
+| k45, the chrome knight as found / `--glass` | 24.99 / 25.25 dB | 25.54 / 25.82 dB, SSIM 0.740 / 0.734 |
+| k45, the glass knight as found / `--glass` | 29.81 / 30.77 dB | 30.02 / 31.11 dB, relMSE 0.0064 / 0.0015 |
+
+What `--glass` gives is the same against either: a quarter of a dB on the chrome knight, one on the glass
+one, and SSIM a little down. The scene's mean light is 0.87 of this reference's in k10 and 1.34 in k45; the
+second is not explained (what margin the scene's own shoot traced with was not kept beside it). The two views
+not taken, measured again the same way: 29.12 and 29.15 dB as found (SSIM 0.860 and 0.834) and 29.33 and
+29.34 with `--glass`, where the references with the lines read 27.53 and 27.90, 27.67 and 28.02; the scene's
+mean light 0.83 and 0.96 of the reference's, holding 0.93 and 0.98 of the frame.
+
+Not done: the materials stage and the stage that moves are metres across and were not looked at for the same
+lines; `qa.py` passes `--ray-margin` only when asked.
+
+**Where the materials stage's 24 dB go.** Its references carry no such lines (a stage of metres; looked at
+side by side). The held view the scene covers whole (h2, 0.997; 23.98 dB) cut in three bands with `oiiotool
+--cut`, each compared alone: the wall behind 34.58 dB (SSIM 0.986), the band of the balls 21.97 (0.799), the
+chequered floor 23.55 (0.808). The wall is held; the frame's figure is the balls -- side by side, the glossy
+plastics have lost the highlight that moves with the eye, and the chrome is a grain -- and the chequer along
+the floor. (The first view's bands are not given: a quarter of its wall band is sky the scene does not hold,
+and a cut cannot be masked.)
+
+**The floor is the discs' stretch.** A disc is stretched along the way its surface falls from the eye that
+made it, by one over its facing and no more than one over `--turned` (0.5: twice). Seen from another side
+that stretch lies across the chequer. The materials stage shot at three bounds, the four held views (dB and
+SSIM where the scene holds something, and how much of the frame it holds):
+
+| view | `--turned 0.5` (the default) | `0.75` | `1` (no stretch) |
+|---|---|---|---|
+| h0 | 24.35, 0.873, holds 0.900 | 26.06, 0.907, 0.895 | 26.70, 0.919, 0.885 |
+| h1 | 22.53, 0.816, 0.996 | 24.15, 0.862, 0.984 | 24.77, 0.877, 0.965 |
+| h2 | 23.98, 0.854, 0.996 | 24.87, 0.874, 0.990 | 25.18, 0.877, 0.977 |
+| h3 | 22.32, 0.803, 0.947 | 23.08, 0.828, 0.933 | 23.22, 0.830, 0.911 |
+| h2, the floor alone | 23.55 | 25.48 | 26.21 |
+| h2, the balls alone | 21.97 | 22.35 | 22.46 |
+
+One to two and a half dB for the frame and 2.7 for the floor, against 1.5 to 3.6 hundredths of the frame no
+longer held: the stretch is what closes a surface seen along itself, and without it the views from higher up
+see between the discs. The default is left at 0.5: a hole is seen and a soft chequer is not, and the figure
+does not count the holes. Levels of detail do not give the floor back (`--lod` 0.5 to 1.5 read as the finest,
+2 loses up to 1.9 dB).
+
+Not done: a disc stretched by what the views that have seen it since need, not by its first eye's alone; the
+same three bounds on Sponza; the balls' band, which the stretch hardly moves (the highlights and the grain).
+
+**A frame through its own camera reads 24 dB because its discs are wide, and a narrow disc is sharp and
+thin.** The stage that moves, shot again after the mirrors, reads what it read (24.25, 24.33, 24.23, 24.24
+and 24.30 dB at frames 1, 6, 12, 18 and 24; 237 s). Its first frame alone, shot at five widths and drawn
+through the camera that took it, against the path tracer there:
+
+| shot with | PSNR dB, SSIM as drawn | alpha, mean | PSNR dB, SSIM with the colour over its alpha |
+|---|---|---|---|
+| the defaults (`--spread 1`, `--turned 0.5`) | 24.25, 0.883 | 0.996 | 24.24, 0.883 |
+| `--turned 1` | 28.15, 0.946 | 0.962 | 28.66, 0.949 |
+| `--spread 0.7` | 28.13, 0.948 | 0.948 | 28.86, 0.952 |
+| `--spread 0.7 --turned 1` | 24.72, 0.954 | 0.842 | 32.08, 0.973 |
+| `--spread 0.5 --turned 1` | 21.53, 0.954 | 0.643 | 35.91, 0.984 |
+
+(518 400 gaussians each: one a pixel. The colour over its alpha is `oiiotool --unpremult` on the file, no
+kernel's.) So the 24 dB of every frame of this section is not the paths, the bounces or the levels: a disc a
+cell wide, stretched twice along a floor, overlaps its neighbours and the frame is the scene low-passed, 12 dB
+under what the same gaussians hold when half as wide. Half as wide they no longer close the surface -- the
+frame's alpha falls to 0.64 and it is drawn dim -- and that is what the width was paying for.
+
+Not done, and the next thing to do here: discs narrow and the surface closed some other way -- the blend
+normalised by its alpha where a surface is held, or opacity raised as the width falls, or the narrow discs of
+a look laid over the wide ones of the look before (which the levels already keep) -- measured from the views
+not taken as well, where the holes between narrow discs open first.
+
+What the third would give, estimated on the frames and not in the engine (the narrow frame laid over the
+default one with `oiiotool --over`): `--spread 0.7 --turned 1` over the default reads 29.62 dB and SSIM 0.957
+with the frame's alpha at 0.998, and `--spread 0.5 --turned 1` over it 28.22 and 0.944 -- five dB over the
+default's 24.25 with the surface closed, where the blend normalised reads 32 to 36. The narrower is the worse
+of the two laid over: more of the wide frame shows between its discs.
+
+**Narrower discs from the views not taken.** The materials stage shot with `--spread 0.7` (the stretch left
+at its default), the four held views: 26.56, 24.67, 25.18 and 23.31 dB (SSIM 0.918, 0.876, 0.881, 0.839),
+holding 0.878, 0.956, 0.968 and 0.903 of the frame; the floor alone 26.01 and the balls 22.53. As `--turned 1`
+within a tenth or two (26.70, 24.77, 25.18, 23.22) and a hundredth less of the frame held: either way of
+narrowing a disc buys the same two dB from the same closure, and the defaults stay as they are until the
+surface is closed some other way (NEU21).
+
+**Narrow discs from the views not taken, three ways.** The materials stage shot with `--spread 0.7 --turned
+1`, the four held views, against the default's 24.35, 22.53, 23.98 and 22.32 dB (holding 0.900, 0.996, 0.996,
+0.947):
+
+| view | as drawn | holds | the colour over its alpha | laid over the default's frame |
+|---|---|---|---|---|
+| h0 | 25.18, SSIM 0.917 | 0.807 | 27.54, 0.928 | 27.01, 0.919 |
+| h1 | 23.75, 0.874 | 0.859 | 25.82, 0.901 | 25.21, 0.888 |
+| h2 | 23.93, 0.840 | 0.893 | 25.57, 0.887 | 25.45, 0.884 |
+| h3 | 22.03, 0.807 | 0.809 | 23.92, 0.858 | 23.71, 0.852 |
+
+(The default's own colour over its alpha reads as it is drawn, 24.41, 22.52, 23.98, 22.34. Both are
+`oiiotool`'s, on the files.) From a view that is not the gaussian's own, narrow discs closed either way give
+1.4 to 3.1 dB over the default, not the 12 a frame's own camera shows: from elsewhere a disc a pixel wide at
+its own distance is not a pixel wide, and what is left is the balls' band. Laid over the wide frame they keep
+the surface closed and lose two to six tenths to the normalised blend: that is the one to build (NEU21).
+
+## More stages through the same QA (14 to 15 Nov)
+
+**The Kitchen Set** (Pixar's, with the lights of `Kitchen_set_lit.usda`; centimetres, Z up, no glass and no
+polished metal), framed by the engine and traced with `--ray-margin 2e-5`: the reference's three views in
+55 s, the walk of twelve in 44 s (3.6 s a frame), 170 164 gaussians. The frame where the scene holds something
+(0.30 of it: the engine frames the whole set from far) reads 23.86, 23.99 and 23.50 dB, SSIM 0.737, 0.721 and
+0.705; handed on in two levels (67 929 and 48 793), 3.3 MB, and baked into an `.athc` of 7 levels.
+
+Found there: **a scene shot from a stage in centimetres said one metre a unit.** `shoot` took the stage's up
+axis and not its unit; it takes both now (`StageRenderer::metersPerUnit`), and `--meters-per-unit` still
+overrides. Nothing reads the unit but `info` and the manifest.
+
+**The Open Chess Set** (the Academy Software Foundation's, CC BY 4.0; a wrapper stage adds a dome and a sun,
+the asset having no light): the reference's three views in 158 s, the walk of twelve in 84 s (7.0 s a frame),
+106 237 gaussians of which 2 253 are lenses (the pieces' glass tops). Where the scene holds something (0.17 to
+0.21 of the frame) 22.16, 21.48 and 21.11 dB, SSIM 0.681, 0.594 and 0.610; with `--glass` 22.13, 21.38, 21.13.
+One level handed on (16 390), 1.3 MB.
+
+Seen side by side: from the held views, which stand higher than the walk, each piece trails a dark streak
+across the board. It is no shadow -- the stage path traced from the walk's own first view and the scene's
+stored frame there agree, and the board is too dark to show the sun's -- but the board behind each piece,
+which no look of the walk saw and the scene does not hold: what a later look fills. The figure counts it only
+where a disc's edge reaches over it.
+
+**The running Fox** (the glTF sample model, CC0 / CC BY 4.0, as Blender wrote it to USD: a skinned mesh, 28
+frames) **is not shot on Metal: the path tracer's kernel does not build.** `neural-scene shoot` and `stage
+--technique rt` both end with `rhi: Internal compiler error` and `cannot make a pipeline for
+athenea_materials_…_path_traced:tracePaths`; `--technique raster` draws it. It is the material and not the
+skinning: the Fox's material alone on a quad fails the same way, and with its texture taken off the diffuse
+colour it builds; taking off any one of `specular` (which UsdPreviewSurface has not, and Blender writes),
+the clearcoat, the index, the opacity, the roughness, the wraps or the source colour space changes nothing.
+Other stages with a `UsdUVTexture` build (the working group's TextureCoordinateTest). The kernel dumped and
+compiled alone (`slangc -target metal`, then `xcrun metal -c`) builds, so it is the pipeline's build in the
+process that fails. On Vulkan under Windows the same stage builds and draws (without its texture: the `.usdc`
+carries the Mac's absolute path to it). It is not the branch's metal tint: the same with that line taken
+back. Not solved (NEU22); the time QA over a skinned mesh waits for it, or for a stage that skins without
+that material.
+
+The engine's own refit test that fails on Metal (NEU18) is skipped on CUDA: nothing to compare there.
+
+**A skinned mesh over time: the Fox with a plain material** (`fox_plain.usda`: the lit Fox, a ground, its
+mesh bound to a UsdPreviewSurface of one colour), the first skeleton through `shoot`: 24 frames in 207 s
+(8.6 s a frame), a still camera. The scene as it stood, through that camera, read 36.32 dB at frame 1 and
+33.94 at frame 24 (35.86, 34.85, 34.30 between), each frame making some 3 900 gaussians and ending 680: the
+head that turns left a dark dotted outline over the ground of every place it had been, and layers of itself.
+Two things were wrong, and both are changed:
+
+- **A gaussian on the rim of what moved was never ended.** Judged at its middle (the frame sees past it
+  there and two pixels each way), it was still asked for most of its weight to lie on flagged pixels, and a
+  rim gaussian has half of it on the ground beside, which nothing flags. An eighth of its weight is enough
+  when it is judged at its middle (`discoverGone`).
+- **A line half covered was held.** Between what moved away and the ground beside it a line a pixel wide is
+  left under the fringes of both, covered by a half or so; a pixel counted as held from a half, and the line
+  was never filled. Held is from 0.8 of cover now (`holds()` in `scene_render.slang`).
+
+| | before | the rim alone | both |
+|---|---|---|---|
+| the Fox, frame 6 | 35.86 dB | 36.10 | 36.06 |
+| the Fox, frame 12 | 34.85 | 35.09 | 35.07 |
+| the Fox, frame 24 | 33.94, SSIM 0.965 | 34.10, 0.960 | 34.29, 0.966 |
+| balls and a cube, frames 6 to 24 | 24.23 to 24.33 | 24.57 to 24.74 | 24.54 to 24.72 |
+| balls and a cube, standing at the end | 585 546 | 505 085 | 514 370 |
+| the materials walk, four held views | 24.35, 22.53, 23.98, 22.32 | -- | 24.29, 22.52, 24.11, 22.30 |
+| the materials walk, gaussians; held of the frame | 1 003 600; 0.900, 0.996, 0.996, 0.947 | -- | 1 033 606; 0.901, 0.997, 0.998, 0.950 |
+
+`[scene]` passes as it did (238 assertions). Tried first and taken back, for nothing: a rim tap that counts
+only a surface at the gaussian's own depth and not one well in front of it (33.95 dB, 689 ended for 681).
+
+Not done: the outline is fainter, not gone; and **the head keeps layers of where it was** -- a mesh of one
+colour that turns within the depth tolerance leaves gaussians the frame's depth takes for the surface and
+whose colour is the surface's, so neither rule ends them. A textured mesh would be repainted; this one waits
+for a rule that knows a gaussian's surface moved (what the engine knows: the mesh was skinned this frame).
+
+**The Fox, the chess set and the kitchen on Vulkan** (Windows, 640x360, 16 paths): the plain Fox over time
+33.57 dB at frame 1 and 32.27 at frame 24 (33.58, 32.86, 32.59 between), 156 543 gaussians standing -- the
+same fall as on Metal; the chess set 12 frames in 34 s, 48 710 gaussians, 20.74 and 19.78 dB at its first two
+held views; the kitchen 12 frames in 41 s, 77 051 gaussians, 22.61 and 22.67. `[scene]` (238 assertions) and
+the 26 workflows pass there and on CUDA after the two changes above.
+
+**The options of `shoot`, one at a time** (`scripts/examples/neural-scene-qa/qa_options.py`: one stage, one
+walk, the held views path traced once, then the walk shot with one option changed; a row an option). The
+materials stage at 640x360, one view in two of its walk (12), 27 rows, every one ends well. The frame where
+the scene holds something at the first and the third held view, and how much of it that is:
+
+| option | seconds | gaussians | h0: dB, held | h2: dB, held |
+|---|---|---|---|---|
+| the defaults (32 paths in passes of 8, 3 bounces, denoised) | 131 | 431 242 | 23.05, 0.902 | 23.42, 0.998 |
+| `--spread 0.7` | 130 | 459 799 | 25.75, 0.881 | 25.09, 0.972 |
+| `--spread 1.3` | 131 | 425 874 | 20.79, 0.906 | 21.74, 1.000 |
+| `--turned 0.75` | 130 | 438 312 | 24.93, 0.897 | 24.51, 0.992 |
+| `--turned 1` | 131 | 456 803 | 25.76, 0.888 | 25.00, 0.982 |
+| `--refine 1` | 135 | 546 621 | 22.09, 0.902 | 22.80, 0.999 |
+| `--refine 3` | 128 | 392 723 | 23.58, 0.902 | 22.96, 0.998 |
+| `--repaint 0.3` | 134 | 397 942 | 21.66, 0.898 | 23.70, 0.997 |
+| `--tolerance 0.02`, `0.15` | 130 | 432 852, 427 631 | 23.07, 22.96 | 23.39, 23.33 |
+| `--bounces 1`, `6` | 82, 155 | 431 242 | 22.71, 23.06 | 22.56, 23.42 |
+| no `--denoise` | 130 | 431 242 | 22.88 (SSIM 0.812 for 0.837) | 23.24 |
+| `--coarsest 1`, `2`, `16`; `--pyramid 8`; `--covered-enough 0.98`; `--glass-opacity 0.2`; `--free-each-frame` | 131 to 140 | 431 242 | as the defaults, to the digit | as the defaults |
+
+- The coarse looks and the pyramid change nothing of what stands at the finest: the last look refines what
+  they made, and they are there for what is drawn while a frame gathers. `--free-each-frame` gives the same
+  scene, read back from the disk. The stage has no pane, so `--glass-opacity` has nothing to say.
+- **The paths are not what the figure follows; the passes are.** 8, 16, 32, 64 and 128 paths in passes of 8
+  read 22.17, 22.61, 23.05, 22.02 and 22.53 dB at h0; 32 paths in one pass reads as 8 in one (22.16, the
+  same 430 662 gaussians), and 64 in passes of 16 as 32 in passes of 8 (23.01, the same 431 242). What a
+  count of passes changes is which looks a frame takes and when, and so which frame of the walk each
+  gaussian of a ball is left from: a ball is a patchwork of the walk's eyes, each with its own highlight,
+  and one schedule's patchwork is not another's (the two frames differ by 32.5 to 34.1 dB between
+  themselves, in blotches over every ball). So **a dB either way between two rows of this table is the
+  patchwork's, not the option's**: the width and the stretch (two to three dB) are over it; `--refine`,
+  `--repaint`, the tolerance and the bounces are not shown to be.
+
+Not done: the same pass on a second stage; a patchwork that does not depend on the schedule (a gaussian's
+colour as what does not move with the eye, its highlight worked out a view: the lobes are in its record).
+
+## Discs half a cell wide, drawn without the 2D filter's compensation (15 Nov)
+
+**Why a narrow disc was thin.** The rasteriser spreads every gaussian a third of a pixel and, as Mip-Splatting
+does, pays for it in opacity: the square root of its footprint's determinant before over after. A disc made
+a pixel wide by a look keeps 0.77 of its opacity so, and one half a pixel wide 0.45: the narrow discs of the
+section above were sharp and thin for that, and at a pixel wide a frame was the scene low-passed. Drawn
+without the payment -- spread the same third of a pixel and as opaque as it was made -- a narrow disc closes
+the surface: the same five scenes through their own camera read 22.75, 25.57, 25.80, 28.18 and 30.42 dB with
+the frame's alpha at 0.999 to 1.000, where with the payment they read 24.25, 28.15, 28.13, 24.72 and 21.53
+at 0.996 down to 0.643.
+
+**It has to be the scene's, not the render's.** Shot with the payment and only drawn without it, discs of
+0.35 of a cell left 3.78 M gaussians where a walk leaves one: the looks ask the scene whether a pixel is held
+by drawing it, drew it thin, and made it again every frame. So how a scene is drawn is kept in its manifest
+(`antialiased`, absent for the payment) and every cloud a command loads or makes of it carries it
+(`scene::GpuSplats::antialiased`, which the rasteriser already followed for a file that says): the looks,
+`render`, `render --glass`, and the header an export writes. `shoot --antialias` makes a new scene with the
+payment as before; `--no-antialias` turns it off for one that is there, and `render --no-antialias` for one
+draw.
+
+**The width, measured both ways** (the materials stage from its four held views, dB and how much of the
+frame is held; and the stage that moves through its first frame's own camera):
+
+| `--spread`, `--turned`, no payment | gaussians | h0 | h1 | h2 | h3 | own camera |
+|---|---|---|---|---|---|---|
+| 1, 0.5, with the payment (as it was) | 1 033 606 | 24.29, 0.901 | 22.52, 0.997 | 24.11, 0.998 | 22.30, 0.950 | 24.25 |
+| 0.7, 0.5 | -- | 25.13, 0.900 | 23.46, 0.997 | 24.73, 0.997 | 22.71, 0.951 | 25.80 |
+| **0.5, 0.5** | 1 059 238 | 26.12, 0.894 | 24.62, 0.988 | 25.39, 0.987 | 23.33, 0.941 | 28.71 |
+| 0.5, 0.75 | 1 083 002 | 26.40, 0.890 | 25.08, 0.981 | 25.49, 0.976 | 23.68, 0.935 | 29.93 |
+| 0.7, 1 | 1 063 108 | 26.13, 0.896 | 24.77, 0.989 | 25.44, 0.984 | 23.43, 0.940 | 28.18 |
+| 0.5, 1 | 1 106 942 | 26.37, 0.886 | 25.18, 0.976 | 25.41, 0.967 | 23.85, 0.932 | 30.42 |
+
+Half a cell with the stretch left as it was is the default now: it keeps what closes a surface seen along
+itself and gives up a hundredth of the frame held for one to two dB from a view not taken and four and a half
+through the frame's own. Every stage of the QA shot again with it (`[scene]` passes, 238 assertions):
+
+| stage | before | now |
+|---|---|---|
+| the materials, four held views | 24.29, 22.52, 24.11, 22.30 dB | 26.12, 24.62, 25.39, 23.33 |
+| the kitchen, three | 23.86, 23.99, 23.50 | 25.94, 25.75, 24.68 |
+| the chess set, three | 22.16, 21.48, 21.11 | 23.38, 22.12, 21.50 |
+| balls and a cube over time, frames 1 to 24 | 24.25 to 24.72 | 28.71 down to 27.40 |
+| the Fox over time, frames 1 and 24 | 36.32, 34.29 | 37.35, 34.75 |
+
+The time and the gaussians are what they were (the materials walk 533 s, 1 059 238; the kitchen 40 s). A scene
+that is there keeps how it is drawn, so nothing published changes; what was shot before is `--spread 1
+--antialias`.
+
+Not done: Sponza and the other published scenes are not shot again, and **how a web viewer draws a scene
+without the payment is not looked at** (the SPZ's header says it; whether Spark follows it is not known) --
+nothing is published again before it is; the stage that moves falls 1.3 dB over its 24 frames now, where it
+did not fall before (more of what is left behind shows, sharper); `discover` keeps its own default of a pixel.
+
+**The web viewer follows it.** Spark spreads a splat 0.3 of a pixel and pays for it in opacity by default
+(`blurAmount`), as the engine's rasteriser did: a scene of half-cell discs drawn so is dark and seen through.
+`export` writes how the scene is drawn into its index (`antialiased`), and the player sets Spark's
+`preBlurAmount` to 0.3 and `blurAmount` to 0 for a scene that says `false`. Looked at in Chrome on Windows
+(headless, the materials scene exported once and its index copied with the flag turned): solid with the flag
+followed, thin and dark without. The published page and its scenes are not touched: they are scenes shot
+before, drawn as before, and the page that is live does not read the flag yet.
+
+**Sponza with the two knights, both ways.** The stage shot twice at 960x540 through one camera in three of
+the published walk (20), with `--ray-margin 2e-5`, and drawn from two views of that walk and two it never
+took, against the references with the margin:
+
+| view | `--spread 1 --antialias` (as before): dB, SSIM, held | the defaults now |
+|---|---|---|
+| k10 | 30.68, 0.921, 0.992 | 31.65, 0.926, 0.984 |
+| k45 | 29.47, 0.829, 0.996 | 29.77, 0.840, 0.994 |
+| a (not taken) | 29.66, 0.905, 0.927 | 30.72, 0.917, 0.922 |
+| b (not taken) | 29.42, 0.867, 0.968 | 30.09, 0.883, 0.964 |
+
+560 s and 1 974 296 gaussians before, 552 s and 2 099 501 now. A third of a dB to one, for two to eight
+thousandths of the frame held: less than on the stages of a few metres, the same way. On Vulkan and CUDA
+`[scene]` (238 assertions) and the workflows (26 of 26 on Vulkan) pass with the defaults changed.
+
+## A disc pays the filter only under the width it was made at (15 Nov)
+
+**What was wrong.** The chrome-knight Sponza shot again at 1920x1080 with the defaults above (60 cameras,
+11 795 537 gaussians) and drawn at 960x540 read *worse* without the 2D filter's compensation than with it:
+
+| view (960x540, against the references with the margin) | no compensation (the default) | the whole compensation | paid under the made width (now) |
+|---|---|---|---|
+| k10: dB, SSIM, mean alpha | 29.73, 0.851, 1.000 | 33.06, 0.900, 0.833 | 31.85, 0.882, 0.975 |
+| k45 | 27.95, 0.771 | 29.00, 0.819 | 28.57, 0.800 |
+| a (not taken) | 29.02, 0.851, 0.940 | 31.12, 0.891, 0.810 | 30.32, 0.876, 0.920 |
+| b (not taken) | 28.86, 0.817, 0.982 | 29.83, 0.867, 0.867 | 29.37, 0.847, 0.966 |
+
+A scene drawn at fewer pixels than it was found at has several discs a pixel; each spread a third of a pixel
+and as opaque as it was made, the pixel is the nearest of them and not their average, and what is small and
+bright (the windows at the far end) is lost. The whole compensation averages them and thins the scene as
+before (a sixth of the frame seen through).
+
+**What is done.** `RenderSettings::madeSpread`: the standard deviation, in pixels, a cloud's discs were made
+at. A cloud drawn without the compensation pays `min(filtered / paidAt, 1)` with `filtered` the filter's own
+share (`sqrt(det before / det after)`) and `paidAt` that share for a round disc of the made width
+(`s^2 / (s^2 + 0.3)`): a disc that projects as wide as it was made or wider keeps its opacity, a narrower one
+pays in proportion. The rasteriser and the GPU reference do the same (`splat_project.slang`,
+`reference_project.slang`, `FrameParams::paidAt`). A scene keeps the width in its manifest (`spread`, what
+`shoot --spread` was when it was begun), every frame `neural-scene` draws of it takes it from there -- the
+looks of a shoot as well -- and `render --made-spread` says another. 0, and a scene that does not say, pay
+nothing: what was shot before is drawn as before.
+
+**Measured**, the same QA as the section above, the defaults then and now (dB by `athenea compare` where the
+scene holds something; held is the mean alpha):
+
+| stage | then | now |
+|---|---|---|
+| materials h0..h3 | 26.12, 24.62, 25.39, 23.33; held .894 .988 .987 .941 | 26.94, 25.26, 25.79, 23.78; held .890 .981 .982 .928 |
+| kitchen h0..h2 | 25.94, 25.75, 24.68 | 26.01, 26.14, 25.22 |
+| chess h0..h2 | 23.38, 22.12, 21.50 | 23.62, 22.55, 21.64 |
+| animated, frames 1, 12, 24 | 28.71, 27.69, 27.40 | 29.41, 28.30, 27.93 |
+| fox (skinned), frames 1, 12, 24 | 37.35, 35.57, 34.75 | 36.28, 35.01, 34.22 |
+| Sponza shot at 960x540, k10 k45 a b (render only) | 31.65, 29.77, 30.72, 30.09 | 32.64, 29.93, 31.01, 30.24 |
+
+Materials: 1 087 047 gaussians for 1 059 238 (the looks ask the same picture a render shows, and hold a little
+less). Without a mask, over black, Sponza reads the same way (k10 31.67 to 32.66). A wider made width reads
+higher still and holds less (Sponza k10 at 1.0: 33.39 dB, mean alpha 0.880 for 0.967): the figure where the
+scene holds something rewards a thin scene, which is why the width is the one the discs were made at and not
+the one that reads best. `[neural]` 4207 assertions in 18 cases pass on Metal, and the new case
+"a cloud drawn without the filter's payment pays it only under the width it was made at".
+
+Not done: **the Fox falls a dB** (frame 1, its own camera), and all of it is at its rim: where the scene's
+alpha is 0.95 or more the two read alike (44.58 dB then, 44.53 now, SSIM 0.982 and 0.991), and the dB is lost
+in the pixels between 0.5 and 0.95, which a figure standing against nothing has all around it. It comes from
+the shoot and not from the drawing (the scene shot before, drawn with `--made-spread 0.5`, reads as it did);
+which look leaves the rim thinner is not found. The web player does not do this (Spark has the two extremes, `blurAmount`
+and `preBlurAmount`, and the player keeps the second for such a scene), so a scene seen from far in a
+browser is still the nearest disc a pixel; a cloud does not carry the width (`GpuSplats`), the frame does,
+so two scenes made at different widths in one frame share one; CUDA and Vulkan are not run yet. Seen while
+running `[render]~[neural]` on Metal and not looked into (backlog NEU25): test_flatten.cpp:78 (roughness
+floor 1.0) and :185 (p99 5 for 4) fail, beside the refit case of NEU18; none of them sets a made width.
+
+## The options of shoot on Windows through Vulkan, the new commit on the three backends, four more stages (15 Nov)
+
+**`qa_options.py` on the RTX 3070 laptop (Vulkan), the materials stage at 640x360**, 12 views of the walk,
+at the defaults of the section before last (no made width yet). All 26 rows end well. Those that say something:
+
+| option | seconds | gaussians | h0: dB, SSIM, held | h3: dB, SSIM, held |
+|---|---|---|---|---|
+| `the defaults` | 160 | 440900 | 25.42, 0.8975, 0.894 | 23.06, 0.8184, 0.938 |
+| `--samples 8` | 50 | 438893 | 24.44, 0.8754, 0.894 | 22.99, 0.8149, 0.938 |
+| `--samples 128` | 1748 | 442310 | 24.79, 0.8836, 0.894 | 22.79, 0.8097, 0.938 |
+| `--bounces 1` | 261 | 440900 | 24.66, 0.8954, 0.894 | 22.43, 0.8118, 0.938 |
+| `no --denoise` | 208 | 440900 | 25.06, 0.8454, 0.894 | 22.78, 0.7827, 0.938 |
+| `--spread 0.7` | 266 | 434131 | 24.28, 0.8735, 0.901 | 22.44, 0.8024, 0.950 |
+| `--spread 1.3` | 175 | 425596 | 20.51, 0.7347, 0.906 | 19.97, 0.6829, 0.954 |
+| `--turned 1` | 274 | 461340 | 25.76, 0.8965, 0.887 | 23.60, 0.8241, 0.927 |
+| `--refine 1` | 293 | 546766 | 23.37, 0.8698, 0.897 | 24.32, 0.8623, 0.947 |
+| `--refine 3` | 370 | 409690 | 26.68, 0.9094, 0.895 | 22.48, 0.8045, 0.935 |
+| `--repaint 0.3` | 202 | 409674 | 21.25, 0.8026, 0.888 | 25.08, 0.8638, 0.938 |
+| `--free-each-frame` | 282 | 440900 | 25.42, 0.8975, 0.894 | 23.06, 0.8184, 0.938 |
+
+`--coarsest`, `--pyramid`, `--covered-enough 0.98`, `--glass-opacity`, `--free-each-frame` and
+`--bounces 6` leave the same scene to the gaussian or within 0.02 dB, as on Metal. The paths a pixel move h0
+by a dB with no order (8: 24.44, 16: 24.92, 32: 25.42, 64: 24.12, 128: 24.79): the number of passes, not the
+noise, as on Metal (which frame each gaussian is left from). **The seconds are not the options'**: rows that
+make the same scene took 160 s at the start and 282 to 374 s later, and `--samples 128` 1748 s for 398 at
+64 -- the machine slows as the pass goes on (heat or memory, not looked into; backlog NEU16 is the same kind).
+
+**The made width on the three backends.** `[scene]` passes on Metal, on CUDA (WSL) and on Vulkan (Windows),
+238 assertions in 10 cases each; the new case of the made width passes on Metal and CUDA; the workflows end
+well 26 of 26 on Vulkan. `[render]~[neural]` on CUDA fails at the same two places as on Metal
+(test_flatten.cpp:78 and :185), so they are not Metal's and not this change's (NEU25).
+
+**Four stages more through `qa.py --frame`** (Metal, 640x360, 12 views, views not taken):
+
+| stage | gaussians | h0, h1, h2: dB where the scene holds | what the pictures show |
+|---|---|---|---|
+| Displaced/Cobbles.usda (a displaced floor and ball, textured) | 108 733 | 27.99, 27.20, 26.74 | as the reference |
+| Datsun240K (usdz unpacked) | 106 154 | 22.99, 22.52, 24.19 | the chrome brighter than the reference from a view not taken (another eye's highlights, NEU24); the panes leave holes in the roof |
+| CarConcept/CarLit.usda | 66 790 | 27.36, 25.66, 25.98 | **not a measure**: `--frame` frames a box far larger than the car (its lights), the car is a few pixels |
+| Buick/BuickLit.usda | 66 999 | 22.16, 20.12, 22.36 | the same |
+
+Not done: the two cars framed by a camera of their own; the Datsun's panes looked into; the options pass run
+again with the made width.
+
+## The web player keeps a centre whole: Spark's extended splats (15 Nov)
+
+The chrome-knight Sponza shot at 1920x1080 (11 795 537 gaussians, the made width in its manifest), exported
+by frame with a level of 3 M and `--exposure 3`, and looked at in the player (Chrome headless on the Mac,
+1280x720, riding the camera of the last frame, 30 cm from a knight): **the knights were rows of gaussians
+with gaps between them**, where the engine draws the same view closed (`render`, with and without
+`--glass`). Not the shading (the same with `?glass=0`) and not gaussians missing (the index sums to the
+scene: 9 314 549 and 789 741 of glass and 1 691 247 mirrors).
+
+Spark's packed splat keeps a centre in three half floats: a part in 2048 of its distance from the origin.
+The stage is in centimetres and twenty metres across, so past 1024 units a centre falls on a grid of a
+centimetre, and the gaussians a near camera found are a third of a millimetre wide. The player now makes
+each mesh with `extSplats: true` (Spark's two-texture encoding): the same view closed, and the same rate
+(37.3 frames a second for 38.6 with the whole 11.8 M, headless).
+
+Not done: the published page does not have this -- its scenes were shot from further and at 960x540 and
+show it less, and it is published again only through sysop with the user's word; on a phone the extended
+splats take twice the texture memory and it is not tried there; the chrome's mirror shading in the player
+is in facets from that near, where the engine's `--glass` is smooth (not looked into); a level of 800 000
+gaussians could not be written for this scene (the coarsest it holds draws 1 067 431).
+
+## A found scene keeps what its surfaces are apart from their light, and lamps are added to it (15 Nov)
+
+**Why.** A gaussian kept the light a look saw leave it: the surface's colour times the light of that moment.
+A change of light could then only be a change of colour -- the gaussian taken out and made again whole
+(`--repaint`), though where it stands and what it is made of had not changed. The user's direction: what a
+gaussian keeps of the material apart from the light of each moment, so a change of light touches one part.
+
+**The base colour.** The path tracer's plane of what a surface lets through (PathAux's sixth) now holds, for
+what is opaque, its base colour: what its matt lobes return (a lobe's weight is its colour times its share),
+or, of a metal, what the stack returns towards the eye. It goes into the record's tint, which what is opaque
+left at nothing: the record is the same thirty floats and no file changes. A scene begun now says so in its
+manifest (`baseColour`).
+
+*What was wrong before, found on the way*: the metal's colour of 14 Nov read `materialSampleOf(...).albedo`,
+which is nothing in this kernel -- every opaque record of a real shoot had a tint of zero, and the mirrors
+of `render --glass` were white by the kernel's fallback (its test hands the tint itself and passed). The
+chrome knight's 25.54 to 25.82 dB of that section was a white mirror's; it is not measured again yet.
+
+**Lamps** (`render --lamps`, `SceneGlass::setLamps`, scene_glass.slang's `sceneLit`). Over the cut the glass
+is shown, before the glass: each gaussian that is neither glass nor a polished metal gains
+`base colour x L (R / d)^2 cos` of a sphere of radius R and radiance L at a distance d (UsdLux's intensity
+times colour, not normalised; a cone for a spot; a distant light by its irradiance), where a ray from the
+gaussian to the lamp's middle meets nothing of the scene (`glassNearest`, with the clearance over the
+gaussian's own plane a mirror ray has). `--lamps-only` leaves the found light out. The test
+(`[lamps]`): a floor, a wall and a lamp behind it -- 0.442 added for 0.447 worked out by hand, nothing in the
+wall's shadow.
+
+**Measured** (`qa_relight.py`: the same lamps written as UsdLux lights in a layer over the stage, path traced
+at 128 paths and 8 bounces from views the walk did not take, Metal, 960x540; dB where the scene holds
+something, against the stage *with* the lamps):
+
+| stage, view | the scene as found | with `--lamps` | against one bounce | mean light: scene with lamps, stage with lamps |
+|---|---|---|---|---|
+| materials (a warm sphere, a cool spot), h0 | 24.08 | 25.46 | 25.24 | 0.295, 0.370 |
+| h1 | 23.27 | 24.05 | 23.69 | 0.296, 0.301 |
+| h2 | 23.02 | 24.41 | 24.03 | 0.296, 0.306 |
+| h3 | 22.23 | 23.18 | 23.04 | 0.266, 0.315 |
+| Sponza with the knights (the same two kinds), k10 | 16.12 | 25.45 | 26.45 | 0.0188, 0.0283 |
+| k45 | 15.02 | 20.87 | 22.05 | 0.0174, 0.1481 |
+| a (not taken) | 15.45 | 23.68 | 24.81 | 0.0182, 0.0315 |
+| b (not taken) | 15.14 | 22.23 | 23.47 | 0.0192, 0.0379 |
+
+The lamps cost 6 to 10 ms for 992 917 gaussians (materials) and 14 to 17 ms for 1 777 799 (Sponza), beside
+some 260 ms and more of the tree over the cut; the stage with the lamps path traced took 454 s and 954 s for
+its four views. In Sponza, lit by little else, the lamps are most of the picture, and the scene with them
+reads as the path traced stage does: the warm side, the spot's circle, the knights' shadows.
+
+Not done: what the lamps' light bounces on to (the scene reads a third darker than the stage in Sponza:
+0.019 for 0.028 to 0.038); a soft shadow (one ray to the lamp's middle); a lamp's highlight, and a rough
+metal as anything but matt; the lamp itself is not drawn (k45 looks at one: 0.148 of mean in the stage);
+the glass knight is darker than the stage's; **a change of the stage's own light over time is still a
+repaint** -- a layer of light a time over the same gaussians is the next step; the web player and `export`
+know nothing of lamps; CUDA and Vulkan are not run yet; `qa_relight.py` writes no distant light.
+
+**A penumbra and one bounce** (the same day). `sceneLit` now sends `--lamp-shadow-rays` rays (8) to points
+over the disc a lamp shows a gaussian and leaves the lamps' direct light a gaussian in a buffer; a second
+kernel, `sceneShown`, gathers `--lamp-bounce` rays (16) by the cosine about the normal, each reading that
+direct light on the first gaussian it meets, and writes the colour: found light, lamps, their bounce.
+
+| Sponza, view | one ray, no bounce: dB, SSIM | 8 rays and 16 gathered | mean light, of the stage's 0.0283 (k10) and 0.0379 (b) |
+|---|---|---|---|
+| k10 | 25.45, 0.772 | 25.79, 0.793 | 0.0188 to 0.0195 |
+| k45 | 20.87, 0.637 | 21.04, 0.655 | |
+| a | 23.68, 0.753 | 23.92, 0.768 | |
+| b | 22.23, 0.711 | 22.41, 0.734 | 0.0192 to 0.0199 |
+
+129 ms for the lamps and 255 ms for the bounce (1 777 799 gaussians; 12.6 M of 28.4 M rays met the scene --
+the atrium is open and the walk did not see all of it), where one ray took 14 to 17 ms. Materials: the same
+to 0.05 dB. **Against the lamps' direct light alone** (the stage path traced with no bounce), the scene's
+direct light reads 28.20 dB at k10 and 25.59 at b, and 0.0245 of mean for 0.0285: the radiometry holds, and
+what is missing of the stage is past it. The stage's first bounce adds 0.0064 of mean at k10 and the
+gathered one 0.0009: most of the stage's is not matt light off matt walls but what the polished floor and
+the knights show of the lit room, which a matt gather does not make.
+
+Not done, seen in the pictures: what a look found *through* glass (the floor under the glass knight) has no
+base colour -- the planes describe the glass, not what is behind it -- and stays as dark as it was found, a
+pool under the knight where the stage has the lamp's light through it; the shadows are black where the
+stage's are filled; the chrome knight shows the lit room only where its mirror ray meets a gaussian.
+
+## A scene's light taken again a frame: a layer of light a time (`shoot --relight`, 15 Nov)
+
+**What.** For a stage whose light changes, a frame first takes again the light of what the scene holds:
+`Discovery::relight` (scene_light.slang's `sceneRelight`) reads the frame at each standing gaussian's own
+middle and, where the frame shows a surface at the gaussian's depth (within `--tolerance`), the gaussian's
+colour becomes the frame's there. The gaussian stays -- its place, its shape, what it is made of. What the
+frame said is kept beside the piece as a layer (`<cloud>.l<snapshot>`: which gaussian, and its colour), the
+manifest names the layers a piece has (`pieces[].lights`), and a piece read at a time is its records with the
+layers up to that time laid over them (`render --at`, `--snapshot`, `--frame`, `--frames`). It is done at
+the frame's last look, before the scene is asked what it holds, so a look that asks about colour then finds
+the scene's light the frame's.
+
+**A stage where only the sun moves** (`neural-qa/relit`: the sun turns 90 degrees and falls from 4000 to
+1500 over 24 frames, one camera; each stored frame against the stage path traced at its time):
+
+| frame | nothing done: dB, SSIM | `--repaint 0.3` | `--relight` |
+|---|---|---|---|
+| 1 | 26.43, 0.957 | 26.43, 0.957 | 26.43, 0.957 |
+| 6 | 26.10, 0.955 | 26.64, 0.958 | 27.02, 0.960 |
+| 12 | 23.56, 0.953 | 25.08, 0.957 | 27.38, 0.960 |
+| 18 | 19.61, 0.945 | 23.17, 0.914 | 27.84, 0.960 |
+| 24 | 16.11, 0.929 | 22.68, 0.864 | 28.38, 0.961 |
+
+With `--relight` no gaussian is made and none taken out (521 082 stand at every frame, each saying its light
+anew); `--repaint` takes out and makes 20 000 to 157 000 a frame. 8.8 to 9.8 s a frame all three ways: the
+frame is path traced whichever. (The stage as first written had a sun of 5, which in UsdLux is a radiance
+over a disc of 2 degrees and lights nothing: the first run of it measured no change at all.)
+
+**Sponza, lit by the two lamps of the section above, three ways to the lit scene** (against the stage with
+the lamps path traced, 960x540):
+
+| view | `render --lamps` over the scene found without them | the same scene, its light taken again from the stage with them | the stage with them shot anew |
+|---|---|---|---|
+| k10: dB, SSIM | 25.79, 0.793 | 28.33, 0.890 | 28.98, 0.906 |
+| k45 | 21.04, 0.655 | 21.90, 0.764 | 23.57, 0.788 |
+| a (not taken) | 23.92, 0.768 | 25.83, 0.855 | 26.93, 0.879 |
+| b (not taken) | 22.41, 0.734 | 23.99, 0.824 | 24.77, 0.839 |
+
+0.4 s, 574 s and 549 s. Read as of the snapshot before the lamps (`--snapshot 23`), the relit scene is the
+scene found without them (63.9 dB at k10 against it). The layers are 297 MB over the scene's 399 MB (20
+frames; 1.49 M gaussians took the first frame's light, 0.49 M the last's): kept as only the gaussians a
+frame spoke of, where a float4 a gaussian of the piece was 800 MB.
+
+Not done: the light is said where a frame looks and nowhere else -- what the walk does not see again keeps
+the light it had; what lets light through is not said anew, nor what was found through glass (the floor
+under the glass knight stays as dark as it was found); the coarser gaussians a finer look was laid over
+keep their old light, so a level of detail drawn from them shows it; `export` and the web player do not
+read the layers; 119 000 gaussians more stand after the relit pass of Sponza than before it, not looked at;
+a surface whose material changed in place has its colour said anew and its material left as it was; a layer
+is not thinned by what a later one says of the same gaussian; CUDA and Vulkan are not run.
+
+**A lamp's highlight** (the same day, after the layers). `sceneLit` adds, towards the eye the scene is cut
+for, a GGX lobe at each gaussian's roughness: 0.04 of reflectance head on for what is not metal, the base
+colour for a rough metal (which is now lit by that alone: it has no matt share); a sphere's highlight is
+widened by the angle the lamp shows and thinned to keep what it sends. It is left out of what the bounce
+gathers.
+
+| view | `--lamps` before the highlight: dB, SSIM | with it |
+|---|---|---|
+| Sponza k10 | 25.79, 0.793 | 26.64, 0.810 |
+| k45 | 21.04, 0.655 | 21.26, 0.656 |
+| a | 23.92, 0.768 | 24.45, 0.786 |
+| b | 22.41, 0.734 | 22.68, 0.744 |
+| materials h0..h3 | 25.49, 24.02, 24.44, 23.20 | 25.76, 24.53, 24.77, 23.31 |
+
+Sponza's mean light with the lamps goes from 0.0195 to 0.0219 at k10, of the stage's 0.0283. 147 ms for the
+lamps where it was 129.
+
+**Tried and taken back** (15 Nov): a base colour and a normal for what a look finds *through* glass (two
+more planes of the path tracer, written into the record of the gaussian made behind a pane). The relit
+figures of materials and Sponza did not move in any digit: a scene holds a few hundred such gaussians (705
+of 1.1 M, 416 of 2.5 M), and none of them took a base colour. The dark pool under the glass knight is not
+those: it is the solid glass itself, which keeps the picture it was found with and shows the room only
+where its bent ray meets a gaussian -- and no camera of the walk saw the floor behind it.
+
+**The three backends, and the workflows.** With the lamps, the layers of light and their two cases,
+`[scene]` passes on Metal, on CUDA (WSL) and on Vulkan (Windows): 285 assertions in 12 cases each (before
+the highlight, which is run on Metal alone so far). `qa_flows.py` has five ways more -- `render --lamps`,
+the same with `--lamps-only` and one ray, `shoot --relight` over a scene just shot, its stored frames
+after, and a snapshot before -- and ends well 31 of 31 on Metal. The 119 000 gaussians more that stood
+after Sponza's relit pass are not the lamps (a shoot of the stage with a lamp leaves 2 112 486, as one
+without): they are what a second pass over the same cameras makes of a scene the first left, light or no
+light, and are not looked into.
+
+**The coarser gaussians take the light again too** (15 Nov). `sceneRelight` asked the gaussians a piece's
+cloud draws, and in a shoot those are the finest: what a finer look was laid over -- what `render --lod` and
+a level of an export draw from far -- kept the light it was found with. The kernel now takes the piece's
+record of what is gone and asks every gaussian still there, and the relit pass also reads, asks and lets go
+the pieces nothing of which is the finest (the coarse looks of earlier frames). On the stage whose sun
+moves, 19 of 20 pieces have layers; the last frame reads 28.38 dB as before at the finest, and at
+`--lod 3` and `--lod 8` 20.30 and 17.35 dB, where the *first* frame, whose light nothing changed, reads
+18.06 and 15.42 at those levels (the levels of this stage are poor by themselves: a chequered floor). The
+scene is 360 MB. Not measured: the same levels before the change (the scene of that run was written with
+the layers a float4 a gaussian, which the reader no longer takes).
+
+**Lamps from a USD file** (15 Nov). `render --lamps` takes a `.usd*` as well as the text file:
+`usd::readStageLamps` hands the file's sphere lights (radius by the prim's scale, the cone of a ShapingAPI,
+the way the prim's -z points) and distant lights, and the command makes lamps of them. Sponza's two lamps
+written as a USD layer and as text draw the same picture (57.3 dB one against the other: the spot's axis
+goes through a matrix printed to six digits). Not done: rect, disk, cylinder and dome lights, and a
+normalised light (left out, counted in the printed line); a light's colour temperature; lights that move
+(read at `--at`, or at 0).
+
+**A lamp that moves while the camera walks: what a layer of light cannot say** (15 Nov). Sponza with a lamp
+that goes once round the knights over 20 frames, shot through the 20 cameras of the walk with `--relight`
+(566 s, 2 112 486 gaussians, 556 MB). Each stored frame is right: it is the frame's own picture. But the
+scene **at a time, from anywhere else**, is a patchwork: a wall the camera last looked at ten frames ago
+keeps the lamp where it was then, and the edge of each camera's frame is drawn across the floor as a seam
+of light. The light is said where a frame looks; with one camera that looks at everything (the stage whose
+sun moves) that is the whole scene, and with a camera that walks it is not.
+
+So the two ways are for two things. A light that changes for the whole scene under a camera that keeps
+seeing it -- or a pass over every camera again -- is `shoot --relight`: path traced light, bounces and
+all, as layers a time. A lamp that moves is `render --lamps` over a scene found without it: worked out a
+gaussian at whatever time and from wherever, whole and with no seam (the 48 positions of the lamp round the
+knights, 0.4 s each), direct light with one matt bounce. Not done: the two together -- a shoot that takes
+the stage's known lamps out of the light it keeps, so that what is stored is the light that does not move
+and the lamps are worked out; that is what "the material apart from the light of each moment" asks for in
+full, and it needs the lamps' own share of a frame, which the path tracer does not hand over yet.
+
+**A correction to the Sponza figures of `--lamps`** (15 Nov). `sponza_knights.usda` authors no light: the
+scene was found under the engine's default lights (a sky of 0.6 and a sun of 2.5), and those go when a
+layer adds a lamp. The stage "with the lamps" is lit by the lamps *alone*, and what compares with it is the
+scene with `--lamps-only`, not the found light and the lamps together:
+
+| view | found light and lamps (as tabled above) | the lamps only: dB, SSIM |
+|---|---|---|
+| k10 | 26.64 | 25.32, 0.788 |
+| k45 | 21.26 | 21.05, 0.632 |
+| a | 24.45 | 23.73, 0.758 |
+| b | 22.68 | 22.17, 0.706 |
+
+The found light (a tenth of the lamps' in the mean) stood in for some of the bounce the lamps' light lacks,
+and read half a dB to 1.3 better than it should. The relit pass and the fresh shoot of that section are not
+touched by this: both are the stage with the lamps, as the reference is. The materials stage has lights of
+its own and its figures stand. `qa_relight.py` now tables the lamps alone beside the rest.
+
+## Groups of lights: a layer of light a group, and a level to draw it at (15 Nov)
+
+**What.** The whole of "what a gaussian is, apart from the light of each moment", for lights that stay
+where they are. A scene is shot once without the lamps. Then, a group of lamps at a time, the stage lit by
+that group *alone* is path traced through the same views (`shoot --light-group NAME`) and what every
+gaussian of the scene sends in each frame is kept as the group's layer: light, linear, a gaussian, with
+whatever it bounced off on the way. Nothing of the scene is touched and no look is taken
+(`Discovery::relight` with `keep`: the frame's light handed, the cloud left). The layer is gathered a piece
+over the run -- a later view's word of a gaussian stands -- and written once, a file a piece
+(`<cloud>.g.<name>.1`), of the gaussians that send any of it. Drawn, the scene is its own light and each
+group's times a level and a tint (`render --group NAME=LEVEL` or `=R,G,B`; `Discovery::addLight`, a kernel
+over the cloud as it is loaded): light is linear, so a level is exact and nothing is traced.
+
+**Sponza**, the scene found under the default lights (960x540, 20 cameras), a warm sphere and a cool spot
+as two groups; against the stage path traced (64 paths, 8 bounces) with the default lights written out and
+the lamps, in two states:
+
+| view | groups off, against the stage with both on | both at 1 | lamp at a half and the spot turned red, by levels alone, against that state path traced | levels left at 1, against that state |
+|---|---|---|---|---|
+| k10: dB, SSIM | 15.85, 0.208 | 27.80, 0.868 | 28.75, 0.886 | 23.75, 0.817 |
+| k45 | 14.90, 0.190 | 22.31, 0.768 | 23.56, 0.795 | 20.72, 0.719 |
+| a (not taken) | 15.23, 0.187 | 25.51, 0.841 | 26.61, 0.864 | 22.79, 0.792 |
+| b (not taken) | 14.97, 0.193 | 24.00, 0.812 | 25.26, 0.835 | 21.64, 0.759 |
+
+That is where a scene shot anew under the lamps stands (28.98, 23.57, 26.93, 24.77 in the section before
+last, against its own reference), and every other state of the two lamps comes from the same files. 543 s
+and 547 s a group (a walk path traced each); drawing at other levels costs what drawing the scene costs.
+The two layers are 93 MB over the scene's 399 MB (3.16 M gaussians each, in 122 pieces). The first cut of
+it wrote a file a frame a piece and left glass out: 1.2 GB, and 27.53, 21.52, 25.08, 23.44 with both on.
+The test (`[relight]`): a layer kept leaves the wall as it was, and added at a half and a tint makes it its
+own light and half the frame's, a channel at a time.
+
+Not done: a group whose lamps move (that is `render --lamps`); the views of a group's run must be the
+scene's own -- a gaussian no view of that run shows has none of the group's light; what a mirror or a lens
+shows is the picture the last view left of it, as the scene's own is; `export`, `bake` and the web player
+read the scene's own light and no group; the levels are a command line's, not a stage's states
+(usd/LightGroups.h has those for a car's lamps: not joined); with `--at` the groups are as they are now, a
+group has no time; CUDA and Vulkan not run.
+
+**One stage for the scene and its groups** (15 Nov). `shoot --lights-on PATHS` and `--lights-off PATHS`
+switch the stage's own lights (`StageRenderer::setLightOn`: the prim deactivated in the session layer), so
+a group needs no stage of its own: the scene is shot with the lamps off, each group with its lamps alone
+on. `qa_flows.py` does that on the materials stage with its sun as the group, and draws the scene with the
+group at a half and at a tint: 35 of 35 end well on Metal. Windows through Vulkan passes `[scene]` (295
+assertions with the group's case) and its 31 workflows of before; CUDA is being run.
+
+## Groups on a stage with lights of its own: what glows, the eye's light, and which view speaks (15 Nov)
+
+The materials stage shot without its sky (`--lights-off /World/Sky`), the sky kept as a group, against the
+stage shot whole (26.94, 25.26, 25.79, 23.78 dB at h0..h3 against the path tracer): the two should read
+alike, and did not. Three things, found one at a time:
+
+| h0..h3, dB against the path traced stage | |
+|---|---|
+| the scene without the sky and the sky's group at 1 | 22.20, 22.17, 23.54, 24.19 |
+| ... less the `dark` group | 22.63, 23.16, 24.04, 24.65 |
+| ... and the nearest view's word of each gaussian | 23.89, 23.88, 23.99, 24.39 (SSIM 0.898, 0.878, 0.873, 0.854 for the whole scene's 0.924, 0.888, 0.884, 0.846) |
+
+**What glows is in every frame.** The stage's emissive ball lights the scene's own frames and every
+group's: a group's layer held its light a second time (with the sun as the group -- a sun that lights
+nothing, backlog NEU26 -- adding the group took h0 from 26.94 to 25.44). A group named `dark`, shot with
+every light off, is what glows alone; drawn, it is taken out once for each group drawn, at that group's
+level (last, so that no step goes under nothing).
+
+**A stage with no light on was not dark.** The path tracer lights a stage that has no light from the eye
+(`PathSettings::headlight`): another light for every camera. That is what Sponza's scene was found under
+all along -- not "the default lights, a sky and a sun", as the sections above say: those are `athenea
+stage --default-lights`' and a shoot never set them. A render setting, `athenea:headlight`
+(`StageRenderer::setHeadlight`), turns it off, and `shoot` does so when lights are switched by path or a
+group is shot (`--no-headlight` for a stage with none).
+
+**Which view speaks for a gaussian.** A group's layer kept the last view's word. A view from far reads, at
+a gaussian's middle, a pixel several gaussians wide, and the layer was the scene low-passed. The kernel now
+hands how far the eye was, and of the views that show a gaussian the nearest one's stands -- the one that
+sees it as large as the look that made it did.
+
+What is left between the two (1.4 to 3 dB at three views, none at the fourth) is, by the pictures, the
+polished balls -- which view's picture a mirror keeps is not the same in a layer as in the scene -- and the
+noise of three frames where one was (the scene's, the group's and the dark one's, at the glowing ball).
+
+Not done: **Sponza's groups measured again with its scene found dark** (`--no-headlight`): the figures of
+the section before were a scene found under the eye's light, with the two groups over it, against a stage
+lit by a sky, a sun and the lamps -- three different lights off the lamps, which the lamps drown;
+`--relight`'s layers still keep the last view's word (there a later frame is a later time); a group shot
+before this change has no distance in its file and is read as before.
+
+**Sponza's groups, measured clean** (15 Nov). One stage with a sky, a sun and the two lamps authored; the
+scene shot with the lamps off by path (`--lights-off /QaLights/Warm,/QaLights/Lamp2`), each lamp a group
+(`--light-group warm --lights-on /QaLights/Warm`), the nearest view's word kept; against the same stage
+path traced in two states:
+
+| view | groups off, against both on | both at 1 | the lamp at a half and the spot red, by levels, against that state |
+|---|---|---|---|
+| k10: dB, SSIM | 16.62, 0.293 | 27.94, 0.875 | 28.78, 0.888 |
+| k45 | 15.39, 0.261 | 22.76, 0.765 | 24.00, 0.786 |
+| a (not taken) | 15.91, 0.274 | 25.81, 0.844 | 26.77, 0.864 |
+| b (not taken) | 15.55, 0.277 | 24.24, 0.814 | 25.42, 0.831 |
+
+A tenth of a dB to half over the first measure (27.80, 22.31, 25.51, 24.00 and 28.75, 23.56, 26.61, 25.26),
+whose scene was found under another light than its reference's. 2 112 486 gaussians; the scene and its two
+layers are 496 MB.
+
+Not settled: which light Sponza's first scenes were found under. The stage's files author no UsdLux light
+that a search of them finds, and the path tracer lights such a stage from the eye; but `shoot` counts six
+lights on this stage where four are authored over it (`lights: 4 of the stage's on, 2 off` with two
+switched off), so two prims of Sponza's own carry the light API. Whether those light anything, and so
+whether the eye's light was ever on for it, is not looked into; the scenes of this section do not depend
+on it.
+
+**The scene handed on with its light** (15 Nov). `export` read a piece's records off its file and knew
+nothing of the layers beside it. It now lays the light the scene took again over them (the copy a loaded
+piece gets: `layLightOver`) and, on the device, adds each group at its level (`--group`, as `render`'s) to
+the record's own light times `--own-light` (`Discovery::addLightToRecords`, scene_light.slang's
+`recordsAddLight`), before the cut sets the records apart by kind and they are packed. Sponza with its two
+groups, handed on by frame at three states -- both lamps on, both off, the lamp at a half and the spot red
+-- and looked at in the player (Chrome headless, the last frame's camera): three scenes lit as the engine
+draws those states. A file has one state: a viewer that changes a lamp's level reads no layer.
+
+Not done: the player given the layers themselves and a control a group; the levels of detail and the
+history of an export (`--levels`, `--history`) go through the same piece and are not looked at with
+groups; `bake` (`.athc`); a group's layer for the gaussians of glass and mirror a player shades by
+itself.
+
+**The player sets the lamps** (15 Nov). `export_groups.py` hands a scene on as the player wants it for
+groups: the scene with every group off, and each group alone (`--own-light 0`, the group at 1), each an
+export of the same options and so the same gaussians in the same order, the groups named in the scene's
+index. The player (`neural-scene-viewer/index.html`) reads each group's part once for its colours -- the
+first word of Spark's packed splat, a byte a channel -- into a texture, a texel a gaussian, and a modifier
+on the part's mesh adds them to the gaussian's own colour as light, each times a level and a tint its
+panel sets (a row a group in Options). Sponza with its two lamps, Chrome headless on the Mac, the last
+frame's camera: both on as the engine draws it; both levels at 0, the scene found without them; the lamp
+tinted red and the spot at a half, by the panel alone. Nothing is loaded again.
+
+Not done: the gaussians of glass and polished metal, which the player shades by the eye from a cube of the
+room -- they follow the room's light when the cube is drawn again, and a group's own layer for them is not
+read; a level of detail (`--levels`) has no group textures and is drawn with the groups off; a group's
+light is a byte a channel after the export's exposure, so a lamp cannot be raised far past what was shot;
+a phone; the published page, which is the user's to ask of sysop.
+
+**And a lamp of the player's own** (15 Nov). `export --base-colour` hands on each gaussian's base colour as
+its colour (`recordsBaseColour`; glass black), the same parts as the scene's. The player reads it a part
+into a texture as it reads a group, and its modifier adds a lamp: the base colour times what the lamp
+sends, over the square of how far it is, by how the gaussian's disc faces it. The lamp rides with the eye
+or is left where the eye was; a level and a colour in the panel, scaled by the stops the scene was handed
+on with. Sponza with its groups off and the lamp at the eye, in Chrome headless: the room lit from where
+one stands. **No shadow**: the lamp lights through walls (the disc's two sides alike); the engine's
+`render --lamps` is the one that asks the scene what stands in the way.
+
+Not done: a shadow in the player (a cube of depths from the lamp); the lamp's highlight; more than one
+lamp; glass and chrome under it, which follow the cube of the room when it is drawn again.
+
+**The three backends, with groups** (15 Nov, the evening). `[scene]` passes on Metal, on CUDA (WSL) and on
+Vulkan (Windows) with the case of a group's layer in it: 295 assertions in 12 cases each. `qa_flows.py`,
+with the sun of the materials stage as a group (`--group-light /World/Sun`) -- the scene shot without it,
+its layer, the scene drawn and handed on at a level, and the group handed on alone -- ends well 37 of 37 on
+Metal and on Vulkan. (A run of CUDA in between had tested the code of the step before: the copy kept the
+Mac's file times and nothing was rebuilt; the copy now sets them.)
+
+**Published** (15 Nov, by sysop at the user's word over Telegram -- "an index on that neural, what has been
+applied with its history"): https://neural.lucab.co.uk/ is now the index (`applied.html` reading
+`history.json`: what was added and when, with sysop's own entries of what was deployed), the player is at
+`/player.html`, and Sponza with its two lamps as groups (960x540) is `/player.html?scene=lamps`. The page
+and its data are in `scripts/examples/neural-scene-viewer` (`applied.html`, `history.json`); sysop
+assembles the site from `build/web` (`player.html`, `applied.html`, `history.json`, `scenes/` with
+`scenes.json`). Not tried on a phone.
+
+**A group's walk at 1080, and a stall that was not one** (15 Nov). Sponza at 1920x1080 (8 366 012
+gaussians, 123 pieces, 2339 s for the scene): the first group's pass said nothing for 37 minutes and was
+stopped twice as hung -- its process waiting on a Metal command buffer whenever it was sampled. It was not
+hung. The line a view prints went to a buffered stdout, and each view took 4.6 minutes where a frame of
+the scene took 117 s: every view read off the disk, again, the two hundred pieces nothing of which is the
+finest. Those pieces and every piece's record of what is gone are now read once a run and kept, and each
+view's line is flushed: 97 to 125 s a view. An hour and a half of the queue went on the wrong reading of
+it.
+
+## Where a shoot's time goes, and the groups of lights found by the scene's own paths (`shoot --light-groups`, 15 Nov)
+
+**Measured first.** A pass of one group of lights over the 1080p Sponza scene (8 366 012 gaussians, 20 views, 32
+paths, 3 bounces, denoised; Metal, M5 Pro) took 2428 s, against 2339 s for the scene itself. With a clock on each
+part of a view (the line a view prints now says them): the scene's pieces brought 0.0 s, the frame path traced
+113.6 s, the light kept 0.1 s. The path tracer alone, one view at 1920x1080 (`athenea stage --technique rt`):
+
+| what | seconds |
+|---|---|
+| the stage loaded, one path, no bounce | 43.1 |
+| 32 paths in passes of 8, 3 bounces, denoised | 147.9 |
+| the same, not denoised | 148.6 |
+| the same in one pass of 32 | 148.6 |
+| 32 paths, no bounce (the first hit and its direct light) | 66.3 |
+| 32 paths, one bounce | 95.4 |
+
+So of 105 s of tracing, 23 s are the first hit with its direct light and each bounce costs about 27 s more; the
+denoiser and the number of passes cost nothing. 66 M paths in 105 s is 2.4 M path segments a second. Before the
+clock I had supposed part of a group's view was the pieces read and the layer merged: it was not.
+
+**What changed.**
+
+- *The groups by the same paths.* The path tracer already gathers what each light group puts in a frame
+  (`athenea:lightGroup`, the output `lightGroup:NAME`, one light chosen a path). `shoot --light-groups NAME=PATH`
+  names the stage's lights at PATH as a group in the session layer (`StageRenderer::setLightGroup`), asks for the
+  planes, makes the scene from what no group holds of each frame and keeps each plane as the group's layer -- the
+  files a pass of `--light-group` writes, read by the same `render --group` and `export --group`.
+- *What no group holds is a plane of its own* (`lightGroupRest`): the frame's colour times the share of it the
+  path tracer's raw sums say no group put there, taken before the denoiser and denoised as the groups' planes
+  are. Two things were tried before it and looked at with the groups off (`--group "*=0"`), against the scene
+  shot with the lamps off: drawing the whole frame's scene less its layers left coloured blotches everywhere
+  (a gaussian's colour and its layer come from different views); the denoised colour less the denoised planes
+  left them on the wall the lamp lights (31.8--35.1 dB against the lamps-off scene, SSIM 0.84--0.89). The plane
+  of its own: 34.2--44.8 dB, SSIM 0.991--0.997.
+- *A denoised frame's group planes are denoised* (they were not: a clean colour over noisy groups), each with
+  the frame's albedo and normal, and then scaled a channel so that with the rest they add up to the denoised
+  colour again (`groupsToWhole`, held to four times). This is the engine's, for every reader of `lightGroup:`
+  outputs.
+- *A group's layer is merged on the device* (`sceneRelight` with `merge`: the nearest view's word stands): the
+  pass of a group read every piece's layer back each view and compared it on the CPU, which this codebase does
+  not do.
+
+**Sponza with two lamps, 960x540, 20 views, four views not taken** (PSNR against the stage path traced with 128
+paths; the baseline is the scene shot with the lamps off and a `--light-group` pass a lamp):
+
+| | seconds | lamps on: k10, k45, a, b | warm at half, spot tinted |
+|---|---|---|---|
+| three passes | 548 + 566 + 702 = 1816 | 27.94, 22.76, 25.81, 24.24 | 28.78, 24.00, 26.77, 25.42 |
+| `--light-groups`, one pass | 584 | 27.44, 22.86, 25.59, 23.99 | 28.09, 24.06, 26.42, 25.02 |
+
+A third of the time, and between 0.7 dB under and 0.1 dB over. The three passes' seconds are the views' own and
+leave out the stage loaded three times (43 s each at 1080p); the one pass's are the whole run.
+
+**A sun too weak to see.** On the materials stage the QA flows name `/World/Sun` as the group, and one pass keeps
+its light for 5 407 gaussians where the pass of its own kept it for 355 607. The planes' means for a view (the
+group's, what no group holds, the colour): 0.0004, 0.368, 0.403 with the sun as the group; 0.204, 0.198, 0.403 with
+the sky. That sun lights next to nothing (NEU26: a `DistantLight` of intensity 5), and what the pass of its own kept
+was the light of what glows, which every group's own frame holds and a `dark` group takes out; a light's plane
+holds that light's alone. The colour's mean is more than the sun's plane and the rest by the sky seen behind the
+stage, which goes into the dome's group. A group's plane is not read by its alpha (the path tracer's count, not a
+coverage): the frame's depth says where a surface is.
+
+**Not done.** Why one pass reads up to 0.7 dB under is not settled: a group's paths are a share of the frame's
+where a pass of its own has them all, which is the likely part, and it was not measured with more paths. The
+1080p scene with its groups was not shot again this way yet. The path tracer's 2.4 M segments a second is not
+explained: a shadow ray always walks nearest-first where glass may let it through (`glassShadows` is on by
+default), but it reads a material's row there and evaluates nothing, so what it costs is not known until it is
+measured. Next: the found scene as the path tracer's cache of what a bounce meets. `bake` still ignores groups.
+
+## The found scene as what a path's bounce meets (`shoot --scene-cache`, 15 Nov)
+
+**The idea** (the user's: the scene itself is the cache a path tracer's report asked for). A found gaussian holds
+the light leaving a surface. A path that bounces off a surface and lands where the scene already holds one can take
+that light and end, with no material evaluated, no light sampled and no further bounce.
+
+**What was built.** The light of the gaussians found so far is kept as a mean a cell of a cube over the stage's
+bounds (`scene_cache.slang`: `cacheAdd` sums each standing gaussian's light into its cell in 1/256ths with a
+stochastic rounding, `cacheResolve` divides by the cell's count; glass and mirrors are left out, their colour being
+what stands behind them or what an eye saw in them), with a plane more a light group, read from the groups' layers.
+The path tracer reads it where a bounce lands (`PathSettings::sceneCache`), only for a direction drawn from a
+broad lobe (not a delta, a density under 1), and adds the groups' planes to the groups' outputs. The cells ride
+after the planes of the tracer's `sum` buffer: its kernel is at the 31 buffers a Metal kernel binds. A piece is
+added once, when the view that found it is done, so a view reads what the views before it found.
+
+**Measured.** Sponza with two lamps as groups, 960x540, 20 views, 32 paths, denoised; four views not taken against
+the stage path traced with 128 paths and 8 bounces; the mean is the red of the four pictures' light, k10 first:
+
+| | seconds in the views | k10, k45, a, b (dB) | mean light, k10 |
+|---|---|---|---|
+| 3 bounces | 547 | 27.44, 22.86, 25.59, 23.99 | not taken |
+| 3 bounces, 160 cells an axis | 568 | 27.48, 22.88, 25.62, 24.00 | 0.0356 |
+| 1 bounce | 283 | 27.19, 22.55, 25.26, 23.55 | 0.0337 |
+| 1 bounce, 160 cells an axis | 280 | 27.28, 22.62, 25.34, 23.61 | 0.0342 |
+
+- *With three bounces it changes neither the time nor, past 0.04 dB, the picture.* The paths do read it: with the light a hit
+  takes tinted magenta, a frame is magenta all over. But a view takes the same 23--28 s. The likely reason, not
+  confirmed by a capture: the tracer is one kernel that loops over its samples and bounces, and on a GPU a path that
+  ends early waits for the others of its group; while some of them miss the cache, the group runs its bounces.
+- *With one bounce it gives back a little over a quarter of the light the bounces not taken would have brought*
+  (0.0337 to 0.0342 of the 0.0356 three bounces with the cache read), and 0.06 to 0.09 dB. The halved time is the one bounce's, not the cache's.
+- In this stage the second and third bounces are 5% of the light: there is not much for a cache to give back.
+
+**Not done.** A capture of the kernel on Metal, which would say whether the waiting is what holds the time. The
+paths one a thread, dispatched a bounce with the live ones compacted (what Unreal's path tracer does, by
+athenea-research's proposal 117), which is what would let a path that ends early cost less; it is a rewrite of the
+kernel's loop. The cells hold only what a camera has seen: a bounce that lands behind the walk finds nothing, and
+nothing fills the cells from the paths themselves. A cell is 23 cm in Sponza and holds one mean for both sides of
+anything thinner. Off by default.
+
+## The player draws the coarsest level first, and the player as one file (15 Nov)
+
+**What changed.** Where a scene's index carries levels of detail, the viewer page reads and draws the coarsest
+first and gathers the detail the device is to draw out of the scene, which takes the coarse level's place when it
+is whole (`setDetail(n, keep)`: `outgoing` stays drawn, `staging` gathers); the fall to a coarser level when frames
+are slow keeps what is drawn the same way. Every address of a scene's file goes through one function (`urlOf`):
+beside the page, at `?base=`, or a folder's files by their names. `make_standalone.py` writes the page as one
+file: each module's source as text in the page, an object URL of each made in the order they import one another
+with the importer's specifier rewritten, Spark's WebAssembly as base64 handed to it in place of the file it fetches
+beside itself. Spark's WebGPU half is left out.
+
+**Measured** (headless Chrome on the Mac, files from a server on the same machine, so no network to speak of):
+
+| scene | the page before: the scene whole | coarsest level drawn | whole, coarse first |
+|---|---|---|---|
+| chrome2, 11.8 M gaussians, one level of 2.8 M | 7.8 s | 1.1 s | 6.0 s |
+| Sponza at 1080p with two lamps, 8.4 M, one level of 1.9 M | 14.0 s | 0.85 s | 13.6 s |
+
+The one file reads the same as the page (first picture 0.55 s, coarse 1.2 s, whole 5.9 s on chrome2), with no error.
+
+**A level of detail is drawn with its lamps on.** A scene's own parts hold its light alone and the page adds each
+group's; a level made of them was the scene unlit, and the picture went from dark to lit when the whole arrived.
+`export_groups.py --levels` makes the levels of the scene with every group at 1.
+
+**Not done.** No figure at a connection's speed: the throttle of the browser's protocol did not reach Spark's
+fetches (the whole scene in 8 s at a nominal 50 Mbit/s, which 250 MB cannot do). The one file opened from a disk,
+with its folder picker, was not exercised. A level of detail has no controls of light (NEU28). Not opened on a phone.
+
+## A group found with the scene reaches the coarser gaussians too (15 Nov)
+
+A level of detail of the 1080p Sponza scene, exported with its lamps on, was dimmer than the scene whole. With
+`shoot --light-groups` only the gaussians a cloud draws were asked for each group's light: the coarser ones finer
+looks were laid over, and the pieces that hold nothing finest, are what a level of detail draws and had none. Now
+every gaussian still there is asked, by its piece's record of what is gone, as a pass of `--light-group` asks:
+the group's light is kept for 12 537 864 gaussians where it was for 9 818 743, the run takes 2195 s where it took
+2046 s, the four views not taken read the same (27.35, 22.91, 25.71, 24.20 dB: they draw the finest), and the level
+of detail the player draws first is lit as the whole scene is. Three passes at 1080p: 2339 + 2428 + about 2428 s.
+
+## A level of detail takes its groups' light, and the published page timed (16 Nov)
+
+`export_groups.py --levels` now hands on the levels of the scene with every group off, of each group alone and of
+the base colours: the same gaussians a level in the three (1 930 530 in parts of 1 188 223 and 638 776 for the 1080p
+Sponza, the same in the four indexes), so the page lays a group's part over a level's as it does over the whole
+scene's, and the panel's levels, tints and lamp work at a level of detail -- which is what a phone draws. The levels
+with the lamps on are kept beside them as `litLevels`: what is drawn first, with no group's part to wait for; the
+level a device rests at is then read behind it. Seen: level 1 with its lamps, and with both at nothing.
+
+**The published page, over the network** (neural.lucab.co.uk, version be7f26f5, headless Chrome on the Mac; the
+three runs one after another, so the later ones may have found the site's cache warm):
+
+| Sponza at 1080p, 8.4 M gaussians, 270 MB | first part | the whole scene, coarse | the whole scene |
+|---|---|---|---|
+| the page as it was (`?progressive=0`) | 4.0 s | -- | 27.7 s |
+| coarse first | 1.2 s | 1.9 s | 18.6 s |
+| the one file | 0.8 s | 1.3 s | 17.5 s |
+
+**Not done.** Glass and mirrors at a level still take no group's light. A level's parts for every group add 64 MB
+to the 270 MB of this scene. Not opened on a phone.
+
+## The one file read from a disk: a folder's parts go to Spark as bytes (16 Nov)
+
+The one-file player opened from `file:` and handed a scene's folder found the scene and read its index, and then
+Spark failed to fetch each part: it reads a part in a worker, and a worker cannot reach the object URL of a file
+handed to a page that was itself read from a disk. A folder's part is now read by the page and handed to Spark as
+its bytes (`fileBytes`). Exercised in headless Chrome: the page from `file:`, the 274 files of the 1080p Sponza
+scene handed to its picker, the scene whole after 13.6 s with no error (coarse after 0.8 s) -- as it reads from a
+server. The automation hands the files to the input as files, not as a directory: the browser's own folder dialog
+and a folder dropped on the page were not exercised.
+
+**The night's commits on the other two backends** (the RTX 3070 laptop, at ba2cc3f1): the scene tests pass on CUDA
+under WSL and on Vulkan on Windows (295 assertions in 12 cases each), and the QA flows on Vulkan, 40 of 40.
+
+## Several lamps added to a scene found, for one path tracing of the walk (`shoot --groups-only`, 16 Nov)
+
+Adding a lamp to a scene already found, with a path tracer's light, was a pass of `--light-group` a lamp: the walk
+path traced again under that lamp alone (Sponza at 960x540, 20 views: 566 s and 702 s for its two lamps; 2428 s
+one lamp at 1080p). `--light-groups NAME=PATH --groups-only` is that pass for several groups at once: the lights in
+no named group are switched off, each view is traced once and each group's plane of it is kept as its layer.
+
+| Sponza, two lamps added to the scene shot without them, 960x540, 20 views | seconds | lamps on: k10, k45, a, b (dB) | warm at half, spot tinted |
+|---|---|---|---|
+| a pass a lamp | 566 + 702 = 1268 | 27.94, 22.76, 25.81, 24.24 | 28.78, 24.00, 26.77, 25.42 |
+| `--groups-only`, one pass | 562 | 28.03, 22.82, 25.86, 24.28 | 28.85, 24.03, 26.81, 25.45 |
+
+Less than half the time and nothing lost: every path goes to one of the lamps, where found with the scene
+(`--light-groups` alone) the lamps share the frame's paths with the sun and the sky, which is the likely reason
+that one reads up to 0.5 dB under. A scene with its lamps for the time of two walks rather than three -- the scene
+with the lamps off (548 s), then this (562 s) -- reads as the three passes do. A light's plane holds no light of
+what glows, so the `dark` group a pass of `--light-group` wants is not wanted here.
+
+**The player's frame rate.** Headless Chrome on the Mac gave 18 frames a second for the whole 1080p scene and 10
+for its level of detail, then 6 for both a run later: not a measure. Chrome on the RTX 3070 laptop (the published
+page): 60 for the whole scene and 60 for the level, both at the display's rate.
+
+**Not done.** `--groups-only` at 1080p. More groups than two. A lamp moved is its group shot again: there is no
+way to move a lamp short of a walk's path tracing but `render --lamps`, which is no path tracer's light.
+
+## The path tracer's time is its paths', and not its materials' (16 Nov)
+
+More of the profile of 15 Nov, the same view of Sponza with two lamps (`athenea stage --technique rt`, Metal, M5 Pro;
+seconds of the whole command, of which about 44 are the stage loaded):
+
+| what | seconds |
+|---|---|
+| 1920x1080, 32 paths in passes of 1, 3 bounces | 149.2 |
+| the same in passes of 8 (15 Nov) | 147.9 |
+| the same in one pass of 32 (15 Nov) | 148.6 |
+| 960x540, one path, no bounce (the stage loaded) | 43.9 |
+| 960x540, 32 paths, 3 bounces | 68.2 |
+| 960x540, 128 paths, 3 bounces (as many paths as 1080p at 32) | 148.5 |
+| 1920x1080, 32 paths, 3 bounces, every mesh under one flat grey material | 125.4 |
+| the same with no bounce | 58.5 |
+
+- *The time is the number of paths and nothing else*: 16.6 M paths in 24 s, 66 M in 104--105 s, whether they are
+  32 a pixel at 1080p or 128 at 540p, in one pass or thirty-two. 1.6 microseconds a path of three bounces; no cost
+  a pass, a pixel or a frame.
+- *Materials are at most a fifth of a bounce.* With every mesh bound to one flat material (a layer over the stage,
+  `bindMaterialAs = "strongerThanDescendants"`; the picture is grey and brighter, so it took) three bounces cost
+  66.9 s where they cost 81.6 s with Sponza's own textures: 22 s a bounce against 27 s.
+- *Nor is it the shadow ray's walk.* That flat stage has no glass and no cut-out, so its shadow rays take the
+  any-hit route (`shadowWalk`'s first branch), and it is the same 22 s a bounce: 66 M nearest rays and 66 M shadow
+  rays in 22 s, 6 M rays a second.
+
+So what is slow is tracing itself inside this kernel, by a factor of ten or more for the hardware: not the
+materials, not the textures' mips, not the shadow walk, not the passes. What that leaves is the kernel's own shape
+(one kernel that loops over samples and bounces with everything in it) or how the scene's acceleration structure is
+built for Metal (how many bottom-level structures, how they overlap) -- neither measured, and a capture of the
+kernel on the device is what tells them apart. Athenea-research's proposal 117 names the same first step.
+
+**Not done.** The capture. Anything to make it faster: this section only rules causes out.
+
+## The path tracer's bounce, taken apart: it is the kernel, not the scene (16 Nov)
+
+The same profile on the materials QA stage, which is a floor and a few spheres (21 prims), 1920x1080, 32 paths:
+the stage loaded 14.6 s, no bounce 25.4 s, three bounces 91.7 s. A bounce of 66 M paths costs 22 s there as in
+Sponza under a flat material (22 s) and near what it costs in Sponza textured (27 s). The scene's geometry and its
+acceleration structure are not what a bounce's time is made of.
+
+Then the kernel with parts of its bounce step taken out, one more each time, on that stage (changes made to time
+them and taken back; seconds of three bounces, a bounce):
+
+| the bounce step | three bounces | a bounce |
+|---|---|---|
+| whole | 66.3 | 22.1 |
+| no light sampled at a bounce's vertex (next event estimation and its shadow ray) | 45.0 | 15.0 |
+| and no light met by the bounce's ray weighed (the loop over the lights) | 45.4 | 15.1 |
+| and the vertex not shaded (the first hit's material stood in) | 32.0 | 10.7 |
+
+A bounce of 66 M paths: 7 s the light sampled, 4 to 5 s the material, nothing the lights met, and 11 s for what is
+left -- a nearest-hit ray in a scene of 21 prims, the hit rebuilt, a direction drawn. No one part is the cost:
+each is some ten times what the hardware does it in elsewhere, the bare ray most plainly (6 M a second). That
+points at the kernel as a whole -- one compute kernel holding every material, the media, the bake and the loop
+over samples and bounces -- rather than at any of its steps, and at many small kernels (a bounce a dispatch, the
+live paths compacted) as the change that would matter. It is not measured which property of the kernel it is: a
+capture on the device is still the next step, and now the only one left.
+
+## `shoot --groups-only` at 1080p (16 Nov)
+
+The two lamps added to the 1080p Sponza scene shot without them (8 366 012 gaussians, 20 views): 2058 s, where one
+lamp took 2428 s as a pass of its own (two: about 4856 s). The four views not taken, lamps on: 27.90, 22.82, 25.90,
+24.22 dB; the scene found with its lamps by the same paths (`--light-groups` alone, 2195 s for everything) reads
+27.35, 22.91, 25.71, 24.20. So at 1080p a scene with two lamps is 2195 s by the same paths, or 2339 + 2058 = 4397 s
+shot without them and the lamps added, up to 0.55 dB better on one view and within 0.2 dB on the others; a pass a
+lamp was 7195 s.
+
+## Adaptive sampling in a shoot: tried, nothing gained, not kept (16 Nov)
+
+The engine's path tracer stops a pixel whose mean has settled (`athenea:pathAdaptive`, a relative standard error);
+`shoot` was given it as `--path-error 0.05` and the pass of two lamps over the 960x540 Sponza scene run again: 562 s,
+the same to the second as without (562 s), and the same pictures to 0.02 dB (28.03, 22.82, 25.86, 24.27). The pixels
+a lamp does not reach are where it was to gain, and they do not stop: a pixel of no light has no relative error
+to fall under a threshold. The option is not kept.
+
+## The lamps' pass at less than the scene's size (16 Nov)
+
+A gaussian reads a group's frame at its own middle, so the frames of a pass of lamps need not be as large as the
+ones the scene was found from. Sponza found at 960x540, its two lamps added by `--groups-only` at five sizes, 20
+views; four views not taken, lamps on, against the stage path traced:
+
+| the pass's frames | seconds | dB: k10, k45, a, b | SSIM: k10, k45, a, b |
+|---|---|---|---|
+| 960x540, 32 paths | 562 | 28.03, 22.82, 25.86, 24.28 | 0.877, 0.766, 0.847, 0.815 |
+| 640x360, 64 paths | 512 | 28.03, 22.81, 25.94, 24.27 | -- |
+| 480x270, 32 paths | 177 | 28.07, 22.88, 25.98, 24.41 | 0.866, 0.766, 0.844, 0.814 |
+| 480x270, 128 paths | 572 | 27.97, 22.67, 25.85, 24.20 | -- |
+| 320x180, 32 paths | 105 | 28.10, 23.14, 26.08, 24.60 | 0.849, 0.758, 0.832, 0.804 |
+| 240x135, 32 paths | 81 | 27.99, 23.02, 26.05, 24.54 | 0.835, 0.749, 0.819, 0.794 |
+
+Half the scene's size a side is the same picture for a third of the time (SSIM within 0.011, dB up to 0.13 over).
+Under that the dB keeps rising and the SSIM falls: the layer is the light a surface sends, its texture in it, and
+a frame of a ninth of the pixels says a brick's texture coarsely; what a dB gains is noise. More paths in a small
+frame are not better than more pixels (480x270 at 128 paths is the time of the full size and reads under it).
+
+**Not done.** A layer kept as the light over the surface's base colour -- the gaussian keeps its base colour, at
+the scene's own detail -- would let the pass's frames be smaller still without the texture going; not built.
+
+## A lamp's light carried to the gaussian's own base colour (`shoot --light-over-base`, 16 Nov)
+
+The user's direction: what a gaussian is made of is kept apart from the light of a moment. A found gaussian keeps
+its surface's base colour, at the scene's own detail; a pass of lamps reads, at the gaussian's middle, what a pixel
+of the pass's frame sends. With `--light-over-base` that is divided by the pixel's base colour (the path tracer's
+plane of them, the same quantity a gaussian's record keeps) and multiplied by the gaussian's own: the light is the
+frame's, the texture the gaussian's. Where the pixel's base colour is under 0.02, or the gaussian lets light
+through, the pixel's word stands; the ratio is held to four.
+
+Sponza found at 960x540, its two lamps added by `--groups-only`, 20 views; four views not taken, lamps on:
+
+| the pass's frames | seconds | dB: k10, k45, a, b | SSIM | SSIM without `--light-over-base` |
+|---|---|---|---|---|
+| 960x540 | 557 | 27.99, 22.81, 25.84, 24.27 | 0.874, 0.765, 0.846, 0.814 | 0.877, 0.766, 0.847, 0.815 (562 s) |
+| 480x270 | 178 | 28.05, 22.86, 25.97, 24.38 | 0.872, 0.767, 0.849, 0.816 | 0.866, 0.766, 0.844, 0.814 |
+| 240x135 | 83 | 28.07, 23.01, 26.09, 24.52 | 0.860, 0.759, 0.841, 0.808 | 0.835, 0.749, 0.819, 0.794 |
+| 120x68 | 60 | 27.79, 23.16, 26.01, 24.44 | 0.838, 0.743, 0.824, 0.784 | not taken |
+
+At a sixteenth of the pixels the pass takes 83 s where the scene's size takes 562 s, and reads within 0.017 of its
+SSIM (0.042 without) with the dB no lower. At the scene's own size it changes nothing to speak of. What is left to
+lose under that is a shadow's edge, which is the frame's: at 120x68 the SSIM is where 240x135 was without. Under
+100 s the time is no longer the paths: the stage loaded is 40 s of it.
+
+The layer is the same file and every reader of it is as it was; the scene tests and the QA flows pass on Metal.
+
+**Not done.** The same for groups found with the scene (`--light-groups` alone), whose frames are the scene's own.
+A level between the frame's shadow and the gaussian's (a shadow's edge kept finer than the light). At 1080p.
+
+## `--light-over-base` on the 1080p scene: two lamps in 182 s (16 Nov)
+
+The 1080p Sponza scene (8 366 012 gaussians, shot without its lamps), its two lamps added by `--groups-only
+--light-over-base` from frames of 480x270 -- a sixteenth of the scene's pixels: 182 s, where the same pass at the
+scene's size took 2058 s and a pass a lamp 2428 s each. The four views not taken, lamps on, drawn at 960x540 (the
+size of the reference): 28.01, 22.86, 26.01, 24.45 dB and SSIM 0.841, 0.740, 0.817, 0.792, against 27.90, 22.82,
+25.90, 24.22 and 0.849, 0.738, 0.818, 0.792 for the pass at the scene's size.
+
+What this makes the way to a scene with lamps one can set: the scene shot with the lamps off, then the lamps by a
+small pass -- at 1080p 2339 + 182 s, against 2195 s for the scene found with its lamps by the same paths (which
+reads up to 0.55 dB under on one view) and 7195 s for a pass a lamp. And a lamp added later, or moved, is that
+small pass again: three minutes at 1080p where it was forty.
+
+**Not done.** The views not taken were not drawn at 1080p (there is no reference at that size).
+
+## The scene found unlit, and every light a group from small frames (16 Nov)
+
+With `--light-over-base` nothing of a gaussian's light has to come from the frame that found it. So the scene is
+found with every light off and little path tracing -- where a surface is, what it is made of and its base colour
+do not wait for light -- and all its light, the sky and the sun as the lamps, is added by one small pass:
+
+    shoot stage.usda scene.aths --views walk.txt --size 960x540 --samples 4 --pass-samples 4 --bounces 0 --lights-on /None
+    shoot stage.usda scene.aths --views walk.txt --size 480x270 --samples 32 --bounces 3 --denoise \
+          --light-groups day=/Lights --light-groups day=/QaLights/Sky --light-groups day=/QaLights/Sun \
+          --light-groups warm=/QaLights/Warm --light-groups spot=/QaLights/Lamp2 --groups-only --light-over-base
+
+(`--lights-on` of a path that is no light's leaves every light off.) No code is new. Sponza with two lamps, a
+scene at 960x540, 20 views; four views not taken against the stage path traced, dB and SSIM:
+
+| how | seconds | lamps on: k10, k45, a, b |
+|---|---|---|
+| the scene lit, a pass a lamp (15 Nov) | 548 + 566 + 702 = 1816 | 27.94, 22.76, 25.81, 24.24; SSIM 0.877, 0.766, 0.847, 0.815 |
+| the scene and its lamps by the same paths | 584 | 27.44, 22.86, 25.59, 23.99 |
+| unlit, then every light from frames of 480x270 | 78 + 177 = 255 | 27.06, 22.48, 25.18, 24.21; SSIM 0.877, 0.773, 0.850, 0.818 |
+| unlit, then every light from frames of 240x135 | 78 + 85 = 163 | 26.88, 22.42, 25.03, 24.00; SSIM 0.848, 0.754, 0.822, 0.790 |
+
+A seventh of the time of the three passes for the same SSIM and 0.3 to 0.9 dB less; and the sky and the sun are a
+group as the lamps are, to be dimmed or tinted with nothing traced. With the lamps changed (warm at half, the spot
+tinted): 27.72, 23.57, 25.92, 25.34 dB against 28.78, 24.00, 26.77, 25.42 for the three passes.
+
+Where the dB go is not found. Seen: the pictures are alike, the knights of glass and chrome a little coarser (what
+they show is a frame's of 480x270), the walls' texture as sharp or sharper.
+
+**Not done.** Why it reads up to 0.9 dB under: the light's edges at the small frames' size, the ratio held to four,
+the gaussians made from four paths and no denoiser (their base colours are four paths' too) are the candidates,
+none measured. What glows: a stage's emission stays in the scene's own light, found by the first pass's four
+paths. At 1080p. The web player with a group for the day.
+
+## The unlit scene and every light a group, at 1080p (16 Nov)
+
+Sponza with two lamps at 1920x1080, 20 views (8 639 341 gaussians); the four views not taken drawn at 960x540, the
+reference's size, dB and SSIM:
+
+| how | seconds | lamps on: k10, k45, a, b | SSIM |
+|---|---|---|---|
+| the scene lit, a pass a lamp (15 Nov) | 2339 + 2428 + about 2428 = 7195 | not measured whole | -- |
+| the scene and its lamps by the same paths | 2195 | 27.35, 22.92, 25.72, 24.21 | 0.856, 0.755, 0.832, 0.806 |
+| unlit (150 s), then every light from frames of 960x540 (547 s) | 697 | 27.30, 22.64, 25.63, 24.63 | 0.894, 0.793, 0.865, 0.842 |
+| unlit (150 s), then every light from frames of 480x270 (230 s) | 380 | 27.30, 22.56, 25.57, 24.61 | 0.886, 0.772, 0.855, 0.822 |
+
+Against the scene found with its lamps by the same paths: a sixth of the time, the dB within 0.4 either way, the
+SSIM 0.017 to 0.030 over. The geometry's pass is 7.5 s a view at 1080p where a lit view was 110.
+
+**In the web player this scene is not right yet**, and it is not published. Exported with its three groups it
+draws whole and lit, the day a group with the lamps; but (a) the scene as it stood at an earlier frame is mostly
+black, a part's history -- what a later frame took out or refined -- being handed on with no group's light, which
+a scene whose own light is nothing shows; and (b) the knights of glass and of chrome are black, the page's glass
+and mirrors taking no group's light (NEU28). Neither showed while the scene's own light held the day. The engine
+draws both (`render --glass`, the figures above).
+
+## Corrected: the unlit scene in the web player is as the lit one (16 Nov)
+
+The section above says the web player draws the unlit scene wrongly in two ways. Looked at again beside the
+published scene of the lamps (`sponza_lamps`, whose own light holds the day), at the same frames: neither is the
+unlit scene's. (a) The scene as it stood at an earlier frame is sparse in both: these exports carry no history, so
+what a later frame refined is not there to draw at that frame, and what shows black is nothing, not gaussians
+without light. (b) The chrome knight seen from a hand away is black facets in both: the page's chrome, the facets
+NEU28 already names. The glass and mirrors are shaded in both (40 of 40 meshes). I took the first picture of the
+new scene for a fault of it without the other beside it. The scene is put with the site's.
+
+## Where the unlit scene's dB go: three causes ruled out (16 Nov)
+
+The scene found unlit with every light a group reads 0.3 to 0.9 dB under the scene found lit with a pass a lamp
+(Sponza, 960x540: 27.06, 22.48, 25.18, 24.21 against 27.94, 22.76, 25.81, 24.24), its SSIM the same or over. Tried,
+each on the same four views not taken:
+
+| what was changed | dB: k10, k45, a, b | SSIM |
+|---|---|---|
+| as it was: four paths for the geometry, the lights from 480x270, the ratio held to 4 | 27.06, 22.48, 25.18, 24.21 | 0.877, 0.773, 0.850, 0.818 |
+| the geometry from 32 paths, denoised (262 s for 78 s) | 27.07, 22.46, 25.19, 24.14 | 0.878, 0.773, 0.855, 0.819 |
+| the lights from the scene's own 960x540 | 27.03, 22.54, 25.30, 24.11 | 0.882, 0.789, 0.856, 0.834 |
+| the ratio of base colours held to 2 | 27.05, 22.49, 25.17, 24.21 | 0.877, 0.773, 0.849, 0.818 |
+
+None is it: not the geometry's few paths (so four are enough), not the size of the lights' frames, not the ratio's
+spikes. Held to 2 the brightest gaussian of a view falls from 27.6 to 6.6 (the reference's brightest pixel is 5.1)
+with nothing else changed, and 2 is kept (the sections above say four: it was four when they were measured). The
+mean light is 0.0343 where the lit scene's is 0.0362 and the reference's 0.0386: about 5% less light, which is in
+the direction of the dB and is not explained -- what a gaussian sends being read from the nearest view's frame
+rather than kept from the frame that made it is what is left unlooked at.
+
+The commit before this one (23a1f103) says in its message that this section was written with it: it was not, the
+script that wrote it having stopped early; the manuals' "held to twice" and the kernel's 2 were in it.
+
+## The unlit scene's dB: two more causes ruled out, and what is left (16 Nov)
+
+- *Gaussians left without light*: the day's layer is kept for 3 254 245 of the 3 258 249 gaussians the scene still
+  holds. Not it.
+- *The ratio of base colours itself*: the lights from the scene's own 960x540 with no `--light-over-base` read 27.06,
+  22.56, 25.34, 24.13 dB (SSIM 0.882, 0.792, 0.860, 0.836), as with it (27.03, 22.54, 25.30, 24.11). Not it. The
+  brightest gaussian of a view is 27.8 there too, so the spikes are the light frames' own and the ratio held to 2
+  only happened to cut them.
+
+What differs from the scene found lit, and is left: the day's light is read from the nearest view's frame where
+the lit scene keeps what the frame that made a gaussian saw; and the gaussians themselves are not the same ones
+(2 181 715 stand where the lit scene has 2 112 637), a look's choices -- what a frame sees through, what is repainted
+-- being made on colours, which an unlit frame does not have. Neither was separated.
+
+On CUDA (WSL) and Vulkan (Windows) at c6991619: the scene tests pass, 295 assertions each, and the QA flows on
+Vulkan, 41 of 41.
+
+## Six lamps added at once (16 Nov)
+
+The 1080p Sponza scene shot without lamps, six sphere lights of different colours added as six groups by one pass
+of `--groups-only --light-over-base` from frames of 480x270: 193 s, where the two lamps took 182 s -- the number of
+groups is next to nothing in a pass's time, a path going to one light whichever it is. Each layer is kept for about
+12.6 M gaussians. Seen from two views not taken: the six on, and two of them alone with the rest at nothing, the
+scene lit by those two colours. No reference was path traced for it: this is the time and that it draws, not a dB.
+With six lamps sharing 32 paths a pixel each has a sixth of them; what that costs in noise was not measured.
+
+## The player's earlier frames show holes: the published scenes carry no history (16 Nov)
+
+The user: the scene on the web "loads and goes on to the next, and looks as if pieces were missing". Reproduced on
+the published page (Chrome on the RTX 3070 laptop, pictures a second apart): loading is whole from the overview -- the coarse
+level, then the scene -- but the scene as it stood at an earlier frame, which is what Play and the timeline show,
+has holes in its floor and walls. Every published scene was exported with `--by-frame` and no `--history`: a part
+holds what its frame found *that still stands*, and what a later frame refined is in no part, so at that earlier
+frame nothing is there to draw.
+
+`export_groups.py --history` hands the history on from the export with the lamps on (the page lays a group's part
+over the scene's standing parts alone, so a span of history is handed on lit as it was found). The 1080p Sponza
+scene at frame 3 of 20: 2.37 M gaussians drawn where 1.62 M were, and the holes are filled; the export goes from
+250-odd files to 774 and 346 MB. The page also lays a group's part over a span of history where a group is handed
+on with one (none is yet).
+
+**Not done.** What fills a hole is the coarser gaussians of the frames that first saw it, and from the overview
+they read as dotted and darker than what stands beside them: filled, not clean. Not published: the scenes on the
+site are still without history. The user has not yet said that this is what they meant.
+
+**A note on how this was written.** The exporter's change was made by this session at 08:14, in a stretch that
+then fell out of the session's own context when it went on in a new transcript; finding it on the disk, I took it
+for another session's and asked the user. The transcript (40c7c81c, 07:14:40Z, a tool call of the assistant's)
+says it was this one.
+
+## `export --history` handed the history on unlit: the fault behind the holes filled dark (16 Nov)
+
+The user, asked which: it is riding the render's camera -- the frame does not come up clean. Ridden at frames 2 and
+6 of the published 1080p Sponza scene the page shows large black holes: the export has no history. With
+`export_groups.py --history` the holes were filled, but dark, beside the same frame drawn by the engine
+(`render --frames 6 6`), which is whole and lit by its lamps. The fault was the engine's: with `--history` every
+piece, standing or not, was gathered by a path of its own (`takeFlagged`) that laid neither the layers of light the
+scene took again nor its groups over the records -- `--group`, `--own-light` and `--base-colour` did nothing to an
+export with history. One helper lights a piece now (`litOnDevice`), for a piece handed on whole and for one handed
+on by what stood until a frame. Ridden again at frames 2 and 6: the frame whole and lit, as the engine draws it.
+
+The scene tests (295 assertions) and the QA flows (41 of 41) pass on Metal. The two scenes of lamps are exported
+again with their history: `sponza_lamps` 774 files and 348 MB, `sponza_lights` 857 files and 428 MB, the largest
+file 10.6 MB.
+
+**Not done.** In the page the knights of glass and of chrome are black at those earlier frames, where the engine
+draws them: not looked into. The three older scenes on the site (chrome, knight, growth) are still without history.
+On CUDA and Vulkan this change has not been run.
+
+## The room a glass shows at an earlier frame, the scenes republished with history, and what history costs in files (16 Nov)
+
+- *The knights black at an earlier frame.* Ridden from the walk's first cameras the knights of glass and chrome
+  were black in the page and not in the engine. The page draws, for each kind, a cube of the room about it and
+  shades the kind by it; it drew the cube of the scene as it stood at the timeline's frame, when most of the room
+  about the knights had not been found. The cube is now drawn with every part that stands to the end shown, and
+  what was shown is put back; the page's own frames wait while it is drawn. Seen at frames 2, 6, 11 and 16 of the
+  1080p Sponza scene: the chrome shows the room, the glass is grey-blue. The chrome's facets from near are as before.
+- *Published* (sysop, version db95db61): the page, and four scenes exported again with their history --
+  `sponza_lamps`, `sponza_lights`, `sponza_chrome` (from its scene, exposure 3: the options it was first exported
+  with were not kept, so its brightness on the site may differ from before) and `lamps`. `sponza_knight` and
+  `sponza_growth` are as they were, without history: their scenes are no longer on the disk.
+- *What history costs in files.* A file a span: `sponza_chrome` is 3868 files where it was 124, `lamps` 723,
+  `sponza_lamps` 774, `sponza_lights` 857. The site holds 6477 of the 20 000 a version of its host admits (NEU33).
+
+**Not done.** The page as published was not looked at by me after db95db61 (an agent checks it from Chrome on
+the RTX 3070 laptop). A part's history in one file.
+
+## The player: its chrome from near, a bar while it reads, its view in its address (16 Nov)
+
+Three changes to the viewer page, each made and seen by an agent of this session in headless Chrome beside the page
+as it was at the same camera (commits 2d117708, a68f22b5, 318488ff); the first I looked at again in its pictures.
+
+**The player's chrome, from near.** The chrome knight showed black facets from near. The normal was not the cause
+first: the cube a kind reads was drawn from the middle of the box of its gaussians, and a few strays stretched that
+box, so sponza_lamps' mirror cube was drawn from (12.07, 0.63, 0.05) m, 1.4 m from the chrome knight and beside the
+glass one. A kind's room is now drawn from where its gaussians are (a median a mesh, weighed by gaussians: (11.37,
+0.91, -1.22)). The black itself is what the scene does not hold -- behind the render cameras, and the sky -- read by
+one flat disc while its neighbour reads a wall. A mirror now reads the cube at thirteen rays in a cone of 0.25 about
+the mirrored one, and the cube is drawn over nothing so its alpha says where the room is empty: there a gaussian
+keeps the colour it was found with. Seen at full detail from 1 m and 2 m and ridden at camera 11: the mosaic of
+black and white blocks is gone from both knights, and the glass's base loses its black stripes; the glass body is
+unchanged. A radial normal blended with the disc's axis was tried and made larger dark patches. The Sky option no
+longer shows in mirrors. Not done: a normal smoothed over a gaussian's neighbours; a cube an object where a scene
+has several chrome objects apart; the softening for the glass's own mirrored term; the levels of detail were not
+looked at side by side.
+
+**The player says how far its reading is.** While parts are read the status line carries a bar: parts read of the
+parts there are, and gaussians of theirs -- the index gives a part's gaussians, not its bytes -- counted a file at
+a time, a part's history and its glass and mirrors with it. It measures the load at hand: the coarse level drawn
+first fills it once, and the detail read behind it ("refining…") fills it again while the coarse scene is drawn and
+moved in. sponza_lamps at full detail went 0 to 20 parts and 0 to 9.89 M gaussians (history counted; the scene at
+its end is 8.37 M); on a phone the folded text keeps its status line while there is a bar. Not done: bytes; the
+groups' light files, during which the bar stands still; a scene still growing, and the page driven while it loads,
+were not exercised.
+
+**The player keeps its view in its address.** The scene, the detail, where the timeline is (`frame`), whether the
+render camera is ridden (`ride=1`) and each group's level where it is not the one it was shot at
+(`light.<group>=<level>`) are written to the page's query in place, a quarter of a second after the last change,
+and read back when the page is; `base`, `unit`, `progressive` and `glass` stay as they came. A frame asked for is
+shown as the parts that reach it are read, through the coarse level and the detail behind it. Opened with
+`detail=1&frame=6&ride=1&light.warm=0.3&light.spot=0`, sponza_lamps drew the same picture as the page set so by
+hand, whose address had become that one. Not done: the free camera's own place and aim, a group's tint, the
+player's lamp; Safari and Firefox, and the one-file player, were not opened with it.
+
+**The published page from Chrome on the RTX 3070 laptop** (version db95db61, by another agent): the four scenes with
+history load with no error; ridden at frames 2, 6 and 11 the frame is whole in `sponza_lamps`, `sponza_lights` and
+`lamps`, the knights not black; `sponza_lights` has its day as a group and at nothing the sun leaves the floor;
+`sponza_lamps` at rest is 48 frames a second whole (8.37 M) and 60 at its level of detail (1.93 M). `sponza_chrome`
+as I exported it again is very dark and nearly grey: not right, being looked into. On CUDA (WSL) and Vulkan
+(Windows) at 4e25aaf6 the scene tests pass, 295 assertions each, and the QA flows on Vulkan, 41 of 41.
+
+## `sponza_chrome` dark on the site: the scene's own light, as far as can be told (16 Nov)
+
+Exported again with its history at exposure 3, `sponza_chrome` is very dark and nearly grey on the site. Looked
+into: the engine draws the same scene so at that exposure (`render --frames 30 30 --exposure 3`: a dim grey nave, the
+knights dark; at exposure 6 brighter and as grey), and its first part exported with and without `--history` is the
+same file to the byte (8 710 465 bytes): the export with history does not darken it. The scene is one shot before
+the stage had its lamps, under the sky alone. Whether the site showed it brighter before cannot be checked: the
+earlier export was replaced and the options it was made with were not kept; the other chrome scene exported that
+week (`chrome2`, `gpu_exp3.sh`) was at exposure 3 too and looked as dark in the pictures taken of it. Left as it is.
+
+## The path tracer on the device: the GPU is full, a bare kernel is 450 times faster, and what reproduces the gap (16 Nov)
+
+Measured by an agent of this session, without building: the program as it is, and a Metal program of its own beside
+it (`build/night/agent-pt/bench/rtbench.swift`), both through the machine's GPU queue.
+
+**The program** (materials stage, 1920x1080, 32 paths in passes of 8, three bounces; 92.9 s):
+
+- The device is busy 99.95% of the time from the first pass to the last (`ioreg -r -d 1 -c IOAccelerator`): no idle
+  time between dispatches. One command buffer a pass, one dispatch of the whole frame in it.
+- The main thread waits: 210 to 226 of every 211 to 228 samples are in `Device::waitIdle` →
+  `waitUntilCompleted` (`sample`); 0.5 s of CPU in 81 s of tracing. Nothing compiles during a pass.
+- Of the 92.9 s: about 7 s the stage opened and framed, 4 s kernels compiled and data uploaded, 81 s the four
+  passes (20.2 s each, 19.4 to 20.4), 1.3 s the picture written.
+- What gave nothing here: `xctrace` with the Metal System Trace template (it recorded 40 K and hung), Metal's HUD
+  variables, the system log.
+
+**A bare kernel of the same shape** -- one compute dispatch, 16x16 threads a group, the loop over 8 samples and 3
+bounces inside it, an instanced top-level structure, a random direction from each hit -- on the same machine and
+queue, by the command buffer's own GPU times:
+
+| the bare kernel | million rays a second |
+|---|---|
+| ray queries as Slang emits them | 2750 to 2800 |
+| Metal's intersector in their place | 3170 |
+| 32 samples in the one dispatch | 2700 |
+| 11 bounces | 1900 |
+| 12 scattered reads of a 256 MiB buffer a hit; 48 | 765; 100 |
+| a thread's own array of 64, 256, 1024, 4096 floats, eight writes a bounce | 1200, 656, 136, 40 |
+| that array copied to another and back each bounce: 256 B, 1 KB, 4 KB, 16 KB | 1233, 67.5, 7.4, 1.7 |
+| athenea's kernel | about 6 |
+
+So it is not the machine, the queue's priority, the ray query, the loop over samples and bounces in one kernel, nor
+data fetched: each leaves a hundred million rays a second or more. The one thing that brings the bare kernel to
+athenea's rate is a thread's own state held in memory and copied by value -- 4 KB copied twice a bounce is 7.4 M
+rays a second. The kernel as generated holds 13 locals of `Shaded` (a lobe stack and a material's inputs; about
+1.7 KB by the agent's count at eight lobes), 7 of `LobeStack`, 21 of `Found`, 12 of `Surface`, and its shading
+functions return them by value. That the copies are athenea's cost is inferred from this, not measured in it.
+
+**What would settle it**, and is next: a bounce timed with the thread's state made smaller and nothing else
+changed. The lobe stack's size is already a link-time constant sized to what the frame's materials push
+(`MaterialPrograms.cpp`), so the agent's eight may be more than the kernel has; the measure is to hold it to one.
+
+**Not measured.** The kernel's stack as compiled; whether Metal's back end falls back on anything for a kernel
+this large; the acceleration structure's build flags.
+
+## Settled: a bounce's time is the size of a thread's shading state (16 Nov)
+
+The measure the section above asked for. A second build of the program in a folder of its own (`build/pt-exp`), the
+lobes a stack keeps held by an environment switch made for the measure (the materials stage's materials push 11, so
+the stack is at its most, 8), the same stage and view, 1920x1080, 32 paths in passes of 8; seconds, the stage loaded
+taken off the first hit's, and the first hit's taken off three bounces':
+
+| lobes a stack keeps | kernels compiled and stage loaded, first run | first hit and its light | three bounces | a bounce |
+|---|---|---|---|---|
+| 8 (as it is) | 89.7 | 10.4 | 51.4 | 17.1 |
+| 4 | 53.5 | 5.8 | 31.8 | 10.6 |
+| 2 | 47.1 | 4.7 | 22.6 | 7.5 |
+| 1 | 48.6 | 2.9 | 14.7 | 4.9 |
+
+(This build's 17.1 s a bounce is under the 22.1 s the main build gave the night before on the same command; not
+explained, and the four rows are one run after another.) A bounce's time falls with the stack's size and nothing
+else was changed: about 1.75 s a lobe kept and 3.2 s for the rest. The cause is the one the bare kernel pointed
+at -- a thread's own shading state, held in memory and copied -- and it is confirmed in athenea's kernel. A lobe is
+about 160 bytes, a stack of 8 about 1.3 KB, the shading state (`Shaded`: the stack and a material's inputs) about
+1.8 KB; in the kernel as generated that state is copied whole several times a bounce -- returned by value from the
+shading functions, assigned to the loop's current state, and copied again before each call it is handed to (Slang
+copies a local the loop changes before passing it).
+
+Holding the stack to fewer lobes is not the fix: a material of many lobes would lose all but its heaviest. What
+follows from it: the copies taken out (the state handed on in place and written where it is kept), a lobe made
+smaller, and a stack sized to what a frame's materials leave standing rather than to what their source pushes.
+Even at one lobe a bounce is 4.9 s for 66 M paths, 27 M rays a second, so the rest of the state is next after the
+stack.
+
+## Where the unlit workflow's dB go: light no group holds, and what a layer costs (16 Nov)
+
+NEU32, measured by a subagent (scripts, logs, references and pictures in `build/night/agent-db`, not in the
+repository). Sponza with its two lamps, 960x540, the four views not taken, against `ref_all`; dB / SSIM.
+
+| what | k10 | k45 | a | b |
+|---|---|---|---|---|
+| no group at all: every light kept by the frame that made the gaussian | 28.34 / 0.896 | 23.44 / 0.788 | 26.41 / 0.874 | 24.47 / 0.834 |
+| the lit baseline (`clean.aths`: the day kept by the frame, the lamps as layers) | 27.95 / 0.875 | 22.76 / 0.765 | 25.81 / 0.844 | 24.24 / 0.814 |
+| every light a group in the shoot itself, the light no group holds kept | 27.77 / 0.889 | 22.51 / 0.791 | 25.61 / 0.864 | 24.08 / 0.836 |
+| the same, its layers alone (pictures subtracted) | 27.13 / 0.885 | 22.51 / 0.791 | 25.28 / 0.862 | 24.07 / 0.836 |
+| the lit gaussians with the day as a layer too (pictures) | 27.12 / 0.875 | 22.35 / 0.761 | 25.02 / 0.840 | 24.05 / 0.808 |
+| the unlit workflow as documented | 27.05 / 0.877 | 22.49 / 0.773 | 25.17 / 0.849 | 24.20 / 0.818 |
+| the unlit workflow, its geometry pass at 32 paths, 3 bounces, denoised (706 s) | 27.06 / 0.878 | 22.46 / 0.773 | 25.19 / 0.854 | 24.14 / 0.819 |
+| the unlit workflow plus the light no group holds (pictures added) | 27.66 / 0.880 | 22.49 / 0.773 | 25.51 / 0.852 | 24.21 / 0.818 |
+
+The rows marked as pictures are EXRs added or subtracted outside the engine and then measured by
+`athenea compare`, since a scene's own light cannot be switched off alone in `render`; checked two ways to 57-66 dB.
+
+What it settles:
+
+- **The gaussians are not it.** The same layers over lit gaussians and over unlit ones differ by -0.07 to +0.15 dB,
+  the unlit ones no worse; a geometry pass as costly as a lit shoot gives the lit scene's count of gaussians
+  (2 112 637) and the same dB. The 2 181 715 of the cheap pass are its 4 paths without a denoiser.
+- **Light no group holds** is the larger part at k10 and a: 0.61 / 0.00 / 0.34 / 0.01 dB of a gap of
+  0.90 / 0.27 / 0.64 / 0.04. A frame with every light in a group still leaves a plane "the frame less its groups"
+  that is not empty: the bright studs of the window, a glow beside it, the lantern's bulb, the knights' outlines
+  (mean 2.8e-4 at k10, maximum 6.6). It is light of the lights and not emission -- with the lights off and three
+  bounces the plane is 4.9e-5, maximum 1.3, the studs absent. A lit scene keeps it in its own light; the unlit
+  workflow loses it twice, its geometry pass having no light and `--groups-only` dropping that plane.
+- **A layer costs against light kept by the making frame**: every light as a layer loses 0.4-0.9 dB to none
+  (first row to third), and the lit baseline pays it for its lamps too. In one view, drawn from that view, the
+  layer already loses 1.2 dB to the frame's own; a nearer view added does not mend it, nor `--tolerance`, nor
+  frames at full size. What is left of the unlit workflow's gap once the unattributed light is back
+  (0.29 / 0.27 / 0.30 / 0.03) is this.
+- The "5 % less light" of the unlit scene misled: against the lamps alone its lamps read better than the lit
+  baseline's (29.96 / 23.18 / 27.52 / 25.20 against 29.65 / 22.94 / 27.17 / 24.88), whose layers carry fireflies.
+
+Not done: which route of the path tracer leaves that light outside its light's group (being looked for; the
+colour and the groups are both weighed by the first hit's opacity, so that factor alone is not it); a pass of
+groups keeping that plane; a layer read over a gaussian's footprint rather than at its middle, which is the
+suspect for a layer's general cost and is a guess, not measured. Not measured: 1080p, CUDA, Vulkan, the lamps
+dimmed or tinted.
+
+## The path tracer 2.4 times faster: structs a function reads, taken by constant reference (16 Nov)
+
+What the section above pointed at, done. Slang passes a struct parameter by copy -- in the Metal it writes, a
+`thread T _S = value;` before each call, though the callee takes a pointer to a constant -- and returns one by
+copy too. A parameter marked `__constref` is handed over as the pointer alone (checked on a small kernel, and it
+compiles for Metal, SPIR-V and CUDA). So every large struct a function only reads is now `__constref`: in the
+path tracer's kernel the shading state, the lobe stack, the surface and the hit of the functions that gather
+light and ask about glass; in the lobe library the stack's four functions and every function of one lobe; and
+then the rest across the shaders and the generated material code -- a material's inputs, a light's record, a
+MaterialX BSDF node's operands (126 parameters in 29 files). Nothing a kernel computes changes.
+
+The materials stage, 1920x1080, 32 paths in passes of 8, the second build folder, seconds (the stage loaded
+taken off):
+
+| | first hit and its light | a bounce of 66 M paths | kernels compiled and stage loaded, first run |
+|---|---|---|---|
+| before | 10.4 | 17.1 | 89.7 |
+| the kernel's and the lobes' parameters | 4.1 | 7.3 | 45.1 |
+| every shader's | 4.7 | 7.1 | 56.3 |
+
+The picture against the unchanged main build's, same command: the same means and maxima, relMSE 1e-12. Nearly
+all of it is the kernel and the lobes; the rest of the shaders add nothing measurable on this stage and are kept
+for being the same rule.
+
+One function changes its parameter as a working copy (`atheneaPushLobe`) and stays plain: marked, Slang said
+nothing and Metal's compiler refused the kernel -- a backend that does not refuse would write through to the
+caller's lobe. Every marked function was then searched for a write to its marked parameter (none), and the rule
+is in the development manual.
+
+Tests, Metal, the second build: 568 run of the suite (the first 545, then 547 to 565 less the ones marked
+slow), eleven not passing -- eight failed (77, 128, 129, 361, 409, 487, and the two glass sheets of mesh2splat,
+552 `sheet_glass_draws_whole` and 562 `tx_conversions_render_like_the_mesh`, at the same assertions) and three
+skipped (34, 263, 469) -- and every one of the eleven with the same result on the unchanged main build. They are
+not this change's and are not looked into here. `tx_gate_corvette` was stopped after 20 minutes holding the GPU
+queue, and the tests marked slow were not run.
+
+Not done: the shading functions still return their state by value and the loop still assigns it (the copies
+that are left; at 7 s a bounce the kernel is at 19 M rays a second); a lobe made smaller; a stack sized to what a
+frame's materials keep; CUDA and Vulkan, and a stage other than the materials one, not yet timed.
+
+## Light through a transparent surface: into its light's group, and counted once (16 Nov)
+
+The route of the light no group held (the section on the unlit workflow's dB), found by a subagent on small
+stages and on Sponza (`build/night/agent-rest`, not in the repository), and mended. A surface of opacity under
+one is passed by lot; where the ray that went on meets nothing, the path tracer gathers the lights it meets at
+infinity or before it ("Nothing behind", `PathTracer.cpp`). That gathering did two things wrong:
+
+- **It added the light to the colour and to no group** -- the one `carried +=` of a light's radiance without its
+  `addGroup`. In Sponza the panes of the studded doors (`glass`, opacity 0.05) and the lantern's glass (0.6): a
+  bounce off a stud crosses a pane, leaves the building and meets the sky.
+- **It took the light at a weight of one whatever ray it was.** For the camera's ray that is right; for a
+  bounce's ray the vertex before had already reached the same light through the same surface by next event
+  estimation, so the light was counted twice. Now weighed against that vertex's light sampling, as a ray that
+  escapes without crossing anything already is.
+
+240x135, 16 paths, 3 bounces, every light in a group; means, the frame and what `--group "*=0"` leaves:
+
+| stage | frame before | frame now | outside the groups before | now |
+|---|---|---|---|---|
+| sun, a chrome ball, no pane (control) | 0.1789 | 0.1789 | 0 | 0 |
+| the same under a pane of opacity 0.05, out of view | 0.3217 | 0.1721 | 0.1612 | 0 |
+| dome, a diffuse ball, no pane (control, the agent's run) | 0.1708 | -- | 1e-10 | -- |
+| the same under the pane | 0.2173 | 0.1676 | 0.0968 | 1e-10 |
+| the camera through the pane, sun, chrome | 0.3015 | 0.1844 | 0.1334 | 2e-10 |
+| the camera through the pane, dome, diffuse | 0.4738 | 0.4500 | 0.3058 | 3e-10 |
+| a sphere light on the camera's side of the pane, metal | 0.1415 | 0.0776 | 0.0674 | 1e-10 |
+| a sheet of opacity 0.3 in view, dome | 0.2956 | 0.2906 | 0.1055 | 2e-10 |
+| no transparent surface (a sphere light, a diffuse ball) | 0.1107 | 0.1107 | 2e-12 | 2e-12 |
+| Sponza, k10, 480x270, the five lights in three groups | 0.036613 | 0.036613 | 8.4e-5 | 2.2e-5 |
+
+Under the pane the frame is now a little under its control, as a pane that passes 95 % asks. With the groups
+alone mended and the weight left (measured apart) every frame was the same to six figures and the groups
+already whole, so the two are separate: the first changes no picture, the second does wherever a bounce looks
+at a light through a transparent surface. What Sponza still leaves outside its groups (2.2e-5, maximum 0.21,
+grey) is what the agent measured with the door panes made opaque: the lantern's bulb, which emits and belongs
+there -- not separated from a leak through the lantern's own glass.
+
+Tests, Metal, second build: the hundred not marked slow whose names speak of opacity, transparency, coverage,
+glass, panes, domes, sky, light groups or path tracing -- 99 pass, and the one that does not
+(`sheet_glass_draws_whole`) fails on the unchanged build too.
+
+Not done: the unlit workflow's dB measured again with this (the 0.6 dB at k10 it should give back); the three
+stages with the pane in view have no control that says what their frame should be; a light standing between a
+pane and a wall behind it is not met by a bounce's ray at all (read by the agent, not measured); cut-outs
+proper (`opacityThreshold`) take the same block and were not measured apart; a bake with `groupsIndirect`;
+CUDA and Vulkan.
+
+## After the two fixes: the unlit workflow's dB again, and the copies that were left (16 Nov)
+
+**The unlit workflow with light through a pane in its group.** Sponza, 960x540, the four views not taken, the
+same commands as the section on its dB, the main build with the day's two changes; dB against the reference:
+
+| | k10 | k45 | a | b |
+|---|---|---|---|---|
+| the unlit workflow before | 27.05 | 22.49 | 25.17 | 24.20 |
+| the unlit workflow now | 27.61 | 22.49 | 25.45 | 24.21 |
+| the lit baseline (`clean.aths`, shot before) | 27.95 | 22.76 | 25.81 | 24.24 |
+
+It gives back what the pictures added by hand had said (27.66 / 22.49 / 25.51 / 24.21). What is left to the lit
+baseline, 0.34 / 0.27 / 0.36 / 0.03, is a layer's cost. The reference path traced again with the fix is the
+old one to 76 dB -- a bounce that sees a light through a pane is rare in this scene -- so the figures above
+hold against either. The workflow's time: 65 s its geometry and 130 s its lights (255 s before the path
+tracer's parameters were taken by reference). What the unlit scene now keeps as its own light is 3.5e-5 at k10
+(maximum 0.9) and 4e-6 to 7e-6 at the others.
+
+**The shading state written in place.** `shadeSurface` and `shadeFound` returned a `Shaded` by value; they now
+write the caller's (`out`). Measured on the materials stage as before: 2.0 s the first hit and 7.5 s a bounce
+against 4.7 and 7.1 -- the bounce no faster (the stage's load varied 3 s between the runs, which is all the
+first hit's difference can be trusted for), the picture bit for bit the main build's (relMSE 0). Kept as the
+same rule, not as a gain. The kernel as Slang writes it for Metal now has no temporary copy of a shading
+state, a stack, a surface or a material's inputs left; what it copies is single lobes (17 places, the lobe
+functions' working copies) and MaterialX closures. So what remains of a bounce, 7 s for 66 M paths, is no
+longer copies of state Slang makes: it is the work of a stack of eight lobes itself, each evaluated, weighed
+and sampled at every vertex and every light.
+
+Not done: a stack that keeps fewer lobes where a frame's materials need fewer (the morning's table: 4.9 s a
+bounce at one lobe before any of this); the lit baseline shot again with the fix.
+
+## A part's history in one file (NEU33, 16 Nov)
+
+`export --history` wrote a file for each (part, frame until which a span of it stood), and its glass and its
+mirrors beside each: 3868 files for the sixty-frame chrome scene, against the 20 000 a version of the site
+admits. Now a part's history is one file (and one for its glass, one for its mirrors): the spans one after
+another in the order of the frames they stand until, and the index gives each span's counts
+(`"spans": [[until, gaussians, glass, mirrors], ...]`). Since the order is by that frame, what stands at a
+frame is the file's end from a count on -- the player sets one number a mesh (an object modifier that takes the
+opacity of the gaussians before it) and reads a file once, where it switched whole meshes on and off. The
+groups' light of a history is laid by a gaussian's index as before, the groups handed on in the same order.
+The player still reads the earlier form (an entry a span with its `until`), so scenes already published draw
+as they did.
+
+The Sponza lamps scene (twenty frames, two groups, base colours, a level, `export_groups.py --history`): 330
+files where it was 774, 346 MB where 348, 190 spans in both. In Chrome on the Mac, riding the render camera,
+frames 3, 8 and 20 beside the earlier export: the same gaussians drawn (2.37 M, 3.90 M, 8.37 M) and the same
+picture to the eye.
+
+Not done: the scenes on the site handed on again in this form (`sponza_chrome` is the one with 3868 files);
+frame rate with a history drawn this way against meshes switched off -- a gaussian without opacity is still
+sorted -- not measured; a real Chrome on the RTX 3070 laptop and a phone.
+
+## A layer's word from the view that sees the gaussian a pixel wide (16 Nov)
+
+What a layer costs against light kept by the frame that made the gaussian (the two sections before) was put
+down to how a layer is read: a pixel at the gaussian's middle, from the nearest of the views that see it.
+Tried, apart, on the unlit workflow with its lights' pass at full size (Sponza, 960x540, the four views not
+taken, dB / SSIM against the reference):
+
+| a layer's word | k10 | k45 | a | b |
+|---|---|---|---|---|
+| the nearest view's (as it was) | 27.56 / 0.885 | 22.55 / 0.789 | 25.63 / 0.858 | 24.11 / 0.834 |
+| the view that sees it nearest a pixel wide | 27.82 / 0.891 | 22.97 / 0.781 | 25.91 / 0.861 | 24.38 / 0.834 |
+| the nearest view's, the mean over the pixels it covers | 27.58 / 0.875 | 22.40 / 0.784 | 25.57 / 0.850 | 24.00 / 0.827 |
+| both | 28.07 / 0.881 | 22.85 / 0.775 | 25.89 / 0.852 | 24.26 / 0.824 |
+
+The view is what gains (0.26 to 0.42 dB, SSIM up in two views, the same in one, 0.008 down at k45); the mean
+gains nothing and loses detail, and is not kept. So `sceneRelight` scores a view by how far the gaussian's
+width in that frame is from a pixel (`|log(width in pixels)|`) and a run keeps the best view's word, where it
+kept the nearest eye's. The reason as understood: a gaussian's own colour is from the frame that made it,
+where it was a pixel wide; the nearest eye holds it over many pixels and reads one of them.
+
+The other two ways a layer is made, each beside its own baseline the same afternoon:
+
+| | k10 | k45 | a | b |
+|---|---|---|---|---|
+| every light a group in the shoot itself, before | 27.78 / 0.889 | 22.51 / 0.791 | 25.64 / 0.864 | 24.08 / 0.836 |
+| the same, now (304 s; 320 s before) | 27.99 / 0.896 | 22.82 / 0.782 | 25.95 / 0.867 | 24.31 / 0.836 |
+| the unlit workflow, its lights' pass a quarter of the pixels, before | 27.61 / 0.880 | 22.49 / 0.774 | 25.45 / 0.851 | 24.21 / 0.818 |
+| the same, now | 27.62 / 0.880 | 22.57 / 0.773 | 25.47 / 0.851 | 24.24 / 0.818 |
+
+At a quarter of the pixels it changes nothing to speak of: no view sees a gaussian a pixel wide there. With
+every light a group the scene is now at the lit baseline's dB (27.95 / 22.76 / 25.81 / 24.24) and over its
+SSIM, and 0.35 to 0.6 dB under the scene with no group at all (28.34 / 23.44 / 26.41 / 24.47). (One run of the
+experiment took 448 s where its baseline took 320; run again as built it is 304 s -- that run's, not the
+change's.) Tests, Metal: the scene tests (295 assertions) and the 41 QA flows pass.
+
+Not done: a scene continued from one found before this keeps in its layers the depth the old rule stored,
+which the new score is compared with (a layer said anew over the whole run is not affected); k45's SSIM,
+which goes down 0.008 each time and is not looked into; CUDA and Vulkan.
+
+## The published Sponza with every light a group, found again (16 Nov)
+
+`sponza_lights` on the site was found before the day's changes. Found again the same way but its lights' pass
+at 960x540 where it was 480x270 (the path tracer being faster): its geometry at 1080p in 125 s (150 s before)
+and its lights in 306 s (230 s at a quarter of those pixels), 431 s in all against 380. The four views not
+taken at 960x540, against the reference, dB / SSIM:
+
+| | k10 | k45 | a | b |
+|---|---|---|---|---|
+| as published | 27.30 / 0.886 | 22.56 / 0.772 | 25.57 / 0.855 | 24.61 / 0.822 |
+| found again | 27.92 / 0.898 | 22.70 / 0.794 | 26.05 / 0.868 | 24.59 / 0.843 |
+
+Handed on with a level and its history in one file a part: 397 files where 857, 8.64 M gaussians as before.
+In Chrome on the Mac riding the render camera, frames 4, 12 and 20 draw the same counts as the published one.
+Not done: the other published scenes with groups (`lamps`, `sponza_lamps`) found again; a phone.
+
+## Sponza at 1080p with two lamps in one render: 1160 s where 2195 s (16 Nov)
+
+The published `sponza_lamps`, found again by the same command (`shoot --size 1920x1080 --samples 32
+--pass-samples 8 --bounces 3 --denoise --light-groups warm=... --light-groups spot=...`, twenty views) with the
+day's changes: **1160 s where it took 2195 s**, the same 8 365 438 gaussians. The path tracer's bounce is 2.4
+times faster and the run 1.9: the rest of a view (the scene's pieces, the denoiser, what is kept) is as it was.
+The four views not taken at 960x540 against the reference, dB / SSIM:
+
+| | k10 | k45 | a | b |
+|---|---|---|---|---|
+| as published | 27.35 / 0.856 | 22.91 / 0.755 | 25.71 / 0.832 | 24.20 / 0.806 |
+| found again | 27.43 / 0.863 | 23.04 / 0.758 | 25.83 / 0.836 | 24.25 / 0.811 |
+
+Handed on with its history in one file a part: 330 files where 774. In Chrome on the Mac, riding the render
+camera, frames 4, 12 and 20 draw the same counts as the published one. Not done: `lamps` (the 960x540 scene)
+found again; where the other half of a view's time goes at 1080p, now that the paths are not most of it.
+
+## The day's two path tracer changes on the RTX 3070 laptop: CUDA and Vulkan (16 Nov)
+
+A subagent, on the RTX 3070 Laptop (WSL2 Ubuntu / CUDA and native Windows / Vulkan), the trees there brought
+from e7406db4 to 52e7b23a; scripts and outputs in `build/night/agent-win2`.
+
+- **Builds**: both, no shader or C++ error from the `__constref` parameters, and no kernel refused at run time
+  in anything that ran. `athenea_usd_tests` did not compile under MSVC before or after: `test_ray_margin.cpp`
+  named a variable `far`, a macro of the Windows headers (renamed here with this section).
+- **Tests on 52e7b23a**, all passing: `athenea_render_tests "[scene]"` 295 assertions on each;
+  `athenea_material_tests` 593 (CUDA) and 695 (Vulkan); `athenea_technique_tests` 917 with 35 cases skipped
+  (CUDA: no rasterisation, no ray queries, no OptiX in WSL) and 2862 (Vulkan);
+  `athenea_usd_tests "[path],[glass],[lights],[emissive]"` 170 with 55 skipped (CUDA) and 1020 (Vulkan); the
+  QA flows 41 of 41 on each.
+- **Pictures, before against after**: bit for bit the same on the materials stage on both and on Sponza
+  without bounces; Sponza with three bounces on Vulkan differs in 72 pixels of 921 600 (relMSE 4e-8), all of
+  them the second commit's (the first alone is bit for bit e7406db4) -- not checked to be where a bounce sees a
+  light through a pane.
+- **The path tracer's time, Vulkan**, the materials stage, runs short enough not to throttle, frame time:
+
+| | before, a bounce | after, a bounce |
+|---|---|---|
+| 1280x720, 16 paths in passes of 2 | 1.63 s | 1.27 s |
+| 640x360, 4 paths | 0.12 s | 0.08 s |
+
+  So a fifth to a third faster there, where Metal is 2.4 times: the copies Slang writes cost Metal's compiler
+  far more than they cost SPIR-V's. **On CUDA the path tracer cannot be timed**: without OptiX in WSL `--technique
+  rt` traces no bounce on this branch (0 and 3 bounces give one picture), so the path tracing kernel was never
+  compiled for CUDA and `__constref` is verified there only in the kernels the tests and the first hit use.
+
+Found on the way and not explained (NEU35): on Vulkan the materials stage in passes of 8 paths takes about
+210 s where passes of 2 take 7-8 s for the same 16 paths, memory at 3.4-4.3 GB of 8 in both; Sponza with three
+bounces takes either about 24 s or 225-260 s with the same binary and the same picture; and the laptop's GPU
+throttles after about 95 s of load (clock from 1400-1575 MHz to 210-255), so no run longer than that measures
+anything there. `athenea compare` still has no device on Windows/Vulkan (NEU17); the pictures were compared by
+the WSL build.
+
+Not done: the full usd suite there (62 of about 195 cases by tag); D3D12; the later commits of the day (a
+part's history in one file, a layer's view) on the RTX 3070 laptop.
+
+## A found scene's mattes by object: each gaussian keeps its prim (16 Nov)
+
+A found scene kept, a gaussian, its colour, what it is made of, its base colour, layers of light and its
+stamps -- and nothing of which object it was. So a render of it could not say "the matte of this prim from
+this camera", which is what a stage with no chroma behind its actors is keyed by.
+
+**The id is the engine's Cryptomatte id, and it was already there.** A path traced frame of the stage carries
+the mesh layer's ids one sample a pixel, as its depth is, and `CryptoObject00`'s first rank is the prim the
+pixel shows: the hash of the prim's path, so a stage shot again, or in another run, names its prims the same
+and no table of the scene's own is needed. `shoot` asks for that output beside the path tracer's planes, and a
+gaussian takes the id at its cell's middle pixel -- the pixel that stands for the cell in everything else a
+look makes (`mattePrims`, `scene_matte.slang`, run by `Discovery::fromRender` over the same `which` and `dest`
+the records were packed by). What stands behind a pane was seen through it, and the frame names the pane
+there: it is left 0, named by nothing.
+
+**Kept beside the piece, not in the record.** `pieces/<id>.prims`, a uint32 a gaussian in the records' order,
+as `.gone` and `.refined` are; the manifest's `prims` is a Cryptomatte manifest (path to eight hex digits),
+merged from every frame's. The record stays 30 floats: nothing that reads records changes, and a scene
+without the files loads and draws as before (`clean.aths`, shot before: its four held views drawn, and
+`--matte` refused with a line that says why). The earlier Cryptomatte section says an id beside the cloud
+comes apart when the loader drops a gaussian; a found scene's pieces are loaded with every gaussian kept and
+never reordered, which is what its stamp files already rest on.
+
+**The matte is the rasteriser's own Cryptomatte, summed.** A piece loaded for a matte carries its ids as
+`scene::GpuSplats::crypto`, so the blend that draws the picture names each pixel's coverage by id
+(`RenderSettings::cryptomatte`: `transmittance * alpha` a gaussian, six ranks kept) with no kernel of this
+change in the blend. A matte is then the coverage of the ranks whose id is one of those asked for
+(`matteOf`, a binary search in the ids put in order), written in every channel: soft where the discs are,
+and less by what stands in front, since the blend already took that share. The scene cut for a view (`--lod`,
+`--glass`, `--lamps`) gathers the ids where it gathers the gaussians (`gatherPrims`). The mattes are a draw of
+their own, by the gaussians' own blend, after the picture: a piece with a neural appearance is drawn by
+another kernel when the matte is on, and the picture is not to change for having asked.
+
+`neural-scene render --matte NAME=PRIMPATH` (a prefix, as `--light-groups` reads a path; repeatable; a name
+twice is the paths together) writes `<picture>_matte_NAME` beside the picture. `athenea stage --matte` writes
+the stage's own in the same form, from the frame's Cryptomatte through the same kernel: the reference below.
+
+**Measured**, Metal (M5 Pro), binaries of `build/pt-exp`, scripts and outputs in `build/night/agent-matte`.
+
+- `athenea_render_tests "[matte]"`: two objects that name their prims, found by a look from the front and one
+  from the side. From the front the left prim's matte covers 0.4797 of the left half where the object drawn
+  alone covers 0.4677, and 0.000000 of the right half (the right prim's: 0.4873 against 0.4755, and
+  0.000000); the two together 0.4835 of the frame, whose own cover is 0.4835. From the side, one in front of
+  the other: the front one's 0.5810 (alone 0.5689), the hidden one's 0.0000 where alone it covers 0.2417. The
+  scene cut into one cloud of 79 258 gaussians gives the pieces' matte, p99 0 and max 0. `"[scene]"` whole:
+  361 assertions in 13 cases pass.
+- The QA flows on the materials stage: 47 of 47 (six new: a matte from a view, through `--views --glass`, as
+  a picture, the stage's own, the two compared -- PSNR 36.61 dB, SSIM 0.9977 for one ball -- and a prim the
+  scene does not name refused).
+- **Sponza with the two knights** (`sponza_lamps.usda`, the walk's twenty views at 960x540, 32 paths in
+  passes of 8, three bounces, denoised: 300 s, 2 112 486 gaussians standing, 117 prims named), a matte of
+  `/GlassKnight` and of `/ChromeKnight` from the four held views against the stage's (`athenea stage
+  --technique raster --matte`, one sample a pixel). The means are the share of the frame covered; IoU is
+  (a + b - d) / (a + b + d) of the two means and the mean absolute difference, each a kernel's
+  (`athenea compare`, and `compare` of its `--heatmap --show difference`):
+
+| view, knight | the scene's | the stage's | mean abs difference | IoU | 8-bit p99 | pixels over 2 |
+|---|---|---|---|---|---|---|
+| k10, glass | 0.0191 | 0.0189 | 0.00121 | 0.938 | 5 | 6 629 |
+| k10, chrome | 0.0195 | 0.0194 | 0.00130 | 0.935 | 4 | 6 211 |
+| k45, glass | 0.1584 | 0.1609 | 0.00597 | 0.963 | 34 | 42 138 |
+| k45, chrome | 0.1864 | 0.1849 | 0.00282 | 0.985 | 7 | 8 728 |
+| a, glass | 0.0381 | 0.0399 | 0.00306 | 0.924 | 5 | 11 293 |
+| a, chrome | 0.0361 | 0.0372 | 0.00233 | 0.938 | 4 | 10 374 |
+| b, glass | 0.0716 | 0.0713 | 0.00213 | 0.971 | 8 | 11 850 |
+| b, chrome | 0.0910 | 0.0910 | 0.00276 | 0.970 | 5 | 8 841 |
+
+  The same figures to the last digit with and without `--glass`: the matte is coverage, and what a glass
+  gaussian shows is its colour. Cut at `--lod 2` the far views are closer to the stage's step (k10: IoU 0.955
+  and 0.953, p99 0) and the near one further (k45: 0.892 and 0.905, p99 139 and 116; b: 0.939 and 0.950): a
+  coarser gaussian is a softer edge.
+- What a baseline of the reference is: the stage's matte from a path traced frame against its raster one
+  differs in 166 to 375 pixels of 518 400 a view (the edge pixels), p99 0.
+- **Asking for the ids costs a path traced frame nothing measurable**: `athenea stage --technique rt` on the
+  same stage and options, the three views after the first, 12.5 / 10.9 / 12.0 s and 12.7 / 11.2 / 12.1 s
+  without the matte in two runs, 12.7 / 11.2 / 12.0 s and 12.7 / 11.0 / 12.1 s with it.
+- **The picture does not change for having asked.** Drawn flat, the four views with `--matte` against without:
+  no pixel differs. With `--glass`, 159 to 338 pixels over 2 codes -- and two renders without `--matte`
+  differ from each other in 209 to 325: what glass shows is not the same from run to run, with or without
+  this.
+
+**Looked at** (`p_<view>_matte_<knight>.png`, `ref_<view>_<knight>.png`, `diff_<view>_<knight>.png` there).
+The two knights are whole silhouettes, one each, with nothing of the other or of the room in them: a solid of
+glass is made as opaque gaussians that keep their picture, and a polished metal as any surface, so neither is
+a faint matte. What is wrong:
+
+- **An edge is a soft band where the stage's is a step**, a gaussian wide: most of the pixels over 2 codes
+  and the whole of the difference from far (k10).
+- **The inside is not everywhere 1 from nearer than the walk came.** From k45 the glass knight's body shows a
+  grain of coverage under 1 (p99 34, 42 138 pixels over 2): discs made a pixel wide from further off do not
+  close the surface from here, and where the scene holds less than the whole pixel the matte holds that. The
+  chrome one beside it, found from nearer, does not (p99 7).
+- **What no view saw is not in the matte.** From `a`, to one side of the walk, the front of the glass knight's
+  head is missing where the stage has it: the scene has no gaussian there, and its picture has a hole in the
+  same place.
+- **Glass in sheets.** A pane is made as a gaussian of the opacity its tint takes (0.05 at least), so its
+  matte is that and not 1, and what was seen through it is named by no prim: an object found only through a
+  window is in no matte. Not measured here -- Sponza's two knights are a lens and a mirror, and neither is a
+  sheet.
+- **A mirror's matte is the mirror**, not what it reflects, as the stage's is.
+
+Not done:
+
+- Instances. The id is the Hydra prim's, as `athenea stage` names it: instances of one prototype, and a point
+  instancer's, are one name. No instance id is kept.
+- The id of what a pane shows (the path tracer keeps the place and the tint of what is behind, not its prim).
+- A matte from `render --frames` (refused), from `bake`, or in what `export` hands on: the web player has no
+  ids, and an `.athc` baked from the scene none.
+- Cryptomatte layers in the scene's own EXR (`CryptoObject00..02` with their manifest), for a compositor that
+  picks ids itself: the frame holds them on the device and only the mattes asked for are written.
+- More than six ranks a pixel: past that the lightest id is dropped, as the format does.
+- An antialiased reference: the stage's ids are one sample a pixel, so the figures above hold an edge's
+  aliasing on the reference's side as well.
+- CUDA and Vulkan: run on Metal only.
+
+## The path tracer's bounce again: a stack copied as far as it holds lobes (16 Nov)
+
+With the parameters by reference a bounce of 66 M paths was 7 s on the materials stage and 13.6 s in Sponza
+with its two knights. Taken apart in a copy of the sources (a switch in the generated kernel, each cut alone
+and its picture checked to differ from the whole kernel's), Sponza, 1920x1080, 32 paths, seconds a bounce:
+
+| | a bounce |
+|---|---|
+| the whole kernel | 13.6 |
+| no light sampled at a bounce's vertex | 12.9 |
+| the vertex not shaded (the first hit's material stood in) | 3.9 |
+| a fallback material of one lobe in place of the stage's, shaded | 4.0 |
+| textures read with no footprint / with one sixteen times wider | 15.1 / 13.5 |
+| every mesh under one flat UsdPreviewSurface (no texture) | 10.8 |
+| that, its node pushing the diffuse lobe alone | 11.0 |
+| that flat stage without the two knights | 4.2 |
+
+So: a vertex's material is three quarters of a bounce; its textures are 2.8 s of it and their footprint is not
+(no footprint at a bounce's vertex leaves the picture bit for bit and gains nothing); the light sampled is
+under a second; and a flat material of two lobes costs 7 s a bounce *while the knights' materials are in the
+kernel* and almost nothing without them. The kernel's stacks are sized to the material of the stage that
+pushes most (the knights' OpenPBR pushes eleven, so `kMaxLobes` is 8), and an assignment of a stack copies all
+of them whatever its count: where a material leaves its result, where the first hit's shading is kept and
+taken back, where a vertex becomes the path's current one, and where a material begins (an empty stack made
+and assigned).
+
+Those are now `copyStack` (as far as the count) and `clearStack` (`lobes.slang`), and `copyShaded` in the
+kernel. Seconds, 66 M paths, both stages with the knights:
+
+| | first hit and its light, before | now | a bounce, before | now |
+|---|---|---|---|---|
+| Sponza | 9.9 | 3.8 | 13.6 | 10.3 |
+| Sponza under the flat material | 7.8 | 3.5 | 10.8 | 7.9 |
+
+The pictures are bit for bit the ones before (Sponza without bounces and with three; the materials stage with
+three, which went from 36.3 s to 26.7 s in all). Tests, Metal: the 167 not marked slow that speak of opacity,
+glass, lights, lobes, materials, emission, bakes or path tracing -- 166 pass, the one that does not
+(`sheet_glass_draws_whole`) is NEU34's; the scene tests pass (361 assertions).
+
+A mistake on the way, said because two figures given to the user were wrong for an hour: the first version of
+the cuts took the vertex's shading out for every cut numbered three or more, so "a fallback material", "one
+lobe copied" and the three texture footprints all measured a bounce without shading, and the footprint was
+taken for the cause. The table above is from cuts that stand alone.
+
+Not done: what is left between 7.9 s and the 4.2 s of the stage without the knights -- not looked for (their
+glass makes every shadow ray walk rather than stop at the first hit, which is a guess); the other kernels that
+assign a stack (the raster's shading) left as they were; CUDA and Vulkan; `shoot`'s time with this.
+
+## What a glass material costs a stage's bounces: narrowed, not settled (16 Nov)
+
+After the stacks copied by their count, flat Sponza (every mesh under one flat UsdPreviewSurface) from the
+frame-12 view of the walk, 1920x1080, 66 M paths, the build as committed; seconds:
+
+| the knights | first hit and its light | a bounce |
+|---|---|---|
+| not in the stage | 1.6 | 2.8 |
+| there, under the flat material | 1.8 | 3.3 |
+| the chrome one alone, its own material | 2.1 | 3.6 |
+| the glass one alone, its own material | 4.1 | 7.4 |
+| both, their own materials | 3.5 | 7.9 |
+| both, from the walk's first view, where they are far | 1.7 | 4.9 (2.7 under the flat material) |
+
+It is the glass knight's material, not the knights' geometry and not the chrome. What was tried and ruled
+out, each timed and each leaving the picture bit for bit:
+
+- *The shadow ray.* With glass or a cut-out in a frame a shadow ray looks for its nearest hit and walks face by
+  face. Asking a face's material row before rebuilding the hit, and letting the first hit found answer when it
+  is a whole opaque face, changed nothing (9.7-9.8 s a bounce in Sponza where 10.3, 7.6-7.9 in the flat
+  stage) -- as the earlier table already said, the light sampled being under a second of a bounce. Taken back
+  out: code for no gain.
+- *The stacks' size.* The flat stage without glass with its stacks forced to the glass material's (11 built, 8
+  kept): 2.8 s a bounce against 2.6. Not the sizes any more.
+
+What is left is the material itself where it is evaluated: a path that enters the glass knight takes a step a
+face (crossings are not bounces) and evaluates OpenPBR at each, and the generated graph for it declares 45 BSDF
+values, each as wide as the stack is built (the UsdPreviewSurface graph did the same before it was made one
+node, `athenea_preview_bsdf`). How much of the 4.6 s is those paths' own work -- the knights fill much of that
+view, and less of the first -- and how much is a cost to every surface is **not separated**: from the far view
+the difference is 2.2 s where it is 4.6 s from the near one, which says most of it is the knight's own pixels
+and does not say all. Said because the user was first told every surface pays it.
+
+Not done: OpenPBR as one node (NEU36), which is where this points; a view with no glass in sight at all.
+
+## The 1080p shoot with the stacks copied by their count: 1069 s (16 Nov)
+
+Sponza at 1080p with two lamps as groups, twenty views, the same command as the afternoon's: **1069 s where
+1160 s** (2195 s the day before), the same 8 365 438 gaussians, the four views not taken the same to 0.02 dB
+(27.41 / 23.04 / 25.83 / 24.25). A view is about 53 s; by the stage command's figures from one of its views
+(3.8 s the first hit, 10.3 s a bounce) some 35 s of it are paths, and the rest -- the planes denoised, the
+scene's pieces, what is kept -- is not taken apart here.
+
+## OpenPBR Surface's lobes built by one node (NEU36, 16 Nov)
+
+MaterialX's graph for `open_pbr_surface` reaches the generator as thirty BSDF node calls over 45 BSDF values,
+each `kBuildLobes` wide (eleven where an OpenPBR is in the frame), and a path evaluates it at every vertex and
+at every face of a glass it crosses. It is now one node, `athenea_open_pbr_bsdf`
+(`shaders/athenea/material/mx/athenea_open_pbr_bsdf.slang`), in the engine's own graph for the surface
+(`athenea_open_pbr_surface.mtlx`, put in place of MaterialX's by `MaterialCompiler::create`, as
+UsdPreviewSurface's is). The graph is MaterialX 1.39.5's with its 27 closure nodes taken out and the one node
+put where `fuzz_layer` was: every other node -- the roughnesses, the modulated index, the coat's darkening,
+the emission's EDFs, the surface constructor -- is MaterialX's, untouched, and feeds the node what it fed the
+closures.
+
+What the node reproduces, read off a generated module (`athenea_mat_59f46fb5d63c81ab.slang`):
+
+- *Eleven lobes, in this order, each pushed where its weight is not under 1e-8:* the fuzz (Zeltner's sheen),
+  the coat (a reflecting dielectric on the coat's normal and tangent), the metal twice (under the thin film
+  and bare, `specular_weight` by `thin_film_weight` and by its complement), the dielectric's reflection twice
+  (the same), the transmission (always), the thin wall's subsurface as a diffuse and as a translucent lobe
+  (always), the solid's subsurface (where the wall is not thin), the diffuse base. The pairs are MaterialX's
+  `premultipliedBsdfAdd`: a mix whose weight is connected becomes its two sides weighted and added, and the
+  engine's lobes take nothing from a thin film, so the two of a pair are alike.
+- *The weights*, multiplied in the graph's order so the floats are the same: a multiply's factor clamped to
+  [0, 1]; the thin wall's two halves by their colour factors and mixed half and half; the substrate under the
+  reflection's throughput (the two reflections' added, max(a + b - 1, 0)); by 1 - metalness; the darkening and
+  the coat's attenuation; under the coat's throughput; under the fuzz's.
+- *The marks:* the transmission under a reflection at its own index passes whole and is flagged
+  (`kFlagOwnFresnel`), under the first layer that qualifies and not again; and, in a kernel that asks
+  (`kAtheneaMarkLobes`), a layer more over every lobe of a base that weighs something, at each of the three
+  layers, and the tint of each colour multiply.
+
+Two things the graph computed and the node does not, neither reaching a lobe: the metal's throughput (a metal
+is never a top), and the layer of the transmission over `anisotropic_vdf`, whose throughput is one in the pass
+the lobes are built in.
+
+`lobesPushed` counts the node as eleven, so the stacks are as deep as with the graph. **The switch:**
+`ATHENEA_OPENPBR_GRAPH` set to anything in the environment keeps MaterialX's graph (the one node is the
+default; the genglsl reference always keeps the graph).
+
+**Pictures, the node against the graph** (`athenea compare`, 1920x1080, 32 paths, `--path-samples 8`, Metal,
+M5 Pro, `build/pt-exp`):
+
+| stage | bounces | relMSE | 8-bit p99 / max | PSNR | the largest relative difference |
+|---|---|---|---|---|---|
+| the materials stage (twelve OpenPBR balls) | 0 | 5.3e-14 | 0 / 0 | 143.8 dB | 0.00075 |
+| | 3 | 1.6e-13 | 0 / 0 | 137.8 dB | 0.00098 |
+| Sponza with the glass and chrome knights, `--ray-margin 2e-5` | 0 | 0 | 0 / 0 | bit for bit | 0 |
+| | 3 | 0 | 0 / 0 | bit for bit | 0 |
+| nineteen OpenPBR features, the materials stage's view | 0 | 1.9e-13 | 0 / 0 | 137.1 dB | 0.00090 |
+| | 3 | 1.6e-13 | 0 / 0 | 138.5 dB | 0.00082 |
+| the same stage, a view with all its balls in frame | 0 | 1.4e-13 | 0 / 0 | 138.5 dB | 0.00090 |
+| | 3 | 2.0e-13 | 0 / 0 | 135.0 dB | 0.00090 |
+
+Where the two differ it is by the last bit of the EXR's half float (2^-10 = 0.00098 relative) in a few pixels:
+the node's products are the graph's in the graph's order, and what is left is taken to be the compiler joining
+a multiply and an add differently in two differently shaped functions -- a guess: the pixels were not looked
+at one by one, and the difference was not removed.
+
+The nineteen features, a ball each (the materials stage's generator with another list; the stage is not in
+the repository): a coat with a colour, darkening and its own index; half a coat, anisotropic, over half a
+metal; fuzz; fuzz over a coat; a thin film over a metal, over a plastic (weight one, so the bare reflection is
+not pushed) and over glass; subsurface whole and half; a thin wall's subsurface; a thin wall's glass;
+transmission with dispersion; with depth and scatter; half transmission; emission under a tinted coat;
+opacity 0.5; an anisotropic metal; half metal with a specular colour and weight; and one with every weight
+between zero and one.
+
+That each route is the route it says: the generated modules dumped for each (`ATHENEA_SHADER_DUMP`) hold one
+call of the node and no `athenea_layer_bsdf` on one route, three layers and no node on the other; and with the
+node broken on purpose in the build's copy of the shaders (the diffuse at half its weight) the node route's
+picture of the materials stage changes (relMSE 7.3e-3, 8-bit p99 51) and the graph route's is bit for bit its
+own.
+
+**Seconds**, the whole `athenea stage` command, one run each, the two routes in one build, 66 M paths:
+
+| | node | graph |
+|---|---|---|
+| materials stage: one path, no bounce, first run / again | 19.9 / 11.1 | 25.6 / 11.3 |
+| 32 paths, no bounce | 12.5 | 13.1 |
+| 32 paths, three bounces | 20.9 | 25.7 |
+| **the first hit and its light** | **1.4** | 1.8 |
+| **a bounce** | **2.8** | 4.2 |
+| Sponza: one path, no bounce, first run / again | 62.0 / 35.8 | 63.1 / 36.7 |
+| 32 paths, no bounce | 38.5 | 40.3 |
+| 32 paths, three bounces | 58.4 | 70.8 |
+| **the first hit and its light** | **2.7** | 3.6 |
+| **a bounce** | **6.6** | 10.2 |
+| the nineteen features: 32 paths, no bounce / three bounces | 15.1 / 27.4 | 15.6 / 34.4 |
+| **a bounce** | **4.1** | 6.3 |
+
+The graph's figures are the afternoon's (3.8 and 10.3 in Sponza). A bounce is two thirds of what it was in
+all three stages. What the knights' glass still costs Sponza's bounces over a stage without it was not
+measured again.
+
+*The kernel's first compile* is not told apart by these runs: the first run of a stage is 9 s over the second
+with the node and 14 s with the graph on the materials stage, 26 s with either in Sponza, and the first run
+ever of the features stage was 39.8 s on both routes -- a first run also loads and builds what the second
+finds made, and the materials stage had been run on both routes before these.
+
+Tests, Metal, the node the default: `athenea_material_tests` (593 assertions in 12 cases) and
+`athenea_technique_tests` (2862 in 64) pass; of the 172 tests not marked slow whose names speak of materials,
+lobes, glass, coats, opacity, coverage, path tracing, emission, bakes or thin walls, 171 pass, and the one
+that does not (`sheet_glass_draws_whole`) is NEU34's and fails the same with `ATHENEA_OPENPBR_GRAPH` set.
+
+Not done: a test that holds the two routes to one stack (a MaterialX update that changes its graph would
+leave the node behind and only the reference tests, which compare responses within a tolerance, would say);
+CUDA and Vulkan, where neither the pictures nor the times were taken; the raster's shading and `shoot` timed
+with the node; `standard_surface` and `gltf_pbr`, whose graphs are as they were; the node's thread memory
+taken further (its one BSDF value could be the stack itself); a view of Sponza with no glass in sight; the
+first compile measured from a cold cache; OpenPBR inputs driven by textures compared route against route
+(the tests draw them, the stages here do not).
+
+## The shoots' times of 16 Nov include the thermal guard's stops (16 Nov, late)
+
+The 1080p shoot was run again with OpenPBR as one node: 933 s, then 913 s with each view's time said in its
+line (`shoot` now prints, a view: the scene brought and its cover drawn, the frame's passes, its looks, the
+groups' light kept, the scene written). All but a few seconds of a view are the frame's passes, 23-29 s a view
+-- and two views of the twenty took 174 s and 184 s. Not the views: the same camera is 27 s by `athenea stage`
+and 29 s as the second view of a short shoot, with or without light groups or the denoiser. It is the GPU
+queue's guard (`guard.sh`, outside the repository), which stops a job while the Mac's thermal pressure is off nominal
+and for 60 s after: two stops of about 150 s in each of these shoots, written in its log.
+
+So the day's shoot times, wall and with the stops the guard's log gives each job taken off (the log names the
+job's script, not the command inside it, so where a job ran more than the shoot the second figure is a bound):
+
+| Sponza at 1080p, two lamps, twenty views | wall | the guard's stops | working |
+|---|---|---|---|
+| the day before (`gpu_hd.sh`) | 2195 s | 576 s | about 1620 s |
+| structs by reference | 1160 s | 134 s | about 1030 s |
+| stacks copied by their count | 1069 s | 315 s in the shoot (460 s in the job) | about 750 s |
+| OpenPBR as one node | 933 s | 289 s | about 645 s |
+| the same, timed a view | 913 s | 305 s | 608 s |
+
+The last row is exact (the two stopped views are named by the log's times): 608 s, of which the first view is
+67 s (kernels compiled, the stage loaded) and the other nineteen 23-32 s each. Against the day before that is
+about 2.7 times, not the 2.4 the wall times give. Shorter timings of the day (a stage drawn in under two
+minutes) were mostly between stops; the two odd ones noted earlier (448 s where 320 s; a first run of 69 s)
+are of this kind and were not looked up one by one.
+
+Flat Sponza after OpenPBR as one node, the frame-12 view, 66 M paths: 2.2 s the first hit and 5.5 s a bounce
+with the knights' own materials (3.5 s and 7.9 s before), 1.8 s and 3.0 s without the knights.
+
+## The afternoon's commits on the RTX 3070 laptop: CUDA and Vulkan at 35c47360 (16 Nov)
+
+A subagent, RTX 3070 Laptop, both trees brought from 52e7b23a to 35c47360 (the shading state written in place,
+a part's history in one file, a layer's view, the test's `far`, mattes by object, stacks copied by their
+count); scripts and outputs in `build/night/agent-win3`.
+
+- **Builds**: both, no error; `athenea_usd_tests` now compiles under MSVC.
+- **Tests, all passing**: the scene tests 361 assertions in 13 cases on each (with `[matte]`);
+  `athenea_material_tests` 593 (CUDA) / 695 (Vulkan); `athenea_technique_tests` 917 with 35 cases skipped (CUDA,
+  as before these commits) / 2862; `athenea_usd_tests "[path],[glass],[lights],[emissive]"` 170 with 55 skipped /
+  1020. The QA flows: 47 of 47 on CUDA, 46 of 47 on Vulkan -- the one that fails is the new flow that compares
+  the scene's matte with the stage's, by `athenea compare`, which has no device on Windows/Vulkan (NEU17).
+- **Pictures against 52e7b23a** (1280x720, 16 paths): bit for bit on Vulkan, the materials stage and Sponza,
+  without bounces and with three; bit for bit on CUDA on the materials stage. **On CUDA Sponza's first hit
+  differs** (relMSE 3.4e-11, the largest relative difference 0.0066, one code of eight bits at most, no pixel
+  over two), every run repeating itself exactly: it comes from 8934e212 (`shadeSurface` and `shadeFound`
+  writing their caller's state), not from the stacks' copy, which is bit for bit there. Not looked into: a
+  field of the state left unwritten on some route would read what the caller's held, and that is the first
+  thing to check.
+- **The path tracer's time on Vulkan**, the materials stage, 16 paths in passes of 2, frame time:
+
+| | first hit | a bounce |
+|---|---|---|
+| 52e7b23a | 2.97 s | 1.33 s |
+| the shading state written in place (8934e212) | 2.51 s | 1.09 s |
+| stacks copied by their count (35c47360) | 1.30 s | 0.46 s |
+
+  2.3 times the first hit and 2.9 times a bounce over the two commits, the same picture: where passing structs
+  by reference gave Vulkan a fifth to a third, copying fewer lobes gives it more than it gave Metal. Sponza on
+  Vulkan says little (its frame there is 19-20 s without bounces and 20 s with three: not shading).
+- **Mattes**: the materials stage's `/World/Bumped` from the scene against the stage's: 36.61 dB, SSIM 0.9977
+  on CUDA and on Vulkan, the Mac's figures; the stage's matte bit for bit between the two backends, the
+  scene's to one code of eight bits. On CUDA without OptiX `shoot` runs and names its prims; whether it traced
+  its bounces was not checked (the stage command there traces none).
+
+Not done: CUDA's bounces (no OptiX in WSL), so the path tracing kernel with these changes is unverified on
+CUDA past the first hit; D3D12; the web player's reading of a one-file history on Windows; OpenPBR as one node
+and what came after 35c47360.
+
+## OpenPBR's one node held to MaterialX's graph by a test; textures and the marks, route against route (NEU36, 17 Nov)
+
+The one node that builds OpenPBR Surface's lobes (16 Nov) was checked against MaterialX's graph by pictures
+only, so a MaterialX whose graph changed would have left it behind with nothing to say so.
+
+**The switch is reachable from code.** `MaterialCompiler::create` takes `MaterialCompilerOptions`, whose
+`openPbr` is `Environment` (the default: `ATHENEA_OPENPBR_GRAPH` decides, as before), `Node` or `Graph`. Two
+compilers in one process give the two routes; their modules are named by a hash of their source, so both load
+in one kernel.
+
+**The test** (`athenea_material_tests "[openpbr]"`, `tests/material/test_material_compiler.cpp`): one kernel
+imports the material compiled by each route, evaluates both in the same thread at 16 384 shading points (a
+random normal and view; a quarter seen from inside, a quarter from behind) and compares the two lobe stacks
+*themselves*, not what they evaluate to: the count; lobe by lobe, in order, the kind, flags, scatter and
+`pad0`; the weight and every parameter (roughness, three colours, index, exponent, alpha, normal, tangent);
+the marks (the tint in `pad1`/`pad2`, the layers over in `pad3`); the emission and the opacity. A float counts
+where it is more than 1e-5 off relative to the larger of the two (to 1e-3 at least), a NaN always. Only
+counters are read back, one of them the worst difference's bits (`InterlockedMax` on a float that is not
+negative). The kernel keeps twelve lobes (`kMaxLobes`), so none of OpenPBR's eleven is dropped as the lightest
+and the stack's order is the order they were pushed in. Each parameter set runs twice: as shading builds its
+stacks, and with `kAtheneaMarkLobes` exported true, as a bake does. The sets are the nineteen features the
+routes were first compared on as pictures. The stacks are compared rather than `stackEval`'s response
+because a response sums the lobes: two wrong weights can cancel in it, a flag or a mark does not reach it at
+all, and a tolerance on a response has to be loose where a lobe is sharp.
+
+What it measured (Metal, M5 Pro, `build/pt-exp`): in all 38 runs no count, word, value, mark, emission or
+opacity off; the floats that differ at all are 0 to 3 % of those compared (none in the six sets that are
+metal or glass alone, 93 882 of 4.1 M in the set with every weight fractional, unmarked), the worst by
+3.9e-7 relative -- three or four units in the last place, the two functions' multiplies joined differently.
+Over the sets: every kind of lobe OpenPBR pushes (Oren-Nayar, translucent, dielectric, Schlick, sheen), a
+stack of nine, emission and an opacity under one. 631 assertions, about ten seconds with its two kernels'
+compile.
+
+**That it fails when the node is wrong** -- the build's copy of `athenea_open_pbr_bsdf.slang` edited, the test
+run, the copy restored and compared with the source (`cmp`: equal), the test passing again:
+
+| the edit | what the test said |
+|---|---|
+| the diffuse at half its weight | fails: 49 152 floats off (three a point) in each of 11 sets, the worst by 0.5 |
+| the coat's weight by 0.999 | fails: 49 152 floats off in each of the 5 sets with a coat, the worst by 1.0e-3 |
+| a layer over counted as two (`pad3 += 2`) | fails in the marked runs alone, all 19: 16 384 to 131 072 marks off |
+| the transmission's own-Fresnel flag not set | fails: 16 384 words off in each of the 6 sets that transmit, no float |
+
+**Deriving the graph again.** `scripts/materialx/make_open_pbr_mtlx.py <MaterialX libraries>` writes
+`athenea_open_pbr_surface.mtlx` from MaterialX's `bxdf/open_pbr_surface.mtlx` (27 closure nodes taken out, the
+one node put in); run against `~/tools/usd-26.08-mx/libraries` it gives the file in the repository byte for
+byte. `docs/development.md` (1.5) says the order: the script, a build, the test.
+
+**Inputs driven by textures** (not compared on 16 Nov). Six balls on the materials stage's floor, OpenPBR,
+their `base_color` (sRGB), `specular_roughness`, `base_metalness`, `coat_weight` and `geometry_normal` (an
+image through `<normalmap>`) from images -- Sponza's stone, brick, plaster and column maps, and a map of
+squares of 0, 1/3, 2/3, 1 and ramps for the weights -- in six combinations, one with fuzz, transmission,
+subsurface and a thin film over them (five material modules; the stage and its generator are in
+`build/night/agent-openpbr2`, not in the repository). `athenea stage --technique rt`, 1920x1080, 32 paths,
+`--path-samples 8`, the node against the graph by `athenea compare`:
+
+| bounces | relMSE | 8-bit p99 / max | PSNR | the largest relative difference |
+|---|---|---|---|---|
+| 0 | 4.0e-13 | 0 / 0 | 134.3 dB | 0.00098 |
+| 3 | 4.6e-13 | 0 / 0 | 133.8 dB | 0.00098 |
+
+The same as with constants: the last bit of a half float in a few pixels. (For scale, no bounce against three
+is relMSE 0.24.) Each route's dumped modules hold the node and no layer, or layers and no node. One run each,
+so no time is given: the first of each route compiled its kernels (48 s and 62 s whole, 28 s and 38 s the
+second, with three bounces; no stop of the thermal guard fell inside).
+
+**The marks, through a conversion.** `kAtheneaMarkLobes` is true in one kernel, the path tracer's bake, and
+what reads the marks is a TX bake's read back of a material whose fields the stage reader cannot say
+(`StageMaterial::sampled`). The smallest command that reaches it on an OpenPBR:
+`athenea mesh2splat ball.usda --transfer --bake-samples 256 --bake-extra 0 --prim /World/Ball --no-camera
+--resolution 192` on the tests' ball and ground (`tests/data/lobes/sphere.usda`, `tx/ground.usda`) with a
+material that asks for the read back -- it says `the material read back on the device into 96118 gaussians`.
+Three: a red dielectric under a coat of colour (0.9, 0.6, 0.2); a metal under the same coat; and one whose
+base colour, roughness, coat roughness and metalness are each a `multiply` node, under a tinted coat and
+fuzz. Converted by each route, both clouds drawn by the default route (`athenea stage --default-lights`,
+1024x1024, raster, and rt with 16 paths) and compared:
+
+| ball | drawn by | relMSE, node's cloud against graph's | 8-bit p99 / max | the node's cloud against the node's again |
+|---|---|---|---|---|
+| tinted coat over a dielectric | raster | 2.1e-12 | 0 / 1 | 2.7e-12, 0 / 1 |
+| | rt | 2.5e-12 | 0 / 1 | |
+| tinted coat over a metal | raster | 3.1e-12 | 0 / 1 | |
+| | rt | 3.3e-12 | 0 / 1 | |
+| four inputs computed | raster | 1.7e-12 | 0 / 1 | 1.0e-12, 0 / 1 |
+| | rt | 9.8e-13 | 0 / 0 | |
+
+The two routes' clouds differ by what two conversions by one route differ by (a bake is not repeated bit for
+bit): no pixel over two codes, the largest relative difference 0.00098. For scale, the dielectric ball against
+the metal one is relMSE 0.049. With the node's **tint mark halved** in the build's copy the node's cloud
+leaves the graph's: relMSE 0.039 (8-bit p99 57) on the first ball, 0.10 (p99 89) on the third. With **a layer
+over counted as two** it does not: 1.4e-12 and 2.8e-12, the repeat's level -- these conversions read whether
+a lobe lies under a layer, not under how many, so a conversion's picture does not hold that mark and the
+stack test (above, its third row) is what does.
+
+Tests, Metal, the node the default: `athenea_material_tests` (1224 assertions in 13 cases) and
+`athenea_technique_tests` (2862 in 64) pass; the new case passes the same with `ATHENEA_OPENPBR_GRAPH` set
+(the option picks each route, not the environment); of ctest, the twenty whose names begin `material`, `lobes`,
+`mesh2splat_lobes`, `mesh2splat_tx_paint`, `mesh2splat_tx_rubber` or `a_map_on_a_layer` pass. The whole suite
+was not run.
+
+Not done: the test on CUDA and Vulkan (it was run on Metal alone; `InterlockedMax` and the twelve-lobe stack
+are untried there, and a device that sets `ATHENEA_MAX_LOBES` keeps its own count, where a lobe dropped as
+the lightest could differ between the routes by a tie); texture-driven inputs inside the test (its nineteen
+sets are constants; maps were compared as pictures only); `geometry_coat_normal` and the tangents driven by
+a map on a stage; the textured stage on the raster's shading; a time for the textured stage (one run a
+route); `standard_surface` and `gltf_pbr`, still graphs and so with nothing to be held to; a baked (not
+`--transfer`) conversion compared route against route -- it builds its stacks in the same marked kernel, and
+the three balls here are all the read back was tried on; the stage that makes the textured balls kept in the
+repository.
+
+## The eight tests that fail on Metal are the trunk's, not this branch's (NEU34, 17 Nov)
+
+A subagent built `neural` (67326e42) and the trunk the branch stands on (`origin/main` cf3ab5f1, 8 Nov) in a
+clone of its own and ran each of the eight several times; logs, the bisect and the experiments are in
+`build/night/agent-neu34`. All eight fail on the trunk with the same numbers, run to run, so none was bisected
+on this branch and nothing was changed. The trunk's own CHANGELOG (0.5.0, "Known") lists them as failing on
+Metal.
+
+| test | what fails | what it is |
+|---|---|---|
+| a posed cloud refits its ray tracing structure... | one pixel of 25 600 is 3 and 16 codes apart between a refitted and a rebuilt tree (bound: 1), the compute BVH route only | a trunk regression of 9 Oct (f15429a5, `surfelSafeScale` in `rt_frames.slang`: it changes no value for this cloud, the generated code rounds differently); a stale tree would be p99 255 |
+| flatten's fit gives back degree 3 harmonics... | the roughness floor comes back 1.0 where under 1 is asked | `lobeShareAbove3` passes no candidate (the smallest share 0.0538 against 0.05, worked out off the device); never passed. `athenea flatten` gets that floor of 1.0 on Metal |
+| a flattened cloud written as PLY and as SPZ... | p99 5 codes at degree 0 where 4 is the bound | a bound one code tight; never passed on Metal (the kernel did not compile there when the test was written) |
+| a skinned cloud's zonal transfer turns with it... | relMSE 1.7e-2 where 1e-4 | the test's cloud carries harmonics, which a prim's transform turns and a joint does not; with them zeroed the test passes (1e-7). The transfer is right |
+| a floor four texels a pixel from the map... | p99 26 codes where 8 | the bound was an expectation written before the run and never set from a measure |
+| a zonal transfer is fitted in the gaussian's frame... | 769 lobe cases off by more than 0.5 % where none is asked | the test asks an exactness the greedy fit does not reach, with 32 rounds either |
+| `sheet_glass_draws_whole` | the sheet's frame is 0.43 of the path traced pane's mean | not diagnosed; never passed |
+| `tx_conversions_render_like_the_mesh` | two of 86 bounds, chrome under a pale sky and glass under a lamp (ratio 1.068 where 1.05) | the chrome bound a placeholder never met; the glass one drifted on the trunk, not bisected |
+
+Not done here: any of them mended -- they are the trunk's areas (the ray tracer, flatten, the transfers,
+mesh2splat), and the two with an engine consequence (flatten's floor; a skinned gaussian's harmonics not
+turned by its joint) are for whoever owns those. The slow `tx_gate_*` tests were not run.
+
+## Mattes by object in the web player: an id a gaussian, handed on (17 Nov)
+
+A found scene kept which prim each gaussian was made from, and `render --matte` gave a prim's matte from a
+camera; the ids did not leave the engine. `neural-scene export` wrote none, so the web player
+(`scripts/examples/neural-scene-viewer`) could not show an object's matte. Now it does.
+
+**What is handed on is a place in a list, not the id.** The index carries `prims[]`: each prim's path and its
+Cryptomatte id (eight hex digits), in ascending order of id. Beside every file of gaussians there is
+`<its stem>.ids`: sixteen bits a gaussian, little endian, in the file's own order, the prim's place in that
+list counted from one and 0 where no prim names the gaussian (what a pane shows behind it), inside gzip. A
+player's shader reads sixteen bits and looks up a texel; thirty-two bits of hash would want a search a
+gaussian, or the same table built in the page. The order by id is what makes the place a binary search in
+the table the engine already keeps in that order for `render --matte`, and nothing else has to be sent.
+Sixteen bits are 65535 prims; a scene of more says so and writes none.
+
+**The ids go where the gaussians go, by the same sets.** A part's file is not a piece's records: the cut
+drops some, and `Discovery::recordsOf` sets what is left apart as matter, lens and mirror, each kind into a
+file of its own, at every level of detail, and for a history by the frame each stands until. The ids are
+carried by the same flags and the same places (`RecordSet::kept`, `places`): `Discovery::primIndices`
+(`scene_matte.slang`'s `matteIndex`) writes, for each record kept, its id's place in the table at the
+record's place in the set, and `primWords` (`matteWords`) packs them two a word so the file is the buffer's
+bytes. So a part's ids are its file's gaussians in its file's order by construction -- its glass's and its
+mirrors' their own, a level's, a history's spans one after another -- and the CPU reads a piece's `.prims`,
+lays buffers end to end and gzips. A piece that keeps no ids (found before a scene kept any) hands on zeros.
+
+**gzip, because the ids come in runs.** A look makes its gaussians cell after cell, and a wall is thousands
+of cells in a row. Raw, the ids of the Sponza below are 4 225 274 bytes beside 19.4 MB of SPZ, 22 % more to
+read; inside gzip they are 63 658 bytes, 0.3 %, a quarter of a bit a gaussian. The player undoes it with the
+browser's own `DecompressionStream`. A static server does not compress a type it does not know, so the file
+is compressed itself.
+
+**`--no-prims`** writes none. `export_groups.py` runs `export` once a group of lights and once for the base
+colours, the same gaussians in the same order with another colour: those are asked without, and the scene's
+own parts, the lit levels and the history carry them. An index without `prims` is what every export before
+this was, and the player plays it and shows no objects.
+
+**The player.** An *Objects* part in the options: how the chosen object is shown, a box that finds prims by
+a part of their path, and the stage's prims as a tree by their paths, a branch choosing every prim under it
+(at or under a path, as `render --matte` reads one). A row of branches with one child each is one line. A
+prim no frame saw has no gaussian and is dim; the count is taken as the ids are read. The three ways:
+
+- *matte*: the chosen gaussians white, every other black, drawn by the same blend over black with none of
+  the page's lines: what stands in front takes its share, so it is the matte from this camera;
+- *isolate*: every other gaussian's opacity 0;
+- *highlight*: the scene as it is, the chosen mixed 0.6 towards a colour.
+
+It is one more modifier, and the order is the point. Spark's mesh takes a list of modifiers in the world
+(`worldModifiers`) and the page used one: a group of lights' sum on a mesh of matter, the shading by the eye
+on glass and chrome, each of which *makes* the gaussian's colour. The objects' modifier is the mesh's last
+(`setWorld`), so a matte replaces that colour and a tint is laid over it; the history's cut is an object
+modifier, before either, and a gaussian it cut stays cut. One program serves the three ways and none: the
+way is a uniform, the prims chosen a texture of a texel a prim that choosing rewrites, and a gaussian's id a
+texture of a texel a gaussian read once a file -- nothing is compiled or read again for a choice. The cubes
+glass and chrome read are drawn with the objects' way put back to none, so an object alone still mirrors its
+room. The choice is in the address with the rest of the view: `object=<prim path>` and
+`object.view=matte|isolate|highlight` (highlight where it is not said); another scene chosen drops both.
+
+**Measured**, Metal (M5 Pro), binaries of `build/pt-exp`, headless Chrome 157 at 1280x720; scripts, logs
+and pictures in `build/night/agent-webmatte`.
+
+- **The scene**: `sponza_lamps.usda` with the two knights, the walk's twenty views at 960x540, 32 paths in
+  passes of 8, three bounces, denoised, two groups of lights: 216 s (no stop of the thermal guard in it),
+  2 112 637 gaussians standing, 117 prims named. 15 of them have gaussians (the floor 751 426, the walls
+  536 244, the chrome knight 239 119, the glass one 83 487), and 233 gaussians are named by none.
+- **What the ids cost**: `export --by-frame`, 60 files of gaussians, 19 391 650 bytes of SPZ and 60 `.ids` of
+  63 658 bytes in all. Through `export_groups.py --levels 1000000 --history` (the scene, two groups, the base
+  colours, a level, the lit level, the history): 437 files, 117.4 MB, of which 122 `.ids`, 167 825 bytes; the
+  largest file 8.04 MB, the largest `.ids` 45 967 bytes. `export --by-frame --history` alone, twice each: 14.8 s and 14.8 s
+  without the ids, 15.8 s and 16.3 s with them (116 files of each, 75 573 bytes of ids beside 22 994 302 of SPZ).
+- **The tests**: `athenea_render_tests "[scene]"`, 361 assertions in 13 cases, pass. The QA flows on the
+  materials stage: 49 of 49 (two new: an export `--by-frame --history --levels` whose every file -- a part's,
+  its glass's, its mirrors', a history's: 17 files -- names an `.ids` whose gzip says two bytes a gaussian,
+  and whose index names as many prims as the scene, 21; and `--no-prims`, which leaves none. That scene is
+  too small for the levels asked, so a level's ids are held by the Sponza export alone).
+- **Looked at** (`shots/`): riding the render camera at frames 9 and 16 of the scene as it stood then
+  (`ride_f9_*`, `ride_f16_*`: the scene, the matte of `/GlassKnight`, of `/ChromeKnight`, each alone, each
+  tinted, then the `warm` group put out and the chrome one tinted and as a matte); the scene whole from
+  the walk's `k24` and `k45` (`whole_*`); the panel (`panel_*`); a view from its address alone
+  (`url_*`, one at the level of detail); the one-file player handed the folder (`alone_matte.png`); two
+  exports made before (`old_*`). Each knight's matte is that knight whole and nothing else, at both frames,
+  where the glass one's gaussians are in the parts' `_glass` files and the chrome one's in their `_mirror`
+  files, and at the level of detail; the matte of `/` is the frame; the old exports play and the panel has
+  no Objects part.
+- **Against the engine's own matte** (`neural-scene render --matte --glass` of the same scene from the same
+  walk views at the same size, `eng/e_<view>_matte_<knight>.png`): by eye only -- `athenea compare` reads
+  EXR and a browser's capture is a PNG, so no figure. From `k24` and `k45`, both knights: the same
+  silhouette on the same pixels as far as the eye tells, the same holes in the chrome knight's foot from
+  `k24`, the same grain inside the glass knight from `k45` where discs made from further off do not close
+  the surface. The player's grain is darker than the engine's picture.
+
+**What is wrong, or not as good as it reads.**
+
+- **No figure for the agreement.** The comparison above is two pictures side by side.
+- **The grain of the player's matte is darker than the engine's**, where a pixel is covered less than
+  whole. Not run down: the engine's PNG is its coverage through its display's curve and Spark blends the
+  bytes it is given, so the two are not the same quantity in the half tones; and Spark spreads a disc by its
+  own filter (`preBlurAmount` 0.3), not the engine's.
+- **A matte in the player is eight bits of a display's blend**, not the coverage summed by id that
+  `render --matte` writes: it is for looking, and a compositor's matte is the engine's.
+- **The tree lists every prim the stage names**, 117, of which 102 have nothing to show in this scene; they
+  are dim, not gone.
+- **One path at a time.** Two objects together are a common branch or nothing.
+- **The one-file player still asks for `site.css`** beside it (as before this): alone in a folder it is
+  unstyled, and it showed the matte so.
+
+Not done:
+
+- `shoot --grow` writes its parts without ids: a scene watched while it is shot has no objects until it is
+  exported.
+- A test of `primIndices` in `athenea_render_tests`: the order is held by construction, by the flow's
+  counts and by the pictures, not by a kernel that compares.
+- Picking an object by clicking it in the page.
+- `.ply` and `.glb` parts get the `.ids` beside them too; no reader of those was tried with them.
+- A phone: the panel's tree was looked at on the desktop layout only.
+- Frame rates: headless Chrome's on this machine are not a measure, and none was taken.
+- CUDA and Vulkan: run on Metal only. The site: nothing was published.
+
+## A layer's view: the one that sees the gaussian as wide as it was made, not a pixel wide (17 Nov)
+
+The rule of 16 Nov scored a view by how far a gaussian's width in its frame was from a pixel. A gaussian is
+not made a pixel wide: `shoot` makes it `--spread` of a cell, half a pixel by default. So the rule preferred a
+view twice as near as the one that made the gaussian. The width aimed at is now the scene's own spread
+(`sceneRelight`'s `madeWide`, handed by `Discovery::relight`), and the view kept is then, for most gaussians,
+the frame that made them: their layers are read at the pixel their own colour came from, and the groups'
+layers and what is left sum to that colour.
+
+Sponza, 960x540, the four views not taken, dB / SSIM against the reference; the two rules shot one after the
+other on the same build (the first by the build's shader copy alone):
+
+| every light a group in the shoot | k10 | k45 | a | b |
+|---|---|---|---|---|
+| a pixel aimed at | 27.98 / 0.8955 | 22.82 / 0.7822 | 25.95 / 0.8672 | 24.31 / 0.8360 |
+| the making width aimed at | 28.35 / 0.8948 | 23.40 / 0.7771 | 26.43 / 0.8661 | 24.30 / 0.8262 |
+| no group at all (16 Nov) | 28.34 / 0.896 | 23.44 / 0.788 | 26.41 / 0.874 | 24.47 / 0.834 |
+
+In dB a scene with every light apart is now the scene with none apart, to 0.04 dB in three views (0.17 in the
+fourth, which does not move). SSIM goes down by 0.001 to 0.010 against the pixel rule, and stays 0.001 to 0.011
+under the scene with no group -- not explained; crops of two views beside the reference show no artefact of the
+new rule's own (floor and walls as the reference in both, the shadow under the glass knight nearer it).
+
+The unlit workflow with its lights' pass at a quarter of the pixels, measured with the number fixed in the
+shader before it was a parameter: 28.08 / 0.878, 23.03 / 0.757, 25.69 / 0.846, 24.54 / 0.806 with half a pixel
+aimed at, against 27.62 / 0.880, 22.57 / 0.773, 25.47 / 0.851, 24.24 / 0.818 -- 0.2 to 0.5 dB more, SSIM 0.002
+to 0.016 less. Aiming at the width scaled to the smaller frame (a quarter of a pixel) was tried and is worse:
+SSIM down by up to 0.07 and a view's dB down. So the width aimed at is the scene's spread in the pass's own
+pixels, whatever the pass's size. Tests, Metal: the scene tests pass (361 assertions).
+
+Not done: why SSIM gives a little where dB gains; the QA flows and the other backends with this; a scene whose
+gaussians were made at coarser cells (their width is a cell's, not the spread's).
+
+## The two published 1080p scenes found again, with the prims' ids and the making-width rule (17 Nov)
+
+Both by the commands they were made with, the build of 946aa4ea; the four views not taken at 960x540 against
+the reference, dB / SSIM, each beside the one on the site:
+
+| | k10 | k45 | a | b |
+|---|---|---|---|---|
+| `sponza_lamps` (two lamps as groups, one render), on the site | 27.42 / 0.8630 | 23.04 / 0.7575 | 25.83 / 0.8364 | 24.25 / 0.8106 |
+| found again | 27.51 / 0.8636 | 23.37 / 0.7567 | 26.00 / 0.8387 | 24.22 / 0.8053 |
+| `sponza_lights` (found unlit, every light a group), on the site | 27.91 / 0.8982 | 22.70 / 0.7937 | 26.06 / 0.8682 | 24.59 / 0.8429 |
+| found again | 28.40 / 0.9037 | 23.11 / 0.7863 | 26.44 / 0.8704 | 24.75 / 0.8403 |
+
+`sponza_lamps`: 899 s wall with two thermal stops of 155 s (the guard's log), so about 589 s working, the same
+8 365 438 gaussians. `sponza_lights`: 270 s for its two passes, no stop (431 s on 16 Nov). Handed on with a
+level, their history and the prims' ids: 458 and 525 files (117 prims named; an `.ids` file beside each file
+of gaussians), the largest 10.5 MB. In Chrome on the Mac, riding the render camera, frames 4, 12 and 20 draw
+the counts the published ones draw, and `?object=/ChromeKnight&object.view=matte` draws the chrome knight's
+matte. A scene's page says its frames' seconds as the shoot's wall clock gave them, the guard's stops
+included (889 s for `sponza_lamps`).
+
+Not done: the other scenes on the site found again (they carry no ids, and the player shows no Objects control
+for them); a phone; a real Chrome.
+
+## OpenPBR as one node and its test on the RTX 3070 laptop: CUDA and Vulkan at cb22fdb7 (17 Nov)
+
+A subagent, RTX 3070 Laptop, both trees brought from 35c47360 to cb22fdb7; scripts and outputs in
+`build/night/agent-win4`.
+
+- **Builds**: both, no error. (On Windows the first `cmake --build` stopped at step 43 of 46 with a return of
+  0 and three binaries not relinked; the same command again finished. Not explained.)
+- **Tests, all passing**: `athenea_material_tests` 1224 assertions in 13 cases (CUDA) and 1326 in 14 (Vulkan);
+  `athenea_technique_tests` 917 with 35 cases skipped / 2862; the scene tests 361 / 361; the usd tags 170 with
+  55 skipped / 1020; the QA flows 47 of 47 on CUDA, 46 of 47 on Vulkan (the flow that needs `athenea compare`,
+  which has no device there: NEU17).
+- **The test that holds the node to the graph** (`[openpbr]`, 631 assertions) passes on both: its
+  `InterlockedMax` and its stack of twelve lobes work there. No count, word, mark, emission or opacity off in
+  any of the 38 runs; the worst float 2.3e-7 on CUDA and 5.3e-7 on Vulkan (3.9e-7 on Metal).
+- **Pictures, the node against the graph** (1280x720, 16 paths), the materials stage and Sponza with the
+  knights: bit for bit on Vulkan, with and without bounces; on CUDA a half float's last bit (relMSE 5e-13 to
+  7e-13, no code of eight bits). The graph's route is bit for bit what 35c47360 drew, on both.
+- **Time on Vulkan**, the materials stage, 16 paths in passes of 2, frame time: 1287 ms to 1106 ms without
+  bounces and 2697 ms to 1909 ms with three, the graph against the node (14 % and 29 % less).
+- **NEU37 narrowed** (CUDA's first hit of Sponza differing by a code since `shadeSurface` and `shadeFound`
+  write their caller's state): not a field left unwritten -- zeroing the whole state first changes nothing --
+  and not the call site. It is the two functions' bodies computing through the `out` parameter: built in a
+  local and assigned at the end, the old picture comes back bit for bit. That is what a compiler contracting
+  multiplies and adds differently would do, and it could not be switched off there to prove it. Left as it
+  is: the difference is under a code, and Metal and Vulkan are bit for bit.
+
+Not done: CUDA's bounces (no OptiX in WSL), so the node inside a bounce is unverified on CUDA past the first
+hit; the commits after cb22fdb7 (the prims' ids in an export, the making-width rule) on the RTX 3070 laptop.
+
+## The older scenes of the site found again: history, ids, and what the levels lose (17 Nov)
+
+By an agent of this session, with the engine at 946aa4ea and each scene's own command (found in the transcripts
+of 13 and 14 Nov and in `gpu_groups3.sh`), exported with `--history` and its ids, and checked against the one
+on the site: held views against a path traced reference made for it (64 paths, 8 bounces, denoised, 960x540),
+and the page in headless Chrome riding the render camera at an early, a middle and the last frame. Scripts,
+logs, references and pictures in `build/night/agent-refresh`.
+
+| scene | shoot (less the guard's stops) | gaussians standing | held views, dB / SSIM, before -> now | files |
+|---|---|---|---|---|
+| `sponza_knight` | 532 s (the page said 1766) | 2.59 M (2.44) | k10 30.85/0.925 -> 32.84/0.940, k45 33.57/0.861 -> 34.60/0.884, a 30.26/0.909 -> 31.77/0.929, b 32.44/0.882 -> 33.59/0.906 | 485 (124) |
+| `sponza_growth` | 443 s (741) | 4.22 M (4.88) | four views off the walk: 32.10/0.907 -> 33.46/0.931, 32.63/0.909 -> 33.69/0.921, 33.05/0.923 -> 34.12/0.931, 32.85/0.939 -> 34.11/0.952 | 401 (102) |
+| `sponza_chrome` | 2738 s, 1846 without six stops (6185) | 11.41 M (9.72) | k10 30.07/0.860 -> 31.71/0.875, k45 29.36/0.794 -> 29.03/0.803, a 29.33/0.860 -> 30.48/0.875, b 29.34/0.833 -> 29.58/0.848 | 753 (379) |
+
+For the knight and the walk "before" is the scene of 13 Nov still on the disk, not the one of 14 Nov that was
+published, which is gone; for the chrome it is the published scene. In the page the knight and the walk, which
+had no history, are whole at their early frames where they showed holes and stripes (looked at: the walk at
+frames 5 and 50); at the last frame the pictures are the same. Mattes of `/GlassKnight` and `/ChromeKnight` are
+clean. The three are in `build/web` (3375 files where 2341).
+
+**The levels.** The scenes hold fewer coarse cells than they did: the knight's level of 250 000 and the chrome's
+of 1 000 000 and 500 000 cannot be met (the coarsest the chrome holds draws 1.31 M). The chrome is handed on
+with levels of 3.81, 1.82 and 1.40 M, so a phone, whose budget is a million, draws 1.40 M where it drew 0.96.
+Worse than it was, and accepted for the rest.
+
+**`lamps` is left as it was.** Its flow (the scene without the lamps, then a `--light-group` pass a lamp) with
+this engine reads 28.22/0.868, 23.14/0.731, 26.22/0.829, 24.35/0.780 against 27.94/0.875, 22.76/0.765,
+25.81/0.844, 24.24/0.814: more dB and less SSIM in every view, with speckle over the dark door in the held
+picture. The same stage in one render with `--light-groups` (192 s) reads 27.53/0.888, 23.36/0.771,
+25.90/0.862, 24.04/0.821: SSIM above the published in the four, dB above in two and below in two. Kept beside
+(`build/night/agent-refresh`, `n_lampsb`), not published.
+
+**Found on the way (NEU38).** A pass over a scene already found (`--light-group`) sets the scene's `upAxis`
+again from the stage, and `all.usda` says none on its root layer: the scene became Y up after `--up-axis Z` on
+its first pass, and the page drew it on its side. And the published `lamps` exported again by this exporter
+(315 files where 723) is not the same picture at frame 4 -- the spot's pool is on the floor where the published
+has none -- and which is right was not checked against the engine.
+
+**Not done.** A phone and the RTX 3070 laptop; the levels side by side; a coarser level for the chrome (a shoot with wider
+cells); CUDA and Vulkan.
+
+## Standard Surface's lobes built by one node, held to MaterialX's graph by a test (17 Nov)
+
+The same as OpenPBR's (16 and 17 Nov) for Autodesk Standard Surface, whose graph
+(`NG_standard_surface_surfaceshader_100`, which both versions of the nodedef use) reaches the generator as
+sixteen BSDF nodes over 29 BSDF values. The two chess knights of the Sponza test stage are standard_surface,
+and the glass one is what the stage's bounces were said to be dear for (16 Nov).
+
+**The node.** `athenea_standard_surface_bsdf` (`shaders/athenea/material/mx/athenea_standard_surface_bsdf.slang`),
+in the engine's graph for the surface (`athenea_standard_surface.mtlx`): MaterialX 1.39.5's with its sixteen
+closure nodes taken out and the one node put where `coat_layer` was; every other node -- the roughnesses and
+what the coat does to them, the two rotated tangents, the coat's gamma on the colours, the artistic index,
+the emission's EDFs -- is MaterialX's and feeds the node what it fed the closures. Read off a generated
+module (`build/night/ptexp/dump2/athenea_mat_33691493a9c71768.slang`):
+
+- *Eight lobes, in this order, each pushed where its weight is not under 1e-8:* the coat (a reflecting
+  dielectric on the coat's normal and tangent), the metal (a conductor of the artistic index, weight
+  `metalness`), the reflection (a dielectric, weight `specular`), the transmission (a dielectric at its own
+  roughness, weight `transmission`), the sheen (Conty and Kulla's), the thin wall's subsurface (translucent)
+  or the solid's (a diffuse) -- `thin_walled` is a boolean, so one of the two -- and the diffuse base
+  (`base` by `1 - subsurface`). Seven at most in a stack.
+- *The weights*, in the graph's order so the floats are the same: the subsurface by `subsurface` clamped;
+  it and the diffuse under the sheen's throughput; those and the sheen by `1 - transmission` clamped; all
+  four and the transmission under the reflection's throughput; those and the reflection by `1 - metalness`
+  clamped; everything under the coat by the coat's attenuation (`mix(1, coat_color, coat)`, clamped) and
+  under the coat's throughput.
+- *The marks:* the transmission under the reflection passes whole and is flagged (`kFlagOwnFresnel`) --
+  under the coat instead where `specular` is zero and the coat is at the transmission's index; and in a
+  kernel that asks (`kAtheneaMarkLobes`) a layer more over each lobe of a base that weighs something, at
+  each of the three layers, and the coat's tint.
+
+What the nodes share -- a closure's push, a layer's and a colour multiply's effect on one lobe, a
+dielectric's directional albedo -- is now one file, `athenea_surface_node.slang`, which OpenPBR's node
+includes too (its test reads as before: 93 882 floats differing at all in the fractional set, the worst by
+3.9e-7). `lobesPushed` counts the node as eight. **The switch:** `ATHENEA_STANDARD_SURFACE_GRAPH` set to
+anything keeps MaterialX's graph; from code, `MaterialCompilerOptions::standardSurface` (`SurfaceRoute`,
+which `openPbr` is now too). The surfaces that have a node are a table in `MaterialCompiler.cpp`
+(`kSurfaceNodes`), and one script derives every such graph: `scripts/materialx/make_surface_node_mtlx.py
+<MaterialX libraries> [surface]` (`make_open_pbr_mtlx.py` renamed and made to hold a table; OpenPBR's file
+comes out byte for byte).
+
+**A stage drew MaterialX's graph whatever the compiler held, and the test did not see it.** The first
+pictures and times of the two routes were the same to the bit and to the second, and the dumped modules of
+the "node" route held no call of the node. `compileDocument` replaces what a document carries (hdMtlx's
+carries the libraries its USD loaded) with the compiler's own where both define an element, and took a
+nodegraph for a definition only where it names its nodedef. Standard Surface's does not: an
+`<implementation>` names the graph. It stayed in the document, and an import skips a name the document
+already has. Now a graph an implementation of the document names is a definition too. The test compiled
+from XML, where there is nothing to replace, so it compared the node while a stage drew the graph:
+`compareRoutes` now also compiles each set from a document that carries MaterialX's graph and requires the
+node's module. With the fix taken out that check fails in all 26 sets of Standard Surface (and in none of
+OpenPBR's, whose graph names its nodedef); the timings below were taken after it, and their dumps hold what
+each route says.
+
+**The test** (`athenea_material_tests "[standardsurface]"`; it and `"[openpbr]"` share `compareRoutes` in
+`tests/material/test_material_compiler.cpp`): both routes compiled in one process, the two stacks compared
+word by word on the device at 16 384 shading points, marked and unmarked, over 26 parameter sets -- a rough
+diffuse base; one with no reflection; an anisotropic metal with its tangent turned; half metal with a
+specular colour and weight; a reflection with anisotropy and its own index; glass; transmission with depth
+and scatter; with dispersion and extra roughness; half transmission; glass with no reflection under a coat
+at its index (the coat spares it); glass under a coat at another index; subsurface whole and half; a thin
+wall's subsurface; a thin wall's glass; sheen; sheen over half a subsurface, half transmitting; a tinted
+coat, rough, anisotropic, at its own index; half a coat with `coat_affect_color` and
+`coat_affect_roughness`; a thin film over a metal and over a plastic; emission under a tinted coat; opacity
+0.5; every weight fractional, solid and thin-walled; and weights past one and under zero (the clamps).
+Metal, M5 Pro, `build/pt-exp`: in all 52 runs no count, word, value, mark, emission or opacity off; no float
+differs at all but in the two fractional sets unmarked (126 667 and 132 759 of them, the worst by 2.3e-7).
+Kinds seen 0xba (diffuse, translucent, dielectric, conductor, sheen), the deepest stack seven. 888
+assertions.
+
+**That it fails when the node is wrong** -- the build's copy of the shader edited, the test run, the copy
+restored and compared with the source (`cmp`: equal), the test passing again:
+
+| the edit | runs failing, of 52 | what the test said |
+|---|---|---|
+| the diffuse at half its weight | 32 | 49 152 floats off (three a point), the worst by 0.5 |
+| the coat's weight by 0.999 | 16 | 49 152 floats off, the worst by 1.0e-3 |
+| `1 - metalness` not clamped | 2 | the set with weights past one alone: 121 stacks of another count |
+| the sheen left out of the multiply by `1 - transmission` | 6 | 49 152 floats off, the worst by 0.5 |
+| the sheen flagged Zeltner's | 8 | 16 384 words off, no float |
+| the own-Fresnel flag not set | 22 | words off in the 22 runs that transmit (16 384 in 16 of them), no float |
+| the coat not sparing a transmission at its index | 2 | 16 384 words and 49 152 floats off, the worst by 0.89 |
+| a layer over counted as two | 26 | the marked runs alone, all 26: every lobe's mark off, no word, no float |
+| the tint mark halved | 26 | the marked runs alone, all 26: three marks a lobe off |
+
+**Pictures, the node against the graph** (`athenea compare`, 1920x1080, `--path-samples 8`, the two routes
+in one build; the dumped modules of each run hold two calls of the node and no `athenea_layer_bsdf` on one
+route in Sponza, six layers and no node on the other):
+
+| stage | paths, bounces | relMSE | 8-bit p99 / max | PSNR | the largest relative difference |
+|---|---|---|---|---|---|
+| Sponza with the knights, `--ray-margin 2e-5` | 1, 0 | 0 | 0 / 0 | bit for bit | 0 |
+| | 32, 0 | 0 | 0 / 0 | bit for bit | 0 |
+| | 32, 3 | 0 | 0 / 0 | bit for bit | 0 |
+| flat Sponza, the knights their own materials | 32, 0 and 32, 3 | 0 | 0 / 0 | bit for bit | 0 |
+| 25 standard_surface balls (the test's sets but the last) | 1, 0 | 6.5e-14 | 0 / 0 | 139.6 dB | 0.00098 |
+| | 32, 0 | 9.5e-15 | 0 / 0 | 149.4 dB | 0.00075 |
+| | 32, 3 | 2.6e-13 | 0 / 0 | 138.4 dB | 0.00098 |
+| *flat Sponza without the knights: no standard_surface, the same modules on both routes* | 32, 0 | 0 | 0 / 0 | bit for bit | 0 |
+| | 32, 3 | 1.8e-12 | 0 / 1 | 115.5 dB | 0.0625 |
+
+The balls differ by the last bit of a half float in a few pixels, as OpenPBR's did. The last row is not a
+difference of the routes -- the stage holds no standard_surface and its modules are the same files -- so
+two runs of one command are not always one picture with three bounces in that stage; **not looked into**.
+
+**Seconds**, the whole `athenea stage` command, 66 M paths at 32, no stop of the thermal guard inside any
+run (`guard.log`: none between 04:12 and 05:45, the runs 04:32 to 04:54 and 05:25 to 05:44). One path twice,
+32 paths, 32 paths and three bounces, one run each; then the last twice more a route (the routes alternated,
+which costs every run without a bounce a kernel compile -- 50 to 55 s where 37 to 41 -- so those are not
+used):
+
+| | node | graph |
+|---|---|---|
+| Sponza: one path, first run / again | 60.5 / 36.6 | 53.6 / 37.2 |
+| 32 paths, no bounce | 41.8 | 39.1 (39.3 and 40.3 in an earlier job) |
+| 32 paths, three bounces | 62.9, 61.6, 61.3 | 60.9, 63.1, 62.7 (62.4, 62.6 earlier) |
+| flat, the knights their own: one path again | 35.0 | 34.5 |
+| 32 paths, no bounce | 36.8 | 37.4 |
+| 32 paths, three bounces | 52.7, 53.2, 53.6 | 53.8, 54.9, 54.5 |
+| **a bounce** | **5.5** | 5.7 |
+| flat without the knights (the same code on both): one path again | 33.0 | 33.7 |
+| 32 paths, no bounce / three bounces | 35.2 / 43.2 | 35.0 / 42.9 |
+| a bounce | 2.7 | 2.6 |
+| 25 standard_surface balls: one path, first run / again | 38.0 / 13.4 | 37.5 / 13.6 |
+| 32 paths, no bounce | 15.5 | 15.9 |
+| 32 paths, three bounces | 28.0, 28.2, 28.5 | 32.5, 32.6, 32.7 |
+| the first hit and its light | 2.1 | 2.3 |
+| **a bounce** | **4.2** | 5.6 |
+
+Where every surface is standard_surface a bounce is a quarter less (4.2 s where 5.6). **In Sponza it is
+nothing that these runs can tell:** three bounces are 61.9 s against 62.3 on average with a second of
+scatter run to run; the first hit -- a difference of two runs of 37 to 42 s -- came out 5.2 s with the
+node and 1.9, 2.4 and 3.9 s with the graph, which is a run's scatter and not the routes; and a bounce is
+about 7.3 s by either (three bounces less the mean of the runs without, 40.1 s). Against the 2.7 s and
+6.6 s of 16 Nov the first hit cannot be told and a bounce is 0.7 s more on both routes alike, the machine
+having been at work all night. In flat Sponza the three
+bounces are 1.2 s less with the node in each of three pairs (0.4 s a bounce, 5.5 where 5.7). **So the
+glass knight's cost is not its graph's BSDF values:** flat Sponza is 2.7 s a bounce without the knights and
+5.5 with them by either route, and what the node took of that is 0.2 to 0.4 s. What is left is where
+16 Nov left it -- a path inside the glass takes a step a face and evaluates the material at each, and how
+much of the 2.8 s is those steps was not separated.
+
+The node is the default: its pictures are the graph's, the test holds it, and it is faster where the
+surface is and no slower elsewhere.
+
+Tests, Metal, the node the default: `athenea_material_tests` (2131 assertions in 14 cases: the 1224 before,
+888 of the new case, 19 of the new check in OpenPBR's) and `athenea_technique_tests` (2862 in 64) pass; the
+new case passes the same with `ATHENEA_STANDARD_SURFACE_GRAPH` set; of the 159 tests of ctest not marked
+slow whose names speak of materials, lobes, glass, coats, opacity, coverage, paths, emission, bakes, thin
+walls, sheen, tints, subsurface or transmission, 158 pass, and the one that does not
+(`sheet_glass_draws_whole`) is NEU34's and fails the same with the variable set. The whole suite was not
+run.
+
+Not done: CUDA and Vulkan (neither the test nor the pictures; the fix in `compileDocument` is the same code
+there but was not run); what the glass knight costs a bounce, still not explained and now known not to be
+the closures; why two runs of flat Sponza without the knights differ in a few pixels at three bounces;
+Sponza's first hit measured well enough to say anything (several runs of each, not one); standard_surface
+inputs driven by textures in the test (the knights' maps are compared as pictures only, bit for bit); the
+marks through a conversion (`mesh2splat --transfer` on a standard_surface, as was done for OpenPBR); the
+raster's shading and `shoot` timed with the node; the feature stage kept in the repository (it and its
+generator are in `build/night/agent-stdsurf`).
+
+## glTF PBR's lobes built by one node, by the same recipe (17 Nov)
+
+The third surface, after OpenPBR and Standard Surface: MaterialX's `gltf_pbr` (`IMPL_gltf_pbr_surfaceshader`),
+fifteen BSDF nodes and a VDF over seventeen BSDF values in the generated module. No stage at hand uses it,
+so there is no scene whose time it was known to cost; done so that the three shading models are handled
+alike.
+
+**The node.** `athenea_gltf_pbr_bsdf` (`shaders/athenea/material/mx/athenea_gltf_pbr_bsdf.slang`) in the
+engine's graph `athenea_gltf_pbr.mtlx` -- MaterialX 1.39.5's with its sixteen closure nodes taken out and the
+one node put where `clearcoat_layer` was, written by `make_surface_node_mtlx.py` (its third entry). Read off
+a generated module (`build/night/agent-stdsurf/dump_gltf_graph0`):
+
+- *Eight lobes, in this order:* the clearcoat (a reflecting dielectric at 1.5, the graph's constant, on the
+  clearcoat's normal), the sheen (Conty and Kulla's, weighed by the largest component of `sheen_color`), the
+  metal under the iridescence and bare (a Schlick from the base colour to white, weights `iridescence` and
+  its complement), the dielectric's reflection under the iridescence and bare (a Schlick from
+  `dielectric_f0` to `dielectric_f90`), the transmission (a dielectric tinted by the base colour, weight
+  `transmission`) and the diffuse (its complement). All eight in one stack where every weight is fractional.
+- *The weights:* the metals by `metallic` clamped; the transmission and the diffuse under what the two
+  reflections let by (a Schlick's averaged directional albedo; the two throughputs added, max(a + b - 1, 0));
+  those and the reflections by `1 - metallic` clamped; the six under the sheen's throughput; the seven under
+  the clearcoat's.
+- *The marks:* the reflection is a Schlick, so the transmission under it is not spared its Fresnel; the
+  clearcoat is a dielectric at 1.5 and spares a transmission at that index (flagged `kFlagOwnFresnel`) -- as
+  MaterialX's graph has the engine's layer do, said here because it is glTF's default index. A layer more
+  over each lobe of a base that weighs something at each of the three layers, in a kernel that asks. No
+  colour multiply, so no tint.
+
+`athenea_surface_node.slang` gained the Schlick's colour at grazing and its throughput. `lobesPushed` counts
+the node as eight. **The switch:** `ATHENEA_GLTF_PBR_GRAPH`, and `MaterialCompilerOptions::gltfPbr` from
+code. The graph names its nodedef, so a document that carries it (hdMtlx's) gave way to the compiler's
+before today's fix as after.
+
+**The test** (`athenea_material_tests "[gltfpbr]"`, over `compareRoutes`): 25 parameter sets, marked and
+unmarked -- a rough dielectric; the defaults; an anisotropic metal with its tangent turned; half metal with
+a specular colour and weight; a dielectric at its own index; one with no reflection; glass; glass with
+thickness and attenuation, and with dispersion (neither reaches a lobe); half transmission; iridescence
+over a metal, of weight one over a plastic, and over glass; sheen; sheen under a clearcoat; a clearcoat;
+half a clearcoat over half a metal; glass at the clearcoat's index with no reflection under a clearcoat,
+and at another index; emission under a clearcoat; alpha 0.5 blended, 0.4 masked at 0.5, 0.4 opaque; every
+weight fractional; weights past one and under zero. Metal, M5 Pro: in all 50 runs no count, word, value,
+mark, emission or opacity off; floats differing at all in two sets (555 with iridescence over glass, 99 429
+with every weight fractional, the worst by 3.2e-7). Kinds 0xd2 (diffuse, dielectric, Schlick, sheen), the
+deepest stack eight. 854 assertions. The other two cases pass with the shared file changed (888 and 650).
+
+**That it fails when the node is wrong** (the build's copy edited, restored, `cmp` equal, passing again):
+
+| the edit | runs failing, of 50 | what the test said |
+|---|---|---|
+| the diffuse at half its weight | 30 | 49 152 floats off, the worst by 0.5 |
+| the clearcoat's weight by 0.999 | 16 | 49 152 floats off, the worst by 1.0e-3 |
+| the reflection's colour at grazing left white | 8 | the sets whose `specular` is not one: floats off, the worst by 0.5 |
+| the clearcoat not sparing a transmission at its index | 2 | 16 384 words and 49 152 floats off, the worst by 0.91 |
+| a layer over counted as two | 25 | the marked runs alone, all 25 |
+
+**Pictures and seconds, the node against the graph**, a stage of 22 glTF PBR balls (the test's sets less the
+defaults, the opaque alpha and the weights out of range; `build/night/agent-stdsurf/gltf`, not in the
+repository), 1920x1080, `--path-samples 8`, one build; the dumped modules hold one call of the node and no
+layer on one route, three layers and no node on the other:
+
+| paths, bounces | relMSE | 8-bit p99 / max | PSNR | the largest relative difference |
+|---|---|---|---|---|
+| 1, 0 | 0 | 0 / 0 | bit for bit | 0 |
+| 32, 0 | 7.6e-14 | 0 / 0 | 138.8 dB | 0.00082 |
+| 32, 3 | 2.3e-13 | 0 / 0 | 136.3 dB | 0.00082 |
+
+| the whole command, s | node | graph |
+|---|---|---|
+| one path, first run / again | 36.5 / 13.0 | 26.2 / 13.2 |
+| 32 paths, no bounce | 14.6 | 15.0 |
+| 32 paths, three bounces | 24.6, 24.8 | 28.2, 28.3 |
+| the first hit and its light | 1.6 | 1.8 |
+| **a bounce** | **3.4** | 4.4 |
+
+A bounce is 23 % less, as Standard Surface's was on its stage of balls (4.2 where 5.6) and OpenPBR's on its
+(4.1 where 6.3). No stop of the thermal guard inside (05:46 to 05:51). The node is the default.
+
+Tests, Metal: `athenea_material_tests` (2985 assertions in 15 cases) and `athenea_technique_tests` (2862 in
+64) pass; the 54 tests of ctest not marked slow whose names speak of glTF, materials, lobes, coats or sheen pass.
+The whole suite was not run.
+
+Not done: a real glTF asset (the stage is constants on balls; no texture, no `gltf_colorimage`, no normal
+map through the node); CUDA and Vulkan; the marks through a conversion; the raster's shading; the alpha
+modes compared as pictures beyond the two balls of the stage; the first run's compile, which was 36.5 s
+with the node and 26.2 s with the graph here once each -- the node's run was the first ever of that stage
+in this build, so the two are not a comparison.
+
+## The branch's head on Metal, checked whole (17 Nov, 5ee7f9e1)
+
+After the night's commits (the prims' ids in an export and the player's objects, the making-width rule, the
+three surfaces as one node each), the main build at 5ee7f9e1, M5 Pro: the scene tests 361 assertions in 13
+cases, `athenea_material_tests` 2985 in 15, `athenea_technique_tests` 2862 in 64, the QA flows 49 of 49, and
+of the 168 ctests not marked slow that speak of opacity, glass, lights, lobes, materials, emission, bakes,
+gltf, coat or sheen, 167 pass -- the one that does not is `sheet_glass_draws_whole`, which is the trunk's
+(NEU34). Not run: the whole suite (565 tests) and the slow gates.
+
+## A scene found already keeps its up axis and its unit (NEU38, 17 Nov)
+
+`shoot` set a scene's up axis and metres a unit from the stage at every run, so a later pass over a scene
+(`--light-group`, `--groups-only`) wrote them again: over a stage whose root layer names no up axis, a scene
+made with `--up-axis Z` became Y up, and the web player drew it lying on its side. Now a scene that holds
+pieces keeps both unless the option is given; a scene being found takes the stage's as before. Checked on
+that stage (`all.usda`): `"upAxis": "Z"` after the first pass and after a `--light-group` pass over it, where
+it read Y. The scene tests (361 assertions) and the 49 QA flows pass.
+
+Not done: the other half of NEU38 -- the published `lamps` scene exported again differs at frame 4 from the
+export on the site, and which is right is not checked.
+
+## The night's commits on the RTX 3070 laptop: CUDA and Vulkan at 5ee7f9e1 (17 Nov)
+
+A subagent, RTX 3070 Laptop, both trees brought from cb22fdb7 to 5ee7f9e1 (the prims' ids in an export, the
+making-width rule, Standard Surface and glTF PBR as one node each with the `compileDocument` fix); scripts and
+outputs in `build/night/agent-win5`.
+
+- **Builds**: both, no error. Writing `.ids` (gzip) works on Windows. (The Windows build that "stopped early
+  with a return of 0" has its cause: `cmake --build --target` handed a PowerShell array built the last name
+  alone; with the names written out all are built.)
+- **Tests, all passing**: `athenea_material_tests` 2985 assertions in 15 cases (CUDA) and 3087 in 16
+  (Vulkan), with `[openpbr]`, `[standardsurface]` 888 and `[gltfpbr]` 854 on each; the scene tests 361 / 361;
+  `athenea_technique_tests` 917 with 35 cases skipped / 2862; the usd tags 170 with 55 skipped / 1020. The QA
+  flows 49 of 49 on CUDA and 48 of 49 on Vulkan (the flow that needs `athenea compare`: NEU17), the two flows
+  of an export with ids among those that pass, and every flow of groups and light layers.
+- **The `compileDocument` fix**, by the dumped modules, the same on both: Sponza with the knights holds two
+  calls of the Standard Surface node and no layer by default, none and six layers with
+  `ATHENEA_STANDARD_SURFACE_GRAPH`, and none and six with the build before the fix.
+- **Pictures, the node against the graph** (1280x720, 16 paths): Sponza bit for bit on Vulkan with and
+  without bounces, a half float's last bit on CUDA; the 25 Standard Surface balls bit for bit or that last
+  bit. The graph's route is bit for bit what cb22fdb7 drew.
+- **Time on Vulkan**, the 25 balls, 16 paths in passes of 2, frame time: 1339 ms to 1136 ms without bounces,
+  3166 ms to 2359 ms with three, the graph against the node -- 609 ms to 408 ms a bounce, a third less (a
+  quarter on the Mac).
+
+Not done there: CUDA's bounces (no OptiX in WSL); a glTF PBR stage; the web player's Objects control; which
+prim each `.ids` value names, beyond the flow's counts; the making-width rule's dB.
+
+## `lamps` on the site: the same scene, handed on again (17 Nov)
+
+The other half of NEU38. The published `lamps` export and today's export of the same scene (`clean.aths`, not
+found again) differ at frame 4 in the spot's pool on the floor. The engine's own drawing of that frame as the
+scene stood (`render --frame 4 --glass`) shows the pool cool and bright, as today's export does and the
+published one less so (crops of the three side by side, the floor under the knights): the published export
+was made before a part's history was lit with its groups as the part is. So today's export replaces it in the
+site's folder: the same 2 112 486 gaussians, 315 files where 723, no ids (the scene was found before a
+gaussian kept its prim, so the page shows no Objects control for it). The scene found again by its own flow
+or in one render was not taken (the section before last says why).
+
+Seen in the same crops and not new: the floor in the page shows fine horizontal dark lines the engine's
+drawing does not have, in the published export and in today's alike. Not looked into.
+
+## The page's filter follows the canvas's pixels over the frames' (17 Nov)
+
+In the page a floor seen at a slant showed fine horizontal dark lines the engine's drawing of the same frame
+does not have. They are the rows of gaussians parting: a gaussian is made `spread` of a pixel of its frame
+(half a pixel), the page spread each a third of a pixel whatever its canvas, and a canvas of more pixels than
+the frame draws the rows further apart. `lamps` (frames of 960x540) on a canvas 633 pixels high, frame 4,
+the same crop: lines at a filter of 0.3 of a pixel and at 0.5, none at 0.8.
+
+So an export's index says the frames' size (`frameSize`, where the scene has frames) and the page's filter is
+1.2 x spread x the canvas's pixels a unit of slope over the frame's (the canvas's from its projection, the
+frame's from its lens and its width), held between 0.3 and 2 pixels and kept up as the canvas or the lens
+changes; an index without the size, or `?filter=fixed` in the address, is drawn at 0.3 as before. (By the
+canvas's height over the frame's it was wrong on a phone held upright, whose canvas fits the frame across:
+1.4 pixels where its picture is fewer pixels than the frame, and the page drew soft.)
+On that canvas `lamps` gets 0.70 and its
+lines all but go; a scene of 1080p frames on it stays near 0.3. The six published indexes were given the size
+by hand (the shoots' own: 960x540 for `lamps`, `sponza_knight`, `sponza_growth`; 1920x1080 for the others)
+rather than exported again.
+
+A false alarm on the way: in the first captures the glass and the chrome knights looked darker with the wider
+filter. Captured again six seconds after the frame is set rather than one and a half, they are the same at
+0.3 and at 0.7 -- the brighter knights were the page caught before it had shaded them by the eye (with
+`?glass=0` they are bright at both widths). It was the capture's moment, not the filter.
+
+Not done: a screen of two or three device pixels a pixel seen by eye (a phone's emulation was captured, not
+judged against anything); a view from much nearer or farther than the frames were, where the right width is
+another; a real Chrome.
+
+## The page's glass showed the same from anywhere (17 Nov, the user's report)
+
+The user: moving the camera, the glass does not show a background that changes; it is frozen, as the
+reflection is. Checked first that the page does shade again as the eye moves -- a view reached by moving is
+pixel for pixel the view loaded there, in three published scenes -- so nothing was stale. The look itself was
+the fault, in two places of the page's shader:
+
+- **The glass read the ray bent at one face.** Each gaussian is one face of a solid, and `refract` at that
+  face alone was taken for what the glass shows: a direction that turns with the face and hardly with the eye.
+  A solid's far face bends the ray back, and what leaves is near the eye's own ray; the page now reads the
+  room along the eye's ray turned three tenths of the way the first face turned it.
+- **The room was read as near as twice the thing's size.** The cube is drawn from the thing's middle and a
+  ray from elsewhere is read where it meets a ball about that middle; with the ball that small, a look
+  depended on where on the thing it left more than on which way it went. The ball is now eight sizes, two
+  metres at least.
+
+Three eyes a third of a metre apart in front of the knights (`sponza_lamps` as exported, headless Chrome):
+before, the glass knight is the same milky facets from the three; now the wall behind it shows through
+lighter from the first and the dark door comes into it from the third. Looked at, not measured: there is no
+reference for these eyes.
+
+Not done: the same eyes drawn by the engine (`render --glass`) to judge it against; the chrome knight, which
+the wider ball changes too and was not looked at closely; a mirror standing on a floor, where a near room was
+the better guess; the three tenths, which is a guess at a solid's far face and not its geometry.
+
+## The page says whether its glass is shaded by the eye (17 Nov)
+
+After the correction above was published the user answered that nothing had changed on their device: the
+reflections and what shows through the glass still frozen. In headless Chrome on the Mac the change is there,
+and so is the engine's own drawing from the same three eyes (`render --glass`): the glass knight light where
+the wall is behind it and darkening as the door comes behind, which the page now follows. So on that device
+the shading by the eye is most likely not applied at all -- a page that cannot draw the room's cube leaves the
+glass and the chrome as they were found, which is exactly frozen -- and the page said nothing of it.
+
+Now its status line says it: `glass and mirror by the eye (N parts, M looks)`, the looks counting each time
+the eye's move was handed on, or `glass and chrome as found, not by the eye: <why>` where drawing the room
+failed. Seen in headless Chrome, desktop and a phone's emulation: by the eye in both.
+
+Not done: the device itself (which one and which browser is not known yet; WebKit was not at hand to try);
+the chrome knight, which the engine draws bright and the page dark -- its room's cube holds something along
+every ray (alpha one) and that something is dark, not looked into.
+
+## Why the glass looked frozen: a drag turned the camera where it stood (17 Nov)
+
+The report closed. With real mouse and key events sent to the page (DevTools protocol, headless Chrome), the
+eye's place and the count of times its move was handed to the shading, read from the page:
+
+| | the eye | looks |
+|---|---|---|
+| loaded | (1.74, 15.53, 11.42) | 2 |
+| after a drag of 200 pixels | the same | 2 |
+| after W held 1.5 s | (2.12, 15.13, 11.31) | 8 |
+| the drag, as it is now | (-1.35, 15.53, 6.77) | 22 |
+
+A drag was Spark's own: it turns the camera and leaves it where it stands. From one place a glass and a mirror
+show the same whichever way the eye is turned -- that is right, and it is what "frozen" was: the user dragged,
+nothing in the glass changed, and only walking (W A S D, two fingers) would have changed it. The shading was
+applied all along, on WebKit and on a phone's emulation as well (sysop's runs: `by the eye`, no error).
+
+Now a drag turns the camera about the point under the pointer when the drag began: Spark's turn is carried to
+the eye's place each frame, the point stays where it is on the screen, and the eye moves, so the glass and the
+chrome are shaded again as one drags. One pointer only (two fingers still move), not while a frame's camera is
+ridden; `Alt` held, or `?orbit=0`, leaves the drag as it was. The hint under the title says so.
+
+The correction of the glass's own look made earlier the same morning (a solid reads the room near the eye's
+ray, the room taken farther off) stands: against the engine's `render --glass` from three eyes it follows the
+same change. It was not what the user was missing.
+
+Published (sysop, version 1a0f2fd9) and tried again there and here: on WebKit's desktop a mouse drag raises
+the looks; on a phone's emulation, by real touch events (DevTools `Input.dispatchTouchEvent`), one finger's
+drag is taken (one pointer, its point fixed) and the eye moves ((1.735, 15.53, 11.423) to (1.597, 15.53,
+11.284)). The looks count low in headless runs: one a frame in which the eye moved, and a headless page draws
+few frames.
+
+Not done: a real browser and a real phone (the user's device is still not known); the wheel, which in the
+headless test moved nothing and was not acknowledged; the hold-and-second-finger gesture beside the new drag
+on a touch screen, not tried; the chrome knight's darkness (NEU39).
+
+## The glass in facets (17 Nov, the user's second report)
+
+With the drag mended the user saw the glass change and said what was left: while the page loads, a model as
+it was found (frozen), and at the end a refresh to one shaded by the eye, in facets. The facets: a glass
+gaussian read the room along one ray for its reflection and one for what shows through, and neighbours'
+axes a little apart read the room far apart -- what a mirror's look was softened for already. The glass's
+two looks are now read as the mirror's is, over a cone of thirteen rays (0.3 about the mirrored ray, 0.2
+about the one through). Three eyes in front of the knights, beside the page as published an hour before: the
+glass knight smooth where it was a mosaic; the door coming behind it darkens it less than before, the cone
+averaging it with the wall -- softer and less telling, the price of it.
+
+Not done: the other half of the report -- the page shades only once everything is read, so the model as found
+is what is seen while it loads; shading the coarse level as soon as it is whole was looked at and not done
+(the parts being read behind it and the parts drawn are different lists, and the room is drawn from one of
+them). Nor the facets' cause itself: a gaussian's axis is its disc's, not a smooth normal of the surface.
+
+## The page's knights while it reads, the chrome's dark room, and a normal from the neighbours (17 Nov)
+
+Three things left by the sections above, each looked at in headless Chrome on the Mac against a baseline
+(the page as it was, a0206592) and, for the looks, against the engine's `render --glass` from three eyes
+(`build/night/webshot/truth_e*.png`). The pictures are in `build/night/agent-player2/`.
+
+**The chrome knight was dark because its room was drawn with the chrome in it.** Spark draws what it last
+sorted: `update` makes the gaussians of what is visible and asks for their order, and comes back at once
+where an order is being worked out -- until the new one is in, what is drawn is the set before. The page hid
+a kind, called `renderCubeMap` (which calls `update`) and took the cube. The glass's cube, drawn first, came
+out right; the chrome's, drawn straight after, was drawn with the set of the glass's pass: the glass hidden
+and the chrome shown. Read back, the chrome's cube was the knight's own shell from inside, shaded by the room
+before, with alpha near one along every ray (faces' means 10 to 55 of 255); the page's own frame from the
+same point with the chrome hidden showed the room bright (`d1_cubes.png`, `d1_in.png`). That is also why
+reading the cube with an axis flipped mended nothing: there was no room in it to flip. The page now waits
+until Spark is at rest with what it was asked for, sorted from where it was asked (`settle`), before a cube
+is drawn, and again for the eye's own view before its frames go on -- a frame drawn before that showed the
+cube's set, which is where the glass knight went missing for a few frames at the end of a load
+(`sheet_cast_base.png`). After: the chrome's cube is the room with the glass knight in it (`d2_cubes.png`).
+
+It was still dark at full detail, for a second reason: where the room holds nothing along a ray a gaussian
+shows the colour it was found with, and the glass's and the mirrors' files were given no groups' light --
+found without the lamps, in a scene lit by its lamps, is near black. (The level drawn first has its lamps
+in its colours, and there the chrome was light.) They now take their groups' light as every other part does,
+from the groups' own glass and mirror files. Page against engine from the three eyes: `cmp_v3.png` (rows:
+engine, page before, page now at full detail, page now at level 1) -- the chrome knight is the tan of the
+lit stone where it was black.
+
+**Shaded while it reads.** The room is drawn from what is on the screen -- the level drawn first, kept in
+`outgoing` while the detail is read behind it, or the parts read so far -- and no longer only when nothing is
+being read. What is gathered behind takes its shading as it is read, so the detail comes in shaded from the
+coarse level's room and the room is drawn again from the detail after. A load of `n_lamps` (the published
+`sponza_lamps`) on a throttled network, a capture every half second (`cast.mjs`; `sheet_cast_v3.png` beside
+`sheet_cast_base.png`): before, the knights as found for 34 s, then the glass knight missing, then shaded;
+now `glass and mirror by the eye` from 4.9 s (the coarse level whole at 3.1 s, its room's pass after) to the
+end, and no capture at the swap differs from the one before it by more than 7 of 255 in the knights' boxes
+(22 before). `sponza_chrome` the same by its status line (by the eye from 4.5 s); its picture from the
+camera tried is too dark to tell anything by.
+
+A pass holds the page's frames while Spark sorts (three sorts): 2 s at the coarse level, 4 to 5 s at 8 M
+gaussians with the normals, in headless Chrome, which is not a device. While the page reads or plays, a
+pass is not begun within a second and a half of the last. The frames it holds were counted as the device's
+rate and the page went to a coarser level right after loading; they are no longer counted.
+
+**A normal from the neighbours.** Each kind's gaussians give their axes to the cells of a grid (a sixtieth
+of the thing's size, 2.4 cm for these knights; as n nᵀ, so which way an axis points does not matter), a
+gaussian blends the eight cells about it and takes the direction that sum holds most of. It is kept a texel
+a gaussian and read by the shading in place of the disc's own axis; the cones are then 0.08 (mirror), 0.1 and
+0.06 (glass, mirrored and through) where they were 0.25, 0.3 and 0.2. Worked out in 0.9 to 1.2 s for the
+1.3 M glass and mirror gaussians of the full scene and 45 ms at level 1 (headless), with the frames going
+on. And through a glass, where the room holds nothing, is now the page's sky -- what the eye sees past it
+there -- not the colour the gaussian was found with, which kept a glass before a dark door milky. Against
+the engine (`cmp_v3.png`, `crop_v3_e0.png`): the glass is light before the wall and dark as the door comes
+behind, as the engine's is, without the facets on the head; it is still a frosted, even glass where the
+engine's is clear with sharp lights in it.
+
+Not done: a real browser, a real phone, WebKit -- all of this is headless Chrome on one Mac. The pass's
+hold on the frames, which is long at full detail and is paid again whenever a lamp's level, the timeline or
+an option changes the room (the eye's frames could go on from Spark's last set while it sorts for the cube;
+not tried). The first seconds of the coarse level, still as found until its room is drawn. A single frame
+at the swap could have fallen between two captures half a second apart. The cell's size and the cones were
+set once and looked at, not searched; the normals of a part's history (shown only at earlier frames) are
+worked out only while they are shown. The room's reach is still eight times a box that strays stretch (15
+and 33 m here, so a look goes by its direction alone). `sponza_chrome` from a camera that shows its
+knights. The glass as the engine draws it: one colour a gaussian and one room from one point do not give
+its inner faces.
+
+## What a glass costs the path tracer's bounces: where it goes (17 Nov)
+
+Measured, nothing changed in the kernel. Flat Sponza with the glass knight alone (`flat_glass.usda`, the knight
+is OpenPBR, 11 % of the frame), the frame-12 view, 1920x1080, 32 paths in passes of 8, Metal, M5 Pro.
+
+**The instrument.** A camera file with the same view four times (the eye moved a hundredth of a millimetre):
+`athenea stage --cameras` draws them from one load, so a view's seconds hold no loading and no compile, and
+three views agree to 1 %. The whole command's time, used until now, moved by 8 s between two runs of one
+binary (46.0 and 53.9 s). Seconds a view:
+
+| | no bounce | three bounces | a bounce |
+|---|---|---|---|
+| flat Sponza without the knights | 2.5-2.7 | 11.0-12.0 | 2.9 |
+| with the glass knight | 4.4-4.7 | 19.4-19.9 | 5.0 |
+
+**Counted by the kernel** (a copy of the sources, a switch in the generated kernel; the counts written in
+place of the colour and their means read by `athenea compare`): a path takes 4.44 steps at three bounces
+(4.09 outside the knight's pixels, 7.3 in them), shades 3.55 vertices of which 0.46 are glass, crosses 0.52
+times; 1.9 % of the paths spend all eight free crossings. A tenth more steps for three quarters more time.
+
+**Cuts**, each alone, each picture compared with the whole kernel's inside the knight's matte
+(`--matte knight=/GlassKnight`) and outside it:
+
+| | no bounce | three bounces | the picture differs |
+|---|---|---|---|
+| the whole kernel | 4.5 | 19.4 | |
+| the knight's own pixels trace nothing | 2.5 | 15.3 | in the knight; outside in 547 edge pixels |
+| a bounce that lands on glass ends there | 4.5 | 14.4 | outside (76 356 pixels over two codes); in the knight 98 |
+| both | 2.4 | 10.1 | both |
+| no free crossing (`kFreeCrossings` 0) | 2.35 | 11.9 | both |
+
+So glass in the stage that no path shades costs nothing (10.1 s is the stage without the knight less the
+knight's pixels): no cost to every surface from the kernel's size or from the shadow rays. Of the 9.3 s the
+knight adds at three bounces, 4.2 s are its own pixels' paths and 5.1 s are the other pixels' bounces that
+land on it, and the two add up. The crossings are what costs (7.5 s of it).
+
+**Doubling cuts**: one piece of a step done twice in a loop, the picture bit for bit, the time it grows by
+being that piece. Three bounces, 19.85 s the whole kernel:
+
+| done twice | seconds | grows by | for |
+|---|---|---|---|
+| a glass vertex's material | 27.6-32.3 | 8-12 | 0.46 evaluations a path |
+| any other vertex's material | 25.8 | 6.0 | 3.1 a path |
+| the light gathered at another vertex | 21.4 | 1.5 | |
+| the light gathered at a glass vertex | 19.8 | 0 | (its lobes are deltas: no shadow ray) |
+| the ray leaving a glass vertex / any other | 19.9 / 19.7 | 0 | not to be trusted: the compiler may have dropped the second query |
+
+With no bounce the glass material twice adds 0.75 s for 0.24 evaluations a path, all in the knight's own
+pixels. So an evaluation of the glass material costs some 3 s a unit where neighbouring threads are all on
+glass and several times that where it is one thread among others on a wall.
+
+**The threads of a group run together.** The stage without glass, three bounces, half the pixels tracing
+nothing: by blocks of 16 x 16 pixels 5.9 s, by a checker of single pixels 14.2 s, where the whole frame is
+11.0 s. A thread with nothing to do saves nothing while its neighbours work, and a group pays for every
+branch any of its threads takes. That is the cause: one thread in a group shading the OpenPBR glass makes
+the group pay that material's evaluation, and a path inside the knight does it at every face while the
+others of its group wait.
+
+**Tried, and not kept:**
+
+- *A thread's paths end to end* (one loop: a path that ends hands the thread to the next sample at once).
+  Bit for bit; slower: 5.0 s where 4.4 with no bounce and 20.9 where 19.5 with three with the knight, 13.6
+  where 12.0 without it. The first step of a sample, which reads the camera's hit shaded once a pixel,
+  stops being a step all threads take together.
+- *The same, a path beginning only on a trip that is a multiple of bounces + 1.* Bit for bit; 5.1 and 19.9 s
+  with the knight, 2.8 and 11.6 without: nothing gained. A straggler holds its group as many trips either
+  way; only moving it out of the group would not.
+- *A glass row's stack evaluated once a thread and a pass, then stood on each later face's normal with the
+  inside flag set by the face* (in the copy; right only where a material's weights do not change with the
+  view, as a bare glass's do not): 18.1 s where 19.8 at three bounces, 4.25 where 4.7 with none, the picture
+  bit for bit with none and within what two runs of one binary differ by with three (one code in a few
+  pixels). A twelfth, for a rule that would have to be told material by material; not taken to the tree.
+
+Every run went through the queue; the guard stopped none of these jobs (its two stops in those hours,
+11:54 and 12:08, were another session's job).
+
+Not done: the paths that are on glass gathered into a dispatch of their own (the state kept in a buffer at
+the moment a ray lands on glass, the rest of the path added to the pixel's sum by a second pass), which is
+what these numbers point at and is the 5 s of the other pixels' bounces at most; the stack of a material
+that is the same from anywhere kept a row in a buffer, not a thread; whether the doubled ray queries were
+really traced twice; the group's size and shape on this device; Sponza itself, the materials stage and
+`shoot` timed by views (nothing changed, so there is no before and after); CUDA and Vulkan. The switches
+and the jobs are in `build/night/agent-glass` (`src` is the copy; `regen.py` makes the one loop).
+
+## A level a phone can draw for the three 1080p scenes, and why the cut stops where it does (17 Nov)
+
+A phone's budget in the page is a million gaussians, and three published scenes held no level within it:
+`sponza_chrome` (3.81, 1.82, 1.40 M), `sponza_lamps` (1.93 M) and `sponza_lights` (1.97 M), so a phone drew
+the coarsest, over its budget. `export --levels` could not go lower: the chrome's coarsest cut draws 1.31 M.
+
+**Why.** Not fewer coarse cells: the chrome found again holds the pyramid it held (2.37 M cells of two pixels
+where 2.45 M, 594 k of four where 613 k, and so on up). The cut's floor is the gaussians standing that were
+laid over nothing -- no parent -- and a count of them a piece gives the exporter's figure to the gaussian:
+1 309 386 where the scene of 14 Nov has 533 904 (the knight 369 916 where 191 590; the walk 691 481; hd8
+1 106 699; geohd3 986 510; clean 306 305). The second frame of every scene found again makes 7% of its pixels
+so (the chrome's k01: 138 994 where 3 330) and the later frames three times as many as before. a6afd496 (14
+Nov) holds a surface from a cover of 0.8, not 0.5: a pixel half covered by its neighbours' discs is made
+again, is no wider than what is there, so is laid over nothing, and the test for a parent in the level above
+still calls that cell held from 0.5. Eight views at 960x540 through copies of the build's shaders
+(`ATHENEA_SHADER_DIR`): floor 145 627 by the build's, 85 479 with a surface held from 0.5 again, 94 747 with
+the level above called held from 0.8 as a surface is (scene_render.slang, `heldThere`; the same 597 613
+gaussians). `--covered-enough` and `--pyramid` are not in it.
+
+**What was done.** No code changed. Each stage was found again through its walk at 960x540 -- a gaussian the
+path traced mean of a pixel twice as wide -- and that scene's level of half a million handed on as a level of
+the published one, its files under the scene's names and the indexes edited (`build/night/agent-levels`,
+`graft.py`): the chrome 562 s (735 s with one stop of the guard), the lights' two passes 64 s and 191 s, the
+lamps from the scene of that size already found (192 s). Now `sponza_chrome` 3.81, 1.82, 1.40, 0.49 M;
+`sponza_lamps` 1.93, 0.43 M; `sponza_lights` 1.97, 0.48 M; 51 files more (3018 in the site's folder).
+
+Held views, 960x540, dB / SSIM against the reference, `render --budget` standing for a level (it cuts by
+pixels from the view, an exported level by a width in units):
+
+| | k10 | k45 | a | b |
+|---|---|---|---|---|
+| chrome, 1080p at 1.40 M | 29.69 / 0.875 | 30.07 / 0.732 | 28.87 / 0.836 | 29.05 / 0.785 |
+| chrome, 540p at 1.0 M | 32.21 / 0.932 | 30.75 / 0.839 | 30.65 / 0.902 | 29.67 / 0.859 |
+| chrome, 540p at 0.5 M (handed on) | 30.75 / 0.915 | 29.54 / 0.752 | 29.29 / 0.881 | 29.41 / 0.827 |
+| lamps, 1080p at 1.93 M | 27.32 / 0.845 | 23.20 / 0.721 | 25.39 / 0.784 | 24.19 / 0.764 |
+| lamps, 540p at 1.0 M | 27.51 / 0.860 | 23.51 / 0.733 | 25.98 / 0.816 | 24.31 / 0.771 |
+| lamps, 540p at 0.5 M (handed on) | 27.16 / 0.833 | 22.76 / 0.709 | 24.91 / 0.768 | 24.05 / 0.749 |
+| lights, 1080p at 1.97 M | 28.09 / 0.863 | 22.94 / 0.701 | 25.98 / 0.785 | 24.08 / 0.743 |
+| lights, 540p at 1.0 M | 27.71 / 0.853 | 22.98 / 0.706 | 25.94 / 0.795 | 24.03 / 0.742 |
+| lights, 540p at 0.5 M (handed on) | 27.52 / 0.826 | 22.80 / 0.690 | 25.14 / 0.761 | 23.95 / 0.732 |
+
+**The levels of a million were not handed on.** By the engine they are as good as or better than the levels
+of twice the count they would stand under. In the page on an emulated phone (390x844 at three device pixels)
+they show short dark dashes across the floor and dark lines on the walls, and in the two scenes with lamps
+the chrome knight dark and striped where the level of 1.93 M shows it bright. The levels of half a million
+from the same exports do not: the scene whole, glass and mirror shaded by the eye, the arches' undersides
+dotted as the published `lamps` level is. Why the one cut and not the other was not found.
+
+**The seconds.** A frame's entry says when it was done and the guard's log when it stopped the job; every
+stop of the two shoots lies whole inside one frame, so those frames' seconds were set less the stop in the
+indexes: `sponza_lamps` 579 s where 889 (k24, k45), `sponza_chrome` 1835 s where 2727 (six frames), each
+corrected frame within four seconds of its neighbours. `sponza_lights` says 87 s, its first pass alone (the
+two took 270 s), and `lamps` its base pass alone; left.
+
+**Not done.** At the time of writing the levels and the seconds are in the site's folder and not yet on the
+site: the final indexes were not captured again with the page of d73fb5c7 (a capture was stopped by the
+guard). A real phone; the dashes of the levels of a million explained (`sponza_knight`'s level of 0.96 M is
+the same kind of cut and was not looked at); the one-line change to `heldThere` and a scene found with it; a
+level of two million for the three scenes a mid device draws at under one; `sponza_growth` near half a
+million (its floor is 0.69 M).
+
+## A parent in the level above is asked for as a surface is held (17 Nov)
+
+The one line the section above left: `heldThere` in `scene_render.slang` called the cell of the level above
+held from a cover of 0.5, where `holds` has called a surface held from 0.8 since a6afd496. Between the two a
+cell the gathering look makes again was called held, no parent was named, and its gaussians stood laid over
+nothing -- the floor under which no cut goes. It is 0.8 now.
+
+The stage of the two knights through 20 views of its walk at 960x540, by the shaders before and after
+(`ATHENEA_SHADER_DIR`), held views against the path traced reference (dB / SSIM):
+
+| | before | after |
+|---|---|---|
+| gaussians standing | 2 112 486 | 2 112 486 |
+| the coarsest cut draws | 306 305 | 211 840 |
+| whole, k10 / k45 / a / b | 32.42 / 30.86 / 31.28 / 30.78 dB | the same, and the same SSIM |
+| `--budget 400000`, k10 | 30.37 / 0.907 | 31.47 / 0.920 |
+| k45 | 30.18 / 0.674 | 31.58 / 0.818 |
+| a | 29.27 / 0.878 | 29.33 / 0.886 |
+| b | 29.64 / 0.817 | 29.65 / 0.845 |
+| `--budget 200000` | 29.28 / 30.18 / 29.31 / 28.94 dB | the same dB, SSIM 0.0002–0.0003 lower |
+
+The same gaussians and the same picture whole; a third fewer with no parent; a budget between the floors met
+by a finer threshold (5.5 pixels where 15.7) and a better picture. `athenea_render_tests "[scene]"` on Metal:
+361 assertions in 13 cases, all pass.
+
+Not done: the published scenes are not found again with it (the floor of the chrome at 1080p would be about
+0.85 M by proportion, not measured; their levels for a phone are the grafted ones); CUDA and Vulkan; why a
+third and not more -- 211 840 gaussians still stand with no parent.
+
+## A frame's seconds count the groups' pass as well (17 Nov)
+
+A scene found in two passes -- the geometry unlit, then `--groups-only` over it -- said the first pass's
+seconds alone: `sponza_lights` on the site says 87 s where the two took about 270. A view of a group pass now
+adds what it took to that view's frame. Four views of the Sponza with lamps at 960x540: 33.6 s after the
+first pass, 95.0 s after the second, whose four views said 45.3, 5.3, 5.4 and 5.4 s.
+
+Not done: the published `sponza_lights` and `lamps` still say their first pass alone (the scenes are not
+found again); a pass of one group at a time (`--light-group`) adds each of its walks, which is what they took.
+
+## `sponza_lights` found again with the two changes, and what a level of a million shows in the page (17 Nov)
+
+The every-light-a-group Sponza found again at 1080p (`build/night/groups/geohd4.aths`; the two passes 107 s
+and 178 s by the clock, no stop of the guard): 8 639 341 gaussians as before, the held views whole 28.40 /
+23.11 / 26.44 / 24.75 dB as before to the hundredth, and the frames say 258.7 s where they said 87.2. With the
+parent asked for from 0.8 the cut goes lower by itself: `export --levels 2000000,1000000,500000` writes
+1.93 M, 0.97 M and 0.58 M where it wrote 1.97 M alone. `render --budget 1000000`, old scene and new: k10
+25.90 -> 27.45 dB (SSIM 0.758 -> 0.825), a 23.12 -> 24.98, b 22.87 -> 23.48, k45 the same.
+
+**In the page the level of 0.97 M is not good, and now it is seen why the levels of a million were not.** On
+an emulated phone, from a frame that looks along the floor, the floor is ruled in horizontal lines: the
+level's gaussians are cells of two pixels of the frame that made them, in rows, and from another eye the rows
+stand apart. The engine's held views do not show it at their distance. The level of 0.58 M of the same cut is
+smeared. The level grafted in the afternoon (0.48 M, the stage found at 960x540) is clean beside both: a
+gaussian of a scene found at half the size is the frame's own, laid as its neighbours are; a cell of the cut
+is not.
+
+**On the site** (the folder; sysop publishes): the scene found again, its finest level and the grafted 0.48 M
+-- the levels it had -- 549 files as before, and 259 s where it said 87.
+
+Not done: a coarse level of the cut that stands in the page (wider discs for a cell, or the cells laid as a
+frame of half the size lays them); the other scenes found again; a real phone.
+
+## The page's frames while a room is made, its knights before they are shaded, and a clear glass (17 Nov)
+
+Three things the section on the page's knights left, each measured or looked at in headless Chrome on the Mac
+against the page as it was (a58b7cf7); tools, logs and pictures in `build/night/agent-player3/`.
+
+**A room's pass no longer holds the page.** Spark draws what it last sorted, and a room's set is not the
+eye's, so with one Spark the page held its own frames for three sorts at every pass. Each kind's room now
+has a `SparkRenderer` of its own that is never in the scene (Spark's `sparkOverride` draws through the one
+that is): what is visible is changed only for the moment its gaussians are made and put back before a frame
+is drawn, its order comes from its own worker, and the cube is drawn through it when the order is in. Where
+a room's parts are the ones before and its middle has not moved -- a lamp's level changes colours alone --
+Spark shows the new set at once on the order it has, and the cube is drawn without waiting for a sort. The
+timeline moved over frames that change no part of a room leaves the rooms alone (it asked for a pass a
+step). A slider dragged gets the pass that is being drawn and one more after it.
+
+Measured with real input through the DevTools protocol (`gap.mjs`: a mouse's drag, a finger's on a phone's
+emulation), the time of every frame the page draws kept in the page: the longest gap between two frames,
+in ms, `n_lamps` (the published `sponza_lamps`). A headless frame is 60 to 250 ms here by itself, depending
+on what else the Mac is doing, so a gap under 300 is no hold.
+
+| longest gap between frames, ms | 8.4 M, before | after | 1.9 M, before | after | phone's emulation, before | after |
+|---|---|---|---|---|---|---|
+| a load | 2462 | 386 | 1397 | 264 | 1323 | 280 |
+| a lamp's slider dragged 3 s | 2470 (11 frames in 7.5 s) | 226 (113) | 1414 (18 in 6.8 s) | 270 (118) | 1416 | 271 |
+| the timeline dragged 3 s | 2398 | 686 | 1348 | 271 | 1300 | 403 |
+| an orbit drag | 1062 | 258 | 243 | 217 | 284 | 247 |
+
+A pass takes 0.2 to 0.3 s at 1.9 M where it sorts and 20 ms where it does not (a lamp's drag: 28 passes in
+the three seconds, 6 before), and 0.4 to 2 s at 8.4 M (8 passes in the drag, 4 before, each of which held
+the frames). The 686 ms at 8.4 M on the timeline was 320 in another run; what it is was not looked into
+(the normals of the glass that stands at the new frame are worked out on the page's thread, in slices).
+Run again with the Mac busier (every frame 200 ms and more, the page before as well): the page before held
+1.8 to 2.8 s in a load and 1.9 to 2.2 s in the drags of the lamp and the timeline, the page now 0.41 s at
+most.
+
+**What is under a pointer.** The second at the start of an orbit drag at 8.4 M was not the room: a drag's
+first touch asks which gaussian is under it, and Spark's ray goes through every gaussian drawn, on the page's
+thread (1.06 s at 8.4 M, 0.24 s at 1.9 M on this Mac's processor; a phone's is slower). One gaussian in
+sixteen is now kept as a point when a part is read, and the point to turn about is the nearest of those
+within a narrow cone about the ray that has another close behind it. The eye ends where it ended before
+((1.73, 15.53, 11.42) to (-5.70, 15.53, 2.49) by the same drag). At 1.9 M the quarter of a second it saves
+is a frame's time in these runs and is not told apart by them.
+
+**No frame shows the knights as found.** A glass or a mirror is drawn only once its kind's room has been
+drawn (or the option is off, or the rooms failed, which the status line says); the level drawn first waits
+to be whole before its first room, so the knights come in once, shaded, in a room that is all there; and
+the finer detail's normals are worked out before it takes the coarse level's place. A load of `n_lamps` on
+a throttled network (`cast_w_lamps`, `sheet_cast_v1_first.png`): the room without the knights from 3.0 s,
+the knights shaded from 3.7 s, and no capture after differs from the one before by more than 4 of 255 in
+the knights' boxes, the swap to full detail included (7 before, and 22 before that). Counted in the page
+at every frame it draws -- a glass or a mirror visible with no shading on it -- 0 frames in the three loads
+(8.4 M, 1.9 M, a phone's emulation).
+
+**The glass was frosted because every gaussian read what is straight behind it.** The look through was the
+eye's own ray turned three twentieths of the way a ball of glass would turn it -- a pane's far face undoes
+the first -- over a cone of 0.06, and the picture behind came through unmoved and blurred: an even grey.
+Not its opacity or its tint (0.93, 0.98, 1: a look through is that squared). The far face is now taken as a
+ball's: the one that mirrors the face met about the ray inside, where the ray is bent as much again; the
+look is 0.85 of the way from the eye's ray to that, read over a cone of 0.015 (0.03 mirrored; the chrome's
+0.04 from 0.08), which the normal from the neighbours allows without the facets. A highlight is one read of
+the room along the mirrored ray, added where it is near white: the room is kept as a display shows it and
+the page is not told where a lamp stands, so what is taken for a light is a sunlit wall or floor. Against
+the engine's `render --glass` from the three eyes (`cmp_w.png`: the engine, the page at 8.4 M, at 1.9 M,
+1.9 M with the look at 0.6, the page before; `crop_w.png`; the six looks tried, `sheet_x1.png`): the glass
+is clear, bright and dark side by side with a dark rim and white lights in it, where it was milk. It is not
+the engine's picture: the page's knight shows the lit wall on the side the engine's shows the dark door,
+its highlights are fewer and broader, and from the third eye, where the engine's knight goes dark before
+the door, the page's stays grey. At 1.9 M it is blotchier and holds.
+
+Not done: a real browser, a real phone, WebKit -- every number and picture here is headless Chrome on one
+Mac, and its frame rates say nothing of a device. The memory of a room's Spark: three sets of the scene's
+gaussians while it works (20 bytes a gaussian each), one at rest (the others are let go four seconds after
+the last pass), a kind -- 60 MB a kind at a million gaussians, 0.5 GB a kind at 8.4 M while a lamp is
+dragged; not measured on a device, and a phone that loses its graphics context reads the scene again a
+level coarser as before. The first room shows the other kind as it was found until the pass after it. The
+player's own lamp, which rides with the eye, still does not ask for a room. The point under a pointer is
+not the gaussian under it: a thin thing between sampled points is missed for what is behind. The 0.85 and
+the cones were chosen from six looks at three eyes of one scene; `sponza_chrome` was loaded (by the eye, no
+error) and not judged. Highlights where the lamps are, which wants the lamps' places in the index.
+
+## Why a cut's level is ruled in rows in the page, and a level's cells made to cover their surface (17 Nov)
+
+**The cause.** A disc is as wide as its cell across the way its surface falls from the eye and, along it, as
+long as the cell lies on the surface -- by no more than one over `--turned` (0.5: twice). A floor seen from an
+eye's height is met at a tenth to a third (`sponza_lights`' walk: 170 units up, the floor 500 to 1800 away), so
+its rows of cells stand three to ten cells apart on the floor and the discs are two long: a sixth to a third of
+what closes it. The finest scene does not show it: later frames lay gaussians between the rows (they are the
+pixels "half covered and made again", the ones with no parent) and the drawing's filter is a third of a pixel
+or more against cells of one. A level of detail has neither. Its gaussians are the pyramid's cells of 2, 4 and
+8 pixels, drawn in place of all that was laid over them, and a filter of a part of a pixel is nothing to a cell
+of four: the rows show, with the dark between them. `sponza_lights` (geohd4) at a width of 1.445 units, 969 238
+gaussians: 393 080 cells of two pixels, 299 147 of four, 80 367 of eight, 171 410 finest with no parent; of the
+cells, 420 000 were bounded by `--turned`.
+
+What rules the candidates out, and in:
+
+- **The engine draws it too**, once asked the same thing the page is: `athenea render --splats` of the exported
+  level's file from frame 4's eye at 1920x1080 shows the same ruled floor
+  (`build/night/agent-cut/shots/e_f4_before_after.png`, above). The held views did not because `render
+  --budget` cuts by pixels from each view, at 960x540, where a cell is under the filter.
+- **Not the page's filter** (`filterFor`, the frames' size for every level): a level is a width in the scene's
+  units, so its cells are any number of pixels on the screen -- many near the eye, where the rows are seen --
+  and no one filter in pixels fits them. The same file is ruled in the engine with its own filter.
+- **Not the cut's cells against a frame's own.** The level grafted from the stage found at 960x540 is ruled as
+  well, and worse, from the same eye (`shots/phone_f4_1M.png`, right: a grid over the floor's near half): it is
+  a cut of that scene (a width of 2.04 units), cells with the same bound. It looked clean in the capture it was
+  judged by, frame 12, where the level of 0.97 M looks clean too; frame 4 looks along the floor.
+- **The length is it.** The level's gaussians lengthened at export to across over their facing, from their
+  frame's eye, by no more than ten times: the floor closes, in the engine and in the page. But every gaussian
+  at a silhouette met aslant stands out past its surface as a spike (`shots/e_f4_ab.png`, below; removed).
+
+**What is done.** `shoot` makes a cell of the levels above its last look (`--pyramid`) as long as it lies on
+its surface where the surface is seen to go on: where the four cells beside it show the same material within
+its plane (0.15 of their distance), the least its facing is taken as is `--pyramid-turned` (0.1) in place of
+`--turned` (`scene_render.slang`: `inside`, `sameSurface`). A cell at a silhouette or a rim keeps `--turned`,
+so nothing stands out past an edge. The last look's own gaussians are made as before: the scene whole is the
+same gaussians to the last one, and the cells are only ever drawn by a cut.
+
+And a budget under the cut's floor (`thresholdFor`): no width draws so few, and the coarsest width was taken --
+every surface with a pyramid by its cells of 32 pixels, for 4% fewer gaussians than a width four times finer.
+The finest width within a twentieth of the floor is taken now: `--levels 500000` writes 607 775 at 4.86 units
+where it wrote 583 308 at 8016.
+
+**Measured.** `sponza_lights` found again (`build/night/agent-cut/geo5.aths`; 103 s and 171 s by the clock, no
+stop of the guard): 8 639 341 gaussians as before, levels of 1 931 076, 969 253 and 607 775. Held views at
+960x540 against the references (dB / SSIM; geohd4 is the same stage found by the engine before):
+
+| | k10 | k45 | a | b |
+|---|---|---|---|---|
+| whole, before | 28.41 / 0.904 | 23.11 / 0.786 | 26.44 / 0.870 | 24.75 / 0.840 |
+| whole, now | 28.40 / 0.904 | 23.11 / 0.786 | 26.44 / 0.870 | 24.75 / 0.840 |
+| `--budget 2000000`, before | 28.07 / 0.864 | 22.96 / 0.703 | 26.07 / 0.796 | 24.04 / 0.746 |
+| now | 28.04 / 0.856 | 22.86 / 0.704 | 26.06 / 0.794 | 23.89 / 0.741 |
+| `--budget 1000000`, before | 27.44 / 0.825 | 22.49 / 0.680 | 24.98 / 0.754 | 23.48 / 0.717 |
+| now | 27.57 / 0.830 | 22.43 / 0.681 | 24.96 / 0.753 | 23.39 / 0.713 |
+
+The cut loses up to 0.15 dB and 0.008 of SSIM where it lost nothing by being open: the figure is taken where
+the scene holds something and does not count what shows between the rows, as the section on the discs' stretch
+found (`--turned`). In the page, an emulated phone (390x844 at three device pixels) and a desktop canvas, frame
+4 and frame 12 (`build/night/agent-cut/shots`: `phone_f4_1M.png` -- the level of 0.97 M before, now, and the
+grafted 0.48 M; `phone_f4_others.png`; `phone_f12.png`; `desk_f4.png`): the levels of 1.93 M and 0.97 M show
+the floor whole with no rows, the walls as before; the level of 0.61 M is whole and soft -- cells of 8 and 16
+pixels -- which is what the floor of 583 308 gaussians with no parent leaves a budget under it.
+
+A test, `[pyramid]`: a floor met at a sixth, cells of four pixels, drawn from above covers 0.388 of the frame
+as its cells were made and 0.863 inside their surface (the floor itself 1.000), the same 2400 gaussians; from
+the eye that made them 0.268 and 0.432 of a floor that covers 0.500. `athenea_render_tests "[scene]"` on Metal: 383
+assertions in 14 cases, all pass; `qa_flows.py` over the materials stage shot again at 640x360: 49 of 49 ended
+well.
+
+Not done: the published scenes found again and handed on with these levels (the export of this one is
+`build/night/webtest/scenes/n_lights5`, not on the site); the scenes found before keep the cells they have --
+nothing lengthens a scene already found, the lengthening at export having left spikes; the last look's own
+gaussians, which a level also draws where they have no parent (171 410 of the 0.97 M) and are as they were; a
+level of half a million that is not soft, which wants the floor lower (the gaussians later frames lay between
+the first frame's rows, each with no parent -- a first look whose cells closed their surface would leave fewer,
+and that changes the scene whole); a real phone; CUDA and Vulkan.
+
+## The page measured: what it holds on the device, how long a load is, and what was cut (17–18 Nov)
+
+A first round of a continuing track: measure where the page's time and memory go, cut what is on top, look
+that the picture did not change, measure again. Headless Chrome 157 on the Mac and, for memory, Playwright's
+WebKit (`~/Library/Caches/ms-playwright/webkit-2359`, driven by the playwright-core already in the npx cache;
+nothing was installed). The page before is f4c65d91. Tools, logs and pictures in `build/night/agent-player4/`:
+`prof.mjs` (a load's events, bytes and requests from the DevTools protocol; the seconds of each of the page's
+reading functions by the clock; long tasks; a sampling profile; memory at marks and while a lamp is dragged),
+`inject.js` (in the page before its own script: every texture, buffer and renderbuffer the page asks WebGL for
+is counted by its format and size, and every WebGL call that takes over 30 ms is kept), `wk.mjs` (the same
+page watched in WebKit, with its processes' footprints), `gap4.mjs` (gap.mjs with a profile of the longest
+gap), `eyes4.mjs` (the three eyes and the options, each after three more passes of the rooms), `diff.py`.
+
+**How the figures are to be read.** Frame rates are not measured. A time is from the navigation; the scenes
+are served from this Mac, so a time says what the page and Spark do with the bytes, not what a line does (a
+6 MB/s line is emulated where it says so). The Mac was not quiet: another session's tests ran on the GPU
+outside the lock all night, swap stood at 6 to 7 GB of 7 to 8, and the guard stopped jobs twice. Loads of the
+same page differed by a tenth; a figure here is a range of the runs there were, and a difference smaller than
+that range is not claimed. For part of the night Chrome's GPU process died under the page, the page before
+as the page after (below); those runs are left out. `footprint` stops the process it reads: taken while a
+lamp was dragged it made GL calls of five seconds, and is now taken only at rest; from about 01:45 it did
+not answer for any process, and the footprints stop there.
+
+**The profile before** (`n_lamps`, the published `sponza_lamps`; desktop at `detail=full`, 8.37 M standing and
+1.52 M of history; the phone is 390x844 at 3x, which draws level 1, 1.93 M):
+
+| | desktop, 8.4 M | phone's emulation, 1.9 M |
+|---|---|---|
+| first gaussians drawn | 0.7–0.9 s, 18 requests, 3–13 MB | 0.8–1.0 s |
+| knights shaded by the eye | 1.7–1.9 s, 25 requests | 2.2 s (5.0 s in a run with a stall) |
+| the detail whole | 16.1–17.9 s, 436 requests, 267–284 MB | 4.0–5.3 s, 54 requests, 84 MB |
+| rooms at rest | 17.4–20.2 s | 5.1–9.7 s |
+| by the clock: the groups' and the lamp's colours | 9.4–10.2 s (180 files) | 2.2–3.2 s (18) |
+| the parts' own files | 4.0–4.5 s (122) | 1.4–1.5 s (12) |
+| normals from the neighbours | 1.7–2.9 s | 0.4 s |
+| ids | 0.5–0.7 s | 0.1 s |
+| the page's thread busy | 3.1 s; long tasks 11–14, 1.2–1.8 s in all, the longest 0.34–0.44 s | 0.5–0.6 s in all |
+| textures asked of WebGL, at rest / lamp dragged | 1303–1375 MB / 1623 MB | 260–332 MB / 332 MB |
+| the page's buffers (ArrayBuffers) | 654 MB (926 in the drag) | 146 MB |
+| GPU process footprint, at rest / in the drag | 2.8 GB / 3.1 GB | 1.4–1.5 GB |
+
+Of the page's thread: the normals 0.74 s, the loop that copies a group's colours out of Spark's packed
+gaussians 0.42 s, a mesh's box asked of Spark at every pass of the rooms 0.25 s, medians by a comparator
+0.23 s, the ids 0.18 s. Nine programs are linked in a load, whatever the number of parts: Spark shares them.
+Of the 1.3 GB of textures at rest: the page's own Spark two sets of the scene's gaussians, 480 MB (a set is
+an RGBA32UI and an RGBA8 texel a gaussian, 20 bytes, in layers of 2048 by 2048); the two rooms' Sparks a set
+each, 320 MB, and their orders, 64 MB; the files as Spark keeps them (32 bytes a gaussian), 302 MB; the
+page's own textures a gaussian (two groups' light, the lamp's base colour, ids, normals), 122 MB; the page's
+order 48 MB. While a lamp is dragged the rooms hold two sets each. WebKit's GPU process stood at 2.0 GB with
+the page at rest and 2.8 GB with a lamp at work, about twice the textures in both browsers.
+
+**What was on top was the rooms' Sparks, and the deployer's WebKit said so first**: the page of f4c65d91 at
+8.4 M lost its graphics context there a minute after the detail was in, read itself again a level coarser and
+lost it again; the page before the rooms had Sparks of their own (d73fb5c7: one Spark, 919 MB of textures in
+Playwright's WebKit here) did not. Two answers, the second the one that stands.
+
+*The first: the rooms taking turns with one set, and letting it go* (345d19fe). A kind's set was made,
+sorted only where its order did not hold, drawn into its cube and its store handed to the other kind's
+Spark; four seconds after the last pass the store, the orders and the sort workers were let go, and the
+page's own Spark let its spare sets go after two seconds without a new one. Textures at 8.4 M: 1375 -> 1139 MB
+with the detail in, 1623 -> 1139 MB in a lamp's drag, 1303 -> 675 MB at rest; WebKit's GPU process with a
+lamp at work 2.79–2.86 -> 2.24–2.26 GB. It was not published: in the deployer's three runs of 160 s each in
+WebKit the page before the rooms' Sparks was clean three times and this one lost its context once, at
+78 s, at rest; and it asked the device for a quarter of a gigabyte again at the first move after every
+rest. Half the memory was not the size that mattered.
+
+*The second: the rooms are drawn from a scene of their own, of few gaussians.* What a glass or a mirror
+shows is read from a cube through a cone of rays; it does not want the gaussians the eye is drawn. Each part
+that is read leaves one gaussian in so many of its own in a second scene -- 400 000 in all whatever the
+detail (one in 21 at 8.4 M, one in 5 at 1.9 M; `?room=<gaussians>` for another number) -- each wider by the
+root of how many it stands for, with its groups' light thinned the same way and the lamp's when it is lit.
+The rooms' Sparks see that scene and no other: a set of theirs is 8 MB where it was 160 to 240, they keep
+what they make (nothing is handed on or let go any more), and the page's own Spark is left as it was before
+any of this. In a kind's room the other kind is as it was found, not as the eye shades it, so a room no
+longer depends on the pass before it and the pass that was run again for that is gone. Spark's sort after
+every set is still put off where the order holds.
+
+| 8.4 M, textures asked of WebGL | f4c65d91 | 345d19fe | now |
+|---|---|---|---|
+| the detail just in | 1375 MB | 1139 MB | 930 MB |
+| a lamp dragged, at its highest | 1623 MB | 1139 MB | 932 MB |
+| at rest after | 1303 MB | 675 MB | 932 MB |
+| of which the rooms: sets, orders, their scene, cubes | 384–700 MB | 0–236 MB | 55 MB |
+| the page before the rooms' Sparks (d73fb5c7), in WebKit | 919 MB | | |
+| the phone's emulation, 1.9 M: the detail in / at rest | 332 / 260 MB | 220 / 133 MB | 204 / 204 MB |
+
+The bar for the page was "no worse than the page before the rooms' Sparks, over six runs each". Playwright's
+WebKit, 1280x800, `n_lamps` at `detail=full`, 160 s a run, the old page (d73fb5c7) and the new by turns,
+both from the test site: old six of six with one load and no context lost, new six of six the same; then
+100 s each with a lamp set every two seconds, the same (`ab_old_*`, `ab_new_*`). Textures in WebKit 919 MB
+old and 930 MB new at rest, 919 and 932 MB with the lamp at work. Twelve runs do not show a rate of one in
+three is gone -- the deployer's loss with the first answer was one run of three -- but the page no longer
+holds more than the old one by anything but 13 MB. In that WebKit the detail is whole 1.5 s after the
+navigation with the new page and 4.8–5.0 s with the old (the load's changes, below). In Chrome the gaps at
+8.4 M with the thinned rooms (one run): a load 407 ms, an orbit 197, a lamp's drag 169, the timeline 225;
+on the phone's emulation 323, 217, 366, 395; a finger's drag turns the eye to the same place as with the
+old page (three runs each).
+
+**What is lost with a thinned room** (`crop_rooms.png`: the page before, a room of 1.5 M, of 400 000, of
+150 000; `cmp11.png`): against the page before, each after three more passes, the three eyes differ by 1.2
+to 1.5 of 255 in the mean and 5 to 6 % of the pixels by more than 8 (0.5 % by more than 24), all in the two
+knights; a room of 1.5 M halves that (0.6–0.75, 1.3 %) and one of 150 000 adds a third (1.5–1.9, 6.4–8 %).
+To the eye the chrome's bricks are a little softer and the glass has fewer of its small bright lights; the
+shapes, the dark and the light sides are where they were. Glass off is the same to the pixel. The chrome
+seen in the glass (and the glass in the chrome) is the picture each was found with.
+
+Also in the page from the first answer and kept: **a context lost is not met with rooms again** -- lost with
+rooms' Sparks made, the page reads itself again at the same detail with `?rooms=0` in its address (no room
+is drawn, glass and chrome as they were found, said in the status line), lost again a level coarser as
+before, and with no coarser level it says so; tried with `WEBGL_lose_context` three times running and,
+unasked, by Chrome's GPU process dying under it. What Spark was waiting on when the context goes is no
+longer an unhandled rejection. **`window.__player.holds()`** says in megabytes what each Spark holds, the
+files' gaussians, the page's textures, the rooms' scene and cubes. What is let go with a level -- its
+groups' light, its ids, its normals -- takes its textures with it; they stayed on the device when the level
+drawn first was swapped for the detail.
+
+**A picture of the knights depended on how many passes the rooms had had**: the glass showed the chrome in
+its room as the chrome was shaded a pass before, and the chrome the glass, so two captures of one page
+taken after a different number of passes differed in the glass's highlights (3.6 % of the pixels in the
+glass's box by more than 8 between two runs of one page). The comparisons below are taken after three more
+passes each (`eyes4.mjs`), where two pages agree to the pixel or do not. With the other kind as found in a
+room, that dependence is gone.
+
+**Then the load: its files were read one after another.** After the rooms, the profile's top was the load
+itself: of 16 to 19 s to the detail at 8.4 M, 9.4 to 10.2 s were the groups' and the lamp's colour files --
+each a whole file of gaussians (two groups and the lamp's base: 199 of the 264 MB of `.spz` a load fetched)
+read through a SplatMesh for its colours alone -- and each was waited for before the next was asked. Three
+changes (9449338b):
+
+- **A part's files are read side by side, and the next parts are begun while it is read**: up to three
+  parts at a time, eight files at most at once (each is a request, a worker's decoding and its bytes held);
+  the parts still come to stand in their order, and what was begun for a load that is left behind is let go
+  as it arrives. A prim's count of gaussians is now taken when its part comes to stand, not when its file
+  is read.
+- **The player's own lamp's colours are read when the lamp is first lit.** They were a file a part as large
+  as a group's, 63 MB of the 284 MB a load at 8.4 M fetched and 17 of the phone's 84, for a lamp that is off
+  until it is asked for. Lit, the parts that stand read theirs side by side (2 s at level 1 here; the lamp's
+  row says "reading" meanwhile) and a part read after takes its own with it.
+- **A mesh's box is asked of Spark once.** A pass of the rooms asked for it again for each of a kind's parts,
+  and Spark goes through every gaussian for it: 0.14 s of a pass's 0.15 at 8.4 M. A pass that does not
+  sort is now 4 to 6 ms of the page's thread, and a lamp's drag gets 20 to 31 passes where it got 8.
+
+| `n_lamps`, served from this Mac | before | after |
+|---|---|---|
+| 8.4 M: the detail whole | 16.1–18.5 s (22.3 in a run with a stall) | 6.2–7.6 s (12.5 with a stall) |
+| 8.4 M: rooms at rest | 17.4–20.2 s | 8.8–10.6 s |
+| 8.4 M: requests, bytes | 436, 267–284 MB | 372–376, 205–221 MB |
+| 8.4 M on an emulated 6 MB/s line | 175 s | 55 s |
+| phone's emulation, 1.9 M: the detail whole | 4.0–5.3 s | 1.4–2.2 s |
+| phone's emulation: requests, bytes | 51–54, 82–84 MB | 45–48, 56–68 MB |
+| phone's emulation on the 6 MB/s line (the lamp's colours still read) | 34.9 s | 19.5 s |
+| `n_lights4` on the phone's emulation (level 2, 0.97 M) | 2.7 s (7.0 with a stall) | 1.4 s |
+| the lamp's colours no longer on the device, 8.4 M / the phone's 1.9 M | 32 / 8 MB | — |
+
+The first gaussians and the knights shaded come when they came (0.7–1.0 s and 1.4–2.2 s): the level drawn
+first is two files. The emulated line is DevTools' and is harder on files asked for one at a time than a
+line is -- the page before got 1.6 MB/s of its 6 -- so the 175 s is not a real line's; the bytes are.
+With parts read together and without the lamp's colours, the page's bound on a slow line is its bytes: 221 MB.
+
+**With the rooms as they were, the load's changes leave the pictures the page before's to the pixel.** The
+three eyes before the knights, glass off, glass on, the lamps out, frame 8, each after three more passes:
+f4c65d91 against the page with the first answer for the rooms and the load's changes, and with the normals'
+(below) -- the largest difference in any of the seven pictures is 1 of 255 in one pixel's channel, and 0 in
+the other six (`yb_*`, `y8_*`, `y7_*`, `y9_*`). What differs in the page now is the thinned room's, above. The lamp lit, lit
+with the glass option put off and on, and put out again, at level 1: the same to the pixel with its colours
+read at the start and read when lit (`lx3_*`, `lx5_*`, `lx7_*`). The gaps, the page before and after in one
+job at 8.4 M: a load 348 and 337 ms, an orbit 256 and 236, a lamp's drag 226 and 290, the timeline 317 and
+253; on the phone's emulation after: 252, 270, 377, 338. `materials_thin`, `sc_one`,
+`?object=/ChromeKnight&object.view=matte` (a patch of 7 by 11 pixels of the matte differs from the page
+before's),
+`?orbit=0&filter=fixed` and the standalone page build and draw (`misc8.png`).
+
+**Then the normals, which the detail waits for.** With the files read together, the largest single thing
+between the last file and the detail being shown was the normals from the neighbours: 0.6 s of arithmetic
+for the 1.3 M glass and mirror gaussians, done on the page's thread in slices of 30 ms between its frames,
+which made it 2.5 to 3.0 s by the clock. They are now worked out in a worker (the same function, whose
+source is the worker's; where a worker cannot be made it is called on the page's thread in one piece).
+Three loads each in one job, 8.4 M: the detail whole in 5.07–5.24 s where it was 6.17–6.65 s, the rooms at
+rest at 7.3 s where 8.8–9.2 s, the long tasks of a load 1.3–1.7 s in all where 1.8–2.1 s. On the phone's
+emulation (0.3 M of glass and mirror at level 1) 1.45 s against 1.43 s: no gain there, and none claimed.
+The seven pictures are the same to the pixel.
+
+**The profile after** (8.4 M): the detail whole in 5.1–5.3 s, of which the files' reading (Spark's workers)
+is most, and the rooms at rest 1.2 s after it (6.5 s; 17.4–20.2 s before); the page's thread busy 3.6 s
+under the profiler, of which 1.2 s inside WebGL calls (texture uploads, the sort's readback), 0.38 s reading
+each glass and mirror gaussian for its axis (`shapeOf`), 0.28 s keeping one gaussian in sixteen (`pickOf`),
+0.2 s of collection; the long tasks of a load 0.9 s in all. Textures 930 MB: the page's own two sets 480,
+the files as Spark keeps them 302, its order 48, the groups' light, ids and normals 94 of which the rooms'
+thinned ones 4, the rooms' sets 33, cubes 12, the rooms' scene 6; and 516 MB in the page's buffers, where
+Spark keeps each file's gaussians a second time. Reading the parts side by side does not change the
+textures' highest during a load (it is the end's); Spark's workers held 197–216 MB where they held 128–135 MB
+at the moments sampled, and what the page held between them was not sampled.
+
+**Chrome's GPU process died here for part of the night, with either page.** `[Device] is lost` and `GPU
+process exited unexpectedly: exit_code=8704` in Chrome's log: four of the six fresh starts between 00:13 and
+00:31, the page before among them, and several before that whose log was not kept; none in the thirty or so
+after 01:25. A process of another session held 6.6 GB on the GPU outside the lock in those hours, swap was at
+its limit and the guard stopped jobs for heat at 00:08 and 01:07. For an hour the losses were taken for the
+rooms' first answer (they came in lamp drags after it); the page before losing its context in the same job,
+and a loss before any room's Spark existed, say these crashes do not tell the pages apart. The deployer's
+runs in WebKit, on a machine at rest, are what did. What
+the page does when it is lost was seen for real in those runs: the same detail without rooms, then a level
+coarser, and no loop.
+
+Not done, and what the measures put next:
+- **A real browser, a real phone, Safari.** Everything is headless Chrome and Playwright's WebKit on one
+  Mac. The loss of the context the deployer saw in WebKit was never reproduced here, with any page: the
+  thinned rooms are known to hold what the old page held, not to stop that loss.
+- **The groups' files are whole files of gaussians read for three bytes each**: 133 of the 221 MB a load at
+  8.4 M still fetches, and 33 of the phone's 56. A group handed on as its colours alone (three bytes a
+  gaussian, gzipped) would be about a third of that; it is the exporter's to write and the page's to read.
+- **On a phone the level with its lamps on is drawn first and then read again with its groups** (the same
+  gaussians): 18 MB and then 38 more for lamps that may never be touched. Reading the groups when a lamp is
+  first moved, as the player's lamp now is, would leave a phone's load at the first 18 MB.
+- **The first link of Spark's programs** is the longest thing the page's thread waits for on a first visit:
+  `getProgramInfoLog` took 0.4 to 1.8 s in one call in four of the fresh starts that were timed, and a load
+  on the phone's emulation had a long task of 4.4 s at the same point before the calls were timed. three
+  asks for a program's log as soon as it is linked.
+- The history's parts (1.52 M gaussians, 112 files at 8.4 M; 3663 files in `sponza_chrome`) are read with
+  the rest, for a timeline that may not be moved. `n_lights4` at full detail, `lamps` and `sponza_chrome`
+  were not profiled after the changes: the two runs of `n_lights4` at 8.6 M (old page and new) did not end
+  in 500 s -- the profiler was stuck in `footprint`, which began to hang on Chrome's processes at about
+  01:45 -- and the rest were dropped for time.
+- Spark's second copy of every file in the page (302 MB at 8.4 M), which the page reads only while a part
+  is read; the page's own copies of its textures (90 MB) after they are on the device.
+- With the first answer for the rooms a lamp's drag at 8.4 M had a gap of 0.56–0.65 s in three runs of
+  six (one `texSubImage2D`, the page's own Spark handing its order to the device while the rooms' passes
+  kept it busy; 0.21–0.27 s before). With the thinned rooms the one drag measured had 0.24 s; it was not
+  repeated. The page's own Spark still holds two or three sets of the scene (480 MB at 8.4 M), as it did
+  before the rooms had Sparks; letting the spare go at rest was tried with the first answer and taken out
+  with it.
+- A thinned room is one gaussian in so many in the files' order, made wider: a room made from the scene's
+  own coarsest level would be better gaussians for the same number, at the price of reading that level's
+  files and its groups'.
+- `?rooms=0` shows glass and chrome as found; the single-Spark pass that held the page's frames is not
+  brought back for it. The flag is not taken out of the address by itself. The 400 000 of a room was
+  looked at beside 150 000 and 1.5 M at three eyes of one scene, not searched; `sponza_chrome`, `lamps` and
+  `n_lights4` at full detail were not looked at with the thinned rooms.
+
+## The paths that land on glass, kept and continued in a dispatch of their own (18 Nov)
+
+What the measures of 17 Nov pointed at ("where a glass's cost to the path tracer's bounces goes"), done. A
+path whose ray lands, past its first vertex, on a row whose material transmits is not shaded there: the
+megakernel writes its state (32 words) after the planes of `moments`, in a slot taken by `InterlockedAdd`,
+and goes on to its next sample. A second dispatch of the same kernel (the uniform `keptPhase`; no second
+compile) runs a thread an entry to the path's end over the whole capacity -- threads past the count return at
+once, so the CPU reads nothing -- and a small `pathResolve`, a thread a pixel, walks the pixel's list of
+entries into `sum`, `colour`, `moments` and the light groups and clears the count. The random numbers are
+keyed by pixel, sample and bounce, so they are the same paths, summed in another order. One keeping a path;
+off for bakes, volumes and the pipeline (CUDA) route; Metal only for now. The capacity is a quarter of a
+pass's paths, at most 512 MB; a path that finds no room goes on where it is. `PathSettings::keepPaths`,
+true by default.
+
+Metal (M5 Pro), 1920x1080, 32 paths in passes of 8, seconds a view (the second and third views of one load),
+one binary with the keeping off and on; no stop of the guard in these:
+
+| | three bounces | no bounce | the picture, on against off |
+|---|---|---|---|
+| flat Sponza, the glass knight | 21.6–21.7 -> 16.4–17.5 | 4.76–4.78 -> 4.55–4.63 | one half-float code at most; bit for bit with no bounce |
+| flat Sponza, both knights | 20.9–21.0 -> 17.0–17.1 | 4.63–4.69 -> 4.53–4.55 | the same |
+| flat Sponza, no knight | 11.5 -> 11.7 | 2.9–3.0 -> 2.9–3.0 | bit for bit: no path kept |
+| Sponza with its lamps | 27.75–27.8 -> 24.0–24.2 | not measured (two views out of line, not run again) | 30–47 pixels of 2 073 600 over two codes; 8–9 with no bounce |
+| the materials stage | 12.0–12.1 -> 11.3 | 3.15–3.2 -> 3.2 | 0–1 pixel over two codes; 139–145 with no bounce |
+
+A fifth off the glass knight's frame, a seventh off Sponza's, a fifteenth off the materials stage's; nothing
+where there is no glass. 2.04 M of 16.6 M paths a pass are kept on the flat stage with the glass knight, 2.5 M
+on Sponza. Sponza's pixels are the cut-out shadows' lots, keyed by a count over the thread's life
+(`gShadowDraws`): off twice and on twice are each bit for bit. Against 512 paths, 32 paths give the same
+error off and on (the materials stage 32.42 dB both; Sponza relMSE 0.591326 and 0.591327).
+`neural-scene shoot` of the Sponza with knights, 960x540, eight views, three runs each way: 97, 94, 94 s
+off; 87, 84, 87 s on; the held views the same (32.58 / 31.21 / 31.44 / 30.36 dB), 1 751 309 gaussians each.
+Tests on Metal, all pass: `athenea_technique_tests` (64 cases), `athenea_material_tests` (15),
+`athenea_usd_tests "[path],[glass],[lights],[emissive]"` (62), `athenea_render_tests "[scene]"` (14).
+
+Tried and dropped: a path kept again each time it passes between glass and the rest, a dispatch each (2–6
+rounds): 17.7–18.3 s where one round gives 16.4.
+
+**Found beside it, not mended: the trunk's kernel is not the same from run to run on the materials stage.**
+Two runs of the same build differ in 16–161 pixels with no bounce; a write to the shadow count that changes
+no meaning (`if (sample == 0u) { gShadowDraws = 0u; }`) makes it 660 000–700 000 pixels (38.5 dB); the count
+set to zero at every sample, 16. Zeroing the bump's quad derivative does not remove it; Sponza and the flat
+stages do not show it. The cause was not found.
+
+Not done: CUDA and Vulkan (the keeping is off there; Vulkan would use the same compute kernel); the capacity
+sized from a count read back; the nondeterminism above; Sponza with no bounce measured again.
+
+## The two other 1080p scenes found again with the cells' longer discs (18 Nov)
+
+`sponza_lamps` and `sponza_chrome` found again with 84788e72 (`--pyramid-turned`) and 37d9d392 (a parent
+asked for from 0.8), by the commands that found them (build/night/held2/job_refind.sh; the release build of
+d32b9d6a, before the kept paths). Whole, the held views are what they were: the lamps 27.51 / 23.37 / 26.00 /
+24.22 dB and the same SSIM to the fourth place but one; the chrome 31.71 / 29.03 / 30.47 / 29.58 dB (one view
+a hundredth lower). The same counts: 8 365 438 and 11 410 389 gaussians.
+
+The cut now writes the levels asked for: the lamps 1.92 M and 0.99 M (it wrote 1.93 M alone); the chrome
+3.82 M, 1.96 M and 0.99 M (it wrote 3.81, 1.82, 1.40 M and could go no lower). On an emulated phone the
+levels of 0.99 M show the floor whole from a frame that looks along it and from one beside the knights; they
+take the place of the levels grafted from scenes found at half the size (0.43 M and 0.49 M), which from some
+views ruled the near floor in a grid.
+
+The shoots took longer than the ones they replace, and it is not known why: the lamps 678 s with no stop of
+the guard inside (589 s the night before), the chrome 2017 s less its four stops (1835 s). The Mac had worked
+all night and stood near its thermal limit (four stops in half an hour); the cells' test of their four
+neighbours is the other candidate. Not separated.
+
+**The cells' longer discs cost nothing, measured after.** The Sponza with knights through eight views at
+960x540, one binary, `--pyramid-turned 0.5` (the cells as they were) and the default, three runs each in
+turn, no stop of the guard on the job: the frames' seconds 71.0, 71.1, 70.8 s as they were and 71.2, 70.8,
+71.0 s now, each view within a tenth of a second, the same 597 613 gaussians. So the two long shoots' tenth
+was the machine that night, or something of 1080p not in this measure.
+
+Not done: the three scenes at 960x540 (`lamps`, `sponza_knight`, `sponza_growth`) found again -- their levels
+are cuts made before the cells were lengthened and were not looked at along a floor; a level of half a
+million that is not soft; a shoot at 1080p timed twice on a cool machine.
+
+## What a thread's memory bears: the path tracer's kernel the same from run to run (18 Nov)
+
+The defect "The paths that land on glass" left ("found beside it, not mended"), found and mended. The cause
+is how much the kernel keeps in a thread's memory: past what the device bears, Metal builds the pipeline,
+reports nothing, and runs of pixels a SIMD group wide come out with other values, not the same ones at each
+run. Nothing in the kernel was read before it was written.
+
+**Where the pixels are.** Metal (M5 Pro), 1920x1080, the materials stage, no bounce. Two runs of one build
+differ in a few places a frame (seven or eight at 32 paths), each a run of pixels the width of a SIMD group
+-- 32 threads, 16 pixels by 2 rows in quad order -- on the wall, the floor and balls of any material, in one
+or two channels. One path in one pass: bit for bit (both views of a load). 8 paths in one pass: 98–100
+pixels over two codes. 32 in passes of 8: 131–228. So it is not the accumulation, the kept paths' area or a
+buffer left from another frame; it needs a thread to run several samples. The write that changes no meaning
+(`if (sample == 0u) { gShadowDraws = 0u; }`): 1.12–1.20 M pixels differ run to run (25.9 dB; 660 000–686 000
+with the keeping off), horizontal streaks of that width over the whole frame, and the picture is 870 000
+pixels from the trunk's. The Metal source slangc writes for the two kernels is the same but for the added
+lines; `gShadowDraws` is a field of a context a thread owns, not shared. What differs is what Apple's
+compiler builds.
+
+**The cuts**, each a kernel of the copy run twice with that write, the first view of a load, pixels over two
+codes run to run:
+
+| the cut | run to run |
+|---|---|
+| none | 1 120 483 |
+| the emitting triangles never chosen | 1 463 314 |
+| paths not kept | 685 858 |
+| the lobes capped at four (another picture) | 0 |
+| six locals zeroed where declared (`first`, `found`, `cur`, `lightPoint`, `shaded`, `ms`) | 0 |
+| `found`, `cur` or `ms` alone | 1.1–1.4 M |
+| `Shaded first = {}` alone | 97 |
+| `Shaded shaded = {}` alone | 0 |
+| `Found lightPoint = {}` alone | 0 |
+| `lightPoint.valid = false` alone, the rest unwritten | 0 |
+| `shaded.stack.count = 0` alone | 1 113 180 |
+| the first hit's shading not cached (one `Shaded` less; `lightPoint` unwritten) | 0 |
+
+Every cut that gives 0 gives one picture, bit for bit, with the write, with another (`if (sample == 3u) {
+gShadowDraws = 7u; }` where the bounces are counted) and with none; it is 65 pixels from the trunk's, which
+are the trunk's own. The trunk's kernel with the second write: 131.
+
+**Not a read of something unwritten.** `lightPoint` written whole, with made-up values and `valid` true:
+1 040 160 pixels differ run to run; the same with `valid` false: 0, the one picture. A line that adds 1000 to
+the path where a target that is not valid would be shaded changes nothing in the kernel that is right: none
+is. `lightPoint` is read only on a step a vertex chose a point for, after it is written. And the made-up
+values with `valid` true and the first write: 0, the one picture. What a line there changes is the kernel the
+compiler builds, not what the kernel reads.
+
+**A thread's memory.** The kernel that is right (`lightPoint.valid = false`), with an array of floats added
+to the thread's frame, written at entry, touched each sample and read at the end, so the compiler keeps it:
+
+| added | run to run | against the one picture |
+|---|---|---|
+| 4 KB, 8 KB, 12 KB | 0 | 0 |
+| 16 KB | 33 (one SIMD group) | 33 |
+| 64 KB | 733, values up to 6e4 times the pixel's | 356 |
+| the six zeroed, 16 KB | 1 514 010 | 1 199 699 |
+
+A kernel with nothing wrong in it, made to keep more, shows the trunk's defect at the trunk's size and then
+the write's. Metal says nothing of it: the pipeline is made, `maxTotalThreadsPerThreadgroup` is 1024 for
+every kernel of the frame (256 are dispatched), with 64 KB added as without. The trunk's kernel stood at the
+edge: three `Shaded` (a stack of eight lobes of 128 bytes and the material's inputs, some 1.5 KB each) beside
+the materials' own stacks, on a stage whose OpenPBR pushes eleven lobes. What a line moved was the frame the
+compiler laid out -- its size the device does not say -- which is why the write showed it, the keeping
+changed it, and Sponza, whose materials push fewer lobes, never did.
+
+**The change.** The step's shading is written where the path keeps its vertex (`cur`); there is no `shaded`.
+A light point is shaded for its emission alone (`shadeFound`'s `emissionOnly`: the material's one call, and
+`cur` stays the vertex that chose the point); a surface the sample's lot sees through is written into `cur`
+as well, the next step shading what is behind before anything reads it. One `Shaded` less in the frame and
+one copy of it less a step; nothing else. With it the kernel is the same from run to run with either write
+and with none, and with 16, 32 and 64 KB added to its frame (three runs each at 32 and 64): where the
+trunk's bore nothing and the one-line cut 12 KB and not 16. Its picture is the one picture to a half-float
+code in a few pixels (relMSE 5e-14, no pixel a code apart).
+
+**Tried with it and taken out: `Found lightPoint = {}`.** The first form of the change also wrote the light
+point whole where it is declared. On the materials stage it changed nothing (the same picture bit for bit,
+16 and 32 KB borne). The kernel with media then drew garbage, another at each run: `the path tracer through
+an absorbing volume is Beer-Lambert's` 12 583–12 725 of 14 399 pixels beyond five deviations (mean ratio
+0.255 against 0.3946), `athenea_usd_tests`'s panel in a medium and its volume against the reference with it
+-- three tests that pass on the trunk. Without the line they pass. Zeroed, the struct is one more in the
+frame (in the Metal slangc writes, the unwritten `lightPoint` lends its storage to the temporary `found` is
+chosen through; written, it has its own), and the kernel with media stands as near the edge as the materials
+stage's did. So the cuts above that "mend" by zeroing a local mend nothing: they move the frame, to the
+right side of the edge on one kernel and the wrong side on another.
+
+Metal (M5 Pro), 1920x1080, 32 paths in passes of 8, three views of a load, the tree's build (`build/pt-exp`)
+against the trunk's kernel (the copy, its switches off); seconds are the second and third views:
+
+| | run to run | against the trunk's kernel | seconds a view, trunk -> now |
+|---|---|---|---|
+| the materials stage, no bounce | 0: five runs, the first against each, three views | 33–99 pixels: the trunk's own | 3.01–3.06 -> 2.86–2.92 (three runs of five; two at 2.91–3.20) |
+| the materials stage, three bounces | 0: five runs, the first against each, three views | no pixel a code apart (relMSE 3–4e-14; one view bit for bit) | 11.13–11.17 -> 9.73–9.92 (four runs; a fifth at 13–14 with the load average at 5.6 and no stop of the guard) |
+| Sponza with its lamps, three bounces | 0, three views | bit for bit | 23.94–24.06 -> 22.13–22.19, 23.0–23.7 (two runs) |
+| Sponza with its lamps, no bounce | 0, three views | bit for bit | 4.92–5.00 -> 4.57–4.73 |
+| flat Sponza, the glass knight, three bounces | 0 on two views; the first: one pixel, see below | bit for bit | 16.18–16.26 -> 14.52–15.12 |
+| flat Sponza, the glass knight, no bounce | 0, three views | bit for bit | 4.48–4.53 -> 4.15–4.24 |
+
+**What is left on the flat Sponza is the keeping's.** Its first view at three bounces comes out as one of two
+frames, one pixel a code apart (relMSE 1.8e-12, max relative 0.0625): this kernel's two runs gave both, the
+first form's two gave one, the trunk's one run the other. With the paths not kept, three runs are one frame;
+kept, three runs are two and one. So it is in what 1096d4d9 added and not in a
+thread's memory. Not looked into further; what the keeping leaves to a race is the slot an entry takes
+(`InterlockedAdd`), and with it which entries share a quad in the second dispatch -- where a material that
+takes a screen derivative takes it from its neighbour.
+
+`athenea_usd_tests "[repeat]"` (tests/usd/test_path_repeat.cpp) renders a stage of those materials -- seven
+OpenPBR boxes, an emitter and two glasses among them, UsdPreviewSurface plain, with a texture and with a
+normal map, a sky and a sun -- from two renderers at 1920x1080, at no bounce and at two, and asks
+`compareImages` for no code apart. On the trunk's kernel it fails at both (max 2 codes at two bounces); on
+this one it passes.
+Tests on Metal, all pass: `athenea_technique_tests` (64 cases), `athenea_material_tests` (15),
+`athenea_usd_tests "[path],[glass],[lights],[emissive]"` (63, the new one among them; 17 minutes, each
+stage's kernel built anew), `athenea_render_tests "[scene]"` (14).
+
+Not done: the flat Sponza's one pixel (above); what the device's limit is, and a check of a kernel against
+it -- the frame is the compiler's and Metal gives no figure for it, so the measure here is the array a kernel
+bears added (the switches are in `build/night/agent-det` and the copy, not in the tree); the kernel with media measured that way: it passes
+its tests with one `Shaded` less than the trunk's, and one `Found` more was enough to break it; the other
+kernels that shade (`MaterialShading`'s, the guides') -- the note in `lobes.slang` on the shadowed shading
+kernel drawing an umbra wrong when `Lobe` grew by two `float4`, "unexplained", reads like this defect; CUDA
+and Vulkan, where the same source is compiled and nothing was run; the materials' own stacks
+(`gAtheneaLobes`, `gAtheneaResult`), `first` and the five `Found` a path holds, which are what is left to
+take out of the frame.
+
+## The RTX 3070 laptop, 18–19 Nov: what CUDA and Vulkan say of the two days' commits
+
+A subagent, RTX 3070 Laptop (8 GB), WSL2 Ubuntu / CUDA and native Windows / Vulkan, both trees brought from
+5ee7f9e1 to 141593d9 (their code the commit's, file for file by content); scripts and logs in
+`build/night/agent-ix6`, outputs kept on that machine and under `build/agent6_*`.
+Three path tracers were built on each: 5ee7f9e1's (which is the commit before the kept paths, 1096d4d9^, in
+`PathTracer.cpp`), 1096d4d9's under the head's other files (the commit before 12de7684), and the head's.
+
+**What it found: the keeping, compiled in and never taken, cost Vulkan a fifth to two fifths of a frame.**
+The paths kept (1096d4d9) are off outside Metal, but the kernel was generated with the keeping's code wherever
+rays are inline, Vulkan among them, its capacity zero at run time. The materials stage, 1280x720, 16 paths in
+passes of 2, one view, frame time in ms, runs after the first, 30–40 s apart:
+
+| | no bounce | three bounces | a bounce |
+|---|---|---|---|
+| 5ee7f9e1 | 1043, 1100, 1101, 1105 | 1834, 1886, 1931, 2102 | 262–277 |
+| 1096d4d9, the keeping in the kernel | 1343, 1370 | 2660, 2687 | 430–448 |
+| 12de7684 (141593d9), one `Shaded` less | 1203, 1234, 1271 | 2316, 2371, 2442, 2518 | 371–438 |
+| the keeping left out of the kernel where no path is kept | 1045, 1055, 1116, 1116 | 1762, 1771, 1808, 1810, 1836 | 231–264 |
+
+So 12de7684 gives Vulkan what it gave Metal (7–12 % off the frame with no bounce, 6–14 % off three bounces;
+Metal 5 and 12 %), and the head was still 12 % slower than 5ee7f9e1 with no bounce and a quarter slower with
+three. The last row is a change tried there and **not committed** (the patch, three lines of
+`PathTracer::setPrograms`, is `build/night/agent-ix6/keeping-out-of-kernel.patch`): the kernel takes `kKept`
+only on Metal, `kNoKept` elsewhere -- Metal's source would be byte for byte what it is, CUDA's two routes
+already take `kNoKept`. On Vulkan its picture is bit for bit the head's with no bounce
+and with three, and it is faster than 5ee7f9e1 by what 12de7684 gives. 5ee7f9e1's figures are cb22fdb7's of
+17 Nov there (1106 and 1909 ms).
+
+**Builds**: both, no error, each of the versions and the tried change (GCC, MSVC).
+
+**Tests at 141593d9**, all passing:
+
+| | CUDA (WSL2) | Vulkan (Windows) | Metal (the sections above) |
+|---|---|---|---|
+| `athenea_technique_tests` | 917 assertions; 29 cases pass, 35 skipped of 64 | 2862 in 64 cases | 64 cases |
+| `athenea_material_tests` (`[openpbr]`, `[standardsurface]`, `[gltfpbr]` among them) | 2985 in 15 | 3087 in 16 | 15 cases |
+| `athenea_render_tests "[scene]"` (`[pyramid]` among them: 22 assertions) | 383 in 14 | 383 in 14 | 14 cases |
+| `athenea_usd_tests "[path],[glass],[lights],[emissive],[repeat]"` | 170; 7 cases pass, 56 skipped of 63 | 1028 in 63 | 63 cases |
+| `athenea_lod_tests` | 9797 in 37 | 1465 in 22 | not run for these sections |
+| `athenea_scene_tests` | 268; 9 pass, 1 skipped of 10 | 226; 8 pass, 1 skipped of 9 | not run for these sections |
+
+CUDA's skips are what they were (no rasterisation, no ray queries, no OptiX in WSL), with `[repeat]` now among
+them ("needs rasterisation and ray queries"); the scene test skipped on both is the one that wants
+openFXplayer's example cloud. With the tried change: the technique tests, the scene tests and the usd tags pass on
+both (the same counts), `[repeat]` on Vulkan among them.
+
+**Run to run.** `[repeat]` on Vulkan (1920x1080): no bounce and two bounces, twice each, p99 0, max 0, 0 of
+2 073 600 pixels over two codes. The materials stage with `athenea compare`, 1280x720, 16 paths in passes of 2,
+no bounce and three: three runs of each of the three versions on Vulkan and two on CUDA are one frame, bit for
+bit; so are two runs at 640x360 with 8 paths in one pass on Vulkan, before 12de7684 and after. **Neither
+backend ever showed the defect**: the kernel before 12de7684 is the same from run to run there, as far as
+these frames say.
+
+**Pictures across the versions**, the same frames: 5ee7f9e1, 1096d4d9 and 12de7684 are bit for bit one
+another on Vulkan, with no bounce and with three (Metal: a half-float code in a few pixels from 12de7684), and
+on CUDA, where no bounce is traced (0 and 3 bounces are one picture, as before). Sponza's first hit on CUDA,
+the frame of NEU37: bit for bit across the three and from run to run -- these two days add nothing to that
+difference.
+
+**Found scenes.** `neural-scene shoot` of the materials stage, 640x360, 12 views of the walk, 32 paths in
+passes of 8, three bounces, denoised, `--pyramid-turned` at its default; then `render` of the four held views
+and `export --levels 200000,50000,10000`:
+
+| | seconds | gaussians | held views against 128 paths, dB | the level written |
+|---|---|---|---|---|
+| Vulkan, 15 Nov (`qa_options.py`, the defaults then) | 160 | 440 900 | 25.42, 23.97, 24.84, 23.06 | -- |
+| Vulkan, 5ee7f9e1 | 30, 27 | 451 234 | 26.30, 24.66, 25.38, 23.63 | 68 147 |
+| Vulkan, 141593d9 | 32, 30 | 451 234 | the same | 47 797 |
+| Vulkan, with the tried change | 28, 26 | 451 234 | the same, the views bit for bit the head's | 47 797 |
+| CUDA, 141593d9 | 33 | 451 215 | 15.14, 15.71, 16.44, 14.37: no shadow and no bounce without OptiX | 47 793 |
+
+The scene's finest gaussians are what they were; the cells' longer discs (84788e72) show in the level, a
+third fewer gaussians. A budget of 50 000 is answered with that level and one of 10 000 with "cannot be met:
+the coarsest the scene holds draws 47 860", on both. The QA flows: 49 of 49 on CUDA; 48 of 49 on Vulkan (the head's binary and
+the tried change's alike), the one that fails being the flow that needs `athenea compare`, which has no device there
+(NEU17). The Mac: 49 of 49.
+
+**NEU35** (passes of 8 paths taking 210 s on Vulkan where passes of 2 take 7): not seen today. The materials
+stage, 1280x720, 16 paths in passes of 8: 12–13 s the run, 1023–1037 ms the frame with no bounce and 1774 ms
+with three, as in passes of 2.
+
+**A device lost once.** The first run of the technique tests with the tried change on Vulkan lost the device
+(`VK_ERROR_DEVICE_LOST` at `vkQueueWaitIdle`) a minute in, in the cylinder light's test, and the 31 cases
+after it failed with it; WSL was being started for the CUDA build at that time. The same tests alone: 64
+cases pass, twice, and a third time with WSL started 40 s into them (`nvidia-smi` then gave no answer for a
+minute, and the tests went on). The head's run, with CUDA renders beside it, lost nothing. Not explained.
+
+The laptop's GPU stood at 80–86 °C through most of this with its clock between 570 and 1815 MHz; the frame
+times above are from short runs with pauses and repeat to a tenth, the tests' and flows' seconds are not
+measures.
+
+Not done: CUDA's bounces (no OptiX in WSL), so 12de7684 and the keeping are verified on CUDA only as far as
+the first hit and the tests that run; the keeping switched on for Vulkan (it would take Metal's kernel and
+has not been run); the keeping left out of Vulkan's kernel committed -- it is measured here and waits for a
+build on Metal, where its kernel's source is unchanged;
+Sponza on Vulkan with these versions; the full usd suite; D3D12; the device lost with WSL starting, tried
+again; the shoot's and the flows' pictures against the Mac's.
+
+## A lobe of 128 bytes, and what a thread's memory does not explain (18 Nov)
+
+Asked: how much each shading kernel bears of the padding ruler of "What a thread's memory bears", and what
+is left taken out of the frames until each bears 16 KB. What was found is that the size of what a thread
+keeps is not the cause that section took it for; what was changed makes every shading kernel keep a third
+less and the path tracer's bounces a fifth to a quarter faster, the same pictures bit for bit.
+
+**What the device bears, with nothing but an array** (`athenea_gpu_tests "[threadmemory]"`,
+`shaders/athenea/test/thread_memory.slang`: an array in a thread's memory filled from a buffer, read where
+only the buffer says and compared with the buffer again; 262 144 threads, three runs a size; Metal, M5 Pro):
+1, 4, 8, 16, 24, 32, 48, 64 and 128 KB read back as written, not a word changed; at 256 KB Metal makes no
+pipeline, and says so. Two arrays in two functions, one done with before the other is filled (the front end
+inlines them: four arrays in one function), read back whole at 4 x 32 KB and are refused at 4 x 64 KB: what
+counts is the sum of the locals, and the limit is between 128 and 256 KB. Metal does not build a kernel past
+it in silence.
+
+**What each kernel keeps, read with no device** (`scripts/kernel-memory.py` over an `ATHENEA_SHADER_DUMP`:
+slangc to Metal, `xcrun metal -S -emit-llvm -O2`, and the allocas of every function the entry reaches added
+up -- the figure the array above is measured in). Bytes, HEAD -> this change:
+
+| kernel | the materials stage (4 material modules) | Sponza with its lamps (6) |
+|---|---|---|
+| the paths (`tracePaths`) | 24 685 -> 15 549 | 32 217 -> 19 693 |
+| with light groups | 24 877 -> 15 741 | 32 409 -> 19 885 |
+| with media | 25 644 -> 16 508 | 33 160 -> 20 636 |
+| a bake | 27 036 -> 16 880 | 34 568 -> 21 024 |
+| the guides (`pathGuides`) | 18 736 -> 10 672 | 25 324 -> 13 872 |
+| `shadeMaterials`, shadowed, with domes | 19 456 -> 12 080 | 26 240 -> 15 280 |
+| `shadeEvaluated` | 16 720 -> 9 728 | 23 308 -> 12 928 |
+| `drawLobes` | 16 880 -> 9 888 | 23 468 -> 13 088 |
+| the cut-out's visibility (`traceCutout`) | none on this stage | 22 684 -> 12 304 |
+| `tabulateMaterials`, `probeRows`, `meshProbe` | 15 216-15 680 -> 8 224-8 688 | 21 804-22 268 -> 11 424-11 888 |
+
+The trunk's kernel that differed from run to run (three shading states) is 26 605 by the same count. So the
+kernels that showed the defect keep a fifth of what an array is borne at, and Sponza's, which never showed
+it, kept more (32 217) than the materials stage's that did. A material module adds some 3.3 KB to every
+kernel that evaluates materials at HEAD and 2.1 KB now (its uniforms as statics, 360 bytes, and its
+functions' BSDF values): a stage's kernels grow with its distinct graphs.
+
+**The ruler does not measure it either.** The array of "What a thread's memory bears" was read at one word;
+made to check sixty-four of its words at every material (through `material_runtime`, so it rules every
+kernel that evaluates one: a shader directory, no build), the new media case of `[repeat]` fails the same
+with 16 KB added and with none on a kernel that is wrong, and the plain kernels pass both. What a kernel
+"bears" by it is whether the padding moved the compiler, not a size.
+
+**What makes a kernel draw other values is a change of no meaning, and it is still not explained.** Four
+changes were made in a copy: the three below, and the light point written into `found` (no `lightPoint`, no
+`target` chosen between the two at the shading). With all four the plain kernels drew HEAD's pictures bit
+for bit (the materials stage at 0 and 3 bounces, the flat Sponza with the glass knight, Sponza with its
+lamps, three views each) and the kernel with media drew garbage: `the path tracer through an absorbing
+volume is Beer-Lambert's` 1665-4764 of 14 399 pixels beyond five deviations and every untouched pixel
+changed, and two renders of a stage with a fog 850 000 pixels apart. Taken apart on that test, the kernel's
+text read from a file under one binary (each row with the lobe as it was and packed, the same):
+
+| the kernel's text | the absorbing volume |
+|---|---|
+| HEAD's | passes (mean z^2 0.978 and 0.955) |
+| + the shading state's three vectors | passes, the same figures |
+| + `bakeBody` in place | passes |
+| + both | passes |
+| + both, and `const Found target = lightStep ? lightPoint : found;` replaced by `if (lightStep) { found = lightPoint; }` | garbage |
+| + both, and the splat-hidden light point's `continue` restructured | passes |
+| all four changes | garbage |
+| HEAD's, `carried += 1.0e6` where a light point is shaded | passes: no light point is ever shaded in this test |
+| HEAD's, `lightPoint.valid = false` where declared | passes |
+
+So in a test where no light point exists, a line that only changes how the surface to shade is named makes
+the kernel with media wrong, and the plain kernel compiled from the same text is right. That is the defect
+of 18 Nov again (a write that changed no meaning; a zeroed `Found`), in a kernel 16 KB large. It is the
+compiler's -- Apple's, past the front end, whose IR for the kernels that work and those that do not holds
+the same locals -- or something in the kernel with media that reads what it did not write; neither is shown.
+The light point's change is not in the tree.
+
+**The change.** (1) A `Lobe` is 128 bytes on every target: a `float3` beside a `float` is one `float4`,
+each half read and written through a property under the name it had. Metal gives a `float3` sixteen bytes of
+its own, so the lobe was 224 bytes there (128 on CUDA), and a lobe is what every shading kernel keeps and
+copies most of: the stack a material builds (eleven for OpenPBR), the one it leaves, the one or two a path
+holds. No source that reads a lobe changes. (2) A path's shading state keeps the three vectors it reads
+again of the material's inputs (the point, its normal, where it is seen from) and not the whole
+`MaterialInputs`, 352 bytes. (3) A bake's `bakeBody` drops lobes in place and returns no second stack.
+
+Metal (M5 Pro), 1920x1080, 32 paths in passes of 8, three views of a load, the tree's build against HEAD's
+binary with HEAD's shaders; seconds are the second and third views, one run each way in one job with no stop
+of the guard:
+
+| | against HEAD | seconds a view, HEAD -> now |
+|---|---|---|
+| the materials stage, no bounce | bit for bit, three views | 2.79-2.92 -> 2.41-2.43 |
+| the materials stage, three bounces | bit for bit, three views | 9.83-9.85 -> 7.06-7.10 |
+| flat Sponza, the glass knight, three bounces | bit for bit on two views; the first is the keeping's one pixel (below) | 14.39-14.49 -> 12.18-12.60 |
+
+Tests on Metal, all pass on the tree's build: `athenea_technique_tests` (64 cases), `athenea_material_tests`
+(15), `athenea_render_tests "[scene]"` (14), `athenea_gpu_tests "[threadmemory]"`, and
+`athenea_usd_tests "[repeat]"`, which now renders twice from two renderers with each kernel that shades and
+asks for not a bit apart: the paths at no bounce and two (the megakernel and the kept paths), the paths
+through a fog (the kernel with media), the raster's frame (`MaterialShading`'s kernels), the denoiser's
+guides (their planes compared on the device) and a bake of 65 536 points at degree 3. All five pass on HEAD
+as well; the copy with the four changes failed the fog.
+
+**The kept paths' one pixel is a first frame reading what nothing wrote, not the quad.** The flat Sponza has
+no material that takes a screen derivative (one UsdPreviewSurface bound over everything, the knight's
+OpenPBR), so the slot order deciding a quad's neighbours changes nothing there. The pixel is (1004, 10) from
+the top, 0.00483 against 0.00453 in red, always the same two frames. With the tracer's `sum` and `moments`
+filled with a word when they are made (a copy's switch), the first view is one frame for 0 and 0x3f000000
+and the other for 0xffffffff and 0x7f7fffff, nine runs of nine and four of four; filled with 0xffffffff in
+`sum` alone, or in the squares', the flags', the heads' or the entries' part of `moments` alone, it is the
+other frame each time; every device buffer's unwritten part filled, with and without the tracer's own, the
+other frame; all of them zero, the first. Unfilled it is the first frame in most runs and the other in some.
+So what the frame turns on is memory holding something other than zero somewhere a first frame reads before
+writing, and it is not one word of the tracer's two buffers -- each part alone turns it. Which read is not
+found.
+
+**Where a bounce's time goes now** (the copy with the four changes, one piece of a step done twice, the
+second view of two; the picture bit for bit but where noted):
+
+| | flat Sponza, no knight | Sponza with its lamps |
+|---|---|---|
+| the whole kernel, three bounces | 8.39 s | 17.06 s |
+| steps a path / vertices shaded / light points shaded | 3.94 / 3.93 / 0.001 | 3.18 / 3.16 / 0.012 |
+| a vertex's material twice | + 2.94 | + 8.03 |
+| the light gathered at a vertex twice | + 1.60 | + 2.72 (another picture: the cut-outs' lots are counted) |
+| the bounce's ray twice | + 1.65 | + 0.65 |
+| the lobes' sample twice | + 0.11 | |
+
+On the textured stage a vertex's material is half the frame. Tried on these numbers and dropped: the weights
+a stack's lobes are chosen by worked out once a vertex, and a direction's response and density in one walk
+of the lobes -- 8.29 s where 8.39, inside what two runs differ by, and a picture a thousandth off in places.
+
+Not done: the cause, in either form (the first frame's read, the kernel with media's garbage); the light
+point written into `found`, which waits on it, and with it the splat-hidden light point's `continue`, which
+shades its vertex again step after step until the steps run out (found reading it; in the tree as it was);
+a material module's uniforms as locals of its function (360 bytes a module in every kernel); Sponza with
+its lamps and a `neural-scene shoot` timed on the tree's build (the copy with the four changes drew Sponza
+bit for bit at 17.3-17.5 s a view where HEAD 21.3-22.5); `athenea_usd_tests "[path],[glass],[lights],
+[emissive]"` whole; the lights' umbra with the lobe grown by two `float4` run again (lobes.slang's note);
+CUDA and Vulkan, where the lobe was already 128 bytes and the properties are new source: nothing was
+compiled there.
+
+## The lobe of 128 bytes verified further, and the one pixel narrowed to a path of the fourth pass (18 Nov)
+
+What "A lobe of 128 bytes" left not done, measured on its commit (06974050); Metal, M5 Pro, 1920x1080, 32
+paths in passes of 8, the tree's build against HEAD's binary with HEAD's shaders.
+
+| | against HEAD | seconds a view, HEAD -> now |
+|---|---|---|
+| Sponza with its lamps, three bounces | bit for bit, three views | 22.47-22.70 -> 18.16-18.40 |
+| flat Sponza, the glass knight, no bounce | bit for bit, three views | 4.51-4.54 -> 3.48-4.27 |
+
+Five loads each of two views at three bounces, the first load against each: the materials stage and Sponza
+with its lamps the same frame every time, both views; the flat Sponza with the glass knight the same on the
+second view and one of the two known frames on the first (loads 1 and 3 one, 2, 4 and 5 the other).
+`neural-scene shoot` of the Sponza with knights, eight views at 960x540, HEAD's kernel and this one in turn
+under one binary (the kernel's text read from a file, the shaders from a directory), two runs each: the
+seven views after the first 36.5 and 36.7 s as it was, 30.1 and 30.5 s now (5.2 s a view to 4.3); the first
+view holds the kernel's compile and went from 36 to 94 s whichever kernel; 597 613 gaussians each.
+
+**The one pixel is not the keeping's.** With the fill of the tracer's buffers as a switch (0 against
+0xffffffff, one binary, HEAD's kernel text) the first frame flips at (1004, 10) with the paths kept and with
+them not kept. It flips at 32 paths in passes of 8 and three bounces, and does not at one or two bounces, at
+8, 16 or 24 paths in passes of 8, nor at 32 paths in one pass or in passes of 16. A pass has its own seed
+and its own offset in the pixel (`pathSeed_`, the Halton offset: Engine.cpp), so those are other paths, and
+what the cuts say is only this: it is a path of the fourth pass of 8, one that reaches its third bounce, and
+what it does there turns on what memory holds. (A first writing of this section read passes of 16 as the
+same paths in another dispatch and concluded a sample read what its dispatch had not written; that does not
+follow.) The camera files' later views are other paths as well, so "the first view" may be no more than the
+view that has this path. The committed kernel's text does not flip under the fill in one binary (five pairs) and does without
+it in the tree's build (above): where the read lands is the layout's. The kernel with media is not that:
+HEAD's text gives the same figures to the last digit under no fill, zero, a NaN and all ones, and the text a
+renamed surface breaks draws garbage that differs from run to run under each -- its Metal source differs
+from the working one's in that one name, through const pointers, and no light point is shaded in the test.
+
+**What a textured stage's material costs, taken apart** (the tree's build, the second view of two; Sponza
+without its knights):
+
+| | three bounces | no bounce |
+|---|---|---|
+| one plain UsdPreviewSurface over everything | 8.63 s | 2.44 s |
+| one of Sponza's textured ones (three textures and a normal map) over everything | 9.90 s | 2.41 s |
+| Sponza's own materials (five modules) | 12.40 s | 2.55 s |
+
+At the camera's hit, where a group's threads are on neighbouring pixels, none of it costs. On the bounces
+the textures are 1.3 s; the 2.5 s more of Sponza's own materials were first read here as the modules being
+several, and that is not it (the section after the next).
+
+Not done: what that path reads (the next cut: what it does written in place of its colour -- its steps,
+its crossings, the surfaces its lot saw through -- under both fills); the kernel with media's garbage; the splat-hidden light point's `continue` and a test
+for it (an emitter, its table and a cloud in one fixture); CUDA and Vulkan.
+
+`athenea_usd_tests "[path],[glass],[lights],[emissive]"` on the commit, Metal: 66 cases, all pass (1028 s).
+
+## The page reads what is looked at: lit levels, a history on demand, its copies let go (18–19 Nov)
+
+The second round of the track the section "The page measured" began; the page before is f1e5938d (the
+published one), the page after 67413e90. Headless Chrome 157 for times, bytes and pictures, Playwright's
+WebKit for the bar on memory; tools and logs in `build/night/agent-player5/` (the first round's, with
+`eyes5.mjs`, `groups5.mjs`, `raw5.mjs`, `wsum.py`). The scenes are the published ones as they stand since
+the night of the 18th, each with levels of its own: `n_lamps9` is `sponza_lamps` (8.37 M; levels 1.92 M and
+0.99 M), `n_chrome3` is `sponza_chrome` (11.41 M standing and 2.67 M of history; 3.82, 1.96, 0.99 M),
+`n_lights6` is `sponza_lights` (8.64 M; 1.93, 0.97 M). A phone's emulation (390x844 at 3x) now draws the
+level of a million.
+
+**How the figures are to be read.** As before: no frame rates; a time is from the navigation with the
+files served from this Mac; a figure is the range of the runs there were, and a difference inside that
+range is not claimed. The Mac was shared with three other sessions' GPU jobs and its guard stopped jobs
+for heat through the evening: a run the guard stopped (one profile with 253 s of stop inside it, one gap
+run with 212 s) is left out, and loads of one page on one scene ranged from 5.9 to 9.9 s across the
+evening.
+
+**The profile before** (f1e5938d, three runs each where a range is given):
+
+| | desktop, `n_lamps9` at 8.4 M | phone's emulation, `n_lamps9` at 0.99 M |
+|---|---|---|
+| the detail whole | 5.9–9.9 s | 1.4–3.4 s |
+| requests, bytes fetched | 367–370, 205–214 MB | 27–29, 42 MB (see the correction below) |
+| textures asked of WebGL, at rest / a lamp dragged | 927.5 / 931.5 MB | 122.7 / 122.7 MB |
+| the page's buffers (ArrayBuffers) at rest | 514–619 MB | 75–146 MB |
+| the page's process, footprint | 1.55–1.59 GB | 0.39–0.47 GB |
+| the GPU process, footprint | 2.08–2.22 GB | 0.86 GB |
+| programs' logs waited for, a load (the longest one) | 0.36–0.55 s (0.14 s) | 0.41 s (0.18 s) |
+
+`n_chrome3` at 11.4 M: 8.8 s, 722 requests, 116 MB, 973 MB of textures, 663 MB of buffers. `n_lights6`:
+7.3 s, 428 requests, 270 MB at 8.6 M; on the phone 1.4–1.6 s, 29–30 requests, 38 MB.
+
+What these put on top, in their order: on the phone the level read twice (the lit level, then the same
+level with its groups: three quarters of the scene's bytes); on the desktop the groups' files (133 of 214 MB) and the
+page's own copies of what the device already holds (514–619 MB of buffers); the history's files read for a
+timeline that opens at its end. The first link of the programs, which the first round met at 0.4–1.8 s in
+one call, was 0.18 s at its longest in every load timed tonight: not on top, and left alone.
+
+**A level is drawn from its lit files until a lamp is moved.** A level handed on with its lamps on
+(`litLevels`) is one file a part; with its groups it is that and one as large for each group. The level
+drawn first was already the lit one, and was then read again with its groups even where it was the detail
+asked for. Now any level that has lit files is drawn from them, and the first time a group's level or tint
+leaves the one it was shot with the level is read again with its groups behind what is drawn (the row says
+`reading…`). An address that sets a group reads them with the scene; the scene whole has no lit files and
+reads its groups as it did. The page's own lamp lights a lit level too (its base colours are the same
+files). Pictures on the phone's emulation, each after three more passes of the rooms (`p_b_*`, `p_v4_*`):
+with a group at 0.4, put back to 1, and with the page's lamp lit, the new page is the old one to the pixel
+(0 of 255 in every pixel); as it opens it is the lit level where the old page showed the groups summed --
+1.3 of 255 in the mean, 9 at most, no pixel over 8 but that one step, the sum of three layers each kept in
+a byte against one layer kept in a byte (`cmp_found.png`: the same to the eye). So a picture shifts by that
+much, once, when a lamp is first moved.
+
+**The history is read when the timeline first leaves its end.** At the end, where the page opens, no span
+of the history is drawn; its files (a file a part with its glass, its mirrors and their ids: 112 of the
+370 requests at 8.4 M, 347 of `n_chrome3`'s 722) were read with the rest. They are read the first time the
+timeline is at an earlier frame -- dragged, played, or asked for by the address, which then reads each
+part with its history as before -- and until they are in that frame shows holes where a later frame
+refined what stood; a file that does not come is asked for twice more (in one run three parts' files
+failed to fetch from the test server, and the frame stayed with holes: that is what the retry is for).
+The seven pictures before the knights at 8.4 M -- three eyes, glass off, glass on, the lamps out, and the
+end of the timeline again -- are the old page's to the pixel; `?frame=8` in the address the same to the
+pixel; frame 8 reached by the slider differs in 0.07 % of the pixels by more than 8 (mean 0.05), all in
+the glass knight's highlights (`cmp_f8.png`, the same to the eye). That difference was not traced: the
+same gaussians stand, read in another order.
+
+**What the page keeps of a file is let go once the device has it.** Spark keeps a file's gaussians in the
+page (32 bytes each) beside the texture it makes of them, and three keeps the array each of the page's own
+textures was made from. The page reads them only while a part is read (its points for the pointer, its
+gaussians for the rooms, a glass's axes and box -- the box is now taken there, not asked of Spark later),
+and a context that is lost is met by reading the page again, so nothing is ever sent twice. Each array is
+let go when three says its texture was sent (`onUpdate`); `?keep=1` leaves them. Spark's own ray through a
+mesh then finds nothing, and the page asks its own kept points, as it did.
+
+**A group's colours in a file of their own** (item (g): the page's side, and a script, not the exporter).
+Where a group's or the base colours' index names an `rgb` file beside a part's `file`, the page reads
+that: gzip over three bytes a gaussian in the file's order, the SPZ's colour stream as it is. The bytes go
+to the texture as they are and the shader makes of them the colour Spark makes of the same bytes
+(`(b - 127.5) × 0.2820948 / 0.15 + 127.5`, held to a byte): over 5.5 M bytes of three files Spark's colour
+and that formula differ in none (`raw5.mjs`), and the pictures of a scene read both ways are the same to
+the pixel (three eyes, the lamps out, the timeline's end; on the phone with a group at 0.4, and 1 of 255
+at most with the page's lamp lit). `scripts/examples/neural-scene-viewer/pack_colours.py <scenes> <scene>`
+writes the files from an export and names them in the groups' and the base colours' indexes -- it takes
+bytes out of one file and puts them in another, nothing is worked out -- and an index without `rgb` is
+read as before. For `sponza_lamps`: 16.9, 8.4 and 12.8 MB where the two groups' and the base colours' files
+are 92.5, 83.9 and 88.2 MB. What the exporter would write is the same file beside each part of a group
+(`"rgb"` in its entry), and then need not write the group's whole files at all once no page reads them.
+
+| | f1e5938d | 67413e90 | with `rgb` files (`n_lamps9c`) |
+|---|---|---|---|
+| phone, `n_lamps9`: the detail whole | 1.4–3.4 s | 0.51–0.80 s | 0.55 s |
+| phone: requests, bytes (by the files on the disk) | 27–29, 42.4 MB | 16–18, 13.6 MB | 13.6 MB |
+| phone: textures at rest / a lamp dragged | 122.7 / 122.7 MB | 95–99 / 122.7 MB | 99 / 122.7 MB |
+| phone: the page's buffers / its process | 75–146 MB / 0.39–0.47 GB | 28–35 MB / 0.24–0.25 GB | 35 MB / 0.23 GB |
+| phone, `n_lights6`: whole; requests, bytes; textures at rest / dragged | 1.4–1.6 s; 29–32, 50.1 MB; 125.2 / 125.2 MB | 0.50 s; 17–19, 13.4 MB; 93.2 / 125.2 MB | |
+| desktop 8.4 M: the detail whole | 5.9–9.9 s (three runs) | 5.3–7.0 s (two) | 4.5 s (one) |
+| desktop: requests, bytes | 367–370, 205–214 MB | 254–258, 192–202 MB | 257, 93 MB |
+| desktop: textures at rest / a lamp dragged | 927.5 / 931.5 MB | 927.5 / 931.5 MB | 927.5 / 931.5 MB |
+| desktop: the page's buffers at rest | 514–619 MB | 110 MB | 219 MB (one run) |
+| desktop: the page's process / the GPU's | 1.55–1.59 / 2.08–2.22 GB | 1.00–1.20 / 2.08–2.23 GB | 0.93 / 2.08 GB |
+| `n_chrome3` at 11.4 M: whole; requests, bytes; buffers | 8.8 s; 722, 116 MB; 663 MB | 6.6 s; 375, 102 MB; 248 MB | no groups |
+
+The desktop's time to the detail is not claimed without the `rgb` files: the ranges overlap. The phone's
+is: a third to a half, and a third of the bytes.
+
+*Corrected, 19 Nov.* This section first said a phone's load was 3.4–3.8 MB against 21–40. The profiler
+counted the requests finished by the moment the detail was whole, and the level's own file, read in a
+worker, was reported finished after it: the figure left out the largest file. The bytes above are the
+files' sizes on the disk -- 3.3 MB of page and libraries, 10.3 MB of lit level, and for the old page the
+level again (9.5 MB) and its two groups (19.2 MB). Textures on the device are not higher anywhere; on the
+phone at rest they are a fifth lower until a lamp is moved, and then what they were. The history was never
+on the device while the timeline stood at its end (Spark sends a mesh when it is first drawn), so leaving
+it unread changes requests, bytes and the page's memory, not the textures.
+
+**The bar: Playwright's WebKit, old and new by turns.** 1280x800, `n_lamps9` at `detail=full`, 160 s a
+run, four of each in four jobs: the old page four of four with one load and no context lost, the new page
+four of four the same (`ab_old_*`, `ab_new_*`). Textures 927.5 MB in both; the page's process at its
+highest 0.96–1.18 GB new against 1.29–1.48 GB old; the GPU process 1.89–1.93 against 1.88–1.90 GB (the
+same); the detail whole 1.35–2.26 s against 1.53–3.0 s. As before, eight runs do not show a loss of one
+in three is absent: they show the new page holds no more than the old.
+
+**The gaps under real input** (the longest gap between drawn frames, ms; 8.4 M; the last two columns are
+the two runs of each in the one job with no other session's job beside it):
+
+| | old, five runs | new, five runs | old, the quiet job | new, the quiet job | new with `keep=1`, the quiet job |
+|---|---|---|---|---|---|
+| an orbit drag | 193–518 | 263–1926 | 193, 240 | 275, 263 | 218, 207 |
+| a lamp's drag | 182–311 | 198–268 | 182, 227 | 232, 198 | 265, 192 |
+| the timeline dragged | 186–1171 | 285–840 | 186, 272 | 285, 397 | 415, 225 |
+
+The orbit's 1926 and 723 ms of the new page came in runs whose load had gaps of 1 to 2 s as well, with
+another session's job on the GPU; in the quiet job the new page's orbit is 20 to 80 ms over the old one's,
+inside the old page's own spread across the evening, and no cause was found for it in the page (an orbit
+reads nothing the changes touch). It is not shown to be the same and not shown to be worse. The timeline's
+first move now reads the history, and in the quiet job its longest gap is 0.1 s over the old page's. On
+the phone's emulation, one run each: orbit 365 old and 217 new, a lamp 383 and 332, the timeline 388 and
+409.
+
+**Still working**, each looked at: a mouse's orbit and a finger's (the eye goes where it went),
+`?orbit=0&filter=fixed`, an object's matte (the old page's to the pixel), `materials_thin` (to the pixel)
+and `sc_one`, the context lost three times running (rooms off, then a level coarser, then the coarsest and
+no loop), the standalone page built by `make_standalone.py` and drawn.
+
+**The way back from `?rooms=0`.** The flag stayed in the address, and in an address handed on, after the
+one time the graphics were lost. With it the options show a row, `Their rooms: Draw them again`, which
+takes it out and reads the page again; the status line says where. And the address's parameters, which
+were in the page's own comment alone, are a table in the manual (operations §2.3.5, both languages).
+
+**A room's size on the other scenes** (item (e); pictures from three eyes before the knights against a
+room of 1.5 M on the desktop and of the level itself, 1 M, on the phone; mean of 255 and the share of
+pixels over 8):
+
+| | room 400 000 | room 150 000 | textures, 1.5 M (or the level) / 400 000 / 150 000 |
+|---|---|---|---|
+| `n_chrome3`, 11.4 M | 0.23–0.43, 0.25–0.57 % | 0.35–0.63, 0.67–1.34 % | 1060 / 973 / 952 MB |
+| `n_lights6`, 8.6 M | 0.73–0.97, 2.1–2.8 % | 1.16–1.58, 4.7–6.3 % | 1091 / 977 / 951 MB |
+| `lamps`, 2.1 M | 0.53–0.78, 1.1–1.8 % | 1.14–1.59, 4.8–6.4 % | 308 / 232 / 210 MB |
+| phone, `n_lamps9` | 0.18–0.21, 0.41–0.48 % | 0.36–0.43, 1.2–1.3 % | 175 / 113 / 91 MB |
+| phone, `n_chrome3` | 0.07–0.12, 0.01–0.03 % | 0.12–0.21, 0.19–0.29 % | 138 / 100 / 86 MB |
+| phone, `n_lights6` | 0.18–0.20, 0.42–0.51 % | 0.41–0.43, 1.3–1.4 % | 171 / 110 / 89 MB |
+
+On the desktop a room of 150 000 saves 2 % of the textures and doubles what is lost: 400 000 stays. On
+the phone a room is needed -- the level itself in the rooms is half as much again on the device for a
+difference of half a percent of the pixels -- and 150 000 there would take a fifth off the textures for
+about one pixel in a hundred more over 8. It was measured, not looked at by eye and not changed: the
+phone's room is still 400 000 (one gaussian in three).
+
+Not done:
+- **A real browser, a real phone, Safari**: still none. Everything is headless Chrome and Playwright's
+  WebKit on one Mac, and that Mac was hot and shared.
+- **The first link of the programs ahead of the files** (item (c)): 0.12–0.55 s a load in all tonight and
+  0.18 s at its longest, where the first round met 0.4–1.8 s in one call. To link ahead the page would
+  have to build Spark's generator for a mesh it has not read yet (a mesh of one gaussian with the same
+  modifiers) and hand its material to three's `compileAsync`; not tried.
+- **The exporter's side of the `rgb` files**: `pack_colours.py` makes them from an export; the site's
+  scenes have none until it is run on them or the exporter writes them. With them the scene whole fetches
+  93 MB where it fetches 192–214.
+- **The phone's room at 150 000**, above; and a room made from the scene's coarsest level, as the first
+  round left it.
+- **The orbit's gap** is not settled, above; **the difference at frame 8 by the slider** (0.07 % of the
+  pixels, in the glass) was not traced.
+- With `?keep=1` off, Spark's own ray through a mesh finds nothing once its file is on the device; the
+  page does not use it where it kept its points, and a part whose points could not be kept is then turned
+  about the scene's middle.
+- A group moved for the first time waits for its files with the level as found on the screen; they are
+  not read ahead while the device is idle.
+- The page's own Spark still holds two sets of the scene (480 MB at 8.4 M), and Spark's sort its two
+  buffers (96 MB in the page), as the first round left them.
+
+## The one pixel: one light sample counted none, once or twice, and what it is not (19 Nov)
+
+Not found. What stands and what is ruled out, on the flat Sponza with the glass knight (three bounces, 32
+paths in passes of 8, the first camera), HEAD's kernel text under one binary, the fill of device buffers at
+creation as the switch (a copy's; nothing of it is in the tree).
+
+**What the pixel does.** (1004, 10) from the top takes three values, 0.004532, 0.004833 and 0.005135 in
+red, 0.000301 apart, the other channels in the pixel's own proportion (1 : 0.72 : 0.42, the sphere light
+"Warm"'s colour): the frame with every buffer zero is the middle one; all ones in every buffer, or in the
+tracer's own, gives the lower; all ones in one class of small buffers with zero in every other gives the
+higher. At 40 paths in passes of 8 it is the same pixel and the same amount in the sum (0.0096). Written in
+place of the colour, a path's steps, crossings, surfaces seen through, glass layers and bounces are the
+same in both frames (4 steps, 3 bounces, no glass); the light gathered at a vertex past the first bounce is
+what differs (0.003891 against 0.003664 in luminance), and nothing is gathered there before the second
+bounce. So it is one light sample of one path -- or the pixel's whole fourth pass, which on a pixel this
+dark may be that one sample -- counted not at all, once, or twice.
+
+**What it is not.**
+- Not the kept paths: it flips with the keeping off.
+- Not the quad's derivatives: no material of the stage takes one.
+- Not adaptive stopping: off by default, and `pathDecide` is not dispatched.
+- Not the sums over passes as such: 8, 16 and 24 paths in passes of 8, and 32 in one pass or in passes of
+  16, do not flip -- but those are other paths (a pass has its own seed and offset), so they only say which
+  path it is.
+- Not memory the host uploads unwritten: every buffer made with data or written to, hashed (1412 of them),
+  is the same in a run as it is, in one with malloc's memory scribbled (`MallocPreScribble`,
+  `MallocScribble`) and in a third, and the three frames are one.
+- Not one buffer's contents: with every other buffer zero, all ones in the tracer's (`path.`), the scene's,
+  the meshes', the lights' and their tree's, the AOVs' or `target.colour` leave the frame as it is; in
+  `target.depth`, the splat rasteriser's (`splat.`, `tile.`, `radix.`, `prefix.`), the textures' records or
+  the environment's they raise the pixel -- buffers no kernel of the path tracer is bound to, most of them
+  never written in a frame without splats. What a class shares with another that moves the pixel was not
+  found; the tracer's own targets are written whole before they are read.
+- Not the light's own sampling by reading it: `sampleLight`'s sphere and its cone, `lightCone`, the tree's
+  descent and its build (two bounded lights: one node over two leaves, settled without a race), the shadow
+  walk and `gatherLight` write every value they read on every path.
+- The instrumented kernels do not all show it, and two of them show it at another pixel (85, 664), where
+  one light sample to the lamp with a cone (light 3) ends before its shadow ray in one frame and is
+  shadowed in the other: which path it is follows the kernel's layout.
+
+The kernel with media is a second thing as far as shown (above: the same figures under every fill).
+
+**Two more, and where it is left.** Under Metal's shader validation and its API validation
+(`MTL_SHADER_VALIDATION`, `MTL_DEBUG_LAYER`; the tree's build, 480x270, 32 paths, three bounces, 278 s) the
+frame is drawn and nothing is reported: no read or write out of a buffer's bounds at that size. With each
+dispatch of a pass waited for before the next is encoded (megakernel, kept paths, resolve; a copy's switch)
+the pixel still takes two of its values in three runs, so it is not a dispatch reading what another still
+writes; a pass's dispatches cover a pixel once each (the megakernel's groups by `atheneaQuadPixel`, the kept
+phase a thread an entry, the resolve a thread a pixel). And the fill stopped being a switch: in that last
+binary seven runs gave the upper value five times and the middle one twice, zero and all ones alike. What
+the fills moved in the earlier binaries they moved by what a fill does to a process beside its contents;
+the pixel is one of three values at each load, and nothing tried says which.
+
+Not done: the cause. What is left untried: the pixel's fourth pass written out alone (`sum` before and after
+it) to say whether a sample or the pass is counted twice; the validation at 1920x1080; the same frames on
+another Metal device.
+
+## Several material modules cost a bounce nothing; one module for every UsdPreviewSurface is not worth making (19 Nov)
+
+Asked after "a textured stage's material taken apart": Sponza's own materials take 2.5 s a view more than one
+of them bound over everything, and one module for every UsdPreviewSurface whatever its textures was the
+candidate. Measured first whether the modules being several is what costs: the plain material on Sponza's
+ground floor and the textured one on the two floors above (two modules a path's bounces land on by turns,
+no cut-out, no knight), the tree's build, three bounces, the second view of two:
+
+| | seconds a view |
+|---|---|
+| the plain material over everything | 8.64 (8.63 before) |
+| the textured one over everything | 9.93 (9.90 before) |
+| the two, a floor each | 9.81 and 9.73 |
+| Sponza's own materials | 12.40 |
+
+Two modules among a group's threads cost no more than the dearer of them alone. Sponza's UsdPreviewSurfaces
+compile to two modules as it is (base colour and opacity; base colour, metalness, normal and roughness),
+and what the first brings that the test stage has not is the cut-outs: a shadow ray walked surface by
+surface with a material's opacity asked at each (`shadowCutouts`), and a path's ray going on through what
+its lot does not cover. That is where the 2.5 s are to be looked for. The one module was not made.
+
+Not done: the cut-outs' cost taken apart (the shadow walk against the any-hit ray a frame without cut-outs
+takes; the opacity variant's evaluation; the steps a path spends passing through), which is the next thing
+to measure on Sponza.
+
+## What Sponza's cut-outs cost a bounce, and a first ray that did not pay (19 Nov)
+
+Sponza's own materials without its knights, the committed kernel's text under one binary with a cut made in
+it; Metal (M5 Pro), 1920x1080, 32 paths in passes of 8, the second view of two, one run each:
+
+| | three bounces | no bounce |
+|---|---|---|
+| the whole kernel | 12.28, 12.33, 12.36 s | 2.55 s |
+| a shadow ray never asks a cut-out its opacity (one ray that stops at anything) | 10.58 | |
+| a path's ray never passes through what its lot leaves uncovered | 12.05 | |
+| both | 10.20 | 2.18 |
+
+A path takes 3.62 steps and passes through 0.0044 surfaces: the paths' own rays through cut-outs are
+nothing. The shadow rays are the 1.7 s -- with both cuts the stage is at what one textured material over
+everything costs (9.9 s). A path sends 2.48 of them: 0.04 meet nothing, 2.23 are stopped by the first
+surface found, whatever else is on their way, and 0.21 first find one that might let them by (a cut-out, a
+transparent row: the dirt decals over the walls) and have to be walked surface by surface, each asked its
+opacity.
+
+**Tried and not kept: one ray that stops at anything, before the walk.** Nothing met is the answer one; a
+surface in the light's link that no cut-out's lot, invisible face or glass could let the ray by is the
+answer zero wherever it stands (read from the instance's and the row's records, no surface rebuilt); only
+the rest is walked. The pictures are the walk's bit for bit (Sponza's own materials, Sponza with its lamps,
+the flat Sponza with the glass knight but its one pixel; the materials stage to 6e-4 in one view), and the
+time is not less: 12.36 -> 12.47 s on Sponza's own materials, 17.43 -> 16.90 with its lamps and knights,
+7.36 -> 7.68 on the materials stage, 12.30 -> 11.49 on the flat Sponza with the glass knight. Nine shadow
+rays in ten no longer rebuild a surface or trace to the nearest hit, and it buys nothing: what a group pays
+is the walk and the opacity's evaluation that the tenth takes, and one thread in a group taking it is the
+group taking it (17 Nov). And with it the kernel with media drew garbage again (`the path tracer through an
+absorbing volume`, 2653 of 14 399 pixels) -- a second ray query in `shadowWalk`, in a test with no cut-out.
+Not in the tree.
+
+Not done: the walked rays taken out of their groups (kept and continued in a dispatch of their own, as the
+paths that land on glass are), which is what these numbers ask for and is a shadow ray's state to keep, not
+a path's; a cut-out's opacity read without the material's inputs rebuilt (a texture and a threshold in the
+row); the decals' rows told apart from cut-outs that cast shadows worth a walk.
+
+## The splat-hidden light point's `continue` is never reached (19 Nov)
+
+Read in the kernel on 18 Nov and listed as a defect: where a vertex has chosen a point on an emitting
+triangle and the cloud lets nothing of it through (`if (!(throughSplats > 0.0)) { continue; }`), the step
+loop goes round again on the same vertex -- its emission added again, the same point chosen again -- until
+the steps run out. Asked for: a test that shows the brightness grow with the bounces, and the fix. There is
+no such test to write: `throughSplats` is `packedShadowTransmittance`, a product of what each particle
+leaves, and a particle leaves at least a hundredth (`shadowAlpha`: `min(0.99, opacity * exp(...))`) while
+the walk stops once less than `splatShadowCut` (a hundredth) is left -- so what comes back is never under
+1e-4, and never zero. The branch is dead as the shadow of a cloud is computed today. It is still wrong as
+written (a cloud's shadow that could reach zero, or a NaN, would take it), and its mending -- the light
+step taken inside `if (throughSplats > 0.0)`, the path going on from the vertex otherwise -- was shown to
+leave the kernel with media right when made alone ("A lobe of 128 bytes", the table's sixth row). Not made
+in the tree: it changes the kernel's text for nothing a frame can show, and each such change has to be paid
+for with the kernel with media and every `[repeat]` case run again.
+
+## The walked shadow rays in a dispatch of their own: its ceiling measured, not built (19 Nov)
+
+Asked for with a rule: at least a tenth off Sponza's own materials at three bounces (12.3 s a view). Before
+building it, the megakernel as it would be left: the one ray first of "What Sponza's cut-outs cost", and
+the rays it does not settle dropped where they would be kept (another picture, the walk and the opacity's
+evaluation no longer in the kernel). The committed kernel's text and that one in turn under one binary, the
+second view of two, twice each: 12.08 and 12.13 s as it is, 10.65 and 10.64 s with the rays dropped -- 1.46 s,
+12 %, before anything is paid for the rays themselves.
+
+What they would cost is not measured, only counted: 0.21 a path, 14 million a frame of 66 million paths,
+each an entry written after its path's steps (a buffer written inside the step loop is what the Metal
+compiler does not get through: `kGroups`), a walk to the nearest surface and that surface's opacity
+evaluated in a dispatch of threads that all do the same, and a pass that adds what got through to its
+pixel. A path's whole step -- a ray, a material, a light -- is some 45 ns here (2.9 s a bounce of 66 million);
+a walk with an opacity is a third of one at best: 0.2 to 0.35 s for the walks, and the entries' writes
+beside. That leaves 1.0 to 1.2 s of the 1.46: eight to ten per cent, at the rule or under it, for a second
+kernel that evaluates materials, a state for a shadow ray (its contribution before the shadow's tint, the
+light, the ray), the light groups' share and a moment's square of a sample that is no longer whole when its
+pixel's thread ends, and sums in another order (not bit for bit, and the cut-outs' lots counted otherwise).
+Not built: the rule is not clearly within reach, and each change to this kernel's text is a draw on the
+kernel with media. The measure that would decide it is the dispatch alone, timed on entries written by a
+kernel that does nothing else.
+
+Not done: that measure; the same ceiling on Sponza with its knights and lamps (17.4 s a view).
+
+## A 1080p shoot timed on a Mac that would not cool, with the kept paths and without (18 Nov)
+
+What "The two other 1080p scenes found again" left: a shoot at 1080p timed twice on a cool machine, and
+whether anything of 1080p made last night's two shoots a tenth slower. The Sponza with lamps as groups
+(`hd9`'s command), the first eight views of its walk, 1920x1080, the release build of d32b9d6a kept as a
+binary with its shaders (`ATHENEA_SHADER_DIR`) and the build of 141593d9 -- the kept paths (1096d4d9) and the
+thread's memory (12de7684) -- twice each in turn (`build/night/agent-scenes/job1.sh`).
+
+**The Mac did not stay cool.** It was nominal with no stop for ten hours when the job began; the guard stopped
+it after four minutes and eleven times in 69, 766 s of the first run's 1219. A view's seconds with a stop
+inside, less the stop, are not a view's seconds (54.7 and 73.2 s where its neighbours take 30), so what is
+compared is the views with no stop inside and no kernel to build:
+
+| | views with no stop, seconds | median |
+|---|---|---|
+| d32b9d6a, two runs | 29.8, 29.8, 32.3, 33.7; 26.9, 31.1, 30.7, 28.2, 39.8 | 30.7 |
+| 141593d9, two runs | 37.7, 26.3, 25.1, 24.2; 24.2, 31.4, 25.3, 22.8, 33.1 | 25.3 |
+| d32b9d6a the night of 17 Nov, cool (`hd8`) | 23.8, 23.7, 24.0 | |
+
+The same 3 898 863 gaussians in the four. The median is a sixth lower with the kept paths, as the path
+tracer's own measure said (a seventh off Sponza's frame), and the two sets overlap from 26.9 to 37.7: on this
+machine today it cannot be called closer than that. The first view, which builds the kernel, took 60.9 to
+167.8 s (51.6 and 64.1 the nights before).
+
+**What of 1080p made the two shoots slower: the heat it makes.** The old binary's views take 26.9–39.8 s
+here where they took 23.7–24.0 s cool: a view at the edge of thermal pressure is a seventh to two thirds
+slower before the guard stops anything, which is more than the tenth in question, and `hd9`'s log shows it
+(22.7 s of passes at its second view, 26.9–35.6 from the third on, no stop). A 1080p shoot reaches that edge
+in four minutes; the 71 s shoots at 960x540 that cleared the cells' longer discs never did. Nothing else of
+1080p was found.
+
+Not done: the timing on a machine that stays cool (it would take a pause of minutes between views, or the
+night); the kept paths' gain at 1080p said closer than "between nothing and a third".
+
+## A look at eleven million gaussians, and a batch that made it slower (18–19 Nov)
+
+The next cost of a shoot after the path tracer. On the eight views above the split `shoot` prints is 1187 s
+of passes, 14.0 of looks, 1.8 of the groups' light kept, 0.6 of pieces brought: nothing but the path tracer.
+On the long shoot it is not so: `sponza_chrome` (60 views, 11.4 M gaussians in 363 pieces, the night of 18
+Nov) said 0.7 s of looks at its second frame, 3.5 at the thirtieth, 22.0 at the fiftieth and 36.0 at the
+last, beside 21–26 s of passes throughout -- 438 s of 2386.
+
+Two more views shot onto a copy of that scene with the look's steps timed (8 paths, no bounce; temporary
+prints, not in the tree; `job4.sh`, `job4c.sh`):
+
+| the look's step, seconds (two views) | hot (17:25) | cool (01:29) |
+|---|---|---|
+| marking what is gone and refined, a piece at a time (16 times ~60 pieces) | 33.7, 22.7 | 1.6, 1.7 |
+| the scene drawn as it is known (10 times, 4 draws each) | 5.8, 4.5 | 2.3, 2.5 |
+| everything else | 6.1, 6.2 | 3.3, 3.3 |
+| the look | 45.6, 33.4 | 7.2, 7.5 |
+
+So a look at eleven million is 7 s on a cool machine, and what took 36 s that night was the same code on a
+hot one: a submit, a wait and a read back a piece, some thousand a look, slow down five to twenty times where
+the passes slow by a third.
+
+**Tried and taken out: every piece marked in one batch.** A counter a piece, one submit and one read back
+(`markGoneAll`), and the cloud without what went not waited for. The marking fell to 3.0–4.1 s hot and cool
+alike, the counts the same to the gaussian -- and the look rose to 46–51 s on the cool machine and 39–67 s on
+the hot one, the scene's draws 29–44 s where 2.3–5.8: twice, in turn with the other binary on the same views.
+Why the draws slow was not found. Reverted; the patch is `build/night/agent-scenes/markGoneAll_timex.patch`.
+
+Not done: why the batch slows the draws that follow it (the cloud not waited for is the first suspect); the
+look's waits made fewer some other way -- on a cool machine there are 1.6 s of 7 to take, on a hot one most
+of it; the four draws of the scene as it is known made one.
+
+## A level's dashes: a parent that went later, and a cell named that was never made (19 Nov)
+
+The 960x540 scenes' level of a million (0.93 M, cells of one and two pixels) shows short dark dashes on the
+floor before the knights -- `lamps` at frame 12, `sponza_knight` at frame 30 -- where the scene whole and the
+level of half a million show none; the three 1080p scenes' levels of a million (cells of four) show none
+from the same place (`build/night/agent-scenes/shots/crop_dashes.png`, `crop_dash_1080.png`). They are the
+"short dark dashes" of 17 Nov.
+
+**What a dash is.** The engine draws them too (`render --frame 12 --lod 2.2`), with the lamps' groups off as
+well, so they are of the cut and not of the page or the light. At a dash's pixel of `sponza_knight` (frame
+30, a threshold of 2.2 pixels) 71 gaussians of the floor stand within two pixels -- last looks of a dozen
+frames, each laid over the frame before's -- and the cut draws none: each names a parent 0.7 to 1.4 pixels
+wide, under the threshold, and nothing that wide stands there. A gaussian names what it is laid over by the
+width of what stands there wider than itself when its look begins. That wider gaussian is refined, and kept
+for good, only where nine tenths of it are covered; left standing as the finest, a later look takes it out as
+gone -- a colour that changes with the eye, by glass and lamps -- and what was laid over it names a width
+nothing holds. A cut between the two widths draws neither.
+
+**`--laid-over-refined`** (shoot, off): a gaussian is laid over what of the earlier frames stands refined once
+the look has marked what it covers, and over nothing that is still the finest. Lamps in one render, 960x540,
+20 views, with it and without (`lamps4.aths`, `lamps1.aths`):
+
+| | without | with |
+|---|---|---|
+| gaussians standing | 2 112 637 | the same records but for the parent's fields (3 290 507 in 123 pieces) |
+| held views, dB | 27.53 / 23.36 / 25.90 / 24.04 | 27.53 / 23.36 / 25.89 / 24.04, the same SSIM to the fourth place |
+| name a parent | | 297 821 fewer (all but 412 of the last looks'), 796 599 another width, 4 008 more |
+| the cut's floor | 211 654 | 505 467 |
+| `--levels 1000000,500000` writes | 930 581 at 0.937 units, 493 218 at 1.646 | 985 534 at 1.164, 528 539 at 5.076 |
+| the level of a million by the knights, in the page | dashes | none (`shots/crop_dash_fix3.png`, `crop_e_f12.png`); the floor whole along it (`crop_e_f4.png`) |
+| the level under it | whole, cells of 2–4 pixels | the cut's floor: cells of 16 and 32 pixels, smeared |
+
+A hole is worse than a missing coarse level, and it is not the default because it more than doubles the
+floor: every later frame's gaussian was a child of whatever wider stood under it, and now only of what a look
+covered nine tenths of. At 1080p, where no dashes show today, it would take the level of a million away
+(`sponza_lights`' floor is 583 308; by this proportion some 1.1 M, not measured). It becomes the default when
+the floor is brought down with it on -- a parent asked for in the cell's plane, a sibling's parent, a gaussian
+whose parent went given what replaced it -- until a scene at 960x540 writes a good half million and one at
+1080p its million.
+
+**A parent named where no cell was made.** Found on the way, and mended: `heldThere` in `scene_render.slang`
+was a copy of the first test of `holds`, and `renderValid` decides whether the cell above is made by `holds`
+whole, which also calls held the scene's surface behind a disc that overhangs an edge. Where the two differ a
+gaussian named a cell that was never made. It is `holds(at2, z2, false)` now. Lamps in one render: 3 264
+standing gaussians named such a parent (2 852 of the last looks', 337 cells of two pixels), the same records
+otherwise, the same held views; the floor 214 918 where 211 654. The dashes are not these: the page shows
+them the same after it.
+
+Ruled out, each by a scene found with it: a parent that went in the very look that named it (the `before`
+picture drawn less what the look found gone: 3 gaussians of 3.29 M name another parent); the cells' longer
+discs standing out past the knights' bases (`--pyramid-turned 0.5`, and a cell lengthened only among cells
+that face as it does: the same dashes). And by counts of the records: cells left where nothing finer stands
+any more (none: every cell in a box before the knights has last-look gaussians within twice its width); dark
+cells.
+
+Tests on Metal, with both changes and the option off: `athenea_render_tests "[scene]"` 383 assertions in 14
+cases and `"[pyramid]"` 22 in one, all pass; `qa_flows.py` over the materials stage shot again at 640x360, 51
+of 51 ended well -- two flows more, a shoot with the option and an export of it.
+
+Not done: the floor brought down with the option on, and the option made the default; a gaussian given what
+replaced its parent when the parent goes; the three 1080p scenes found with it (not while it takes their
+level of a million); the level of half a million of a scene found with it, which is its floor (a red speck
+on the chrome knight's base there, in the page at frame 12, was seen and not looked into -- one mirror cell
+of 32 pixels, by its size); CUDA and Vulkan; a real phone.
+
+## The page asks again for a file that does not come; the orbit, the lamp's wait, frame 8, a phone's room (19 Nov)
+
+What followed the section above. The page there (67413e90) was published and taken back within the hour
+on this section's first finding; the page after is 63f5c9af. Tools and logs in
+`build/night/agent-player5/` (`hang.mjs`, `flaky.py`, `ahead5.mjs`, `wsum.py`).
+
+**A load could stand for ever at "refining…", in every page there has been.** One load of five of the new
+page in a headless Chrome job never reached the detail: the level drawn first stood, the status said
+"refining… 3 of 20 parts", and nothing more came in 200 s. Caught again once in 14 loads with what was
+open written down (`hang.mjs`): no request open, nothing waiting in the page's own queue, and one file --
+a group's -- failed with `net::ERR_CONNECTION_RESET`, the test server (`python -m http.server`) having
+reset a connection. The part that file was of rejected, the loop that reads the parts threw with nobody to
+catch it, and the page was left saying it was reading. It was not the copies let go on the device (the
+failure comes before any texture exists; `?keep=1` was 0 of 14, and so was the old page 0 of 12, by chance
+alone), nor the history or its retries, which were not in play. The old page (f1e5938d) given the same
+fault on purpose stands at "refining… 5 of 20 parts" the same way: the defect is as old as the page, and a
+server that never resets a connection (the deployer's six runs in WebKit) never shows it.
+
+Now every file -- Spark's, the ids, the `rgb` -- is tried three times, 0.6 and 1.2 s apart; one that has
+begun to come and then stops for 30 s is given up and tried again (Spark says how a file is coming, so the
+stall is seen; a file that has said nothing yet is waited for, a slow line not being a stall); the status
+line says `a file did not come and was asked for again`; and when three tries fail the load ends, says
+which file (`the scene is not whole: <file> did not come in three tries … Reload the page to try again`)
+and leaves drawn what is drawn. `window.__player.reading()` lists what is being read. With `flaky.py`, a
+server that fails where it is told to:
+
+| the fault | f1e5938d | 63f5c9af's reading |
+|---|---|---|
+| five connections reset (a lit level's file, a group's, an `.ids` twice, a part's), and one more the server reset by itself | not run | all six asked for again; the scene whole in 8.0 s |
+| a group's file sent by half, then nothing | not run | given up at 30 s, asked again, whole at 35.6 s |
+| a group's file that never comes | "refining… 5 of 20 parts", for ever | said in 3.9 s, the load ended, the level drawn first still drawn |
+
+A request Spark's worker has open and that stalls cannot be taken back from outside: it is left behind,
+and what it brings later is let go.
+
+**The bar for publishing again**, headless Chrome, a fresh page each load, 63f5c9af: `n_lamps9` at full
+detail 20 of 20 reached the detail (3.6–4.8 s), the phone's emulation 20 of 20 (0.38–0.66 s), `n_chrome3`
+at full detail 8 of 8 (3.6–4.3 s). Playwright's WebKit, old and new by turns, 160 s, 1280x800, `n_lamps9`
+at full detail: old four of four with one load and no context lost, new four of four the same; textures
+927.5 MB in both, the page's process 1.15–1.25 GB new against 1.22–1.32 GB old, the GPU's 1.88–1.89 GB in
+both.
+
+**The orbit's gap is the old page's.** Old and new by turns in one job, five runs each, three drags a
+run (the longest gap between drawn frames, ms; one new run is left out of the load's figures, its load
+being the one that hung): the first drag old 188, 195, 237, 253, 254 and new 204, 214, 218, 232, 303; the
+second and third old 157–327 and new 171–228. What the device was asked in a run is the same -- some
+ninety readbacks of the order (6 s in all) and thirty-odd uploads of it (3.5 s) in both. The 1926 and
+723 ms of the evening before were another session's job on the GPU.
+
+**The first move of a lamp no longer waits where there is room.** A level drawn from its lit files read
+its groups when a lamp was first moved, and the lamp answered a second and a half later. They are now
+read behind the level once it has stood four seconds with nothing touched -- not on a phone, whose load
+is to stay the lit level's, until its options are opened, where the lamps are; `?ahead=0` leaves it as it
+was. Level 1 of `n_lamps9` on a desktop, two runs each: the lamp answers in 61 and 264 ms where it waited
+1542 and 1578 ms. Textures there go from 191.8 to 211.8 MB when the groups are in, which is what they
+were with the old page; a phone's load is the same files as before (13.6 MB).
+
+**Frame 8 by the slider was not frame 8 by the address: a history read on demand was not in the rooms.**
+The 0.07 % of pixels in the glass was a defect. A part's glass and mirrors are also in the rooms' scene,
+thinned, so that the chrome's room holds the glass that stands; read with their part they were put
+there, read later by the timeline they were not, and at an earlier frame the chrome showed a room
+without the glass of that frame. They are put there now, and frame 8 by the slider is the old page's to
+one of 255 in a channel, as are the other six pictures (0 of 255).
+
+**A phone's room is 150 000 gaussians.** Looked at beside 400 000 on the phone's emulation, three eyes
+before the knights in each of `n_lamps9`, `n_chrome3` and `n_lights6` (`room_*.png`: the knights the same
+to the eye; 0.2–0.3 of 255 in the mean and 0.2–1.0 % of the pixels over 8). Textures on the phone's
+emulation, `n_lamps9`: 84 MB at rest and 99.8 MB with a lamp dragged, where the page before this round
+(f1e5938d) held 122.7 and 122.7 MB; `n_lights6` 82.3 and 102 MB against 125.2. A desktop keeps 400 000.
+
+Not done:
+- **A real browser, a real phone, Safari**: still none.
+- A file is tried three times and then the load ends; the page does not go on to the parts that would
+  have come, nor try again by itself later. A stalled request inside Spark's worker is left open.
+- The stall's 30 s and the three tries were chosen, not searched; a line slower than a chunk in 30 s
+  would be taken for a stall.
+- The groups read ahead are read whether or not a lamp is ever moved (38 MB on a tablet's level); on a
+  phone, opening the options for anything reads them.
+- What the first section left: the programs linked ahead, the exporter's side of the `rgb` files, the
+  page's own Spark's two sets.
+
+## The three 960x540 scenes found again, and what was handed on (18–19 Nov)
+
+What "The two other 1080p scenes found again" left. Each by its own command, with the build of 141593d9
+(the kept paths, the thread's memory) unless said, held views at 960x540 against its reference beside the
+published scene's source drawn by the same binary, the page on an emulated phone (390x844 at three device
+pixels) from a frame that looks along the floor and from one by the knights
+(`build/night/agent-scenes`: `job2.sh`, `job2b.sh`, `shots/`).
+
+| | gaussians standing | held views, dB / SSIM | shoot, less the guard's stops | handed on |
+|---|---|---|---|---|
+| `sponza_knight` | 2 590 530, as the source of 17 Nov | 32.84 / 0.9400, 34.60 / 0.8842, 31.77 / 0.9293, 33.59 / 0.9057: the source's to the hundredth and to SSIM's fourth place | 467.9 s (782.9 by the clock, two stops; 523 on 17 Nov) | levels of 491 775 and 273 858 alone |
+| `sponza_growth` | 4 216 318, as the source | 33.46 / 0.9309, 33.69 / 0.9207, 34.12 / 0.9306, 34.11 / 0.9523: the source's | 455.2 s, no stop (434 on 17 Nov, on a Mac that had been hot all evening) | levels of 968 618 and 544 155, the second the cut's floor |
+| `lamps`, in one render | 2 112 637 | 27.53 / 0.8876, 23.36 / 0.7713, 25.89 / 0.8620, 24.04 / 0.8206 | 164.3 s, no stop | one level of 985 534, with `--laid-over-refined` |
+
+**`lamps` is not its own flow any more.** The scene without the lamps and then a pass a lamp, found again
+(648.6 s less eight stops; 2 112 486 gaussians as `clean.aths`), reads 28.22 / 0.8676, 23.14 / 0.7308, 26.22 /
+0.8289, 24.35 / 0.7802 against `clean.aths`' 27.94 / 0.8745, 22.76 / 0.7648, 25.81 / 0.8442, 24.24 / 0.8137 --
+the figures of 17 Nov again, and the lower SSIM is speckle a viewer sees, bluish dots over the dark door
+between the knights in the held view and in the page. `clean.aths` exported again with the levels the cut now
+writes (947 420 and 430 898) is ruled in rows along the floor at its coarser level: its cells were made
+before they were lengthened. The stage in one render with `--light-groups`, as `sponza_lamps` is found, has
+neither: SSIM above `clean.aths` in the four views (dB -0.41, +0.60, +0.08, -0.20), 117 prims named where
+the published scene named none, 164 s where the flow's three passes take 649.
+
+**The levels.** Without the option the level of a million of `lamps` and of `sponza_knight` (0.93 M, 0.94 M)
+is whole along the floor and shows the dashes by the knights (the section on a level's dashes); the level of
+half a million shows neither and is pebbled -- cells of two and four pixels seen as cells. So `lamps` was
+handed on found with `--laid-over-refined` (its floor 505 467: one level, 985 534, clean from both frames),
+and `sponza_knight` without it and without its level of a million (with the option its floor is 1 095 760 and
+the level it can write, 1 148 380, is over a phone's million with the glass knight a blur). `sponza_growth`
+has no glass and no lamp and its level of a million showed no dashes at frames 5 and 50; with the option it
+writes no level at all (the floor 1 492 301).
+
+**`sponza_growth` by a later build reads lower, and it is not this work's.** Found by the build of 3e84c5d7
+with the option off, its first two held views read 33.38 / 0.9249 and 33.65 / 0.9165 (the job was cut short
+there), as they do with the option on, where the build of 141593d9 gives 33.46 / 0.9309 and 33.69 / 0.9207.
+The only other change to the engine between the two builds is 06974050 (the lobe of 128 bytes). `lamps` and
+`sponza_knight` are the same records by both builds but for the parents. Passed to the path tracer's side;
+the frames themselves were not compared.
+
+Not done: a real phone; a level of a million for `sponza_knight` without the dashes; `lamps` with a level of
+half a million again (found with the option its floor is that); the half million of `sponza_growth`, which
+is its floor and smeared.
+
+## The kernel with media reads an undefined local; a switch to tell that from another cause (19 Nov)
+
+**The pair that differed by one line.** `const Found target = lightStep ? lightPoint : found;` against
+`if (lightStep) { found = lightPoint; }` in the path tracer's megakernel: the first drew Beer-Lambert
+through an absorbing box (0 pixels beyond five binomial deviations, mean z² 0.978) and the second garbage
+that changed from run to run (2,600–2,900 of 14,399 pixels beyond, mean z² of 10⁸), with no light point
+ever shaded. Taken down a level, on Metal, Apple M5 Pro:
+
+- **The IR.** Both texts through `xcrun metal -S -emit-llvm`: one `alloca` of a `Found` and two memcpys
+  apart at -O0, 35 against 34 allocas at -O2; no branch on `undef`, no `unreachable`, the same counts of
+  phis, selects and float operations with an undefined operand in both. Nothing ill formed.
+- **How it is compiled** (Slang runs `metal -std=metal3.1 -fno-strict-aliasing -Os -g0`; flags were added
+  by a wrapper on `PATH`). As built: broken. `-O0`: right. `-O1`: 0 beyond, z² 846. `-O2`: 1,828 beyond.
+  Without fast math, or with NaNs honoured, at `-Os`: right -- and with NaNs honoured at `-O2` 1,964
+  beyond, with safe math at `-O2` 128 beyond, and the NaN-honouring IR optimised from its text broken as
+  before. The text that "worked" is wrong at `-O2` (10 beyond, z² 13,711) and from its IR text (2,652).
+  So no option mends it; each only arranges the code another way, and the committed text is the
+  arrangement that passes at `-Os`.
+- **Metal's shader validation** on the broken kernel at the test's size reports nothing, and the result
+  under it is right.
+- **Every local initialised by the front end** (`-ftrivial-auto-var-init=zero`): right at `-Os`, `-O2`
+  and `-O1` from the broken text and at `-O2` from the other. With `=pattern` the broken text is wrong
+  (2,887 and 2,970 beyond on two runs).
+- **A stage.** The repeat test's fog stage (`materials_medium.usda`) at 480x270, 64 paths, 2 bounces,
+  the committed text read into another build of the kernel (the experiment copy, whose compiled-in
+  text it replaces at run time): 6,224 and 6,241 of 129,600 pixels differ from the
+  first of three runs, in short runs of pixels all over the frame; with `=zero` the three are identical,
+  with `=pattern` identical, and `=zero` against `=pattern` 0 pixels over two codes.
+
+So the kernel reads a local nobody wrote. Which one was not found: the front end's 2,706 initialisations
+taken back out by ranges do not narrow monotonically (inside the megakernel it takes two sets out at
+once to break it, and either half of each alone is right); `Found lightPoint = foundNothing();` alone
+leaves it broken at every level; so do initialisers on all 35 plain uninitialised locals of the kernel's
+own text together. What that leaves is the shading states (`Shaded`, whose lobe stack has no zero
+value to write), the arrays, and the locals of the imported modules and of Slang's own making.
+
+Not it, measured on the way: PNanoVDB's HDDA dividing by a zero component of the direction (the test's
+sun runs along z), guarded: still broken everywhere.
+
+**`ATHENEA_METAL_LOCALS=zero|pattern`** (`modules/gpu/src/Device.cpp`) is that discriminator kept: a
+`DownstreamArgs` entry for Slang's `metal`, off unless asked for. It is not shipped on: every kernel
+compiled with `=zero` cost the materials stage 7.34 → 7.92 / 8.00 s a view (1920x1080, 32 paths, 3
+bounces; pictures bit for bit) and the flat Sponza with the glass knight 12.19 → 12.36 s a view and 50 →
+326 s of cold compile.
+On the fog stage alone the tree's build, as built and with the switch (147 kernels compiled, all 147
+with the flag): 480x270, 64 paths, 2 bounces, three runs each the same picture either way; a cold
+start 39.9 → 59.6 s, a warm run 8.4–9.2 against 8.1–8.5 s, and 1920x1080, 32 paths, 3 bounces 17.7–17.9
+against 18.0–18.7 s. So the tree's own arrangement is repeatable on that stage today, and the flag would cost
+the kernel with media nothing a frame there.
+
+**The one pixel of flat_glass is not this.** Under `=zero`, six loads: (1004,10) still takes two values
+and other pixels differ between loads too (up to 0.376). Nor is it the keeping's order: with a kept path taking no
+derivative from its quad and a pixel's entries added in the order of their samples (both tried from
+scratch text, not in the tree), four loads still give (1004,10) its two values on one view and nothing
+else differs; none of that stage's 24 material modules takes a quad derivative at all.
+
+Not done:
+- The local is not found, so the kernel with media is right by the arrangement `-Os` gives its present
+  text, on Metal; `[repeat]` holds it at 1920x1080 and 32 paths, where it passes. A case at
+  480x270 and 64 paths was not added: the tree's build passes it as built, so it would watch nothing
+  the present one does not.
+- One variant compiled with the flag (the volumes kernel alone): `ShaderLibrary` links with
+  `composed->link()`; `linkWithOptions` is where a program's own entry would go. Not tried.
+- Vulkan and CUDA: not run. They have no such switch here, and SPIR-V's `OpUndef` gives a compiler the
+  same freedom.
+- With `MTL_DEBUG_LAYER=1` the technique tests abort in slang-rhi's `clear_texture2d_uint`, which writes
+  a texture made with usage 0x05 (no shader write). Not followed.
+- flat_glass's source of difference between loads: not found.
+
+## The page's request that is never answered, its note after a file came late, and no reading ahead on a metered line (19 Nov)
+
+Three small things the deployer's fault tests and the measures left, written on the 19th and verified the
+same afternoon by the main session from the jobs the page's agent had queued before it was cut off.
+
+- **A request never answered.** The stall of 30 s covered a file that had begun to come; a server that
+  answers nothing left the page at `loading… 0 of 1 parts` (the deployer: 100 s and no second try). Now a
+  request is given up as a failed try once nothing has come from *any* file for 60 s: a file only waiting its
+  turn behind others that are coming is not given up. With a server that never answers one file, on the
+  emulated phone: asked again, the scene whole at 82 s.
+- **The note stays.** After a file was asked for again the final status line keeps `1 file asked for again`
+  (it kept it only after three failures).
+- **No reading ahead where the line is metered.** Where `navigator.connection` says `saveData` or `2g` the
+  groups' files are not read ahead (the first lamp move waits 990 and 968 ms there); on `4g` they are (140 ms).
+
+The bar, headless Chrome, a fresh page a load: 20 of 20 at full detail (3.7–5.5 s), 20 of 20 on the emulated
+phone (0.38–0.87 s); a throttled line whole in 97 s with no retry. Playwright WebKit, `sponza_lamps` at full
+detail, 160 s, alternating with 63f5c9af: two runs each, all four one load and no context lost, the page's
+process 1.21–1.27 GB in both, the GPU's 1.89–1.96 GB.
+
+Not done: four runs each in WebKit as the bar was set (two each were run before the agent stopped; the
+deployer runs six each before publishing); a real phone, a real metered line; programs linked ahead of the
+files; the exporter's side of the `.rgb` files.
+
+## The keeping out of the kernels that keep nothing, and the last days' path tracer on Vulkan (19 Nov)
+
+1096d4d9 put the keeping's text into every kernel whose rays are inline, with its capacity zero where paths
+are not kept: Vulkan's kernel carried it and paid for it (the RTX 3070 laptop, 18–19 Nov: the materials stage 1043–1105 ms
+a frame before it, 1343–1370 with it). Now the text is taken only where paths are kept -- Metal -- and the
+other backends' kernels are what they were. Metal's source does not change.
+
+The Windows machine (RTX 3070 Laptop, Vulkan), the materials stage at 1280x720, 16 paths in passes of 2, a
+frame in ms, the build of 141593d9 and this one in turn, the second and third rounds (the first carries the
+kernels' compile):
+
+| | no bounce | three bounces |
+|---|---|---|
+| 141593d9 | 1157, 1188 | 2331, 2390 |
+| now (the keeping out, a lobe of 128 bytes, the thinner shading state) | 990, 993 | 1692, 1533 |
+
+A sixth off the frame with no bounce and a third off three; the earlier figure before the keeping was
+1043–1105 and 1834–2102. Tests there, all pass: `athenea_technique_tests` 2862 assertions in 64 cases,
+`athenea_material_tests` 3087 in 16, `athenea_render_tests "[scene]"` 383 in 14, `athenea_usd_tests
+"[repeat]"` 37 in 5 (the lobe of 128 bytes had not been compiled off Metal before). On Metal with the change:
+technique 2862 in 64, `[repeat]` 37 in 5, `[scene]` 383 in 14.
+
+Not done: CUDA (WSL) built and run with these; the two changes timed apart on Vulkan; Sponza there.
+
+## A level's dashes, read in the records: not a parent that went (20 Nov)
+
+The section on a level's dashes and "A level closed against the frames that made the scene" say a gaussian is
+left out of a level for a parent that a later look took out. Read in the records of `sponza_knight` as it was
+found without `--laid-over-refined` (`build/night/agent-scenes/knight.aths`, 2 590 530 standing;
+`holes.py`, an inspection script, lists what lies on a box of the floor by what the cut at a width does with
+it), that is not what happens.
+
+**What is gone.** 130 596 gaussians of the scene are stamped gone. 129 561 of them are one piece whole:
+the first frame's gathering look of footprint 2 (`k00_t0_f2_s3`), which the frame's last look replaces with
+its own pyramid, and which nothing names (every one of them was laid over nothing). 1 035 are footprint 1,
+taken out by a later frame. No gaussian the cut leaves out names one of these.
+
+**What a hole is.** On the floor before the first knight (x 840 to 960, the level of a million, a width of
+0.937 units): 3 601 gaussians drawn, 25 733 left out for what they were laid over, 1 248 refined and too
+wide. Every one left out has what it names, standing and drawn. The first frame saw this floor from far and
+aslant: its rows fall 3.15 units apart along the floor, its discs are 0.39 wide and 0.77 long, and its
+pyramid's footprint 2 sits on every other row (0.77 wide, 3.2 long). Frames 13 to 18, nearer, laid gaussians
+0.22 to 0.28 wide between those rows, and named what stood there as the finest: the first frame's footprint
+1, by its width (0.38). At a width of 0.937 those are left out for it, it is left out for its own footprint
+2, and that is drawn -- on its row, 3 units from the gaussians it is drawn in place of. The chain of names
+is whole and the level is open: a gaussian's stand-in is named by the pixel it was laid on, and from far and
+aslant a pixel is longer than what stands in it reaches.
+
+**Tried, none kept** (each exported and looked at on the emulated phone from frame 30 and frame 5; the
+level of a million without any of them is 936 402 with the dashes):
+
+| | gaussians in the level | the floor at frame 30 |
+|---|---|---|
+| closed where the level covers under 0.8 of a pixel of the gaussian's frame (19 Nov's) | 942 552 | dashes fewer, not gone |
+| the same at 0.97 | 1 281 993 | faint rows left; over a phone's million |
+| closed where the level covers a tenth less than the scene itself does from the same eye | 979 810 | two short dark dashes and faint rows left |
+| the same at three hundredths | 1 161 209 | the two gone, faint rows left; over a million |
+| that test drawn at three times the frame's size, a tenth | 1 100 386 | not looked at |
+| a gaussian drawn where what the earlier frames left and the width can draw covers under half its pixel | 1 416 079 | worse: dashes over the whole floor |
+| what its own frame's next look took out kept as refined | 938 509 | dark blots everywhere: the gathering look's gaussians are not lit |
+| a gaussian laid on the pixel of one its own look took out, named for that one's parent | 990 268 | clean -- by drawing all the first frame at every width: the floor of the cut 967 047 (273 858), `sponza_growth`'s 1 217 619 (545 028), `lamps` 1 214 661 (528 881); no level of half a million left |
+
+A test in the frame's own picture tells a hole from a thin cover by a threshold, and the two overlap: the
+skirts of two rows a disc's length apart cover four fifths of the pixel between them.
+
+Not done: the test where it belongs, in the scene's own space -- a gaussian left out drawn where no drawn
+gaussian reaches its middle (a grid of the drawn ones on the device, asked by each left out); or, at the
+shoot, a pyramid whose wider gaussian is as long as its pixel is on the surface. `sponza_knight` stays
+published without its level of a million.
+
+### The dashes, where they are: a far frame's own discs, two long in rows four apart (20 Nov)
+
+The box read above was not where the dashes are. A dash of the page's frame 30, taken back to the floor
+through the page's camera, is at x 1036, y 73, by the knight. There the first frame's footprint 2 is 0.96
+wide -- over the level's 0.937, so not drawn -- and the level draws that frame's own gaussians in its place:
+0.48 wide, 0.96 long, their rows four units apart along the floor (the eye meets it at a fifth). Everything
+frames 16 to 28 laid between the rows names, link by link, those rows, and is left out for them. The level's
+band between a far frame's footprint 1 and its footprint 2 is drawn by discs `--turned` holds to twice
+their width, on a surface where their pixel is five times as long: a dash is the dark between two rows.
+`--pyramid-turned` had given the cells of the levels above their length; the look's own gaussians, which a
+level draws as well wherever a nearer frame refined past them, were left at `--turned`.
+
+**`shoot --inside-turned`** (0: off) is `--pyramid-turned` for a look's own gaussian: where its four
+neighbouring pixels show its own surface in its plane it is as long as its pixel lies on the surface, by no
+more than one over the value; at a silhouette it keeps `--turned`. `sponza_knight` found again with 0.1
+(`build/night/agent-scenes/job_in.sh`, the build of this commit, 960x540, the Mac at nominal, no stop of the
+guard), against the scene as it was found on 18 Nov:
+
+| | without | `--inside-turned 0.1` |
+|---|---|---|
+| gaussians standing | 2 590 530 | 2 362 750 |
+| the frames' seconds | 467.9 | 414.5 (426 by the clock) |
+| held views, dB / SSIM | 32.84 / 0.9400, 34.60 / 0.8842, 31.77 / 0.9293, 33.59 / 0.9057 | 32.77 / 0.9386, 34.24 / 0.8762, 31.74 / 0.9292, 33.41 / 0.9013 |
+| levels of 1 000 000, 500 000, 250 000 | 936 402, 491 775, 273 858 | 913 434, 495 348, 248 286 |
+| the level of a million on the emulated phone, frames 5, 30 and 45 | dashes by the knight | none |
+
+The held views read 0.03 to 0.36 dB lower: a long disc of a far frame lies under what nearer frames lay and
+shows where they leave it. Off by default for that; a scene whose level is ruled is found with it.
+
+Not done: the other scenes found with it (their levels of a million show no dashes as published); a real
+phone; a value between 0.1 and `--turned`.
+
+## The kernel with media reads no unwritten local: written with any value it draws the same (22 Nov)
+
+The section of 19 Nov concluded that the kernel reads a local nobody wrote, from this: left as they are the
+locals give garbage in one text of the megakernel, zeroed by the front end they give the right picture, and
+with `=pattern` garbage again. Taken further, on Metal, Apple M5 Pro, the build of 57e0b99a.
+
+Every local is written by the front end (`-ftrivial-auto-var-init=zero`) and, in the unoptimised IR, the
+value its initialisation writes is changed before the optimiser sees it
+(`build/night/agent-local/irpat.py`, through the same wrapper on `PATH`). The program stays defined, so a
+picture that changes names a local read before the kernel's own text wrote it. The absorbing box of the
+test (14,399 pixels whose light crosses it), the text in the tree and the text that drew garbage
+(`if (lightStep) { found = lightPoint; }`, in the experiment's copy):
+
+| what the locals are written with | the tree's text | the text that drew garbage |
+|---|---|---|
+| zero | 0 beyond, z² 0.978 / 0.955 | 0 beyond, z² 0.978 / 0.955 |
+| floats 3.0, integers and bools 1, structs bytes of 0x3F (2,097 of the megakernel's 2,107 sites) | the same | the same |
+| floats -7.5, integers 5, structs bytes of 0xBF | -- | the same |
+| every float NaN | the same | the same |
+| every struct bytes of 0xFF | the same | the same |
+| the initialisations taken out again | -- | 2,656 beyond, z² 4.8·10⁸ |
+| as built | 0 beyond, z² 0.978 / 0.955 | 2,728 beyond, z² 7.8·10⁸ |
+
+And the fog stage (`materials_medium.usda`, 480x270, 64 paths, 2 bounces, all its kernels through the
+wrapper, the tree's build): the pictures with 3.0 / 1 / 0x3F, with NaN floats and with 0xFF structs are bit
+for bit the picture with zero (0 of 129,600 pixels over 1e-6), as a second run with zero is.
+
+So no value an unwritten local holds reaches the picture, not as data and not through arithmetic that a
+zero would have hidden (a NaN would have come through). The garbage needs a local left *undefined*: what
+breaks is what Apple's optimiser makes of an undefined value that is carried and never used, with fast
+math on, and the kernel's text gives it nothing to read. That is why the search of 19 Nov by taking
+initialisations out did not narrow: there is no one local to find. `=pattern` breaking the same text is not
+evidence of a read either: it writes other things than these (pointers that are not null among them), and
+with the values above the text is right.
+
+What stands from 19 Nov: the kernel with media is right on Metal by the arrangement `-Os` gives its
+present text, `[repeat]` holds it, and `ATHENEA_METAL_LOCALS=zero` is the switch that takes the compiler's
+freedom away when a text is in doubt.
+
+Not done:
+- Which undefined local the optimiser turns into garbage in that text, and by which fold: not looked for;
+  it would name a compiler's fault, not the kernel's.
+- The volumes kernel alone compiled with the flag (`linkWithOptions`), which would hold it whatever the
+  text: still not tried.
+- Vulkan and CUDA: not run.
+- The other two scenes found at 960x540 looked at again on the emulated phone as published (`lamps` at its
+  level of 0.99 M, frames 4, 12, 17; `sponza_growth` at 0.97 M, frames 5, 30, 50, 80): no dashes on their
+  floors; not found again with `--inside-turned`.
+
+## An image is its own: a view's first pass took the last view's pixel offset, and a view asked for twice came back with a pass more (22 Nov)
+
+Found looking at the one pixel of flat_glass again: the flat Sponza with the glass knight, one view drawn
+several times a load (`stage --cameras`, 1920x1080, 32 paths in passes of 8, three bounces, Metal, M5 Pro,
+the build of ff41dc88).
+
+**A view after another was not the view drawn alone.** The same view first in the file and again after
+another view: 483,096 of 2,073,600 pixels differ (23.3 %; 8-bit p99 39, the whole knight and the paths
+that reach it), the same in six loads, and the two later ones are each other bit for bit. A pass's pixel
+offset (the Halton pair that makes the mean an average over the pixel) was taken from `pathSeed_` before
+the frame knew it was starting again, where `pathSeed_` still counted the view before: so the first pass
+of every view but a load's first was drawn off the pixel's middle by the last view's count, where "the
+first pass takes no offset at all". `neural-scene shoot` draws its views that way, one after another.
+A frame that is about to start again takes no offset now: an image asked for, or a camera that is not
+the one the mean under way was drawn from.
+
+**A view asked for twice in a row came back with a pass more.** The same view four times running: the
+second, third and fourth took 4.2 s where the first's four passes take 17, and held 40, 48 and 56 paths
+(the pixel that is one light sample, 0.005135 at 32, read 0.004108, 0.003424, 0.002934: the same sum over
+more paths). `StageRenderer::render` executes once before it asks whether the frame holds its total, and
+an identical frame adds to the mean, which is what makes a viewport converge. An image now asks the engine
+for its own start (`Engine::restartPaths`), so a view rendered twice is that view twice.
+
+After both, one load each: the view first, after another view and after two are bit for bit one image, the
+other view's two the same, and four in a row the same four times (11.8–12.1 s each). `athenea_usd_tests
+"[repeat]"` has the case (one renderer: the view, the view again, another view, the view): no float differs,
+and without the two changes both of its checks fail. `athenea_usd_tests "[repeat]"`, `"[path]"` (35 cases),
+`"[glass]"` (14), `athenea_render_tests "[scene]"` (14) and `athenea_mcp_tests` (10) pass on Metal.
+
+What it changes beyond that: `stage --cameras` and `neural-scene shoot` give every view after the first
+other paths in its first pass than they did, so a scene found again is not gaussian for gaussian the scene
+found before this commit, and a second view's picture is not comparable bit for bit across it. A viewport
+that is left alone converges as it did.
+
+**The one pixel is a load's.** In those loads (1004, 10) is 0.005135 or 0.004833 -- three loads of six
+each, then one of two -- and inside a load every drawing of the view has the load's value, three of three
+and four of four. So it is not a frame's memory nor a race between a frame's dispatches: it turns on
+something a load makes once -- the acceleration structures Metal builds on the device, the lights' tree,
+the tables -- and a ray that meets an edge two triangles share, answered with one or the other, would do
+what is seen (one light sample of one path, there or not).
+
+Not done:
+- Which of a load's things it is. A kernel that hashes what a fixed set of rays hit, read in two loads,
+  would say whether the acceleration structure answers alike; not written.
+- A scene or a setting changed under a still camera still takes the old offset for its one first pass:
+  that restart is known only after the frame's visibility has been drawn.
+- The scenes published are not found again for this.

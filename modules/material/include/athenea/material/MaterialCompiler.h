@@ -92,17 +92,36 @@ struct Transmission {
 /// 9e-4.
 inline constexpr float kGlassShadowRoughness = 0.03F;
 
+/// What a surface's lobes are built by, where the engine has one node for
+/// them (OpenPBR Surface, Autodesk Standard Surface, glTF PBR).
+enum class SurfaceRoute : uint8_t {
+    /// The environment says: MaterialX's graph where the surface's variable
+    /// (`ATHENEA_OPENPBR_GRAPH`, `ATHENEA_STANDARD_SURFACE_GRAPH`,
+    /// `ATHENEA_GLTF_PBR_GRAPH`) is set to anything, the engine's node
+    /// otherwise.
+    Environment,
+    Node,    ///< the engine's one node (`athenea_open_pbr_bsdf`, `athenea_standard_surface_bsdf`, `athenea_gltf_pbr_bsdf`)
+    Graph,   ///< MaterialX's own nodegraph of BSDF nodes, which the node is held to (the material tests)
+};
+
+struct MaterialCompilerOptions {
+    SurfaceRoute openPbr = SurfaceRoute::Environment;           ///< `open_pbr_surface`
+    SurfaceRoute standardSurface = SurfaceRoute::Environment;   ///< `standard_surface`
+    SurfaceRoute gltfPbr = SurfaceRoute::Environment;           ///< `gltf_pbr`
+};
+
 class MaterialCompiler {
 public:
     /// `searchPaths`: where MaterialX's libraries are (a folder holding
     /// "libraries"), then the engine's shader directories.
     [[nodiscard]] static Result<std::unique_ptr<MaterialCompiler>> create(
-        const std::vector<std::filesystem::path>& materialxRoots, const std::vector<std::filesystem::path>& shaderPaths);
+        const std::vector<std::filesystem::path>& materialxRoots, const std::vector<std::filesystem::path>& shaderPaths,
+        const MaterialCompilerOptions& options = {});
     /// The same with libraries already loaded (hdMtlx's HdMtlxStdLibraries(), a
     /// MaterialX::DocumentPtr) and the folders their source files are found in.
     [[nodiscard]] static Result<std::unique_ptr<MaterialCompiler>> create(
         const std::shared_ptr<void>& libraries, const std::vector<std::filesystem::path>& librarySearchPaths,
-        const std::vector<std::filesystem::path>& shaderPaths);
+        const std::vector<std::filesystem::path>& shaderPaths, const MaterialCompilerOptions& options = {});
     ~MaterialCompiler();
 
     /// The renderable element `element` (a material or shader node) of a

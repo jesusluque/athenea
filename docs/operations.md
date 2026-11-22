@@ -80,6 +80,7 @@ a ray tracing pipeline fails with `Failed to locate OptiX headers (optix.h)`.
 | `ATHENEA_STREAM_TRACE` | set to anything: each live pool logs, at every update, the epoch shown, the pages placed, the epochs waiting and being built (pages left), the loads queued and in flight, the free staging and its source's counters. |
 | `ATHENEA_BACKEND` | which device to open, as a comma-separated order: `metal,cuda,vulkan,d3d12`. Unknown words warn and are skipped. |
 | `ATHENEA_GPU_VALIDATION` | any value: the graphics API's validation and debug layers (D3D12's needs Windows' Graphics Tools), for a failure the driver otherwise gives no reason for, such as a pipeline it cannot make. Slow. |
+| `ATHENEA_METAL_LOCALS` | `zero` or `pattern`, Metal only: every kernel is compiled with its locals initialised (`-ftrivial-auto-var-init`), to tell a kernel that reads an undefined local from one with another cause (`docs/development.md` §2). Not a way to run: slower by several per cent a frame, and a first compile that takes minutes. The shader cache does not know of it: use an empty `ATHENEA_SHADER_CACHE` with it. Any other value is warned about and ignored. |
 | `ATHENEA_GPU_BUDGET` | the device memory this run may hold, in MiB. Without it the budget is Metal's recommended working set (`recommendedMaxWorkingSetSize`); on CUDA and Vulkan there is none unless this sets one. The device prints the one in use (`GPU memory budget: N MiB`). An allocation past it fails as `OutOfMemory` before it is made, streaming budgets and splat shadows are sized against what it leaves (§3.3, §9), and it is how a run is held below what other jobs on the same GPU leave. On Apple silicon an allocation must also fit the physical memory the system has free less 1.5 GiB kept for the rest of the machine -- free counting what it hands back on demand (inactive, purgeable and speculative pages, and the file cache) -- whatever the budget says: past it the machine swaps the GPU's memory and stops drawing its windows. |
 | `ATHENEA_VOLUME_PLY` | a path: every frame a medium of gaussians draws (§3.3's media, `primvars:athenea:splat:volume`) also writes that medium as a 3DGS PLY with the light the frame baked for it: each gaussian's radiance (emission, the lights' single scattering through the cloud shadow map, the dome) through Reinhard (x / (1 + x) a channel) and the sRGB curve as its base colour, ln sigma and the temperature in `f_rest_0` and `f_rest_1`, positions in the cloud's own space (the prim's transform not applied), one record a record of the stage, a dead or dropped one a speck at the origin with ln sigma -10 -- the layout of `vdb2splat --cloud`, so `video-encode --volume` takes it. A second medium is written as `<stem>_1.ply`, and so on. Overwritten each frame: meant for one frame a run (`athenea stage`). |
 | `ATHENEA_VOLUME_PLY_EXPOSURE` | stops on the radiance before the curve, for `ATHENEA_VOLUME_PLY`; default 0. |
@@ -193,6 +194,7 @@ athenea info
 | `--lod` | number | `0` | pixels a merged cell may span; 0 draws every splat |
 | `--stream-budget` | integer | `0` | `.athc`: splats kept on the device; 0 reads the file whole |
 | `--no-antialias` | flag | off | drop the Mip-Splatting 2D filter compensation for every cloud, over what an `.spz` says |
+| `--neural` | path | — | a `.athn` (§2.3.2, §8.2): the cloud's colours from its latents and their network rather than from its harmonics. One `--splats` file, the one the `.athn` was fitted to, and no `--lod`; raster only |
 | `-o`, `--output` | path | `out.exr` | half RGBA plus a `Z` channel |
 
 Checked while it runs, not while it parses:
@@ -214,9 +216,340 @@ Takes every option of `athenea render` except `-o`, and adds:
 |---|---|---|---|
 | `--repeat` | integer | `20` | frames drawn |
 | `--stages` | flag | off | wait after each stage so each is timed separately; slower, and the reason the numbers differ from a real frame |
+| `--features` | 8, 16 or 32 | off | with `--neural`: the cloud's features blended and decoded once a pixel rather than its colour decoded once a gaussian, to time it; the pixel's network is untrained, so the frame is not one to look at |
+| `--trace` | flag | off | the frame keeps its trace -- the four heaviest gaussians of each pixel, 44 bytes a pixel -- so that what it costs is timed; raster only |
 
 Writes no image. With `--stages` it reports the project, depth sort, counts,
 emit, tile sort and blend times separately.
+
+### 2.3.1 `athenea lift` — a mask on some cameras' frames, as the matte another camera sees
+
+A mask made over one or more frames of a cloud is carried to its gaussians, and
+the frame of another camera is written keyed by it: what the gaussians inside
+the mask cover there, and nothing else. No mesh and no chroma are involved; the
+cloud's own blend weights say which gaussians each masked pixel was made of.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `--splats` | paths, required | — | `.ply`, `.splat`, `.spz`, `.sog`; several are one scene |
+| `--from` | `x y z`, repeatable | — | a camera the mask is made on; at least one |
+| `--mask` | paths | — | one EXR a `--from`, of the frame's size: its red channel, 1 inside the mask |
+| `--rect` | `left bottom right top` | — | instead of `--mask`: the same rectangle of every `--from` frame, in fractions of the frame from its bottom left corner |
+| `--eye` | `x y z`, required | — | the camera the matte is drawn for |
+| `--target` | `x y z` | the clouds' centre | what every camera looks at |
+| `--up` | `x y z` | `0 1 0` | |
+| `--focal` | mm | `35` | every camera's |
+| `--size` | `WIDTHxHEIGHT` | `1920x1080` | every frame's |
+| `--degree` | 0..3 | `3` | harmonics kept |
+| `--hard` | flag | off | a gaussian is in the mask or out of it, rather than in it by the share of its weight the masks covered |
+| `--threshold` | 0..1 | `0.5` | `--hard`: that share |
+| `--matte-by-trace` | flag | off | read the matte off the `--eye` frame's trace (the four heaviest gaussians of a pixel, and a guess for the rest) rather than have the frame's blend sum it over every gaussian, which is the default and keeps no trace |
+| `--by-trace` | flag | off | lift through each frame's trace (the four heaviest gaussians of a pixel) rather than while blending (all of them) |
+| `--turn` | integer | `0` | also this many frames of the `--eye` camera going once round the target (about y), each keyed by the same lift: `<output>_NNN.exr` |
+| `-o`, `--output` | path | `lift.exr` | the `--eye` frame, premultiplied by the matte, with the matte as its alpha, and its depth |
+
+After the frame is written the command says how much the key shimmers as the
+camera goes by: three frames half a degree apart round the target, the middle
+against the mean of its neighbours, for the keyed frames and for the whole
+frames (relMSE, p99 and the largest difference in 8-bit code values).
+
+A gaussian no `--from` camera saw has no opinion, and is taken to be in the
+mask as far as the others of its pixel are: a mask made from one side leaves
+the far side to that guess, and more `--from` cameras are what removes it.
+
+### 2.3.2 `athenea neural-fit` — a cloud's harmonics learnt by a latent a gaussian and one network
+
+Fits a neural appearance to a cloud and says how near it came: the cloud drawn
+by its harmonics, from cameras over a sphere round it, is what the cloud drawn
+from eleven numbers a gaussian and a network of 1008 weights is moved towards.
+The geometry is not touched. `--save` writes the fitted appearance; `-o`,
+three frames to look at.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `--splats` | path | — | one `.ply`, `.splat`, `.spz` or `.sog`; this or `--pictures` |
+| `--pictures` | path | — | instead of `--splats`: a manifest of one mesh baked into the same gaussians under several suns, and a lit fit to those (below) |
+| `--steps` | integer | `3000` | a camera each; the error and the held-out measure are printed ten times on the way |
+| `--size` | `WIDTHxHEIGHT` | `960x540` | of the frames fitted and of those measured |
+| `--target` | `x y z` | the cloud's centre | what every camera looks at |
+| `--up` | `x y z` | `0 1 0` | y or z up |
+| `--distance` | number | 1.4 times the cloud's largest side | every camera's distance from the target, in the cloud's units |
+| `--focal` | mm | `35` | |
+| `--degree` | 0..3 | `3` | the harmonics being learnt |
+| `--held-out` | integer | `8` | cameras the fit never uses, measured before and after |
+| `--rate-features` | number | `0.01` | Adam's rate for the features |
+| `--rate-base` | number | `0.002` | for the base colours |
+| `--rate-weights` | number | `0.004` | for the network |
+| `--rate-decay` | number | `1` | what the three rates have fallen to by the last step, as a factor, step by step; `0.1` is what a long fit wants |
+| `--view-smooth` | number | `0` | how hard each gaussian's colour seen a degree off is held to its colour, as a multiple of what a pixel's error weighs; `0` does not hold it and saves the second evaluation. `64` took the colour's shimmer down 1.6 times on the pawn at no measured cost in quality |
+| `--split` | flag | off | two networks of the same shape rather than one: the first is never told the view, so what it says of a gaussian is the same from every camera, and the second gives what the view adds. 2016 weights where one network is 1008, two evaluations a gaussian, and saved in a `.athn` as such (`--save`); `--load` takes an appearance as it was saved |
+| `--reached` | `ray` or `map` | — | `--shadows`: the neural cloud is also given what reaches each gaussian from the light, and its colour is its answer times that. `ray`: the transmittance the engine's shadow ray finds, so every frame by it casts those rays. `map`: read from the cloud's shadow map from the sun, built with no ray; what the cloud should be is still the rays' |
+| `--map-side` | integer | `2048` | `--reached map`: the shadow map's texels a side |
+| `--map-coefficients` | 1, 3, 5 or 7 | `7` | `--reached map`: the map's total optical depth and its Fourier pairs |
+| `--map-bias` | world units | `0` | `--reached map`: how far behind a texel's nearest caster a receiver still stands on it; 0 is 2% of the slab |
+| `--map-spread` | number | `0` | `--reached map`: each gaussian reads the map at its centre and at four points this many of its own standard deviations along its two longer axes, each at its own depth, and is told the mean (the centre counts twice); `0` reads the centre alone. `3` is where the pawn's error against the path tracer was least |
+| `--load` | path | — | a `.athn` to start from; with `--steps 0` it is only measured |
+| `--save` | path | — | writes the fitted appearance as a `.athn` (§8.2), which `athenea render --neural` draws the cloud by |
+| `--relight` | flag | off | fits a lit neural cloud instead: what it should be is the engine's own relighting of the cloud (its colours as what it is made of, no shadow) under a sun from a different direction each step, and the held-out cameras are measured under suns the fit never used |
+| `--sun` | number | `3` | `--relight`: the sun's intensity |
+| `--turn` | integer | `0` | `--relight` with `-o`: this many frames of a sun going once round the cloud, forty degrees up, from the first held-out camera, as `<prefix>_turn_engine_NNN.exr` and `_turn_latents_NNN.exr` |
+| `--shadows` | flag | off | `--relight`: in what the cloud should be, the sun casts the cloud's shadow on itself (a ray a gaussian, through the cloud's own gaussians); needs a device that traces rays. The neural cloud is still told only where the light comes from |
+| `-o`, `--output` | prefix | — | writes `<prefix>_harmonics.exr`, `_base.exr` and `_latents.exr`: the first held-out camera's frame by each; with `--relight`, `<prefix>_engine_sun0..2.exr` and `_latents_sun0..2.exr`, that camera under three held-out suns |
+
+The measures are those of `athenea compare` against the harmonics' frame, the
+mean over the held-out cameras: relMSE, the 99th percentile in 8-bit code
+values, and the largest difference of any of them. With `--relight` the same
+measures are also taken under three suns of three colours at once, against the
+engine's relighting under those three (and `-o` writes `_engine_three.exr` and
+`_latents_three.exr`).
+
+**`--pictures`: fitted to what the path tracer baked.** The manifest is a text
+file, a line a cloud: `train` or `held` (or `base`, below), the sun's turn about y and then about
+x in degrees (a distant light shining down its own -z, as
+`xformOp:rotateY`, `xformOp:rotateX` author it), and a USD file beside the
+manifest -- the same mesh converted by `athenea mesh2splat` under that sun, so
+every file holds the same gaussians with that sun's light, bounces and
+shadows, in their harmonics. A lit neural cloud of those gaussians is told each
+`train` sun and moved towards its cloud, and is measured against the `held`
+clouds, whose suns it was never shown, from the held-out cameras. `--reached
+map` gives it the cloud's shadow map from each sun; there is no ray here, so
+`--reached ray` and `--shadows` do not apply. A `base` line (its two angles
+not read) names the same gaussians converted with `--no-bake`: the neural
+cloud's base colours then start as the material's own rather than as the first
+cloud's, which is that sun's picture of them -- where the two hold the same
+gaussians, which a bake that dropped some does not, and the line is then refused. `-o` writes
+`<prefix>_picture_sun0..2.exr` and `_latents_sun0..2.exr`.
+
+### 2.3.3 `athenea wall-fit` — a cloud taught what a wall of light does to it
+
+An LED wall is a light whose picture is known every frame. Each gaussian learns
+where on the wall it reads that picture, how wide and how much -- `--lobes`
+reads of six numbers each -- and is then lit by whatever the wall shows with
+one filtered read a lobe, no light sampled and no ray. What it learns from is
+the path tracer: the same mesh baked into the same gaussians with one texel of
+the wall lit at a time. The manifest's first line is the wall, in the cloud's
+space, and then a line a texel:
+
+```
+wall W H  cx cy cz  ux uy uz  vx vy vz  halfU halfV
+patch <texel> <file.usda>
+```
+
+`W` x `H` texels; the centre; the unit axes along the picture's u and v; half
+the wall's size along each. Texel `y * W + x`, the bottom row first, is the
+cloud `athenea mesh2splat` baked under a `RectLight` standing where that texel
+is. Every texel wants its cloud, and every cloud the same gaussians.
+
+| Option | Value | Default | Notes |
+|---|---|---|---|
+| `--patches` | path | — | the manifest; required |
+| `--steps` | integer | `4000` | a camera each |
+| `--size` | `WIDTHxHEIGHT` | `960x540` | of the frames fitted and measured |
+| `--target` | `x y z` | the cloud's centre | what every camera looks at |
+| `--distance` | number | 1.4 times the cloud's largest side | in the cloud's units |
+| `--focal` | mm | `35` | |
+| `--up` | `x y z` | `0 1 0` | `0 0 1` for a stage whose z is up |
+| `--lowest` | number | `-0.25` | the lowest a camera stands: its height over the target as a share of its distance, negative for below it. A cloud on a floor wants it above zero; the highest is `0.9` |
+| `--held-out` | integer | `4` | cameras the fit never uses |
+| `--lobes` | integer | `1` | reads a gaussian keeps; six numbers each |
+| `--start-level` | number | the widest level but one | how wide a read starts, as a level of the wall's mip chain |
+| `--start-gain` | number | `0.05` | how strong a gaussian's reads start, together |
+| `--rate-uv` | number | `0.002` | Adam's rate for where a read is, in walls a step |
+| `--rate-level` | number | `0.01` | for how wide it is |
+| `--rate-gain` | number | `0.01` | for the log of its gain |
+| `--rate-decay` | number | `0.1` | what the rates have fallen to by the last step |
+| `--whole-every` | integer | `1` | one step in this many is fitted to a whole picture -- a colour a texel, a colour a block, a few texels lit -- whose frame is every texel's cloud drawn and summed, so it costs a frame a texel; the others to one texel alone. `0`: single texels only |
+| `--grid` | integer | — | in place of reads, a weight for each texel of this level of the wall and a gain a channel: `0` the wall's own texels, `1` half as many a side. What a matt thing wants; `--lobes` is then not read |
+| `--show` | path | — | an EXR the fitted wall then shows, the wall's texels times a power of two a side (a wall of 8 x 4 shows 128 x 64): the reads or the grid stay as fitted and read a finer picture. Measured as the others are, and with `-o` written as `<prefix>_shown0..2_picture.exr` and `_wall.exr` |
+| `--frozen` | flag | off | every read is the whole wall's mean and only its gain is learnt: the wall as a light with no picture, to compare against |
+| `-o`, `--output` | prefix | — | `<prefix>_<picture>_picture.exr` and `_wall.exr` for ramp, checker, random, window and white, from the first held-out camera |
+
+The measures are `athenea compare`'s, over five whole pictures the fit is never
+shown (a ramp, a checker, a colour a texel, a bright window on a dim wall, all
+white) from the held-out cameras, against the baked clouds summed times each
+picture's texels. The last lines are a frame's time with and without the wall,
+and a still frame's: the camera and the cloud as they were and the wall showing
+another picture, which keeps the last frame's geometry and redoes colours and
+blend alone, held against the same picture's frame drawn whole.
+
+### 2.3.4 `athenea neural-scene` — a scene kept in pieces
+
+A scene too large to convert, fit or hold as one cloud is kept as a directory,
+`<name>.aths` (§8.2): a manifest and, a piece, its gaussians and the neural
+appearance they are drawn by. A piece is whatever is converted and fitted on
+its own -- a floor of a building, a prop -- and each has its own network.
+
+```sh
+athenea mesh2splat stage.usda --prim /root/floor1 -o floor1_gs.usda --no-camera
+athenea neural-scene add    hall.aths --id floor1 --cloud floor1_gs.usda --prim /root/floor1 --up-axis Z
+athenea neural-scene camera hall.aths --name door --eye 8 0 1.7 --target 0 0 2
+athenea neural-scene fit    hall.aths --steps 3000
+athenea neural-scene render hall.aths --camera door --compare -o door.exr
+athenea neural-scene info   hall.aths
+
+# A render whose result is the scene, found as it gathers; the picture is made of it afterwards.
+athenea neural-scene shoot  stage.usda hall.aths --views views.txt --focal 20 --samples 64 --denoise
+athenea neural-scene render hall.aths --camera door -o door.png          # or .exr
+athenea neural-scene render hall.aths --camera door --at 0 -o then.png   # the scene as it stood
+```
+
+| Subcommand | What it does |
+|---|---|
+| `add` | copies a piece's cloud into the scene (`pieces/<id>.<ext>`), uploads it once to count it and take its bounds, and writes the manifest; a piece of the same `--id` is replaced, its revision goes up and its appearance is dropped, being of other gaussians. The first `add` makes the directory |
+| `camera` | a named view in the manifest; one of the same name is replaced |
+| `fit` | each piece's harmonics learnt by a latent a gaussian and the piece's own network, a piece at a time; writes `pieces/<id>.athn` and the measures into the manifest after each piece, so a fit that stops keeps the pieces it finished |
+| `render` | every piece from one view, each by its appearance where it has one and by its harmonics where it has none. Prints how much of the view the scene holds -- the frame's mean cover -- and the EXR's `A` is that cover a pixel: the mask of what is known from there, for whoever renders or fills the rest |
+| `look` | one camera's look at one time: the frame is drawn and every gaussian that gave it something is found, stamped with this look where no look had seen it. Writes `pieces/<id>.seen` and the look into the manifest's `snapshots`, and prints how many gaussians it saw, how many were new and how many the scene already held |
+| `discover` | a piece made from a frame: any renderer's frame through a known camera, an EXR with `R`, `G`, `B` and its view depth as `Z`, becomes a gaussian a pixel -- a disc in the pixel's surface, in the world -- for every pixel whose surface the scene, drawn through that camera, does not already hold. Writes `pieces/<id>.ply`, the piece (`origin` discovered) and the look's snapshot; prints how much of the frame the scene already held, and the scene through that camera against the frame. It makes the scene where there is none. Before it adds, it takes out: where the scene has a surface nearer than the frame's, or something where the frame has nothing, what stood there has moved or gone, and the gaussians most of whose weight fell on those pixels are stamped gone (`pieces/<id>.gone`) and drawn by nothing after |
+| `shoot` | a USD stage path traced into the scene: the render's result is gaussians and no picture. Each is as wide as its pixel is at its distance (twice as far, twice as wide), a disc in its surface stretched only along the way the surface falls from the eye, and of its surface's material: an opaque thing carries its metal's share and its roughness; a surface that lets the eye through gives two gaussians -- the pane itself, thin of opacity, with its transmission, its index and whether it is a sheet, and where the bent ray ends what is seen through it, with the light it sent before the glass tinted it; a solid of glass, which is a lens, gives one, opaque: the picture the look saw in it and, beside it, what it is made of (its transmission, its index, the tint of a crossing, its normal), laid over by finer ones as looks come nearer like any surface -- what it shows from another eye is `render --glass`'s to work out. They are found while the render gathers: a first look at cells of `--coarsest` pixels a side as soon as each cell has the paths a pixel will end with, then finer looks, each taking out the coarser gaussians it replaces; the last waits for the frame to be whole (and denoised). Every look is a snapshot with its time, its paths and its footprint, and its gaussians a piece `pieces/<view>_t<time>_f<footprint>_s<snapshot>.athg`. What a look sees through -- something that moved -- is stamped gone as `discover` does, and nothing leaves the disk. Each frame is stored as it is made (`frames[]` in the manifest). The device holds what a view sees of the scene and no more: a view drops the pieces its frustum does not meet and reads from the disk the ones it meets that are not there, so a scene is not bounded by the device's memory, which also holds the stage, and a camera a step on reads nothing. A frame's coarse looks end with its last: what is left of their pieces is stamped gone when the look at one pixel is in |
+| `bake` | the scene as it stood at a snapshot (`--at`, `--snapshot`; as it stands without either), frozen into a `.athc`: every gaussian standing then, as one cloud, with the engine's levels of detail built over it, for `athenea render --lod`, a stage or a stream. Only a render's pieces (`.athg`). A `.athc` keeps a gaussian's disc, colour and shading normal and has no room for when it came or went nor for its material: it is what a scene is handed on as, not what it is kept as |
+| `export` | the scene as standard splat files for a viewer on the web: the gaussians that are the finest standing (at `--at` or `--snapshot`; as it stands without either), as SPZ version 3 with no harmonics above the first, in parts of no more than `--part` gaussians -- `<stem>_NNN.spz` -- and `<stem>.json` naming them with the scene's box, its up axis and its cameras. Positions are the scene's own, in its unit and its axes: a viewer turns and scales them. Some 9 bytes a gaussian |
+| `info` | the manifest, read; no device |
+
+| Option | Of | Value | Default | Notes |
+|---|---|---|---|---|
+| `--id` | `add` | name | — | letters, digits, `_` and `-`: it is a file's name |
+| `--cloud` | `add` | path | — | a USD ParticleField (`athenea mesh2splat`) or a `.ply`, `.splat`, `.spz`, `.sog` |
+| `--prim` | `add` | path | — | where the piece came from in the source stage; recorded, not read |
+| `--name`, `--up-axis`, `--meters-per-unit`, `--source`, `--licence` | `add` | | the directory's stem, `Y`, `1`, —, — | the scene's own; any `add` may set them |
+| `--origin` | `add` | `converted`, `discovered` or `generated` | `converted` | where the piece came from: geometry converted whole, what a camera saw, or what another system filled in |
+| `--found-by`, `--time` | `add` | name, number | —, — | the camera that found the piece and when; with `--time` the piece joins the scene's snapshot of that time and camera |
+| `--name`, `--eye`, `--target`, `--up`, `--focal` | `camera` | | —, —, —, the scene's up, `35` | |
+| `--piece` | `fit` | id | every piece | repeatable |
+| `--steps` | `fit` | integer | `3000` | a piece |
+| `--size` | `fit`, `render` | `WIDTHxHEIGHT` | `960x540` | |
+| `--held-out` | `fit` | integer | `8` | cameras a piece is measured from and never fitted from |
+| `--rate-decay` | `fit` | number | `0.1` | |
+| `--view-smooth`, `--split` | `fit` | | `0`, off | as `athenea neural-fit`'s (§2.3.2) |
+| `--camera` | `render` | name | the manifest's first | or `--eye` and `--target` (with `--up`, `--focal`) for a view of its own |
+| `--harmonics` | `render` | flag | off | every piece by its harmonics |
+| `--views` | `render` | path | — | a walk: a file of views, `NAME EX EY EZ TX TY TZ [UX UY UZ]` a line (`athenea stage --cameras`' own), each written as `<-o>_NAME.exr` from the scene loaded once; `--focal` is every view's. Prints a frame's time, the least and the mean, the clock waiting for the device. Without `-o` nothing is written and the walk is only timed: a frame of 3840 x 2160 is some 60 MB, and a walk of them fills a disk |
+| `--discovered` | `render` | flag | off | only the gaussians the looks have found: the scene as it is known. A piece no look has been taken of is not drawn |
+| `--up-to` | `render` | integer | `0` | `--discovered`: only the looks up to this one, counted from one in the order of `snapshots`; `0` is all of them |
+| `--at`, `--snapshot` | `render` | time, integer | —, — | the scene as it stood: at a time, the last snapshot taken by then; or a snapshot of the manifest's, counted from one. The pieces that had come in by it, less the gaussians that had gone by it. Without either, the scene as it stands now |
+| `--frame` | `render` | integer | — | a frame the scene stored (`shoot`), counted from one: drawn again through its camera, at its size, from the scene as it stood when its last look was in. In place of `--camera`, `--size` and `--snapshot` |
+| `--lod` | `render` | pixels | `0` | levels of detail: the scene cut for the view. A gaussian narrower than this on the screen is drawn in place of the finer ones later looks laid over it, and those only where what they were laid over is wider; `0` draws the finest everywhere. `1.2` to `1.5` is a gaussian about a pixel wide; `2` and over is a picture drawn with gaussians that wide. The cut is gathered into one cloud, whatever the scene's pieces: what is not drawn is not handed to the rasteriser. With `--views` each view is cut for itself |
+| `--budget` | `render` | gaussians | — | levels of detail by a count, in place of `--lod`: the finest threshold that draws no more than this many gaussians from the view, read off a histogram every piece in view adds its gaussians to (256 thresholds, sixteen to the octave from an eighth of a pixel) with no cut made to find it. Prints the threshold and what it draws, which is within a few hundredths under the budget. With `--views`, each view's own |
+| `--morph` | `render` | share | `0` | `--lod`, `--budget`: a gaussian is moved towards what it was laid over -- its width, its colour, its opacity given up as it comes to lie over its neighbours -- across this share of the threshold above the point where that is drawn in its place, so that the cut steps between two pictures all but the same as the eye draws off. It softens a still by as much as it moves: `0.25` to `0.5` for a camera that moves, `0` for a still |
+| `--glass` | `render` | flag | off | solid glass shows what it bends and mirrors of the scene from each view, in place of the picture the look that found it saw. What a glass gaussian is made of is its own -- its transmission, its index, what a crossing tints, its normal, all in its record -- and its colour is worked out a view: the eye's ray mirrored at it and bent through the glass to its far face and out, each reading the first gaussian of the scene it meets that is not glass. The scene is then drawn as one cloud whatever `--lod` says (with none, the finest there is), with the pieces outside the view too, since the glass may show them; a ray that meets nothing keeps the stored picture. A sheet (a pane) bends nothing and is blended as before. Needs a scene `shoot` made (records of 30 floats) A polished metal (metallic from a half, roughness to 0.12, the bound of an export's mirrors) is shown the same way as a mirror: what stands along the mirror direction, times what the metal reflects -- its base colour head on, white at grazing -- which `shoot` keeps in the record where a glass keeps its tint; a scene shot before it did has none and its metal is a white mirror. The line printed a view counts the glass and the metal: `glass: N gaussians and M of polished metal; …`. |
+| `--lamps` | `render` | file | none | lamps added to the scene with no path traced: a line a lamp, in the scene's units and UsdLux's radiometry (intensity times colour is the radiance, not normalised) -- `sphere x y z radius intensity r g b`, `spot x y z tx ty tz half-angle radius intensity r g b` (a sphere within a cone of that half angle, in degrees, about the line to `t`), `distant tx ty tz irradiance r g b` (`t` points towards it). Or a USD file (`.usd`, `.usda`, `.usdc`, `.usdz`): its `SphereLight`s (radius, intensity, exposure, colour, the cone of a `ShapingAPI`, placed by the prim's transform) and its `DistantLight`s (the irradiance its radiance lays over its angle), in the scene's own space; a light of another kind or a normalised one is left out, and the line printed says how many. Each gaussian that is neither glass nor a polished metal gains its surface's base colour times what the lamp sends there, where rays to the lamp meet nothing of the scene, and what that light bounces on to once, gathered off the scene's own gaussians; a highlight towards the view's eye (GGX at the gaussian's roughness: 0.04 head on for what is not metal, the base colour for a rough metal, which has no matt share); glass and mirrors then show the room so lit. Wants a scene that keeps base colours (`baseColour` in its manifest: shot from 15 Nov 2026 on); draws the cut `--glass` draws |
+| `--lamps-only` | `render` | flag | off | with `--lamps`: without the light the scene was found under |
+| `--group` | `render` | `NAME=LEVEL` or `NAME=R,G,B`, repeatable | every group at 1 | the level of a group of lights the scene keeps a layer of (`shoot --light-group`): the scene drawn is its own light and each group's times its level, a channel at a time with three numbers. `*` names every group not named (`--group "*=0"`: the scene's own light alone). Light is linear, so a level is exact: nothing is traced. `render`, `--frame`, `--frames`, and `export` (its own `--group`); not `bake`, which reads the scene's own light |
+| `--matte` | `render` | `NAME=PRIMPATH`, repeatable | none | beside the picture, a matte by object: what the gaussians made from the stage's prims at or under the path cover of each pixel, by the picture's own blend -- soft at an edge, and less by what stands in front. Written as `<picture's stem>_matte_NAME` with the picture's extension (with `--views`, `<prefix>_VIEW_matte_NAME`): an EXR holds the coverage, 0 to 1, in R, G, B and A, with the frame's depth as `Z`; a `.png` is the picture of it, display-encoded. A name said twice is the paths together; `/` is every prim the scene names. Wants `-o` and a scene that keeps its gaussians' prims (`prims` in its manifest: shot from 16 Nov 2026 on) and fails on a path that names none of them. What was seen through a pane of glass is named by no prim, and a pane covers what its own opacity is. With `--glass`, `--lamps`, `--lod`, `--budget`, `--snapshot`, `--at`; not with `--frames` |
+| `--lamp-shadow-rays` | `render` | count | `8` | with `--lamps`: rays from a gaussian to each lamp, to points over the disc the lamp shows it; `1` is one ray to its middle, a hard shadow. 1 to 32 |
+| `--lamp-bounce` | `render` | count | `16` | with `--lamps`: rays a gaussian gathers the lamps' light off the scene with, by the cosine about its normal, each reading the lamps' direct light on the first gaussian it meets: one bounce. `0`: the direct light alone |
+| `--no-antialias` | `render` | flag | off | the scene drawn without the 2D filter's compensation whatever its manifest says. A scene shot with discs a cell wide reads worse so (22.8 dB for 24.3 through its own camera); it is for looking at what the compensation takes |
+| `--made-spread` | `render` | float (pixels) | the manifest's `spread` | the standard deviation the scene's discs were made at, in pixels of the eye that found each. A scene drawn without the compensation pays it only where a disc projects narrower than that: opaque from where it was found, averaged with its neighbours from further or at fewer pixels. 0: no disc pays, however small it is drawn |
+| `--by-frame` | `export` | flag | off | a part a rendered frame, in the frames' order, each holding what that frame found and still stands: the scene in the order it grew, which a viewer plays back. In place of `--part` |
+| `--levels` | `export` | gaussians, comma separated | — | levels of detail beside the scene, for a device that cannot draw the finest: a budget each, coarser one after another. A level is the scene whole, cut at a width in the scene's own units -- a gaussian up to that wide drawn in place of the finer ones later looks laid over it -- and the width is the finest that draws no more than the budget. Written `<stem>_lodK_NNN.spz` in parts of `--part`, with no frames; a budget the scene already meets writes nothing. Where no look left anything coarser, a level holds what there is and may be over its budget: a budget under what the coarsest cut draws (within a quarter of it; further under, the level is not written) is given the finest width that draws within a twentieth of the coarsest cut, not the widest cells |
+| `--history` | `export` | flag | off | with `--by-frame`: the scene as it stood at every frame, for a stage that moves. What a frame found is set apart by the frame from which it no longer stands: what stands to the end is the part, as without the option, and what a later frame took out (the thing moved, the light changed) or laid finer gaussians over goes in one file of its own, `<stem>_NNN_history_000.<format>` (and one for its glass, one for its mirrors), named in the part's `history`: its gaussians in the order of the frame from which each no longer stands, and `spans` giving, a span, `[that frame, gaussians, glass, mirrors]` -- what stands at a frame is the file from the count of the spans already past on. `until` is the last of those frames. What went within its own frame is not written. Up to twice the files and several times the gaussians of a scene that stood still |
+| `--format` | `export` | `spz`, `ply`, `glb` | `spz` | the parts' format: SPZ version 3, which a viewer on the web reads; INRIA's 3DGS PLY (62 floats a gaussian); or a glTF binary with `KHR_gaussian_splatting`. The same gaussians and the same index; PLY and GLB are whole floats, several times the size |
+| `--part` | `export` | gaussians | `1200000` | the most a file holds; a part is a run of the scene's pieces in their order. 1.2 million are some 10 MB |
+| `--exposure` | `export` | stops | `0` | on the scene's light before it is encoded: a file says a colour, and a viewer shows what it says |
+| `--group`, `--own-light` | `export` | `NAME=LEVEL` or `NAME=R,G,B`, repeatable; a number | every group at 1; `1` | the scene handed on with its groups of lights at these levels, as `render --group` draws it, and its own light times `--own-light` (`0` with one group at 1 and `"*=0"` hands on that group's light alone). The layers of light the scene took again (`shoot --relight`) are in what is handed on, up to `--at` or `--snapshot`. Laid over each piece's records on the device before they are packed; a file handed on has one state of the lamps. For a viewer that changes them: the scene with every group off and each group alone are exports of the same options, so the same gaussians in the same order, and the scene's index names the groups (`"groups": [{"name", "stem"}]`, each stem another export's) -- `scripts/examples/neural-scene-viewer/export_groups.py` writes all of it, and the player there gives each group a level and a tint `export_groups.py --levels BUDGET[,BUDGET]` adds levels of detail to the scene, to each group and to the base colours -- the same gaussians in the same order a level, so a level takes its groups' light and the page's lamp as the whole scene does -- and, as `litLevels` in the index, levels of the scene with every group at 1, which is what the player draws first. The player draws the coarsest level first and reads the detail the device is to draw behind it, which takes its place when it is whole (`?progressive=0`: no coarse level first); `?base=URL` reads the scene's files from another address. `make_standalone.py --page index.html --vendor DIR -o FILE` writes the player as one HTML file with three, Spark and Spark's WebAssembly inside it (3.9 MB): served, it reads `./scenes/` as the page does; opened from a disk it asks for the scene's folder, a browser not letting such a page read the files beside it `export_groups.py --history` hands on the scene's history too (`export --history`), as it was found with its lamps on: what a frame found that a later one took out or refined, drawn only while the timeline is before that frame -- without it an earlier frame shows holes where the scene was later made finer The player keeps its view in its address and reads it back: `scene`, `detail` (`auto`, `full` or a level), `frame`, `ride=1` (the render camera ridden) and `light.<group>=<level>` for a group not at 1; while parts are read its status line carries a bar of the parts and gaussians of the load at hand |
+| `--base-colour` | `export` | flag | off | each gaussian handed on with its surface's base colour as its colour, in place of its light (glass black): the same parts as the scene's own export, for a viewer that lights the scene with a lamp of its own (the index's `"base"` names this export's stem; `export_groups.py` writes both). Without `--exposure`: a base colour is a share, not a light. Wants a scene that keeps base colours |
+| `--no-prims` | `export` | flag | off | the parts without which prim each gaussian was made from. Without the flag, a scene that names its prims (one shot since its gaussians keep them: `prims` in `scene.json`) is handed on with an `.ids` file beside every file of gaussians -- the part's, its glass's, its mirrors', a level's, a history's -- and `prims` in the index; a scene that names none writes neither, and so does one of more than 65535 prims, which says so. The same parts written again for a group of lights or for the base colours need none: `export_groups.py` asks those with the flag |
+| `-o`, `--output` | `export` | path | — | with no extension: `<stem>_NNN.spz` and `<stem>.json` |
+| `--frames` | `render` | two integers | — | the stored frames FIRST to LAST as pictures in one run, the scene read once and each piece the first time a frame wants it: `-o` is a prefix, written `<stem>_NNNN.png` or `.exr` |
+| `--exposure` | `render` | stops | `0` | `-o` a `.png`: over the scene's light, before the standard view transform |
+| `stage`, `scene` | `shoot` | paths | — | the USD stage, and the scene's directory: made, or added to |
+| `--views`; `--eye`, `--target`, `--up`, `--camera` | `shoot` | | — | the views, a file of `NAME EX EY EZ TX TY TZ [UX UY UZ]` a line; or one view and the name it is kept under (`camera`) |
+| `--focal`, `--size` | `shoot` | mm, `WIDTHxHEIGHT` | `35`, `960x540` | over a 24.576 mm aperture, as `athenea stage`'s |
+| `--time`, `--times` | `shoot` | time codes | `0` | the stage's time; several are shot one after another through every view, each look finding what the last left and taking out what moved |
+| `--grow`, `--grow-exposure` | `shoot` | path, stops | —, `0` | a file that grows: a path with no extension. When a frame is whole, what it found is written beside the others as `<stem>_NNN.spz` and the index `<stem>.json` is put in place again (written whole and renamed, so it is never read half written) with `growing` true; when the shoot ends, false. A viewer that reads the index again every few seconds shows the scene being made (`scripts/examples/neural-scene-viewer`: served beside a `scenes/` directory the stem points into, `?scene=<name>`). A part is not gone back to: what a later frame takes out of an earlier one stays in the earlier part |
+| `--pyramid` | `shoot` | pixels | `32` | the widest cells of the levels a frame leaves above its last look, where it found surface the scene did not hold: cells of 2, 4, 8... pixels of the whole frame, each a gaussian the right width for an eye that far again. They are written refined (the last look's gaussians lie over them), are read by no look, and are what `render --lod` draws from far. A third as many gaussians again where a frame is all new; `1`, none |
+| `--covered-enough` | `shoot` | 0..1 | `0.8` | a view the scene already covers this much of -- its frame's mean cover, drawn before a path is traced -- takes only its last look, at one pixel: the coarse looks are for a render with nothing yet to show. Over `1`, every view takes them all |
+| `--free-each-frame` | `shoot` | flag | off | the scene leaves the device after every frame and the next reads back from the disk what it sees. Off, a view keeps on the device the pieces the last view held that its own frustum still meets, and reads only the others: a camera a step on reads nothing |
+| `--time-step` | `shoot` | time codes | `0` | `--views`: each view of the file is this much later than the last, from `--time`: a sequence, a frame a line, the camera and the stage both moving |
+| `--samples`, `--pass-samples`, `--bounces`, `--denoise`, `--ray-margin` | `shoot` | | `64`, `1`, `4`, off, `athenea:rayMargin`'s | the path tracer's: paths a pixel in all and a pass, bounces, whether the whole frame is denoised before its last look, and how far a ray leaves a surface (§3) |
+| `--coarsest` | `shoot` | pixels | `8` | the side of the first look's cells, a power of two; the looks go on at half of it down to one pixel. A look at cells of `f` waits for `samples / f²` paths a pixel, so every look's gaussians hold as many paths. `1`: one look, when the frame is whole |
+| `--spread`, `--tolerance`, `--refine`, `--repaint` | `shoot` | | `0.5`, `0.06`, `1.5`, `0` | as `discover`'s, a disc's width in cells of the look. Half a cell is what a scene drawn without the 2D filter's compensation closes its surfaces with (below); a scene drawn with it (`--antialias`) wants `1` |
+| `--antialias`, `--no-antialias` | `shoot` | flags | off | how the scene is drawn, by the looks and by whoever draws it after; kept in its manifest (`antialiased`). A new scene is drawn without the Mip-Splatting 2D filter's compensation: each gaussian is spread a third of a pixel and keeps its opacity, so a disc narrower than a pixel stays opaque. `--antialias` makes a new scene drawn with it, as a scene shot before 15 Nov 2026 is; `--no-antialias` turns it off for a scene that is there already |
+| `--relight` | `shoot` | flag | off | for a stage whose light changes: each frame, before it is asked what the scene holds, every standing gaussian the frame shows at its own depth (within `--tolerance`) takes the frame's colour. Those gaussians keep their place and what they are made of; what is said is kept as a layer of light beside the piece, stamped with the frame's snapshot, and `render --at`, `--snapshot`, `--frame` and `--frames` lay over each piece the layers up to their time. The coarser gaussians a finer look was laid over are said anew too, so a level of detail follows the light. Not said anew: what lets light through and what the frame does not show. `export` hands on the scene with its layers laid over it |
+| `--light-group` | `shoot` | name | none | the stage handed is lit by one group of lights alone (every other light off): each view is path traced whole and what every gaussian of the scene sends in it -- the finest and the coarser ones, glass as the rest -- is kept as that group's layer of light, a file a piece (`<cloud>.g.<name>.1`), written when every view is taken; of the views that show a gaussian, the nearest one's word stands. A stage with surfaces that glow has their light in every group's frame as it has it in the scene's own: a group named `dark`, shot with every light off (`--lights-off` the scope of them all), holds that light alone and is taken out once for each group drawn, at its level. The scene is not touched: nothing is made, taken out or said anew, and no frame is stored. The views should be the ones the scene was shot through. Shot again by the same name, the group is replaced. Letters, digits, `_` and `-` |
+| `--light-groups` | `shoot` | `NAME=PATH`, repeatable; at most 8 names | none | the stage's lights at or under the prim path are the group `NAME` (a session opinion: `athenea:lightGroup`), and the groups are found with the scene, by the same paths: each frame's light is path traced once, the scene is made from what no group holds of it (the lights in none, what glows) and each group's share is kept as its layer, the files `--light-group` writes. No pass of a group's own, and no `dark` group: a light's share holds that light's alone. Each group's paths are a share of the frame's -- one light is chosen a path -- where a pass of its own gives the group every path. Not with `--light-group`. A path that matches no light is an error |
+| `--groups-only` | `shoot` | flag | off | with `--light-groups`, over a scene already found: the stage's lights in no named group are switched off, each view is path traced once and every group's share of it is kept as that group's layer, the files `--light-group` writes; nothing of the scene is made, taken out or said anew and no frame is stored. Several lamps added to a scene, or shot again, for one path tracing of the walk, every path being one of theirs. A light's share holds no light of what glows: no `dark` group is wanted. The views should be the ones the scene was shot through The pass's frames need not be the scene's size: a gaussian reads the frame at its own middle, and frames of half the scene's `--size` a side read the same for a third of the time (decisions.md); smaller ones lose the surfaces' detail in the lamps' light |
+| `--light-over-base` | `shoot` | flag | off | in a pass of groups over a scene found (`--groups-only`, `--light-group`): what a pixel sends is carried from that pixel's base colour to the gaussian's own base colour, which the scene keeps at its own detail, before it is kept as the group's layer -- so the pass's `--size` can be a quarter of the scene's a side and the surfaces' texture stays in the lamps' light; a shadow's edge is still as fine as the pass's frames. Not for a gaussian that lets light through, nor where the pixel's base colour is under 0.02; held to twice. The layer written is the same kind of file |
+| `--scene-cache` | `shoot` | cells an axis, 0 to 512 | `0` (none) | the found scene is what a path's bounce meets: the light of the gaussians found so far (not glass, not mirrors) is kept as a mean a cell of a cube of this many cells an axis over the stage's bounds, a plane more a group of `--light-groups`; a path that leaves a surface by a broad lobe (not a mirror's or a glass's ray) and lands in a cell that holds light takes that light and ends there, the surface neither shaded, lit nor bounced off again. A cell that holds none: the path goes on as ever. A piece is added once, when a view has found it, so a view reads what the views before it found. It does not shorten a frame by itself -- a path that ends early waits for its neighbours in the kernel -- and is for a shoot of few `--bounces`, where it gives back part of the light the bounces not taken would have brought. The cells take 48 bytes each a plane on the device: 160 an axis is 197 MB a plane |
+| `--lights-on`, `--lights-off` | `shoot` | prim paths, comma separated or repeated | none | which of the stage's lights light it: with `--lights-on` only those named (every other light the stage authors is switched off), with `--lights-off` all but those. A path names a light or a scope of them. For groups: the scene is shot with the lamps `--lights-off`, and each group with its lamps `--lights-on`. A stage left with no light on is lit by the engine's default lights, and the line printed says so |
+| `--no-headlight` | `shoot` | flag | off | a stage that authors no light is left dark but for what glows (`athenea:headlight` off), where the path tracer lights it from each camera's eye. Implied by `--lights-on`, `--lights-off` and `--light-group` |
+| `--turned` | `shoot` | 0..1 | `0.5` | the least a disc's facing is taken as: a disc is stretched along the way its surface falls from the eye by one over its facing, and by no more than one over this |
+| `--inside-turned` | `shoot` | 0..1 | `0`: off | the same bound for a look's own gaussian whose four neighbouring pixels show its own surface in its plane: it is as long as its pixel lies on the surface, so the rows of a floor seen from far and aslant meet, and a level of detail that draws them in place of what nearer frames laid between them is not ruled with dark dashes. One at a silhouette keeps `--turned`. `0`, or a value not under `--turned`: every gaussian by `--turned` |
+| `--pyramid-turned` | `shoot` | 0..1 | `0.1` | the same bound for a cell of the levels above a frame's last look (`--pyramid`) whose four neighbouring cells show its own surface in its plane: such a cell is as long as it lies on the surface, so a level of detail closes a floor seen aslant; a cell at a silhouette keeps `--turned`. `0`, or a value not under `--turned`: every cell by `--turned`. A scene found before it keeps the cells it has |
+| `--laid-over-refined` | `shoot` | flag | off | a gaussian names as its parent -- what a level of detail draws in its place -- only what stands refined where it is made, not a wider gaussian that is still the finest there: such a one may be taken out by a later frame (a colour that changes with the eye, beside glass and lamps), and what named its width is then drawn by no level between the two widths (short dark dashes on a floor walked towards). With it no level has those holes, and more gaussians stand with no parent: the coarsest level the scene can write is larger (a 960x540 Sponza of 20 views: 505 467 where 211 654, so `export --levels 500000` is its coarsest cut). The scene whole is the same gaussians either way. Off until that floor is brought down |
+| `--glass-opacity` | `shoot` | 0..1 | `0.05` | the least a pane covers of what is behind it, however clear. A pane covers what its darkest channel takes of the light through it, and is coloured by what the others keep over that, so that blended over the gaussian behind it gives the look's pixel back |
+| `--name`, `--up-axis`, `--meters-per-unit`, `--source`, `--licence` | `shoot` | | the directory's stem, the stage's, the stage's, the stage, — | the scene's own |
+| `--camera`, `--time` | `look` | name, number | —, — | a view of the manifest's and when; the pair is the look's snapshot, and a look taken again is the same one |
+| `--views`, `--frames` | `discover` | path, directory | —, beside the file | several looks in one run, the scene kept on the device from one to the next: a file of views, `NAME EX EY EZ TX TY TZ [UX UY UZ]` a line (`athenea stage --cameras`' own), each with its frame `NAME.exr` and made the piece `look_NAME`, at times one after the last's from `--time` (0 where not given). In place of `--frame`, `--id` and `--camera` |
+| `--frame` | `discover` | path | — | the frame: an EXR with `R`, `G`, `B` (linear light) and `Z`, the depth along the view; its size is the look's |
+| `--id`, `--camera`, `--time` | `discover` | | —, —, — | the new piece's name, the view the frame was drawn through and when. The view is one of the manifest's, or `--eye`, `--target`, `--up`, `--focal` kept under that name; the focal length is over a 24.576 mm aperture, as `athenea stage`'s |
+| `--tolerance` | `discover` | share | `0.06` | a pixel's surface is already held where the scene's depth through that camera is within this share of the frame's |
+| `--repaint` | `discover`, `shoot` | share | `0` | a surface the scene holds at the frame's depth whose colour is off the frame's by more than this share of the brighter of the two is taken out and made again from the frame; `0` holds a surface by its depth alone. The colours compared are means over five pixels by five of each, so that the edge of a pattern is not a change. For a stage that moves: it is what takes out the foot of a thing that rolled on, where the floor behind is within `--tolerance` of it. `0.3` is past what a found scene is off its own frame by; it makes again some 8% of a still view every frame, and a polished or glass thing all of the time, since what those show is the eye's |
+| `--refine` | `discover` | ratio | `1.5` | a surface the scene holds with gaussians more than this many times as wide as the disc this look would make there -- found from far, now seen from near -- is taken out and made again, finer; `0` holds a surface however coarse |
+| `--spread` | `discover` | pixels | `1` | a gaussian's standard deviation, in pixels at its own depth; half that at a surface's rim. Wider closes the gaps between gaussians, paints past silhouettes and is softer from a camera that took no look: `1` is where views no look took are closest, `1.3` where a look's own frame comes back closest |
+| `--name`, `--up-axis`, `--meters-per-unit`, `--source`, `--licence` | `discover` | | | the scene's own, as `add`'s |
+| `--threshold` | `look` | pixels | `0.05` | how much a gaussian gives the frame to count as seen: its blending weight summed over its pixels |
+| `--compare` | `render` | flag | off | both ways: the latents against the harmonics (`athenea compare`'s measures) and a frame's time by each, the least of twelve |
+| `-o`, `--output` | `render` | path | — | an EXR (linear, with its depth), or a `.png`: the picture, through the standard view transform, for an sRGB display; with `--compare`, `<stem>_harmonics.exr` and `<stem>_latents.exr`; with `--views`, a prefix, and one ending in `.png` writes `<stem>_NAME.png` |
+
+A piece is fitted from inside the scene: each camera's eye somewhere in the
+scene's box, a tenth in from its walls, looking at somewhere in the piece's own
+box through a 20 mm lens. That is where a building is seen from; an object on a
+table is better fitted by `athenea neural-fit`, whose cameras stand round it.
+
+### 2.3.5 The web player — what its address says
+
+`scripts/examples/neural-scene-viewer/index.html`, served beside a `scenes/`
+directory (an export of `neural-scene export`, `export_groups.py`'s for a
+scene with groups of lights), is told what to show by its address. What is
+being looked at it writes back there, in place and a moment after the last
+change, so that an address copied is the view handed on; the rest it only
+reads.
+
+| Parameter | Value | Default | Kept by the page | Notes |
+|---|---|---|---|---|
+| `scene` | a name: letters, digits, `_`, `-` | `sponza_growth` | yes | `scenes/<name>.json` |
+| `detail` | `auto`, `full`, or a level counted from 1 | `auto` | yes | `auto` draws the finest level within what the device is trusted with -- 1 M gaussians on a phone, 2 M on another touch screen or a machine that reports 4 GB or less, the scene whole otherwise -- and goes a level coarser where frames come under 15 a second. A scene exported with no levels is drawn whole |
+| `frame` | integer | the end of the scene as it grew; the first camera of a level's walk | where it is not the default | of the scene whole (`detail=full`), so many of its frames; of a level, a camera of the walk. An earlier frame of the scene whole reads the scene's history (below) |
+| `ride` | `1` | off | yes | the render camera ridden |
+| `light.<group>` | 0 to 2 | `1` | where not 1 | a group of lights at a level other than the one it was shot at. Said in the address, the groups' files are read with the scene |
+| `object` | a prim path | none | yes | the gaussians made from the stage's prims at or under the path; an index with `prims` |
+| `object.view` | `highlight`, `isolate`, `matte` | `highlight` | with `object` | the object tinted, alone, or its matte white on black |
+| `glass` | `0` | on | in the browser's storage, with the options | glass and chrome drawn as the pictures they were found with, not shaded by the eye |
+| `orbit` | `0` | on | no | a drag turns the camera where it stands, not about what is under the pointer; Alt held does the same for one drag |
+| `filter` | `fixed` | by the canvas | no | the filter a third of a pixel whatever the canvas. Without it a scene whose index says `frameSize` and `antialiased: false` is filtered `1.2 × spread ×` the canvas's pixels over the frame's, held between 0.3 and 2 pixels |
+| `rooms` | `0` | on | set by the page | no room is drawn for glass and chrome, which show as found. The page sets it itself and reads itself again when the browser takes the graphics context back while rooms were drawn; lost again, it reads a level coarser. `Their rooms: Draw them again` in the options takes it out |
+| `room` | gaussians, at least 20000 | `400000`; `150000` on a phone | no | how many gaussians the scene the rooms are drawn from keeps, whatever the detail |
+| `keep` | `1` | off | no | the page keeps its own copies of the gaussians and of its textures after the device has them (32 bytes a gaussian and 4 a texel); without it they are let go once sent, and Spark's own ray through a mesh finds nothing |
+| `ahead` | `0` | on | no | the groups' files are read only when a group is first moved. Without it they are also read once the level stands and nothing has been touched for four seconds -- on a phone, when the options are opened -- so a lamp answers when it is moved. Never ahead where the browser says the connection saves data or is 2g (`navigator.connection`) |
+| `progressive` | `0` | on | no | the detail asked for as it comes, with no coarser level drawn first |
+| `base` | an `http(s)` address | `./scenes/` | no | where the scene's files are |
+| `unit` | metres | the index's `unit`; `0.01` where the box is over 200 across, else `1` | no | the scene's unit |
+
+What the page reads, and when. The coarsest level is drawn first, from its
+files with the lamps on (`litLevels`), and the detail behind it. A level that
+has such files is drawn from them, and its groups' files -- as large again for
+each group -- are read once the level has stood untouched for four seconds, on a phone
+when the options are opened, or the first time a group's level or tint is
+moved (the row says `reading…` meanwhile); the scene whole has none and reads its groups with its
+parts. The base colours the page's own lamp wants are read when the lamp is
+first lit. A scene's history -- what a frame found that a later one took out
+or refined -- is read the first time the timeline is at an earlier frame, and
+that frame shows holes until it is in. Where a group's index names an `rgb`
+file beside a part's `file` (`pack_colours.py <scenes> <scene>` writes them
+from an export: gzip over three bytes a gaussian, the SPZ's colour stream),
+the page reads that in place of the file: a fifth to a tenth of its bytes.
+
+A file that does not come is asked for again: each is tried three times, a
+moment apart, and one that began to come and then stops for 30 seconds is
+given up and tried again, as is one that was never answered once nothing
+has come from any file for 60 seconds (a file waiting its turn behind others
+that are coming is not given up). The status line then says `a file did not
+come and was asked for again`, and `a file asked for again once` once the scene
+is whole; after three failures the load ends with `the scene is
+not whole: <file> did not come in three tries (…). Reload the page to try
+again`, and what is drawn stays drawn. `window.__player.reading()` lists what
+is being read, for whoever asks why a load stands still.
 
 ### 2.4 `athenea convert` — a splat file into USD, or into a `.athc`
 
@@ -388,6 +721,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--path-samples` | integer | `1` | rt: paths a pixel each pass |
 | `--path-bounces` | integer | `1` | rt: bounces after the first hit; going through a glass (into it, out of it, inside it) is not one, up to 8 a path |
 | `--path-total` | integer | `1` | rt: paths a pixel the image is drawn until it holds |
+| `--ray-margin` | float | `athenea:rayMargin`'s | rt: how far a ray leaves a surface, as a share of its distance from the origin (`athenea:rayMargin`) |
 | `--denoise` | flag | off | rt: denoise once the total is held |
 | `--default-lights` | flag | off | a dome and a sun in the session layer, for a stage with none |
 | `--shutter` | `OPEN:CLOSE` | unset | in frames; only for a camera made by `--eye` |
@@ -428,6 +762,7 @@ athenea decimate car_tx.usdc car_tx_fewer.usdc --drop-hidden --hidden-below -10 
 | `--no-readback` | flag | off | with `--frames`: every frame but the last is drawn and waited for, not read back -- what a host that keeps the image on the device pays; the last is read for `-o` |
 | `--drift` | number | `0` | with `--frames` and a camera of its own (`--eye`, `--frame-all`): scene units it moves along its own x axis every frame, one way and back, to time a moving camera |
 | `--cameras` | path | none | a file of views, one a line: `NAME EX EY EZ TX TY TZ [UX UY UZ]` (`#` starts a comment; the up vector is `--up` where a line gives none). The stage is loaded once and each view written to `-o`'s directory as `NAME.exr`, with this command's lens, size and technique; `-o` is a directory, or a file whose directory is taken |
+| `--matte` | `NAME=PRIMPATH` ‹repeatable› | none | beside each image written, the matte of the prims at or under the path from the frame's Cryptomatte: what they cover of each pixel (the ranks of the three `CryptoObject` layers whose id is one of theirs, summed on the device), in R, G, B and A, with the frame's depth as `Z` -- `<image's stem>_matte_NAME.exr`. The ids are one sample a pixel, so a mesh's edge is a step. The same form `neural-scene render --matte` gives of a found scene. Wants `-o`; fails on a path that names no prim of the frame |
 | `--turntable` | integer | `0` | that many views around `--target`, the first from `--eye`, each turned 360/N degrees about `--up`, written to `-o`'s directory as `f_0000.exr`, `f_0001.exr`, ... from one load of the stage. Prints each view's time and, at the end, the first and the median of the rest |
 
 ```sh
@@ -2033,6 +2368,8 @@ found and does not.
 | `athenea:meshAntialias` | int | `0` | raster: the meshes' edges resolved from 4, 8 or 16 samples a pixel, a count in between rounded up; 0 and 1 draw one sample a pixel (§4.3, *Mesh edges antialiased*) |
 | `athenea:splatView` | int | `0` | the raster: a parameter of the gaussians drawn in place of their light, blended by their opacity -- 1 albedo, 2 roughness (as the specular reads it), 3 metallic, 4 transmission, 5 ior (`ior - 1`, a grey), 6 normal (world, `n / 2 + 1/2`), 7 opacity, 8 size (the largest axis, a ramp from blue at 10 µm to red at 10 cm, a decade a quarter), 9 sky visibility (the transfer's cosine-weighted sky seen, 1 unoccluded), 10 bounce (the indirect half under a white sky), 11 open cells (the share of a TX transfer's directions that leave the scene), 12 emission, 13 reflected field (its mean under a white sky), 14 the light the cloud carries, 15 the material's own roughness (0 where not carried); a cloud that is not relit shows its light, opacity and size and nothing else. 0 draws the light |
 | `athenea:glassShadows` | bool | `true` | rt and its bakes: a light's shadow ray goes on through up to 4 faces of glass whose transmission is a delta (a thin wall; a solid of constant specular roughness under 0.03), tinted by each; off, glass stops it |
+| `athenea:rayMargin` | float | `1e-3` | rt and its bakes: how far a ray that crosses nothing leaves its surface, as a share of the position's distance from the origin (along the normal and along the ray, with a TMin as long), 1e-6 to 0.1. A scene in centimetres or far from its origin wants less: at the default, 2000 units out, light passes every concave join nearer than 2 units (Sponza: `2e-5`) |
+| `athenea:headlight` | bool | `true` | rt: a stage with no light on is lit from the eye, as the raster lights it (the first hit only, nothing to bounce). `false` leaves such a stage dark but for what glows: what a frame of a scene's lamps switched off wants, since a light at the eye is another light for every camera |
 | `athenea:denoise` | bool | `false` | denoise once gathered |
 | `athenea:motionBuckets` | int | `4` | rt: shutter slices, 1 to 8 |
 | `athenea:antialias` | bool | `true` | a sub-pixel offset per pass |
@@ -2058,7 +2395,7 @@ Read but not declared:
 | `athenea:colourHalf` | bool (or an int, non-zero) | the host, through the delegate | the `color` AOV is half float (`Float16Vec4`) rather than float; for a host that copies the colour through host memory to show it (Blender's viewport). Read when the host asks for the AOV's format, so it is set before the first frame. Light groups and other outputs stay float |
 | `athenea:disableMotionBlur` | bool | settings or product | for this product |
 | `athenea:disableDepthOfField` | bool | settings or product | for this product |
-| `athenea:lightGroup` | string | a light prim; or a mesh, as `primvars:athenea:lightGroup` (constant) | the group a light's contribution is gathered under; on a mesh, its emission group: what it gives off, seen and lighting (§4.3, *Mesh lights*), 31 such groups a frame |
+| `athenea:lightGroup` | string | a light prim; or a mesh, as `primvars:athenea:lightGroup` (constant) | the group a light's contribution is gathered under; on a mesh, its emission group: what it gives off, seen and lighting (§4.3, *Mesh lights*), 31 such groups a frame On a denoised path traced frame (`athenea:denoise`) each group's plane is denoised as the colour is, with the frame's albedo and normal, and the planes are then scaled, a channel, so that with what no group holds they add up to the denoised colour (held to four times) |
 | `athenea:lightState` | string | settings prim, or a host | the light state whose targets a stage's lamp groups take; empty: each at its `initialOn` (§3.6). Read by `StageRenderer`, not by hdAthenea under another host |
 | `athenea:lightLevel:<group>` | float | settings prim, or a host | that lamp group's level over the state's: 0 off, 1 its radiance; for an emission group, what its emitters give off is multiplied by it, both seen and lighting |
 
@@ -3202,10 +3539,138 @@ sizes, the first record, the SPS's profile, tier and level, and the WebCodecs
 codec string and `hvcC` record built from that record's VPS, SPS and PPS
 (`--hvcc OUT` writes it).
 
+**A neural appearance, `.athn`.** What `athenea neural-fit --save` writes and
+`athenea render --neural` reads: a cloud's colours as a latent a gaussian and
+one network, beside the cloud's own file and of it gaussian for gaussian, in
+its order (it names no cloud; the count is checked). Little endian: `ATHN`, six
+uint32 -- version (1), gaussians, numbers a gaussian (11), words a gaussian (6),
+weights (1008, or 2016 for two networks), flags (bit 0: lit; bit 1: split, two
+networks' weights, the first never told the view) -- then the latents as
+halves, two a uint32 and so 24 bytes a gaussian, then the weights as float32.
+
+**A neural scene, `.aths`.** A directory: what `athenea neural-scene` writes
+and reads (§2.3.4). It is a scene of gaussians kept in pieces, with the time
+each gaussian came, went and was refined, so that one directory answers three
+questions: what the scene is now, what it was at any earlier time, and what
+of it to draw from a given eye. Every path in it is relative to the
+directory, so a scene moves as a directory does. Nothing in it is replaced: a
+look adds files and stamps, and nothing is taken off the disk.
+
+```
+<name>.aths/
+  scene.json               the manifest: pieces, cameras, snapshots, frames
+  pieces/<id>.athg         a piece's gaussians, as a render left them (neural-scene shoot)
+  pieces/<id>.gone         a stamp a gaussian: the look that found it gone
+  pieces/<id>.refined      a stamp a gaussian: the look that laid finer gaussians over it
+  pieces/<id>.prims        an id a gaussian: the prim it was made from (neural-scene shoot)
+  pieces/<id>.usda|.ply|…  a piece's gaussians converted or brought in (add, discover)
+  pieces/<id>.seen         a stamp a gaussian: the look that first saw it (look)
+  pieces/<id>.athn         a piece's neural appearance, once fitted (fit)
+```
+
+*A piece* is the gaussians one look left: one camera, one time, one size of
+cell. A frame of `shoot` leaves the piece of its last look (cells of one
+pixel) and, where it found new surface, one piece a level above it (cells of
+2, 4, ... pixels: its pyramid). A piece's gaussians are never reordered, so a
+stamp file and a piece's file go index by index.
+
+*A gaussian of a render* (`.athg`) is a record of float32. The file is sixteen
+bytes -- `ATHG`, a version (1), how many gaussians and how many floats each,
+uint32 little endian -- and then the records:
+
+| Floats | What |
+|---|---|
+| 0–2 | position, in the scene's space and unit |
+| 3 | opacity, as a logit |
+| 4–6 | the three scales, as logarithms: a disc in the surface, as wide as its pixel was at its distance, a tenth as thick |
+| 7–10 | rotation, a quaternion w x y z |
+| 11–13 | colour: the first harmonic as a capture keeps it (display-encoded, about a half, over Y00); there are no higher harmonics |
+| 14–16 | the surface's shading normal, in the world |
+| 17, 18, 19 | the metal's share, the roughness, how much goes through |
+| 20 | the material's row in the frame that made it, plus one; 0 for what was seen through glass |
+| 21 | the index of refraction |
+| 22 | 1 for a sheet with no inside (or nothing that bends), 0 for a solid |
+| 23–25 | what the surface lets through one crossing, r g b |
+| 26 | the width of the coarser gaussians it was laid over, 0 where over nothing: its parent's |
+| 27–29 | their colour, as a base colour is kept |
+
+A record is 30 floats; scenes shot before the last fields were added have 26
+or 27, and are read as they are.
+
+*A stamp file* (`.gone`, `.refined`, `.seen`) is a uint32 a gaussian, little
+endian and nothing else: a snapshot's place in `snapshots`, counted from one,
+or 0. Three things are stamped, and they are different things:
+
+| Stamp | Where | What it says |
+|---|---|---|
+| found | the piece's `origin.snapshot` | the look that made the piece: all its gaussians came then |
+| gone | `.gone`, a gaussian | the world changed: a later look saw through where it stood, or found nothing, or another colour |
+| refined | `.refined`, a gaussian | a nearer look or a longer lens laid narrower gaussians over it. It is not gone: it is their parent, and from far it is still the one to draw |
+
+*An id file* (`.prims`) is laid out as a stamp file is, a uint32 a gaussian,
+and holds something else: the Cryptomatte id of the prim the gaussian was made
+from -- the hash of the prim's path, the id `athenea stage` writes in its
+`CryptoObject` layers -- or 0 where the frame named none (what was seen through
+a pane of glass). `prims` in the manifest says which path each id is. A
+gaussian takes the id of the pixel at the middle of its cell.
+
+*How it is read.* With S a snapshot (the last one, for the scene as it is now;
+`--at` a time or `--snapshot` for as it stood):
+
+| Asked | The gaussians drawn |
+|---|---|
+| the scene at S (`render`, and what a new look of `shoot` holds) | of the pieces found by S, those neither gone nor refined by S: the finest there was |
+| the scene at S for an eye, by a threshold in pixels (`render --lod`, `--budget`) | of the pieces found by S, those not gone by S whose parent's width (float 26) is over the threshold on the screen, or that have none, and whose own width is under it, or that nothing had refined by S |
+| a frame as it was rendered (`render --frame N`) | the scene at the frame's last snapshot, through the frame's camera at its size |
+
+A gaussian's width is its level of detail: no tree is stored and none is
+walked, and each gaussian is chosen from its own record and its two stamps.
+
+| Key of `scene.json` | Value |
+|---|---|
+| `format`, `version` | `"athenea-neural-scene"`, `2`; version 1 is read as it is (2 added `origin.snapshot`, `origin.footprint`, a snapshot's `samples`, `footprint`, `taken`, and `frames`), and a reader refuses any other |
+| `name`, `upAxis`, `metersPerUnit` | the scene's name; `"Y"` or `"Z"`; metres a unit |
+| `antialiased` | `false`: the scene is drawn without the Mip-Splatting 2D filter's compensation (absent: with it) |
+| `spread` | the standard deviation its discs were made with, in pixels of the eye that found each (`shoot --spread` when the scene was begun). Drawn without the compensation, a disc pays it only where it projects narrower (absent: it never pays) |
+| `baseColour` | `true`: every gaussian of what is opaque keeps its surface's base colour apart from the light it was found under, in the record's tint (which for glass is what one crossing lets through, and for a metal what it reflects head on). What `render --lamps` multiplies a lamp's light by (absent: the scene was shot before it did, and has none) |
+| `lightGroups` | the names of the groups of lights the scene keeps a layer of (`shoot --light-group`). A group's layer is a file beside each piece, `<cloud>.g.<name>.1`, laid out as an `.athg` of four floats a record: which gaussian of the piece, and the light it sends under that group alone (linear rgb). Absent: none |
+| `prims` | what the ids its gaussians keep are called, as a Cryptomatte manifest is written: the path of each prim a frame of `shoot` drew, to the eight hex digits of its id. What `render --matte` reads a path by (absent: the scene was shot before it kept any, and has no matte to give) |
+| `source` | `stage`: what the pieces were made from; `licence`: what it asks of whoever uses it |
+| `bounds` | `min`, `max`: the box round every piece's, written and not read |
+| `pieces[]` | `id`; `prim` (where it came from); `cloud` (its file); `gaussians`; `bounds` (what a view is culled by); `transform` (object to world, sixteen numbers row major); `revision`, `movedAt`, `paintedAt`; `static`; `origin`; and, once fitted, `appearance` |
+| `pieces[].origin` | `kind`: `"converted"` (from geometry, whole), `"discovered"` (what a camera saw) or `"generated"` (filled in by another system); `camera` and `time`: what found it and when; `snapshot`: the snapshot it came in at, counted from one (absent: it was there before any look); `footprint`: the side in pixels of the cell each of its gaussians was made of (a render's) |
+| `pieces[].gone`, `removed` | its `.gone` and how many gaussians it stamps; absent until one is. Taking gaussians out raises the piece's `revision` and `movedAt` |
+| `pieces[].refined`, `refinedCount` | its `.refined` and how many gaussians it stamps; absent until one is |
+| `pieces[].prims` | its `.prims`; absent where the piece keeps no ids |
+| `pieces[].lights` | the snapshots at which a frame said the light of the piece's gaussians anew (`shoot --relight`), in order. Each is a file beside the piece, `<cloud>.l<snapshot>`, laid out as an `.athg` of four floats a record: which gaussian of the piece, and its colour as a record keeps one. Absent until a frame does |
+| `pieces[].seen`, `discovered` | its `.seen` and how many gaussians the looks have found; absent until a look is taken |
+| `pieces[].appearance` | `file` (its `.athn`); `lit`; `split`; `fit`: `steps`, `against` (`"harmonics"`), `relMSE`, `p99`, `max` as the device measured them from the held-out cameras |
+| `lights[]` | `name`, `kind` (`"distant"` or `"dome"`), `towards`, `radiance`: what the pieces were made under; recorded, and read by nothing yet |
+| `cameras[]` | `name`, `eye`, `target`, `up`, `focal` (mm, over a 24.576 mm aperture) |
+| `snapshots[]` | one look: `time` (the stage's), `camera`, `pieces` (those it added); and, of a render's, `samples` (the paths a pixel it had), `footprint` (the side of its cells) and `taken` (when, by the clock, ISO 8601). A stamp is a snapshot's place here, counted from one |
+| `frames[]` | one rendered frame: `time`, `camera`, `width`, `height`, `samples`, `firstSnapshot` and `lastSnapshot` (its looks), `seconds`, `taken` |
+
+`revision` goes up each time a piece's gaussians, stamps or appearance are
+written, and `static` says its gaussians do not move from frame to frame: what
+a renderer keeps of a piece it keeps while the revision stands. `movedAt` and
+`paintedAt` are the revisions at which it last moved and at which what it is
+made of last changed: a fit raises `paintedAt` alone, new gaussians or stamps
+raise both. A manifest without these keys reads as converted, moved and
+painted at its revision, and with no snapshots.
+
+*What it is handed on as.* The directory is how a scene is kept; two commands
+write what other programs read, and both lose the stamps and the material:
+
+| Command | Files | What they hold |
+|---|---|---|
+| `neural-scene bake` | a `.athc` | the finest gaussians standing at a snapshot, as one cloud, with the engine's merged levels of detail built over it: for `athenea render --lod`, a stage, a stream |
+| `neural-scene export` | `<stem>_NNN.spz` and `<stem>.json` | the same gaussians as SPZ (version 3, no harmonics above the first) in parts under a size, for a viewer on the web. The JSON is the index: `name`, `upAxis`, `metersPerUnit`, `spread` and, where the scene has frames, `frameSize` (the pixels of the frames it was found from: a viewer drawing on more pixels widens its filter by as much), `growing` (more parts may come), `gaussians`, `min`, `max`, `parts[]` (`file`, `gaussians`, and of a frame's part `frame`, `time`, `camera`, `seconds`; and where the part holds solid glass, `glass`: `file`, `gaussians`, `ior`, `tint`; and where it holds polished metal, `mirror`: `file`, `gaussians`; and with `--history`, `history[]`: the same of what stood only for a while, each with `until`), `levels[]` (with `--levels`: `budget`, `width` in the scene's units, `gaussians`, and `parts[]` as above) and `cameras[]`. Positions are the scene's own: a viewer turns and scales them. A part's solid glass is in a file of its own, `<stem>_NNN_glass.spz`, and its polished metal (metallic from 0.5, roughness to 0.12) in `<stem>_NNN_mirror.spz`: the same gaussians with the picture a look saw in them. A viewer that knows how shades them by the eye (the example page does: glass from `ior` and `tint`, a mirror as a mirror), and one that does not draws them as they are. `shoot --grow` writes the same, without the ids below. Where the scene names its prims (and not with `--no-prims`), the index carries `prims[]` -- `path` and `id`, the prim's Cryptomatte id in eight hex digits, in ascending order of id -- and every entry that names a file names its ids beside it (`ids` in a part, in its `glass`, in its `mirror`, and the same in a level's parts and in a `history[]` entry): `<the file's stem>.ids`, gzip around sixteen bits a gaussian, little endian, in the file's own order -- a history's in its spans' -- each the prim's place in `prims[]` counted from one, 0 for a gaussian no prim names (what a pane shows behind it). A viewer shows an object by them (the example page: `?object=<prim path>&object.view=matte|isolate|highlight`, the prims at or under the path as `render --matte` reads one); one that does not know them plays the scene as before, and the page plays an index without them and shows no objects. The index also says how the scene is drawn (`antialiased` and `spread`, as the manifest's): a viewer that draws with the Mip-Splatting compensation by default -- Spark's `blurAmount` -- draws a scene that says `false` spread and not thinned (`preBlurAmount`), or its surfaces show through. |
+
 **Images written.** OpenEXR, linear premultiplied, bottom row first inside the
 engine and written top row first as the format wants. A frame is half by
 default with a `Z` channel; a render product's channels follow its vars, and a
-Cryptomatte layer is always float. PNG is written only as the MCP preview.
+Cryptomatte layer is always float. PNG is written as the MCP preview and by
+`athenea neural-scene render -o x.png`.
 
 ### 8.2.1 Kinds of gaussians
 
@@ -3257,6 +3722,9 @@ surfels in levels of detail is one cloud.
 | `athenea info` | a report on standard output |
 | `athenea render` | one EXR: half RGBA and `Z` |
 | `athenea bench` | nothing; timings on standard output |
+| `athenea lift` | the EXR of `-o`: the `--eye` frame keyed by the matte, and its depth |
+| `athenea neural-fit` | measures on standard output; with `--save`, a `.athn`; with `-o`, EXR frames |
+| `athenea neural-scene` | a `.aths` directory: `scene.json`, the pieces' clouds copied in, a `.athn` a fitted piece, a `.athg` a look of `shoot`'s; `render -o`, EXR frames or PNG pictures |
 | `athenea convert` | a USD stage, or a `.athc` |
 | `athenea stage` | one EXR; or, with `--render-settings`, one per product |
 | `athenea view` | nothing, or one EXR with `--snapshot` |

@@ -3,6 +3,12 @@ athenea_add_module(render
     SOURCES
         src/Camera.cpp
         src/SplatQuery.cpp
+        src/SplatLift.cpp
+        src/NeuralAppearance.cpp
+        src/NeuralFit.cpp
+        src/NeuralWall.cpp
+        src/Discovery.cpp
+        src/SceneGlass.cpp
         src/TileRasterizer.cpp
         src/Flatten.cpp
         src/ReferenceRenderer.cpp

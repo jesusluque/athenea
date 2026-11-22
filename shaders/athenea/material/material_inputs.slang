@@ -263,7 +263,7 @@ public float atheneaDdy(float v) {
 public float2 atheneaDdx(float2 v) { return float2(atheneaDdx(v.x), atheneaDdx(v.y)); }
 public float2 atheneaDdy(float2 v) { return float2(atheneaDdy(v.x), atheneaDdy(v.y)); }
 
-public void atheneaBeginInputs(MaterialInputs inputs, uint blob) {
+public void atheneaBeginInputs(__constref MaterialInputs inputs, uint blob) {
     gAtheneaInputs = inputs;
     gAtheneaBlob = blob;
 }

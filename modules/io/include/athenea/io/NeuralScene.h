@@ -1,0 +1,248 @@
+// Copyright (c) 2026 jesus luque.
+//
+// A NEURAL SCENE ON DISK: a directory, `<name>.aths`, of a scene kept in
+// pieces. A piece is a part of the scene that is converted, fitted, loaded
+// and changed on its own -- a floor of a building, a prop, a character: its
+// gaussians, and the neural appearance they are drawn by. The manifest says
+// what the pieces are and where they stand, what lights and cameras the
+// scene was made with, and when each piece last changed.
+//
+//   <name>.aths/
+//     scene.json                 the manifest: this header's structs
+//     pieces/<id>.usda|.usdc|…   a piece's gaussians (a USD ParticleField as
+//                                athenea mesh2splat writes one, or a splat file)
+//     pieces/<id>.athn           its neural appearance (NeuralFile.h), once fitted
+//     pieces/<id>.seen           which look first saw each gaussian: a uint32 a gaussian, little
+//                                endian, the snapshot's place in `snapshots` counted from one, 0 for none
+//     pieces/<id>.gone           which look found each gaussian gone, the same way
+//     pieces/<id>.refined        which look laid finer gaussians over each, the same way
+//     pieces/<id>.prims          which prim each gaussian was made from: a uint32 a gaussian, little
+//                                endian, the Cryptomatte id of the prim's path (`prims` in the
+//                                manifest says which path an id is), 0 where the frame named none
+//     pieces/<id>.athg           the gaussians a render of the engine's own left (`neural-scene shoot`):
+//                                "ATHG", a version, how many and how many floats each (four uint32,
+//                                little endian), then the records as render::Discovery lays them out
+//
+// THE SCENE IS KEPT, NOT REPLACED. A look adds a piece and stamps what it
+// found gone; nothing is taken off the disk. A piece says the snapshot it
+// came in at (`foundIn`) and each gaussian the one it went at (`.gone`), and
+// a snapshot says when it was: so the scene as it stood at any time is the
+// pieces in by then less the gaussians gone by then (`neural-scene render --at`).
+//
+// Every path in the manifest is relative to the directory, so a scene moves
+// as a directory does. The manifest is read and written here and nothing is
+// computed: counts, bounds and measures are what the device said when the
+// piece was added or fitted.
+//
+// `revision` goes up each time a piece's gaussians or appearance are written,
+// and `static` says its gaussians do not move from frame to frame: what a
+// renderer keeps of a piece (its matt colours, a still frame's geometry) it
+// keeps while the revision stands. Two stamps say what kind of change the
+// last one was -- where the piece stands, or what it is made of -- since
+// what must be done again differs: a piece that only moved keeps its matt
+// colours, a piece that was only repainted keeps its place in every sort.
+//
+// A SCENE THAT IS FOUND, NOT ONLY CONVERTED. A piece says where it came from
+// (`origin`): converted whole from geometry, discovered by a render -- the
+// gaussians one camera saw at one time, placed in the world -- or generated
+// by something that fills what no camera has seen. `snapshots` is the
+// scene's history: each a time, the camera that looked, and the pieces it
+// added or changed, so that the scene at a time is the pieces of the
+// snapshots up to it.
+#pragma once
+
+#include <array>
+#include <cstdint>
+#include <filesystem>
+#include <map>
+#include <optional>
+#include <span>
+#include <string>
+#include <vector>
+
+#include "athenea/core/Result.h"
+
+namespace athenea::io {
+
+/// What a piece's appearance was fitted to, and how close it came.
+struct NeuralSceneFit {
+    uint32_t    steps = 0;
+    std::string against;        ///< "harmonics": the piece's own baked harmonics
+    double      relMse = 0.0;
+    double      p99 = 0.0;      ///< 8-bit code values
+    uint32_t    max = 0;
+};
+
+struct NeuralScenePiece {
+    std::string            id;            ///< a file-safe name, unique in the scene
+    std::string            prim;          ///< where it came from in the source stage, if anywhere
+    std::string            cloud;         ///< its gaussians, relative to the scene
+    uint32_t               gaussians = 0;
+    std::array<float, 3>   boundsMin{};
+    std::array<float, 3>   boundsMax{};
+    /// Where the piece stands: object to world, row major, identity where it
+    /// was converted in the scene's own space.
+    std::array<double, 16> transform{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    std::string            appearance;    ///< its `.athn`, relative to the scene; empty: its harmonics
+    bool                   lit = false;   ///< the appearance answers a light rather than holding one
+    bool                   split = false; ///< two networks: what is the same from everywhere, and what the view adds
+    uint32_t               revision = 1;
+    bool                   isStatic = true;
+    /// The `revision` at which the piece last moved, and at which what it is
+    /// made of last changed (its gaussians' colours, its appearance).
+    uint32_t               movedAt = 1;
+    uint32_t               paintedAt = 1;
+    /// "converted" (from geometry, whole), "discovered" (what a camera saw)
+    /// or "generated" (filled in by another system); and, where a camera
+    /// found it, which and at what time.
+    std::string            origin = "converted";
+    std::string            foundBy;
+    double                 foundAt = 0.0;
+    /// What the looks have found of it: its `.seen`, relative to the scene
+    /// (empty: no look has been taken), and how many gaussians that is.
+    std::string            seen;
+    uint32_t               discovered = 0;
+    /// What later looks saw through: its `.gone`, a uint32 a gaussian as a
+    /// `.seen` is (the look that found it gone, 0 while it stands), and how
+    /// many that is. Those gaussians are drawn by nothing.
+    std::string            gone;
+    uint32_t               removed = 0;
+    /// What finer looks were laid over: its `.refined`, a uint32 a gaussian
+    /// as a `.gone` is (the look that made finer gaussians over it, 0 while
+    /// it is the finest there), and how many that is. They are not gone:
+    /// they are the level above, drawn from where the finer ones are too
+    /// fine to matter.
+    std::string            refined;
+    uint32_t               refinedCount = 0;
+    /// THE LIGHT TAKEN AGAIN: the snapshots at which a frame said the light
+    /// of this piece's gaussians anew, in order. Each is a file beside the
+    /// piece, `<cloud>.l<snapshot>`, four floats a gaussian the frame spoke
+    /// of (which one of the piece's, and its colour as a record keeps one):
+    /// the piece at a time is its records with the layers up to that time
+    /// laid over them.
+    std::vector<uint32_t>  lights;
+    /// WHICH PRIM EACH GAUSSIAN WAS MADE FROM: its `.prims`, relative to the
+    /// scene (empty: the piece keeps none -- it was shot before a scene did,
+    /// or by a frame that named nothing). A uint32 a gaussian, as a `.seen`
+    /// is laid out: the Cryptomatte id of the prim's path (NeuralScene::prims).
+    std::string            prims;
+    /// The snapshot the piece came in at, counted from one (0: it was there
+    /// before any look), and the side in pixels of the cell each of its
+    /// gaussians was made of (0: not a render's).
+    uint32_t               foundIn = 0;
+    uint32_t               footprint = 0;
+    std::optional<NeuralSceneFit> fit;
+};
+
+struct NeuralSceneLight {
+    std::string          name;
+    std::string          kind;                       ///< "distant" | "dome"
+    std::array<float, 3> towards{0.0F, 0.0F, 1.0F};  ///< a distant light: a unit vector towards it
+    std::array<float, 3> radiance{1.0F, 1.0F, 1.0F};
+};
+
+struct NeuralSceneCamera {
+    std::string           name;
+    std::array<double, 3> eye{};
+    std::array<double, 3> target{};
+    std::array<double, 3> up{0.0, 1.0, 0.0};
+    double                focal = 35.0;   ///< mm
+};
+
+/// One look at the scene: when, through which camera, and the pieces it
+/// added or changed.
+struct NeuralSceneSnapshot {
+    double                   time = 0.0;
+    std::string              camera;
+    std::vector<std::string> pieces;
+    /// A look taken while its render was still gathering: the paths a pixel
+    /// it had by then and the side of the cells it was taken at (0: a
+    /// finished frame's), and when it was taken, as the clock said (ISO 8601).
+    uint32_t                 samples = 0;
+    uint32_t                 footprint = 0;
+    std::string              taken;
+};
+
+/// A frame a render took into the scene (`neural-scene shoot`): the stage's
+/// time, the camera and the size it was drawn at, the paths a pixel it
+/// gathered, the snapshots that are its looks (the first and the last,
+/// counted from one), how long it took and when. A frame is drawn again from
+/// the scene as it stood at its last snapshot, through its camera.
+struct NeuralSceneFrame {
+    double      time = 0.0;
+    std::string camera;
+    uint32_t    width = 0;
+    uint32_t    height = 0;
+    uint32_t    samples = 0;
+    uint32_t    firstSnapshot = 0;
+    uint32_t    lastSnapshot = 0;
+    double      seconds = 0.0;
+    std::string taken;
+};
+
+struct NeuralScene {
+    /// 2 added a piece's `foundIn` and `footprint` and a snapshot's `samples`,
+    /// `footprint` and `taken`; a version 1 manifest is read as it is.
+    static constexpr uint32_t kVersion = 2;
+
+    std::string name;
+    std::string upAxis = "Y";             ///< "Y" | "Z"
+    double      metersPerUnit = 1.0;
+    /// How the scene's gaussians are drawn: with the Mip-Splatting 2D filter's
+    /// compensation (a gaussian spread a third of a pixel pays for it in
+    /// opacity), or without it (`false`: spread and as opaque as it was made,
+    /// which is what closes a surface of discs narrower than a pixel).
+    bool        antialiased = true;
+    /// The standard deviation its discs were made with, in pixels of the eye
+    /// that found each (`shoot --spread`); 0: not said. A scene drawn without
+    /// the compensation pays it only under this width (RenderSettings::madeSpread).
+    float       spread = 0.0f;
+    /// Its gaussians keep the base colour of the surface under each, apart
+    /// from the light a look saw leave it (what is opaque: in the record's
+    /// tint): what a lamp added after is multiplied by (`render --lamps`).
+    bool        baseColour = false;
+    /// THE GROUPS OF LIGHTS IT KEEPS A LAYER OF (`shoot --light-group`): each
+    /// is light path traced under that group alone, a gaussian, in files
+    /// beside the pieces (`<cloud>.g.<group>.<frame>`: which gaussian of the
+    /// piece, and the light it sends, linear). The scene drawn is its own
+    /// light and each group's times a level (`render --group`).
+    std::vector<std::string> lightGroups;
+    /// WHAT THE IDS ITS GAUSSIANS KEEP ARE CALLED (a piece's `.prims`): the
+    /// stage's prim paths, each with its Cryptomatte id -- the hash of the
+    /// path (athenea::core::cryptomatteId), so a stage shot again names its
+    /// prims the same. Written as a Cryptomatte manifest is: path to eight
+    /// hex digits. Empty: the scene keeps no identity (`render --matte` says so).
+    std::map<std::string, uint32_t> prims;
+    std::string source;                   ///< the stage the pieces were converted from
+    std::string licence;                  ///< what the source asks of whoever uses it
+    std::vector<NeuralScenePiece>  pieces;
+    std::vector<NeuralSceneLight>  lights;
+    std::vector<NeuralSceneCamera> cameras;
+    std::vector<NeuralSceneSnapshot> snapshots;
+    std::vector<NeuralSceneFrame> frames;
+
+    [[nodiscard]] NeuralScenePiece* piece(const std::string& id);
+    /// The box round every piece's own, as the manifest has them.
+    void bounds(std::array<float, 3>& min, std::array<float, 3>& max) const;
+};
+
+/// A piece's `.seen`: `count` uint32, as they are.
+[[nodiscard]] Result<std::vector<uint32_t>> readSeen(const std::filesystem::path& path, uint32_t count);
+[[nodiscard]] Result<void> writeSeen(const std::filesystem::path& path, const std::vector<uint32_t>& seen);
+
+/// A piece's `.athg`: records of `floats` float32 each, as they are.
+struct GaussianRecords {
+    uint32_t           count = 0;
+    uint32_t           floats = 0;
+    std::vector<float> records;
+};
+[[nodiscard]] Result<GaussianRecords> readGaussians(const std::filesystem::path& path);
+[[nodiscard]] Result<void> writeGaussians(const std::filesystem::path& path, uint32_t count, uint32_t floats,
+                                          std::span<const float> records);
+
+/// `directory`/scene.json.
+[[nodiscard]] Result<NeuralScene> readNeuralScene(const std::filesystem::path& directory);
+/// Writes the manifest, making the directory and its `pieces` where they are not.
+[[nodiscard]] Result<void> writeNeuralScene(const std::filesystem::path& directory, const NeuralScene& scene);
+
+}   // namespace athenea::io

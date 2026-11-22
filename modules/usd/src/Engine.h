@@ -263,6 +263,10 @@ struct AovLayout {
 /// Which image an AOV reads.
 enum class AovKind {
     Colour, Depth, PrimId, InstanceId, ElementId, EyeNormal, WorldNormal, Primvar, Albedo, ShadingNormal, LightGroup,
+    /// What the path tracer's first hit is made of and what stands behind it
+    /// (technique::PathAux): `material`, `materialRow`, `throughPosition`, `throughTint`,
+    /// `transmissionColour`.
+    Material, MaterialRow, ThroughPosition, ThroughTint, TransmissionColour,
     /// A Cryptomatte layer: `AovSource::primvar` is which of them (0, 1, 2),
     /// each a float4 of two (id, coverage) ranks.
     Crypto
@@ -567,6 +571,24 @@ public:
     /// Let the path tracer's shadow rays through glass whose transmission
     /// is a delta, tinted (technique::PathSettings::glassShadows). On by default.
     void setGlassShadows(bool glass);
+    /// The light a path's bounce takes where it lands, in cells of the world
+    /// (technique::PathSettings::sceneCache); an invalid buffer for none. Set
+    /// between frames, by the thread that draws. Each call is a new revision.
+    void setSceneCache(const gpu::Buffer& cells, uint32_t side, uint32_t planes, const std::array<float, 3>& min,
+                       float cell) {
+        sceneCache_ = cells;
+        sceneCacheSide_ = side;
+        sceneCachePlanes_ = planes;
+        sceneCacheMin_ = min;
+        sceneCacheCell_ = cell;
+        ++sceneCacheRevision_;
+    }
+    /// Whether a stage with no light is lit from the eye by the path tracer
+    /// (technique::PathSettings::headlight). On by default; off, such a stage
+    /// is dark but for what glows.
+    void setHeadlight(bool headlight);
+    /// How far the path tracer's rays leave a surface (technique::PathSettings::rayMargin).
+    void setRayMargin(float margin);
     void setPathError(float error);
 
     /// How many paths a pixel the path traced frame on screen has gathered,
@@ -574,6 +596,10 @@ public:
     /// path traced one has nothing to gather and is always finished.
     [[nodiscard]] uint32_t pathAccumulated() const noexcept;
     [[nodiscard]] bool pathConverged() const noexcept;
+    /// The next path traced frame starts its mean again though nothing
+    /// changed: an image asked for twice is the same image, not the first
+    /// with a pass more.
+    void restartPaths() noexcept { pathRestart_.store(true); }
     /// The mesh pools' generation (a repack each) and positions revision (a
     /// deformation in place each), so a host can tell which one a change was.
     [[nodiscard]] uint64_t meshGeneration() const noexcept;
@@ -847,6 +873,17 @@ private:
     /// a pixel each, the means in `colour` and the path tracer's sums in
     /// `sum`; sized for `lightGroupPixels_`.
     gpu::Buffer                               lightGroupColour_;
+    // What a bounce meets, known already (technique::PathSettings::sceneCache): set by whoever keeps it.
+    gpu::Buffer                               sceneCache_;
+    uint32_t                                  sceneCacheSide_ = 0;
+    uint32_t                                  sceneCachePlanes_ = 0;
+    std::array<float, 3>                      sceneCacheMin_{0.0F, 0.0F, 0.0F};
+    float                                     sceneCacheCell_ = 0.0F;
+    uint64_t                                  sceneCacheRevision_ = 0;
+    gpu::Buffer                               groupPlane_;   ///< one group's plane, while it is denoised
+    bool                                      groupRestValid_ = false;   ///< the plane after the groups' holds this frame's rest
+    std::optional<gpu::ComputeKernel>         groupsWhole_;  ///< a denoised frame's groups made to add up to it
+    std::optional<gpu::ComputeKernel>         groupsRest_;   ///< what no group holds of a path traced frame
     uint32_t                                  lightGroupCount_ = 0;
     uint64_t                                  lightGroupPixels_ = 0;
     std::optional<technique::Denoiser>        denoiser_;     ///< made on first use
@@ -932,6 +969,8 @@ private:
     std::atomic<bool>                         pathAdaptive_{false};
     std::atomic<bool>                         pathMis_{true};
     std::atomic<bool>                         glassShadows_{true};
+    std::atomic<bool>                         headlight_{true};
+    std::atomic<float>                        rayMargin_{1.0e-3F};
     std::atomic<bool>                         domeVisible_{true};
     std::atomic<bool>                         screenSpaceReflections_{false};
     std::atomic<uint32_t>                     meshAntialias_{0};
@@ -986,6 +1025,8 @@ private:
         bool         adaptive = false;
         bool         mis = true;
         bool         glassShadows = true;
+        bool         headlight = true;
+        float        rayMargin = 1.0e-3F;
         bool         cameraMoves = false;
         render::Mat4 cameraStart = render::Mat4::identity();
         render::Mat4 cameraEnd = render::Mat4::identity();
@@ -1012,7 +1053,7 @@ private:
                    lensRadius == o.lensRadius && focusDistance == o.focusDistance &&
                    distortionK1 == o.distortionK1 && distortionK2 == o.distortionK2 && width == o.width &&
                    height == o.height && samples == o.samples && bounces == o.bounces && adaptive == o.adaptive && mis == o.mis &&
-                   glassShadows == o.glassShadows &&
+                   glassShadows == o.glassShadows && headlight == o.headlight && rayMargin == o.rayMargin &&
                    error == o.error && revision == o.revision && tags == o.tags && traced == o.traced;
         }
     };
@@ -1028,6 +1069,7 @@ private:
     /// Sync -- so this frame and the one that resamples are not converged,
     /// however many paths they hold.
     std::atomic<int>                          shutterSettle_{0};
+    std::atomic<bool>                         pathRestart_{false};
     /// A bit per category name, as they are first seen: a prim's mask and a
     /// light's link have to agree on the numbering, and this is the only
     /// place that sees both. Past 64 names a category cannot be represented

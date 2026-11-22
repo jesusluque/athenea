@@ -57,6 +57,8 @@
 #include <pxr/usd/usdSkel/utils.h>
 #include <pxr/usd/usdLux/domeLight.h>
 #include <pxr/usd/usdLux/lightAPI.h>
+#include <pxr/usd/usdLux/shapingAPI.h>
+#include <pxr/usd/usdLux/sphereLight.h>
 #include <pxr/usd/usdRender/pass.h>
 #include <pxr/usd/usdRender/settings.h>
 #include <pxr/usd/usdVol/particleField3DGaussianSplat.h>
@@ -87,6 +89,7 @@ namespace athenea::usd {
 
 struct StageRenderer::Impl {
     UsdStageRefPtr                         stage;
+    std::vector<std::string>               groupOutputs;       ///< the light groups asked for as outputs, in order
     std::function<uint64_t()>              liveClock;          ///< setLiveClock's, handed over at execute
     bool                                   liveClockSet = false;
     std::unique_ptr<HdAtheneaRenderDelegate>   delegate;
@@ -683,6 +686,31 @@ Result<void> StageRenderer::setLightOn(const std::string& prim, bool on) {
     return ok();
 }
 
+void StageRenderer::setSceneCache(const gpu::Buffer& cells, uint32_t side, uint32_t planes,
+                                  const std::array<float, 3>& min, float cell) {
+    auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
+    if (Engine* engine = param != nullptr ? param->GetEngine() : nullptr; engine != nullptr) {
+        engine->setSceneCache(cells, side, planes, min, cell);
+    }
+}
+
+Result<void> StageRenderer::setLightGroup(const std::string& prim, const std::string& group) {
+    Impl& impl = *impl_;
+    const UsdPrim carrier = impl.stage->GetPrimAtPath(SdfPath(prim));
+    if (!carrier || !carrier.HasAPI<UsdLuxLightAPI>()) {
+        return Error(ErrorCode::NotFound, "no light at " + prim);
+    }
+    {
+        const UsdEditContext session(impl.stage, impl.stage->GetSessionLayer());
+        const UsdAttribute named = carrier.CreateAttribute(TfToken("athenea:lightGroup"), SdfValueTypeNames->String, false);
+        if (!named || !named.Set(group)) {
+            return Error(ErrorCode::InternalError, "cannot name the group of " + prim);
+        }
+    }
+    impl.sceneIndices.stageSceneIndex->ApplyPendingUpdates();
+    return ok();
+}
+
 const LightRig& StageRenderer::lightRig() const {
     return impl_->lightRig;
 }
@@ -1174,10 +1202,14 @@ GaussianStats StageRenderer::gaussianStats() const {
 
 void StageRenderer::requestOutputs(const std::vector<std::string>& aovs) {
     TfTokenVector outputs{HdAovTokens->color, HdAovTokens->depth};
+    impl_->groupOutputs.clear();
     for (const std::string& aov : aovs) {
         const TfToken token(aov);
         if (std::find(outputs.begin(), outputs.end(), token) == outputs.end()) {
             outputs.push_back(token);
+            if (aov.rfind("lightGroup:", 0) == 0) {
+                impl_->groupOutputs.push_back(aov.substr(11));   // numbered in this order by the render pass
+            }
         }
     }
     impl_->controller->SetRenderOutputs(outputs);
@@ -1380,12 +1412,19 @@ void StageRenderer::setMeshAntialias(uint32_t samples) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:meshAntialias"), VtValue(static_cast<int>(samples)));
 }
 
+void StageRenderer::setHeadlight(bool headlight) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:headlight"), VtValue(headlight));
+}
+
 void StageRenderer::setGlassShadows(bool glass) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:glassShadows"), VtValue(glass));
 }
 
 void StageRenderer::setPathAdaptive(bool adaptive) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:pathAdaptive"), VtValue(adaptive));
+}
+void StageRenderer::setRayMargin(float margin) {
+    impl_->delegate->SetRenderSetting(TfToken("athenea:rayMargin"), VtValue(margin));
 }
 void StageRenderer::setPathError(float error) {
     impl_->delegate->SetRenderSetting(TfToken("athenea:pathError"), VtValue(error));
@@ -2134,6 +2173,12 @@ Result<void> StageRenderer::executeUntilGathered(uint32_t width, uint32_t height
     // for: the pass reports itself unconverged until then, and a frame that is
     // not path traced is whole at once. The cap is against a total no pass
     // count could reach.
+    // And it is its own image: the frame before it, were it the same view,
+    // is not added to.
+    if (auto* param = static_cast<HdAtheneaRenderParam*>(impl_->delegate->GetRenderParam());
+        param != nullptr && param->GetEngine() != nullptr) {
+        param->GetEngine()->restartPaths();
+    }
     for (uint32_t pass = 0; pass < 65536; ++pass) {
         ATHENEA_TRY(execute(width, height));
         if (pathConverged()) {
@@ -2320,6 +2365,35 @@ Result<technique::DisplaySource> StageRenderer::displaySource(const std::string&
     } else if (aov == "Neye" || aov == "normal") {
         source.kind = aov == "Neye" ? AovKind::EyeNormal : AovKind::WorldNormal;
         shown.kind = technique::DisplaySource::Kind::Vector;
+    } else if (aov == "albedo" || aov == "shadingNormal" || aov == "material" || aov == "materialRow" ||
+               aov == "throughPosition" || aov == "throughTint" || aov == "transmissionColour") {
+        // The path tracer's planes (technique::PathAux), a float4 a pixel.
+        source.kind = aov == "albedo"            ? AovKind::Albedo
+                      : aov == "shadingNormal"   ? AovKind::ShadingNormal
+                      : aov == "material"        ? AovKind::Material
+                      : aov == "materialRow"     ? AovKind::MaterialRow
+                      : aov == "throughPosition" ? AovKind::ThroughPosition
+                      : aov == "throughTint"     ? AovKind::ThroughTint
+                                                 : AovKind::TransmissionColour;
+        shown.kind = technique::DisplaySource::Kind::Vector;
+    } else if (aov == "lightGroupRest") {
+        // What no light group holds of a path traced frame: the plane after the groups'.
+        if (impl_->groupOutputs.empty()) {
+            return Error(ErrorCode::InvalidArgument, "no light group is among the outputs asked for");
+        }
+        source.kind = AovKind::LightGroup;
+        source.primvar = static_cast<uint32_t>(impl_->groupOutputs.size());
+        shown.kind = technique::DisplaySource::Kind::Colour;
+    } else if (aov.rfind("lightGroup:", 0) == 0) {
+        // A light group's plane: the groups are numbered as the outputs asked for them stand (requestOutputs).
+        const auto at = std::find(impl_->groupOutputs.begin(), impl_->groupOutputs.end(), aov.substr(11));
+        if (at == impl_->groupOutputs.end()) {
+            return Error::make(ErrorCode::InvalidArgument, "the light group '{}' is not among the outputs asked for",
+                               aov.substr(11));
+        }
+        source.kind = AovKind::LightGroup;
+        source.primvar = static_cast<uint32_t>(at - impl_->groupOutputs.begin());
+        shown.kind = technique::DisplaySource::Kind::Colour;
     } else {
         return Error::make(ErrorCode::InvalidArgument, "no display for AOV '{}'", aov);
     }
@@ -2624,8 +2698,71 @@ char StageRenderer::upAxis() const {
     return UsdGeomGetStageUpAxis(impl_->stage) == UsdGeomTokens->z ? 'Z' : 'Y';
 }
 
+double StageRenderer::metersPerUnit() const {
+    return UsdGeomGetStageMetersPerUnit(impl_->stage);
+}
+
 double StageRenderer::endTimeCode() const {
     return impl_->stage->GetEndTimeCode();
+}
+
+Result<std::vector<StageLamp>> readStageLamps(const std::filesystem::path& file, double time, uint32_t& skipped) {
+    PXR_NAMESPACE_USING_DIRECTIVE
+    skipped = 0;
+    const UsdStageRefPtr stage = UsdStage::Open(file.string());
+    if (!stage) {
+        return Error(ErrorCode::NotFound, "cannot open " + file.string());
+    }
+    const UsdTimeCode at(time);
+    std::vector<StageLamp> out;
+    for (const UsdPrim& prim : stage->Traverse()) {
+        if (!prim.HasAPI<UsdLuxLightAPI>()) {
+            continue;
+        }
+        const UsdLuxLightAPI light(prim);
+        const bool sphere = prim.IsA<UsdLuxSphereLight>();
+        const bool distant = prim.IsA<UsdLuxDistantLight>();
+        bool normalised = false;
+        light.GetNormalizeAttr().Get(&normalised, at);
+        if ((!sphere && !distant) || normalised) {
+            ++skipped;
+            continue;
+        }
+        StageLamp lamp;
+        lamp.prim = prim.GetPath().GetString();
+        lamp.distant = distant;
+        float intensity = 1.0F;
+        float exposure = 0.0F;
+        GfVec3f colour(1.0F);
+        light.GetIntensityAttr().Get(&intensity, at);
+        light.GetExposureAttr().Get(&exposure, at);
+        light.GetColorAttr().Get(&colour, at);
+        const float sent = intensity * std::pow(2.0F, exposure);
+        lamp.radiance = {sent * colour[0], sent * colour[1], sent * colour[2]};
+        const GfMatrix4d toWorld = UsdGeomXformable(prim).ComputeLocalToWorldTransform(at);
+        const GfVec3d where = toWorld.ExtractTranslation();
+        const GfVec3d sends = toWorld.TransformDir(GfVec3d(0.0, 0.0, -1.0)).GetNormalized();
+        lamp.position = {where[0], where[1], where[2]};
+        lamp.sends = {sends[0], sends[1], sends[2]};
+        if (sphere) {
+            float radius = 0.5F;
+            UsdLuxSphereLight(prim).GetRadiusAttr().Get(&radius, at);
+            // The radius is the prim's own: in the world it is as large as the prim's transform makes it.
+            lamp.radius = radius * static_cast<float>(toWorld.TransformDir(GfVec3d(1.0, 0.0, 0.0)).GetLength());
+            if (prim.HasAPI<UsdLuxShapingAPI>()) {
+                float cone = 90.0F;
+                if (UsdLuxShapingAPI(prim).GetShapingConeAngleAttr().Get(&cone, at) && cone < 90.0F) {
+                    lamp.cone = cone;
+                }
+            }
+        } else {
+            float angle = 0.53F;
+            UsdLuxDistantLight(prim).GetAngleAttr().Get(&angle, at);
+            lamp.angle = angle;
+        }
+        out.push_back(std::move(lamp));
+    }
+    return out;
 }
 
 }   // namespace athenea::usd

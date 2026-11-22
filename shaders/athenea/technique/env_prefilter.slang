@@ -53,7 +53,7 @@ ConstantBuffer<EnvPrefilterParams> params;
 static const float kPrefilterPi = 3.14159265358979;
 
 /// A texel of the source, along `dir`, at `level`.
-float3 skyAt(LightRecord light, float3 dir, float level) {
+float3 skyAt(__constref LightRecord light, float3 dir, float level) {
     if (light.texture == 0xFFFFFFFFu) {
         return float3(1.0);
     }
@@ -67,7 +67,7 @@ float3 skyAt(LightRecord light, float3 dir, float level) {
 /// texels cut, a copy of the source's level `residualLevel` with its own mips,
 /// read at `level` of the source -- the same texels, the same solid-angle
 /// mips, less the sun. A dome with no image reads as it always did.
-float3 skyResidualAt(LightRecord light, float3 dir, float level) {
+float3 skyResidualAt(__constref LightRecord light, float3 dir, float level) {
     if (light.texture == 0xFFFFFFFFu) {
         return skyAt(light, dir, level);
     }

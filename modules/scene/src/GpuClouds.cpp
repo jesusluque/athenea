@@ -68,6 +68,7 @@ void setDecodeParams(rhi::ShaderCursor cursor, const io::SplatEncoding& e, uint3
     p["transferBase"].setData(e.transferBase);
     p["transferCount"].setData(e.transferCount);
     p["transferWords"].setData((e.transferCount + 1) / 2);
+    p["keepFaint"].setData(uint32_t{0});
     p["shadowBits"].setData(e.shadowBits);
     p["shadowWords"].setData(e.shadowWords);
     p["recordBase"].setData(recordBase);
@@ -260,6 +261,7 @@ Result<void> CloudLoader::decodeInto(gpu::CommandBatch& batch, const gpu::Buffer
         cursor["raw"].setBinding(raw.rhi());
         cursor["valid"].setBinding(scratch.valid.rhi());
         setDecodeParams(cursor, e, n, written, keep, splats.shWords, recordBase);
+        cursor["params"]["keepFaint"].setData(uint32_t{keepFaint_ ? 1u : 0u});
     });
     ATHENEA_TRY(prefix_.apply(batch, scratch.valid, scratch.dest, scratch.total, n));
     // The decode does not need the total, so it is queued now: `base` is

@@ -46,7 +46,7 @@ public struct Best {
 };
 
 /// Moller-Trumbore, t in (tMin, best.t).
-void triangleHit(inout Best best, float3 origin, float3 direction, float tMin, MeshRecord m, uint instance,
+void triangleHit(inout Best best, float3 origin, float3 direction, float tMin, __constref MeshRecord m, uint instance,
                  uint triangle) {
     const uint base = (m.firstTriangle + triangle) * 3;
     const float3 a = positions[m.firstPoint + indices[base]].xyz;

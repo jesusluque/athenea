@@ -5,7 +5,7 @@
 // for the path tracer's media (M9).
 #include "pbrlib/genglsl/lib/mx_closure_type.glsl"
 
-void athenea_layer_vdf(ClosureData closureData, BSDF top, VDF base, out BSDF result)
+void athenea_layer_vdf(ClosureData closureData, __constref BSDF top, VDF base, out BSDF result)
 {
     result = top;
     for (uint k = 0; k < kBuildLobes; ++k)

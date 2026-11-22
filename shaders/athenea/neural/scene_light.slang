@@ -1,0 +1,231 @@
+// Copyright (c) 2026 jesus luque.
+//
+// A SCENE'S LIGHT, TAKEN AGAIN FROM A FRAME.
+//
+// A found scene's gaussian keeps where a surface is and what it is made of, and the light a look saw leave
+// it. When the stage's light changes and nothing else does, the first two still hold: only the light is
+// taken again. A frame path traced under the new light is read at each standing gaussian's own middle --
+// where the frame shows a surface at the gaussian's depth, which is that gaussian's surface -- and the
+// gaussian's colour becomes the frame's there. Nothing is taken out and nothing is made.
+//
+// What the kernel leaves beside the cloud's colours is a layer: a float4 a gaussian, the colour as a record
+// keeps one (rgb) and whether this frame said it (a). A scene keeps a layer a frame that took its light
+// again, beside the piece, and whoever draws the scene at a time lays over each piece the layers up to it.
+//
+// Not asked: a gaussian that lets light through (its picture is made of what is behind it, not read off
+// the frame), one the frame does not show (behind something, out of the frame), one that is gone. One a
+// finer look was laid over is asked where the piece's record of what is gone is handed (`gone`): it is
+// there still, and is what a level of detail draws.
+module scene_light;
+import athenea.common.packing;
+import athenea.common.color;
+import athenea.scene.splat_encoding;
+
+struct RelightParams {
+    uint  count;
+    uint  width;
+    uint  height;
+    uint  linearCloud;
+    float4 viewX;
+    float4 viewY;
+    float4 viewZ;
+    float lensX; float lensY; float middleX; float middleY;
+    float nearness;     // the share of its depth a surface may stand off the gaussian and be the gaussian's
+    uint  hasPbr;
+    uint  hasGone;      // `gone` says what stands; without it, a gaussian's opacity does
+    uint  keep;         // sceneRelight: 1 leaves the cloud's colours as they are and hands the frame's light as it is (rgb, linear)
+    float gainR; float gainG; float gainB;              // sceneAddLight: what the layer is multiplied by
+    uint  merge;        // sceneRelight with keep: 1 leaves in `layer` what a nearer view said (the layer is a run's, not a frame's)
+    uint  floats;       // recordsAddLight: floats a record
+    float own;          // recordsAddLight: what the record's own light is multiplied by
+    uint  colourBase;   // sceneRelight: where in `frameColour` the frame starts (a light group's plane in a buffer of several)
+    uint  overBase;     // sceneRelight with keep: 1, the frame's light is carried from its pixel's base colour to the gaussian's own
+    uint  baseAt;       // and where in `frameBase` the frame's base colours start
+    float madeWide;     // sceneRelight with keep: a gaussian's width where it was made, in pixels of its frame (the scene's spread)
+    uint pad6; uint pad7;
+};
+
+StructuredBuffer<float4>   positions;    // xyz, opacity (0 and under: not standing)
+RWStructuredBuffer<uint>   shape;        // four words a gaussian; the colour is written
+StructuredBuffer<uint>     pbr;          // metallic, roughness, transmission
+StructuredBuffer<uint>     gone;         // the look a gaussian went at (0: it is there, standing or laid over)
+StructuredBuffer<float4>   frameColour;  // the frame's light a pixel
+StructuredBuffer<float>    frameDepth;   // and its depth along the view (0: nothing)
+RWStructuredBuffer<float4> layer;        // the colour as a record keeps it, and whether it was said
+StructuredBuffer<float4>   frameBase;    // sceneRelight, overBase: the base colour of each pixel's surface (the path tracer's plane)
+StructuredBuffer<float4>   matter;       // and each gaussian's own (rgb)
+StructuredBuffer<float4>   added;        // sceneAddLight: light a gaussian (rgb, linear) and whether there is any (a)
+RWStructuredBuffer<float>  records;      // recordsAddLight: a render's records, their colours written
+RWStructuredBuffer<uint>   counters;     // [0]: gaussians whose light was taken again
+ConstantBuffer<RelightParams> params;
+
+float encodedLight(float linear) {
+    const float v = max(linear, 0.0);
+    return v <= 0.0031308 ? 12.92 * v : 1.055 * pow(v, 1.0 / 2.4) - 0.055;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void sceneRelight(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    if (params.merge == 0u) {
+        layer[i] = float4(0.0);
+    }
+    // With the record of what is gone, every gaussian that is still there is asked: the finest, and the
+    // coarser ones finer looks were laid over, which are what the scene is drawn with from far.
+    if (params.hasGone != 0u ? gone[i] != 0u : positions[i].w <= 0.0) {
+        return;
+    }
+    // What lets light through is not said anew (its picture is made of what is behind it); for a group's
+    // layer it is asked as the rest: what it shows under that group is the group's light it sends.
+    if (params.keep == 0u && params.hasPbr != 0u && pbrTransmission(pbr[i]) > 0.02) {
+        return;
+    }
+    const float3 p = positions[i].xyz;
+    const float z = dot(params.viewZ.xyz, p) + params.viewZ.w;
+    if (!(z > 0.0)) {
+        return;
+    }
+    const float x = params.middleX + params.lensX * (dot(params.viewX.xyz, p) + params.viewX.w) / z;
+    const float y = params.middleY + params.lensY * (dot(params.viewY.xyz, p) + params.viewY.w) / z;
+    if (x < 0.0 || y < 0.0 || x >= float(params.width) || y >= float(params.height)) {
+        return;
+    }
+    const uint at = uint(y) * params.width + uint(x);
+    const float seenAt = frameDepth[at];
+    if (!(seenAt > 0.0) || abs(seenAt - z) > params.nearness * z) {
+        return;
+    }
+    const float4 pixel = frameColour[params.colourBase + at];
+    // OF THE VIEWS THAT SEE A GAUSSIAN, THE ONE THAT SEES IT AS WIDE AS IT WAS MADE is the one whose word is
+    // kept (score: how far its width in this frame is from the width it was made with, `madeWide` pixels --
+    // the scene's spread, half a pixel by default; the smaller the better). A gaussian keeps its own colour
+    // from the frame that made it, and read from that frame its layers are that same pixel's: the groups'
+    // layers and what is left then sum to the colour it has. The nearest eye holds it over many pixels and
+    // its middle's is one sample of them; a far one holds many gaussians in a pixel. (A pixel as the width
+    // aimed at chose a view twice as near as the making one and cost 0.2 to 0.6 dB; the mean over the pixels
+    // it covers was tried in the nearest view and lost detail for no gain.)
+    float score = z;
+    if (params.keep != 0u) {
+        const uint row = i * 4u;
+        const float wide = exp(max(lowHalf(shape[row + 1u]), max(highHalf(shape[row + 1u]), lowHalf(shape[row + 2u]))));
+        score = 1.0e-3 + abs(log(max(wide * params.lensX / z, 1.0e-4) / max(params.madeWide, 1.0e-3)));
+    }
+    // A frame's colour says where it holds a surface by its alpha; a light group's plane does not (its alpha
+    // is the path tracer's own count, not a coverage), and there the depth above is what says so.
+    if (params.keep == 0u && !(pixel.a > 0.5)) {
+        return;
+    }
+    const float3 light = max(pixel.rgb, float3(0.0));
+    const float3 shown = float3(encodedLight(light.r), encodedLight(light.g), encodedLight(light.b));
+    InterlockedAdd(counters[0], 1u);
+    if (params.keep != 0u) {
+        // A GROUP OF LIGHTS' OWN LAYER: the frame was path traced under that group alone, and what each
+        // gaussian sends then is kept as light, to be added to the scene's by a level (sceneAddLight).
+        // And how well the view saw it (a, the score above): the best of a run's views is the one kept.
+        // THE LIGHT CARRIED FROM THE PIXEL'S BASE COLOUR TO THE GAUSSIAN'S OWN (overBase). A frame smaller than
+        // the ones the scene was found from says a surface's texture coarsely, and the gaussian keeps its own
+        // base colour at the scene's detail: what the pixel sends over its base colour is the light on the
+        // surface, and times the gaussian's base colour it is what that gaussian sends. Only where the pixel
+        // has a base colour to speak of and the gaussian lets no light through; held to twice.
+        float3 sent = light;
+        if (params.overBase != 0u && !(params.hasPbr != 0u && pbrTransmission(pbr[i]) > 0.02)) {
+            const float3 of = frameBase[params.baseAt + at].rgb;
+            const float3 own = saturate(matter[i].rgb);
+            if (all(of > float3(0.02)) && any(own > float3(0.0))) {
+                sent = light * min(own / of, float3(2.0));
+            }
+        }
+        // Over a run (merge) the layer holds what the views before said, and a view that sees it worse leaves it.
+        if (params.merge == 0u || !(layer[i].a > 0.0) || score < layer[i].a) {
+            layer[i] = float4(sent, score);
+        }
+        return;
+    }
+    const float3 put = params.linearCloud != 0u ? light : shown;
+    const uint row = i * 4u;
+    shape[row + 2u] = packHalves(lowHalf(shape[row + 2u]), put.r);
+    shape[row + 3u] = packHalves(put.g, put.b);
+    layer[i] = float4((shown - 0.5) / 0.28209479, 1.0);
+}
+
+// LIGHT ADDED TO A CLOUD'S OWN, A GAUSSIAN: a group of lights' layer times its level and its tint. Light is
+// linear: the scene with a lamp at half is the scene without it and half the lamp's layer.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void sceneAddLight(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    const float4 more = added[i];
+    if (!(more.a > 0.0)) {
+        return;
+    }
+    const uint row = i * 4u;
+    const float3 base = float3(highHalf(shape[row + 2u]), lowHalf(shape[row + 3u]), highHalf(shape[row + 3u]));
+    const float3 lit = max(cloudLight(base, params.linearCloud != 0u) +
+                           more.rgb * float3(params.gainR, params.gainG, params.gainB), float3(0.0));
+    const float3 put = params.linearCloud != 0u ? lit : float3(encodedLight(lit.r), encodedLight(lit.g), encodedLight(lit.b));
+    shape[row + 2u] = packHalves(lowHalf(shape[row + 2u]), put.r);
+    shape[row + 3u] = packHalves(put.g, put.b);
+}
+
+float lightOfEncoded(float shown) {
+    const float v = max(shown, 0.0);
+    return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+}
+
+// THE SAME OVER A RENDER'S RECORDS, as a file keeps them (scene_render.slang: the colour at 11, the first
+// harmonic of the light as shown): for whoever hands the scene on with its groups at their levels. `own`
+// multiplies the light the record has -- 0 hands on a group's light alone.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void recordsAddLight(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    const uint at = i * params.floats + 11u;
+    const float3 shown = float3(records[at], records[at + 1u], records[at + 2u]) * 0.28209479 + 0.5;
+    float3 lit = params.own * float3(lightOfEncoded(shown.r), lightOfEncoded(shown.g), lightOfEncoded(shown.b));
+    const float4 more = added[i];
+    if (more.a > 0.0) {
+        lit += more.rgb * float3(params.gainR, params.gainG, params.gainB);
+    }
+    lit = max(lit, float3(0.0));
+    records[at] = (encodedLight(lit.r) - 0.5) / 0.28209479;
+    records[at + 1u] = (encodedLight(lit.g) - 0.5) / 0.28209479;
+    records[at + 2u] = (encodedLight(lit.b) - 0.5) / 0.28209479;
+}
+
+// A RECORD'S BASE COLOUR AS ITS COLOUR: for whoever is handed the scene to light it itself (a viewer with a
+// lamp of its own). What is opaque keeps its surface's base colour in its tint (scene_render.slang's 23);
+// glass keeps there what a crossing lets through, which is no base colour, and is handed on black.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void recordsBaseColour(uint3 tid: SV_DispatchThreadID) {
+    const uint i = tid.x;
+    if (i >= params.count) {
+        return;
+    }
+    const uint row = i * params.floats;
+    const bool through = records[row + 19u] >= 0.5;
+    const float3 base = through ? float3(0.0) : saturate(float3(records[row + 23u], records[row + 24u], records[row + 25u]));
+    records[row + 11u] = (encodedLight(base.r) - 0.5) / 0.28209479;
+    records[row + 12u] = (encodedLight(base.g) - 0.5) / 0.28209479;
+    records[row + 13u] = (encodedLight(base.b) - 0.5) / 0.28209479;
+}
+
+// A PLANE OF A BUFFER OF SEVERAL, COPIED OUT: `count` pixels of `added` from `colourBase`, into `layer`. What
+// reads a frame's colour takes a buffer whole; a light group's plane, or what no group holds, is one of several.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void framePlane(uint3 tid: SV_DispatchThreadID) {
+    if (tid.x < params.count) {
+        layer[tid.x] = added[params.colourBase + tid.x];
+    }
+}

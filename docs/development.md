@@ -154,6 +154,122 @@ threads, any thread), and a test calls it from the wrong one.
    stands while `GpuScene::placementRevision()` does, so a camera that moves
    rebuilds nothing of it.
 
+### 1.3.1 What a rasterised frame of splats can also keep, and be drawn by
+
+Three things ride on the splat rasteriser without changing a frame that asks
+for none of them (the `neural` branch; `docs/decisions.md`, 11 Nov, has what
+each measured):
+
+- **The trace** (`RenderSettings::trace`, `shaders/athenea/splat/splat_trace.slang`):
+  each pixel's four heaviest gaussians by slot, weight and depth, with what
+  the list had no room for and what closed the walk. Kept by the blend's
+  traced entry points; `ReferenceRenderer` keeps the exact walk's, which is
+  what `[trace]` holds it to.
+- **A lift** (`render/SplatLift.h`, `splat_lift.slang`): a mask over a frame
+  carried to the gaussians -- through the trace, or while the frame blends
+  (`contributionMode` 3) -- and drawn as a matte from another frame's trace.
+  `athenea lift` is its command.
+- **A neural appearance** (`render/NeuralAppearance.h`, `render/NeuralFit.h`,
+  `shaders/athenea/neural/`): a cloud's colours from a latent a gaussian and
+  one perceptron, decoded once a gaussian in view after its projection
+  (`SplatInstance::neural`), lit or not; fitted on the device by
+  `NeuralFit::step`, whose backward pass is written by hand and whose colour
+  gradients the blend carries back (`contributionMode` 4); kept beside the
+  cloud as a `.athn` (`io/NeuralFile.h`). `athenea neural-fit` fits one and
+  `athenea render --neural` draws by it. A decoder once a pixel
+  (`RenderSettings::neuralFeatures`, `neural_pixel.slang`) is there to be
+  timed and is fitted by nothing.
+  A split cloud (`NeuralCloud::split`) has two networks, the first never told
+  the view; with `RenderSettings::neuralKeep` the rasteriser keeps that
+  first answer a gaussian (`neuralMatt`) and says it again only for the
+  chunks of 1024 gaussians the cloud stamped as changed (`NeuralCloud::touch`)
+  or when the frame's lights are others. Whoever writes a cloud's latents
+  outside a fit calls `touch`.
+  A still frame (`RenderSettings::still`) keeps the last frame's geometry --
+  what is in view, its order, the tiles' lists -- and runs only the kernels
+  that write colours and the blend, for a camera and clouds that have not
+  moved; the rasteriser checks the projection and each cloud and otherwise
+  draws the frame whole (`FrameStats::still` says which it did).
+- **A wall of light as a texture** (`render/NeuralWall.h`,
+  `shaders/athenea/neural/neural_wall.slang`): each gaussian's reads of an LED
+  wall's picture -- u, v, a mip level and the log of a gain a channel, six
+  numbers a read -- added to its colour after the projection
+  (`SplatInstance::wall`), whatever the cloud is otherwise drawn by. The wall's
+  pictures are pyramids in one buffer (`NeuralWall::pattern`, `picture`);
+  `NeuralWall::step` fits the reads through the read's own derivatives, the
+  blend carrying the error back as it does for a neural appearance.
+  `athenea wall-fit` is its command.
+  In place of reads a gaussian may keep a grid: a weight a texel of a coarse
+  level of the wall and a gain a channel (`NeuralWall::start`'s `gridLevel`),
+  which is the shape of what a matt thing takes. A fitted wall is made finer
+  (`NeuralWall::finer`) to show pictures of the wall's real resolution.
+  The clouds a fit learns from are one mesh's under one light each and must
+  stay gaussian for gaussian: `scene::CloudLoader::keepFaint` keeps the
+  records a bake emptied in their place.
+- **A neural scene** (`io/NeuralScene.h`, `apps/athenea/src/CmdNeuralScene.cpp`):
+  a directory of pieces, each its gaussians and its own neural appearance,
+  under a manifest (`scene.json`) that the reader and the writer frame and do
+  not compute. To add something a scene holds -- a wall's reads, a light's
+  shadow field -- give the piece or the scene a key in `NeuralScene`'s
+  structs, read it with a default so that older manifests still load, and
+  raise `kVersion` only when an older reader would draw the scene wrong.
+  `render/Discovery.h` (`shaders/athenea/neural/scene_discover.slang`) is what
+  a look is made of: it stamps the gaussians a frame's contributions say were
+  seen, counts them, and hands back a piece with the unseen ones given no
+  opacity, which is how the scene as it is known is drawn. `Discovery::fromFrame`
+  (`scene_frame.slang`) makes gaussians from a frame's colour and depth, a
+  disc a pixel the scene does not already hold, as the records of a 3DGS PLY.
+  `Discovery::fromRender` (`scene_render.slang`) is the same look taken by the
+  engine's own path tracer, which hands it more than a picture: the planes of
+  `technique::PathAux` (`pathGuides` in `PathTracer.cpp`) -- the surface's
+  normal, what it is made of, and where it lets the eye through what stands
+  behind it. Its records are its own (`Discovery::renderEncoding`, 26 floats)
+  and stay on the device. To give a gaussian something more of its surface,
+  write it in `pathGuides` into a plane (raise `PathAux::kPlanes`), read it in
+  `renderPack`, and give the record a field: one `io::SplatEncoding` names
+  where the loader has a use for it, or one after those, which only the file
+  keeps. `athenea neural-scene shoot` (`CmdNeuralScene.cpp`) is the loop: a
+  pass of the render at a time, and a look whenever a footprint's paths are in.
+  A gaussian's width is its level of detail: what a finer look is laid over
+  is stamped refined and not gone (`frameSeenThrough`'s `only`, a record of
+  its own), each finer gaussian keeps its parent's width in its record, and
+  `Discovery::cut` (`discoverCut`) chooses a gaussian or what was laid over
+  it by their widths on the screen, with no tree walked and none stored.
+  `render/SceneGlass.h` (`scene_glass.slang`) is what solid glass shows from
+  a view: what a gaussian is made of is gathered into the cut's cloud beside
+  it (`pbr` and `normals` as every cloud keeps them, and `matter`: the tint
+  of a crossing and the index), and `see` writes each glass gaussian's colour
+  from two rays cast through the tree the gaussian ray tracer builds over
+  that cloud (`GaussianRayTracer::treeOf`, `rt/rt_glass.slang`'s walks). A
+  kernel that wants a ray through a cloud's gaussians takes the tree from
+  there; it does not build one.
+  What `neural-scene export` hands on is chosen on the device too:
+  `Discovery::recordsOf` (`scene_level.slang`) gathers a piece's records by
+  kind -- lens, mirror, the rest -- where a cut draws them, and
+  `Discovery::worldWidths` is the projection under which that cut is a level
+  of detail in the scene's own units, whatever the eye.
+  Which prim a gaussian was made from (`scene_matte.slang`) is the engine's
+  Cryptomatte id at its cell's middle pixel, kept beside the piece's records
+  and loaded as the cloud's `crypto`: a matte by object is then the
+  rasteriser's own Cryptomatte of the scene drawn, summed over the ids asked
+  for (`Discovery::matte`). What gathers a cut's gaussians gathers their ids
+  (`gatherPrims`); a per-gaussian array added to a found scene goes the same
+  way, a file index by index and a gather beside `gatherCut`.
+  A change to how a look makes or takes out gaussians is qualified with
+  `scripts/examples/neural-scene-qa`: `make_materials_stage.py` (fourteen
+  balls of one material each) with `qa.py`, and `make_animated_stage.py` (a
+  stage that moves) with `qa_time.py`; `qa_options.py` shoots one walk once
+  an option of `shoot`, `qa.py --frame` takes any stage, framed by the
+  engine, and `qa_relight.py` writes a file of lamps as UsdLux lights over the
+  stage, path traces that and compares the scene drawn with `--lamps` there. Two rows a dB apart are not told apart by it: which frame of a walk
+  each gaussian is left from moves the figure that much. They run the engine
+  and lay what it prints in a table; both the holes of 14 Nov and the path tracer that did not
+  restart were found by looking at the pictures they leave, not by a figure.
+
+A kernel that adds to `shaders/athenea/neural/neural_appearance.slang` adds to
+both passes: the forward one and, by hand, the backward one beside it, and
+`[neural]`'s central differences are what say the two still agree.
+
 ### 1.4 A frame, path traced
 
 The difference begins at step 3: `technique::PathTracer` integrates from the
@@ -208,7 +324,39 @@ else is traced whole by `render::GaussianRayTracer`, whose two routes
   `lobesPushed` (`technique/src/MaterialPrograms.cpp`) with how many it
   pushes: the lobe stacks are as deep as the frame's materials can push, and
   a node the count does not know pushes nothing into it -- its lobes are
-  dropped, and nothing says so.
+  dropped, and nothing says so. A surface whose graph is one node
+  (`athenea_preview_bsdf`, five; `athenea_open_pbr_bsdf`, eleven;
+  `athenea_standard_surface_bsdf` and `athenea_gltf_pbr_bsdf`, eight each) is
+  listed with all it pushes.
+- OpenPBR Surface's, Standard Surface's and glTF PBR's one node are each
+  written by hand
+  from MaterialX's nodegraph, and a MaterialX whose graph has changed leaves
+  them as they were. When MaterialX is updated: (1) `python3
+  scripts/materialx/make_surface_node_mtlx.py <root>/libraries` writes
+  `shaders/athenea/material/mx/athenea_open_pbr_surface.mtlx`,
+  `athenea_standard_surface.mtlx` and `athenea_gltf_pbr.mtlx` again -- MaterialX's graph with its BSDF
+  and VDF nodes taken out and the one node put in -- and their diff shows a
+  node the closures read that has changed; (2) build, so the shaders are
+  copied; (3) `athenea_material_tests "[openpbr]"`, `"[standardsurface]"`
+  and `"[gltfpbr]"` compile the surface by both routes
+  (`MaterialCompilerOptions::openPbr`, `standardSurface`, `gltfPbr`) and
+  compare, on the device, the lobe stacks they build over nineteen,
+  twenty-six and twenty-five parameter sets, with and without the marks a
+  bake asks for (`kAtheneaMarkLobes`). Those tests are what say whether
+  `athenea_open_pbr_bsdf.slang`, `athenea_standard_surface_bsdf.slang` and
+  `athenea_gltf_pbr_bsdf.slang` still match: a count, a kind, a flag or a value beyond 1e-5 off fails
+  them, and the line they print says which set and which of them.
+- A surface gets its one node by the same steps: its lobes, weights and
+  marks read off a generated module of MaterialX's graph
+  (`ATHENEA_SHADER_DUMP`) and written as `athenea_<surface>_bsdf.slang` over
+  the steps the nodes share (`athenea_surface_node.slang`: a closure's push,
+  a layer's and a colour multiply's effect on one lobe); an entry in
+  `make_surface_node_mtlx.py` (the node's inputs, its nodedef) and in
+  `kSurfaceNodes` (`material/src/MaterialCompiler.cpp`: the graph it
+  replaces, its file, its environment variable, its option); its count in
+  `lobesPushed`; and a test case over `compareRoutes`
+  (`tests/material/test_material_compiler.cpp`) whose sets reach every lobe
+  and combinator of the graph.
 
 ## 2. The rules, and what each is there to prevent
 
@@ -227,6 +375,67 @@ The CPU reads files, parses headers, decompresses and keeps counts.
 and counting slots is how openFXplayer's D30 bugs happened: a parameter added
 in the middle of a structure moves every one after it, and nothing fails to
 compile. `cursor["name"].setBinding(...)` fails loudly instead.
+
+**A struct a shader function only reads is taken `__constref`.** Slang hands a
+plain parameter over by copy: the whole struct is copied into a local before
+each call, and a kernel that carries a large one -- a lobe stack, a shading
+state, a material's inputs, a light's record -- spends its time copying it
+(the path tracer: 17.1 s a bounce down to 7.1 s, the same picture). A
+function that changes its parameter as a working copy keeps it plain
+(`atheneaPushLobe`): Slang does not refuse a write to a `__constref`
+parameter, Metal's compiler does, and another backend may write through to
+the caller's variable instead.
+
+**A kernel keeps in a thread's memory only what it reads again.** A local
+struct is thread memory, and a kernel that shades holds several of the
+largest there are (a shading state is a lobe stack and what the path reads
+again of a material's inputs, 1.2 KB). It is also what a kernel copies: the
+path tracer's bounces went a fifth faster when a lobe went from 224 bytes to
+128 on Metal -- a `float3` beside a `float` is a `float4` there, read through
+properties (`lobes.slang`'s `Lobe`), since Metal gives a `float3` sixteen bytes
+of its own. So a state is written where it is kept, not into a local and
+copied, and `scripts/kernel-memory.py` says what each generated kernel keeps
+(section 3.2).
+
+**A kernel that shades is held to drawing the same thing twice, and a change
+to one is not right until every variant of it does.** On Metal a change that
+alters no meaning has made a kernel draw other values: the path tracer's
+frames differed from run to run on a stage of OpenPBR materials, a run of
+pixels a SIMD group wide here and there, and a line that changed nothing made
+it half the frame; a `Found` zeroed where it is declared, and later the copy
+chosen between two of them replaced by a write, made the kernel with media
+draw garbage while the plain kernel drew the same picture bit for bit. It is
+not the size of what a thread keeps: an array of 128 KB in a thread's memory
+reads back as written and at 256 KB Metal refuses the pipeline
+(`athenea_gpu_tests "[threadmemory]"`), where these kernels keep 15 to 35 KB
+(`docs/decisions.md`, "What a thread's memory bears" and "A lobe of 128
+bytes"). For the kernel with media the kind of cause is known and the place
+is not: it reads a local nobody wrote. With Apple's compiler told to
+initialise every local (`ATHENEA_METAL_LOCALS=zero`) that kernel is right at
+every optimisation level and from either text, and a fog stage drawn by a
+build of another arrangement is the same picture three times where it
+differed on 6,200 pixels of 129,600; no single
+initialiser in the kernel's own text does that, and fast math, the
+optimisation level and Metal's validation each only move it
+(`docs/decisions.md`, "The kernel with media reads an undefined local"). So a
+local is not zeroed "to be safe" -- an initialiser that mends one arrangement
+is not a mend -- and `athenea_usd_tests "[repeat]"` renders with each kernel
+that shades -- the paths with and without a medium, the raster, the guides, a
+bake -- from two renderers and asks for not a bit apart, beside the tests
+that hold each to its closed form.
+
+**`ATHENEA_METAL_LOCALS=zero|pattern` tells an undefined local from a real
+cause.** It is a developer's discriminator, read where the device is made
+(`modules/gpu/src/Device.cpp`) and off unless asked for: on Metal every
+kernel is compiled with `-ftrivial-auto-var-init`, its locals zeroes or a
+pattern before they are written. A kernel that changes between two loads, or
+with an edit of no meaning, and is right and the same twice under `zero`
+reads an undefined local; one that still changes has another cause (the
+flat Sponza with the glass knight still changes a pixel between loads under
+it, cause unknown). It is not a way to run: the materials stage paid 8 % a view for it
+and the flat Sponza with glass five minutes of compiling where 50 s. The
+shader cache knows nothing of it, so it wants an empty `ATHENEA_SHADER_CACHE`.
+And Vulkan and CUDA have no such net: a kernel has to be right without it.
 
 **`Result<T>` and `ATHENEA_TRY`, no exceptions.** A renderer that throws through a
 command buffer leaves the device in a state nobody can describe. Where a
@@ -358,6 +567,11 @@ To check that a shader compiles without building anything:
 Generated shaders — the materials, the shading and path-tracing kernels — are
 written out by `ATHENEA_SHADER_DUMP=<dir>`, and compile with `slangc -I shaders -I
 <dir>`, which is how a kernel's compile time is measured outside the process.
+`scripts/kernel-memory.py <dir>` reads from the same dump what each kernel
+keeps in a thread's memory, with no device: slangc to Metal, Apple's front end
+to LLVM IR (`xcrun metal -S -emit-llvm`), and every local that stays memory
+added up -- the entry's own, the deepest chain of calls, and every function
+it reaches (`-v` lists the largest and what they hold).
 
 ### 3.3 Looking inside a run
 
@@ -365,6 +579,9 @@ written out by `ATHENEA_SHADER_DUMP=<dir>`, and compile with `slangc -I shaders 
 |---|---|
 | `ATHENEA_SHADER_DUMP` | write every generated Slang module to this directory |
 | `ATHENEA_MTLX_DUMP` | write the MaterialX document handed to the generator, one per material |
+| `ATHENEA_OPENPBR_GRAPH` | set to anything: OpenPBR Surface is compiled from MaterialX's own graph of BSDF nodes instead of the engine's one node (`athenea_open_pbr_bsdf`), to compare the two routes in one build (pictures and timings; `athenea_material_tests "[openpbr]"` compares their lobe stacks without it, through `MaterialCompilerOptions::openPbr`, which it sets where the caller leaves the choice to the environment) |
+| `ATHENEA_STANDARD_SURFACE_GRAPH` | the same for Autodesk Standard Surface: MaterialX's graph instead of the engine's one node (`athenea_standard_surface_bsdf`); `athenea_material_tests "[standardsurface]"` compares the two without it, through `MaterialCompilerOptions::standardSurface` |
+| `ATHENEA_GLTF_PBR_GRAPH` | the same for glTF PBR: MaterialX's graph instead of the engine's one node (`athenea_gltf_pbr_bsdf`); `athenea_material_tests "[gltfpbr]"` compares the two without it, through `MaterialCompilerOptions::gltfPbr` |
 | `ATHENEA_SHADOW_DEBUG` | log the cloud shadow maps: casters, lights, texels, mean transmittance |
 | `ATHENEA_VISIBILITY_DEBUG` | log the per-part visibility factors |
 | `ATHENEA_CUDA_LDG` | `=1` leaves CUDA's read-only cache path in place, reproducing a defect the prelude otherwise works around |

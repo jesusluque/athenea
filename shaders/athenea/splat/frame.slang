@@ -32,6 +32,8 @@ module frame;
 import athenea.common.edit;
 
 public static const uint kTile = 16;
+/// The steps a unit of a colour's gradient is kept in (contributionMode 4).
+public static const float kColourGradScale = 256.0;
 
 // WHY A SPLAT WAS CULLED, kept where a culled slot's depth key would be: the
 // compaction reads a key only where `visible` is 1, so the word is free, and
@@ -59,6 +61,7 @@ public struct FrameParams {
     public float farZ;
     public uint  orthographic;
     public uint  antialias;
+    public float paidAt;         // no antialias: the filter's share a disc of the made size pays (0: none paid)
     // Object -> view, rows of a 3x4.
     public float m00; public float m01; public float m02; public float m03;
     public float m10; public float m11; public float m12; public float m13;
@@ -131,7 +134,16 @@ public struct FrameParams {
     // 0: nothing. 1: the weight it blended with (transmittance times alpha),
     // in 1/4096 of a pixel. 2: the squared error its removal would leave
     // (`finalColour` is the frame drawn whole), in 2^-24 as two words a slot.
+    // 3: a mask lifted to the gaussians, (weight * `liftMask`, weight) in
+    // 1/1024 as two words a slot.
+    // 4: a loss's derivative with respect to each gaussian's colour, the weight
+    // times `finalColour` (the loss's derivative at the pixel), in
+    // 1 / kColourGradScale (1/256) as three signed words a slot.
     public uint  contributionMode;
+    // THE MATTE A WALK SUMS (splat_blend's `matteOut`): 1, a gaussian is in the mask or out of it by
+    // `matteThreshold` rather than in it by its share.
+    public uint  matteHard;
+    public float matteThreshold;
     // Relighting happens in the world, where the lights are: the cloud to
     // world rows, and the eye there. The colour from the harmonics is still
     // the cloud's own business, which is why the eye above stays as it is.

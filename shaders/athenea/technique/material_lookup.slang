@@ -20,12 +20,12 @@ public struct MaterialRecord {
 
 /// What a transmitting row lets through a crossing, before Fresnel: its
 /// weight times its colour, linear rgb.
-public float3 transmissionTint(MaterialRecord m) {
+public float3 transmissionTint(__constref MaterialRecord m) {
     return float3(float(m.pad0 & 0xffu), float((m.pad0 >> 8) & 0xffu), float((m.pad0 >> 16) & 0xffu)) / 255.0;
 }
 
 /// Its dielectric's index.
-public float transmissionIndex(MaterialRecord m) {
+public float transmissionIndex(__constref MaterialRecord m) {
     return 1.0 + 3.0 * float(m.pad0 >> 24) / 255.0;
 }
 
@@ -71,7 +71,7 @@ public ConstantBuffer<MaterialLookupParams> lookup;
 
 /// The row a surface wears: its instance's, unless its triangle is in a
 /// GeomSubset that binds one of its own.
-public uint materialRowOf(Surface s) {
+public uint materialRowOf(__constref Surface s) {
     uint row = (s.instance.flags >> 8) & 0xFFFFu;   // bits 24 and up are the mesh lights' (mesh_lights.slang)
     const uint subset = triangleSubsets[s.mesh.firstTriangle + s.triangle] & 0x7FFFFFFFu;
     if (subset != 0) {

@@ -13,7 +13,7 @@ __exported import athenea.light.lights;
 __exported import athenea.material.material_inputs;
 
 /// A dome's image along `wi`, white where it has none.
-public float3 domeImage(LightRecord l, float3 wi) {
+public float3 domeImage(__constref LightRecord l, float3 wi) {
     if (l.texture == 0xFFFFFFFF) {
         return float3(1.0);
     }
@@ -28,7 +28,7 @@ public float3 domeImage(LightRecord l, float3 wi) {
 /// and then the four children of a cell would not sum to their parent: the
 /// descent's probabilities would stop telescoping and the closed-form density
 /// would no longer be the one the samples were drawn with.
-public float domeTexelOf(LightRecord l, int2 xy, uint level) {
+public float domeTexelOf(__constref LightRecord l, int2 xy, uint level) {
     const TextureRecord record = gTextures.records[l.texture];
     const int2 size = int2(max(int(record.width) >> level, 1), max(int(record.height) >> level, 1));
     const int2 at = clamp(xy, int2(0, 0), size - 1);
@@ -37,7 +37,7 @@ public float domeTexelOf(LightRecord l, int2 xy, uint level) {
 }
 
 /// The same by uv, for a density that is asked about a direction.
-float domeLuminance(LightRecord l, float2 uv, float level) {
+float domeLuminance(__constref LightRecord l, float2 uv, float level) {
     const TextureRecord record = gTextures.records[l.texture];
     const uint mip = uint(max(level, 0.0));
     const int2 size = int2(max(int(record.width) >> mip, 1), max(int(record.height) >> mip, 1));
@@ -58,7 +58,7 @@ float domeLuminance(LightRecord l, float2 uv, float level) {
 static const float kTwoPiSquared = 2.0 * 3.14159265358979 * 3.14159265358979;
 
 /// The image's mean luminance, from the top of its chain.
-float domeAverage(LightRecord l) {
+float domeAverage(__constref LightRecord l) {
     const TextureRecord record = gTextures.records[l.texture];
     const float top = log2(max(max(record.width, record.height), 1.0));
     return domeLuminance(l, float2(0.5, 0.5), ceil(top));
@@ -70,7 +70,7 @@ float domeAverage(LightRecord l) {
 /// altogether, and a plane under a flat dome came out sixteen times noisier
 /// that way. One with a sun in it is the opposite. The 1x1 level gives the
 /// mean and a middle level the spread, so the choice costs two samples.
-public bool domeHasImage(LightRecord l) {
+public bool domeHasImage(__constref LightRecord l) {
     // Off until the descent is right. It draws directions its own density
     // does not describe: a chi-square binned in the image itself -- where the
     // warp works, so no grid artefact can explain it -- reads z 61543 over a
@@ -105,7 +105,7 @@ public bool domeHasImage(LightRecord l) {
     return spread > 0.25 * average;
 }
 
-public float domeImagePdf(LightRecord l, float3 wi) {
+public float domeImagePdf(__constref LightRecord l, float3 wi) {
     if (!domeHasImage(l)) {
         return 0.0;
     }
@@ -125,7 +125,7 @@ public float domeImagePdf(LightRecord l, float3 wi) {
 /// from right by luminance and take u.x with it, then top from bottom with
 /// u.y. What comes out is a texel drawn in proportion to its luminance, and
 /// the two numbers are spent rather than merely consumed.
-public LightSample domeImageSample(LightRecord l, float2 u) {
+public LightSample domeImageSample(__constref LightRecord l, float2 u) {
     LightSample s;
     s.wi = float3(0.0, 0.0, 1.0);
     s.distance = 1.0e30;
@@ -193,7 +193,7 @@ public LightSample domeImageSample(LightRecord l, float2 u) {
     return s;
 }
 /// One sample of `l`, by its image where it has one.
-public LightSample sampleLightImaged(LightRecord l, float3 p, float3 n, float2 u) {
+public LightSample sampleLightImaged(__constref LightRecord l, float3 p, float3 n, float2 u) {
     if (l.kind == kLightDome) {
         if (domeHasImage(l)) {
             return domeImageSample(l, u);
@@ -206,7 +206,7 @@ public LightSample sampleLightImaged(LightRecord l, float3 p, float3 n, float2 u
 }
 
 /// The density that sample was drawn with.
-public float lightPdfImaged(LightRecord l, float3 p, float3 n, float3 wi) {
+public float lightPdfImaged(__constref LightRecord l, float3 p, float3 n, float3 wi) {
     if (l.kind == kLightDome && domeHasImage(l)) {
         return domeImagePdf(l, wi);
     }
@@ -214,7 +214,7 @@ public float lightPdfImaged(LightRecord l, float3 p, float3 n, float3 wi) {
 }
 
 /// lightHit, with a dome's image.
-public LightHit lightHitImaged(LightRecord l, float3 p, float3 wi) {
+public LightHit lightHitImaged(__constref LightRecord l, float3 p, float3 wi) {
     LightHit h = lightHit(l, p, wi);
     if (h.valid && l.kind == kLightDome) {
         h.radiance *= domeImage(l, wi);
@@ -224,6 +224,6 @@ public LightHit lightHitImaged(LightRecord l, float3 p, float3 wi) {
 }
 
 /// What a dome puts in a direction nothing was drawn in.
-public float3 domeBackground(LightRecord l, float3 wi) {
+public float3 domeBackground(__constref LightRecord l, float3 wi) {
     return lightEmission(l) * domeImage(l, wi);
 }

@@ -25,5 +25,7 @@ void splatValidate(uint3 tid: SV_DispatchThreadID) {
                              decodeLogScale(fieldOf(raw, i, s, params.scale1), params.scaleMode),
                              decodeLogScale(fieldOf(raw, i, s, params.scale2), params.scaleMode));
     const bool finite = all(isfinite(p)) && scalesValid(ls);   // a surfel: one scale exactly 0
-    valid[i] = (finite && a >= 1.0 / 255.0) ? 1u : 0u;
+    // Kept all the same where the loader is told to: a record a bake emptied (no opacity, no size) stays
+    // in its place, drawn by nothing, so that the clouds of one mesh stay gaussian for gaussian.
+    valid[i] = ((finite && a >= 1.0 / 255.0) || (params.keepFaint != 0 && all(isfinite(p)))) ? 1u : 0u;
 }

@@ -8,6 +8,7 @@ import frame;
 import athenea.common.octahedral;
 import athenea.light.environment;
 import splat_relight;
+import splat_trace;
 
 StructuredBuffer<uint>      ranges;
 StructuredBuffer<uint>      pairSplats;
@@ -41,9 +42,36 @@ StructuredBuffer<uint>      underCrypto;
 // (`finalColour`) and P what the walk holds once this splat is in, what is
 // behind it is (C - P) / T', and the pixel without it changes by w (c - that).
 // Bound whether it is counted or not.
+//
+// Or, mode 3, A MASK LIFTED TO THE GAUSSIANS (splat_lift.slang): two words a
+// slot, the weight times this pixel's `liftMask` and the weight, in 1/1024 of
+// a pixel -- every gaussian of the walk, not the few a trace names.
 RWStructuredBuffer<uint>    contribution;
+StructuredBuffer<float>     liftMask;
 StructuredBuffer<float4>    finalColour;
 RWStructuredBuffer<float4>  crypto;
+// THE TRACE (splat_trace.slang): the gaussians each pixel is made of, kept by
+// the entry points that say so. Bound whether the frame keeps one or not.
+RWStructuredBuffer<uint>    trace;
+// FEATURES BLENDED AS THE COLOUR IS, for a decoder that runs once a pixel
+// rather than once a gaussian (athenea/neural/neural_pixel.slang): what each
+// projected slot carries, `featureWords` uints of two halves each
+// (`slotFeatures`), summed by the walk with the weights it blends the colour
+// with into `features`, a plane a word as the matte is. Kept by the entry
+// points that say so, each for its own count of words: the sums are registers
+// a pixel, and a walk that keeps none has none. Bound whether or not.
+// THE MATTE, SUMMED BY THE WALK ITSELF. What a lift told each gaussian
+// (splat_lift.slang: two words a slot, weight times mask and weight) is read
+// as the gaussian is blended, and a pixel is in the matte as far as every
+// gaussian of its walk is -- not the four a trace names and a guess for the
+// rest. A gaussian no lifting camera saw is still a guess (the share of the
+// pixel's known ones), but it is the only one left. One float a pixel into
+// `matteOut`; kept by the entry points that say so. Bound whether or not.
+StructuredBuffer<uint>      slotLift;
+RWStructuredBuffer<float>   matteOut;
+StructuredBuffer<uint>      slotFeatures;
+RWStructuredBuffer<uint>    features;
+static const uint kFeatureWordsMost = 16;
 RWStructuredBuffer<float4>  colour;   // width * height, premultiplied, linear
 RWStructuredBuffer<float>   depth;    // width * height
 ConstantBuffer<FrameParams> params;
@@ -205,7 +233,8 @@ groupshared uint       sSplats[kBatch];
 groupshared uint4      sSlopes[kBatch];
 groupshared uint       sDone;
 
-void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
+void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte, bool traced, uint featureWords = 0u,
+                bool lifted = false) {
     const uint px = tid.x;
     const uint py = tid.y;
     const uint lane = groupThread.y * kTile + groupThread.x;
@@ -242,6 +271,17 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             list.ids[k] = 0;
             list.weights[k] = 0.0;
         }
+    }
+    // Cleared whether the walk keeps a trace or not: a walk that keeps none never reads it, and the
+    // compiler is told so by `traced` being a constant.
+    TraceList traceList;
+    traceList.clear();
+    float matteInside = 0.0;   // weight times share, over the gaussians a lift told
+    float matteKnown = 0.0;    // their weight
+    float matteUntold = 0.0;   // the weight of those it did not
+    float featureSums[kFeatureWordsMost * 2];
+    for (uint c = 0; c < featureWords * 2; ++c) {
+        featureSums[c] = 0.0;
     }
     bool done = !inside;
     for (uint first = start; first < end; first += kBatch) {
@@ -338,6 +378,33 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
                 if (before + add < before) {
                     InterlockedAdd(contribution[sSplats[j] * 2 + 1], 1u);
                 }
+            } else if (params.contributionMode == 4u) {
+                // What the frame's error asks of this gaussian's colour: the
+                // pixel is the sum of weight times colour, so the derivative
+                // of a loss with respect to the colour is the weight times
+                // the loss's derivative at the pixel (`finalColour` here),
+                // summed over its pixels. In 1 / kColourGradScale as three
+                // signed words a slot (of four), rounded up or down by a hash so that
+                // what is smaller than a step is not lost on average.
+                const float3 g = weight * finalColour[at].rgb * kColourGradScale;
+                for (uint c = 0; c < 3; ++c) {
+                    const int step = int(floor(g[c] + hash01((at * 3u + c) ^ (sSplats[j] * 2654435761u))));
+                    if (step != 0) {
+                        InterlockedAdd(contribution[sSplats[j] * 4 + c], uint(step));
+                    }
+                }
+                // And the weight itself, a fourth word: what a term of the
+                // loss that is the gaussian's own (not a pixel's) is weighed by.
+                InterlockedAdd(contribution[sSplats[j] * 4 + 3], uint(weight * kColourGradScale + 0.5));
+            } else if (params.contributionMode == 3u) {
+                const uint seen = uint(weight * 1024.0 + 0.5);
+                if (seen != 0u) {
+                    InterlockedAdd(contribution[sSplats[j] * 2 + 1], seen);
+                    const uint within = uint(weight * saturate(liftMask[at]) * 1024.0 + 0.5);
+                    if (within != 0u) {
+                        InterlockedAdd(contribution[sSplats[j] * 2], within);
+                    }
+                }
             }
             // A LIGHT CATCHER ADDS: the lamps' light on the ground under it,
             // seen through what is in front, and nothing taken from behind --
@@ -352,6 +419,36 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
             }
             if (matte) {
                 list.add(cryptoIds[sSplats[j]], weight);
+            }
+            if (lifted) {
+                const uint told = sSplats[j] * 2u;
+                const uint seen = slotLift[told + 1u];
+                if (seen != 0u) {
+                    float share = float(slotLift[told]) / float(seen);
+                    if (params.matteHard != 0) {
+                        share = share > params.matteThreshold ? 1.0 : 0.0;
+                    }
+                    matteKnown += weight;
+                    matteInside += weight * share;
+                } else {
+                    matteUntold += weight;
+                }
+            }
+            if (featureWords != 0u) {
+                const uint from = sSplats[j] * featureWords;
+                for (uint c = 0; c < featureWords; ++c) {
+                    const uint word = slotFeatures[from + c];
+                    featureSums[c * 2] += weight * lowHalf(word);
+                    featureSums[c * 2 + 1] += weight * highHalf(word);
+                }
+            }
+            if (traced) {
+                // Its slot is read only where it enters the list: most of a
+                // walk does not, and the read is one more a gaussian a pixel.
+                traceList.total += weight;
+                if (weight > traceList.floor) {
+                    traceList.enter(sSplats[j], weight);
+                }
             }
             // A TX transfer's reflection turns across the footprint: the
             // colour at this pixel is the centre's plus its slope over the
@@ -436,6 +533,22 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
         list.add(opaqueId, opaqueHit ? transmittance : 0.0);
         list.write(at, params.width * params.height);
     }
+    if (lifted) {
+        const float share = matteKnown > 0.0 ? matteInside / matteKnown : 0.0;
+        matteOut[at] = saturate(matteInside + matteUntold * share);
+    }
+    if (featureWords != 0u) {
+        for (uint c = 0; c < featureWords; ++c) {
+            features[c * params.width * params.height + at] = packHalves(featureSums[c * 2], featureSums[c * 2 + 1]);
+        }
+    }
+    if (traced) {
+        float depths[kTraceSlots];
+        for (uint k = 0; k < kTraceSlots; ++k) {
+            depths[k] = traceList.slots[k] != kTraceNone ? proj[traceList.slots[k]].screen.z : 0.0;
+        }
+        traceList.write(trace, at, params.width * params.height, opaqueHit ? transmittance : 0.0, depths);
+    }
 
     const float coverage = 1.0 - transmittance;
     // Blended in linear light: every splat's colour was made linear when it
@@ -467,23 +580,80 @@ void blendPixel(uint3 tid, uint3 groupThread, bool composite, bool matte) {
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void splatBlend(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
-    blendPixel(tid, groupThread, false, false);
+    blendPixel(tid, groupThread, false, false, false);
 }
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void splatBlendComposite(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
-    blendPixel(tid, groupThread, true, false);
+    blendPixel(tid, groupThread, true, false, false);
 }
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void splatBlendCrypto(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
-    blendPixel(tid, groupThread, false, true);
+    blendPixel(tid, groupThread, false, true, false);
 }
 
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void splatBlendCompositeCrypto(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
-    blendPixel(tid, groupThread, true, true);
+    blendPixel(tid, groupThread, true, true, false);
+}
+
+// The same four walks keeping a trace (splat_trace.slang).
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendTrace(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, false, false, true);
+}
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendTraceComposite(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, true, false, true);
+}
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendTraceCrypto(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, false, true, true);
+}
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendTraceCompositeCrypto(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, true, true, true);
+}
+
+// The splat-only walk keeping feature sums, of 8, 16 and 32 channels.
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendFeatures8(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, false, false, false, 4u);
+}
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendFeatures16(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, false, false, false, 8u);
+}
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendFeatures32(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, false, false, false, 16u);
+}
+
+// The splat-only and the composite walk summing a matte.
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendMatte(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, false, false, false, 0u, true);
+}
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void splatBlendMatteComposite(uint3 tid: SV_DispatchThreadID, uint3 groupThread: SV_GroupThreadID) {
+    blendPixel(tid, groupThread, true, false, false, 0u, true);
 }

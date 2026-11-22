@@ -352,6 +352,16 @@ public:
 
     [[nodiscard]] static Result<CloudLoader> create(gpu::ShaderLibrary& library);
 
+    /// KEEP THE FAINT. A record whose opacity is under 1/255 is dropped, since
+    /// nothing it could draw is seen -- and two files of the same gaussians
+    /// whose opacities differ at that edge (one mesh baked under two lights,
+    /// where a pane's opacity follows what it reflects) then hold different
+    /// gaussians at the same index. With this, the clouds uploaded from here
+    /// on keep every record whose position is finite -- one a bake emptied,
+    /// with no opacity and no size, too, which nothing then draws -- so they
+    /// stay gaussian for gaussian. Off, as it has always been.
+    void keepFaint(bool keep) noexcept { keepFaint_ = keep; }
+
     /// `maxDegree` caps the harmonics kept (0..3).
     [[nodiscard]] Result<GpuSplats> upload(const io::RawSplats& raw, uint32_t maxDegree = 3);
     /// The same decode of records that are already on the device: `count`
@@ -468,6 +478,7 @@ private:
     gpu::ComputeKernel spzRecords_;
     gpu::ComputeKernel packedRecords_;
     gpu::PrefixSum     prefix_;
+    bool               keepFaint_ = false;
     gpu::ComputeKernel splatValidate_;
     gpu::ComputeKernel splatDecode_;
     gpu::ComputeKernel splatKept_;

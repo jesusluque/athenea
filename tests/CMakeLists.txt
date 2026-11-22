@@ -51,6 +51,7 @@ athenea_test(athenea_ui_tests
 
 athenea_test(athenea_gpu_tests
     SOURCES gpu/test_algo.cpp gpu/test_textures.cpp gpu/test_uniforms.cpp gpu/test_paths.cpp gpu/test_memory.cpp
+            gpu/test_thread_memory.cpp
     LIBS athenea::gpu athenea::render)
 
 athenea_test(athenea_colour_tests
@@ -69,6 +70,7 @@ endif()
 athenea_test(athenea_render_tests
     SOURCES render/test_splat_render.cpp render/test_points.cpp render/test_ray_tracing.cpp
             render/test_splat_motion.cpp render/test_splat_lens.cpp render/test_ply_qa.cpp
+            render/test_splat_trace.cpp render/test_neural_mlp.cpp
             $<$<BOOL:${ATHENEA_HAVE_SPZ}>:render/test_spz.cpp>
             $<$<BOOL:${ATHENEA_HAVE_SPZ}>:render/test_flatten.cpp>
             $<$<BOOL:${ATHENEA_HAVE_WEBP}>:render/test_sog.cpp>
@@ -117,7 +119,7 @@ athenea_test(athenea_volume_tests
 set_target_properties(athenea_volume_tests PROPERTIES BUILD_RPATH "${SLANG_ROOT}/lib;${ATHENEA_USD_ROOT}/lib")
 
 athenea_test(athenea_usd_tests
-    SOURCES usd/test_usd.cpp usd/test_migrate.cpp usd/test_cloud_shadow.cpp usd/test_lights.cpp usd/test_shadow_catcher.cpp usd/test_tree_leaves.cpp usd/test_glass_shadows.cpp usd/test_glass_tint.cpp usd/test_mesh_lights.cpp usd/test_mesh_lights_raster.cpp usd/test_mesh_lights_tx.cpp usd/test_mesh_lights_groups.cpp usd/test_mesh_lights_bake.cpp usd/test_volumes.cpp usd/test_volume_splats.cpp
+    SOURCES usd/test_usd.cpp usd/test_migrate.cpp usd/test_cloud_shadow.cpp usd/test_lights.cpp usd/test_shadow_catcher.cpp usd/test_tree_leaves.cpp usd/test_glass_shadows.cpp usd/test_ray_margin.cpp usd/test_glass_tint.cpp usd/test_path_repeat.cpp usd/test_mesh_lights.cpp usd/test_mesh_lights_raster.cpp usd/test_mesh_lights_tx.cpp usd/test_mesh_lights_groups.cpp usd/test_mesh_lights_bake.cpp usd/test_volumes.cpp usd/test_volume_splats.cpp
             usd/test_validate_frames.cpp $<$<BOOL:${ATHENEA_HAVE_SPZ}>:usd/test_live.cpp> $<$<BOOL:${ATHENEA_HAVE_SPZ}>:usd/test_live_qa.cpp>
     LIBS athenea::usd)
 add_dependencies(athenea_usd_tests hdAthenea)

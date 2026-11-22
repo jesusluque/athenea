@@ -445,6 +445,12 @@ void Engine::setMesh(const pxr::SdfPath& id, int32_t primId, const pxr::TfToken&
     if (look.has_value()) {
         entry.look = *look;
     }
+    // A MESH THAT MOVED IS A SCENE THAT CHANGED. Its points arriving bump the revision when they are
+    // committed; its transform, its visibility, its look and what instances it do not pass through there,
+    // and a path traced frame under a camera that stood still went on adding to the mean of the frames
+    // before: a ball that crossed the floor was a smear of everywhere it had been (found by the QA of a
+    // stage that moves, 14 Nov). Whatever a Sync hands on restarts the mean.
+    revision_.fetch_add(1);
 }
 
 void Engine::setInstancer(const pxr::SdfPath& id, const pxr::SdfPath& parent, InstancerArrays arrays) {
@@ -453,11 +459,13 @@ void Engine::setInstancer(const pxr::SdfPath& id, const pxr::SdfPath& parent, In
     entry.arrays = std::move(arrays);
     entry.parent = parent;
     entry.version = ++instancerVersion_;
+    revision_.fetch_add(1);   // instances that moved: a scene that changed
 }
 
 void Engine::removeInstancer(const pxr::SdfPath& id) {
     const std::lock_guard<std::mutex> held(guard_);
     instancers_.erase(id);
+    revision_.fetch_add(1);
 }
 
 void Engine::setMaterial(const pxr::SdfPath& id, std::shared_ptr<void> mtlxDocument) {
@@ -798,6 +806,8 @@ void Engine::setMeshLights(bool on) {
     }
 }
 void Engine::setGlassShadows(bool glass) { glassShadows_.store(glass); }
+void Engine::setHeadlight(bool headlight) { headlight_.store(headlight); }
+void Engine::setRayMargin(float margin) { rayMargin_.store(std::clamp(margin, 1.0e-6F, 1.0e-1F)); }
 void Engine::setDomeVisible(bool visible) { domeVisible_.store(visible); }
 void Engine::setScreenSpaceReflections(bool on) { screenSpaceReflections_.store(on); }
 
@@ -923,6 +933,7 @@ void Engine::remove(const pxr::SdfPath& id) {
     splats_.erase(id);
     points_.erase(id);
     meshes_.erase(id);
+    revision_.fetch_add(1);   // a prim that left: a scene that changed
 }
 
 /// WHICH LEVEL OF EACH CLOUD THIS VIEW DRAWS. A cloud converted at several
@@ -2303,10 +2314,24 @@ AovView Engine::aovView(const render::RenderTargets& targets, AovSource aov) con
             view.offset = static_cast<uint32_t>(pathAux_.normalOffset());
         }
         return view;
+    case AovKind::Material:
+    case AovKind::MaterialRow:
+    case AovKind::ThroughPosition:
+    case AovKind::ThroughTint:
+    case AovKind::TransmissionColour:
+        if (pathAuxValid_ && pathAux_.width == targets.width && pathAux_.height == targets.height) {
+            view.buffer = &pathAux_.planes;
+            view.offset = static_cast<uint32_t>(pathAux_.planeOffset(
+                aov.kind == AovKind::Material ? 2u : aov.kind == AovKind::MaterialRow ? 3u
+                : aov.kind == AovKind::ThroughPosition ? 4u : aov.kind == AovKind::ThroughTint ? 5u : 6u));
+        }
+        return view;
     // A light group's plane, one of the frame's in one buffer: the offset
     // addresses it at a stride of one.
     case AovKind::LightGroup:
-        if (aov.primvar >= lightGroupCount_ || lightGroupPixels_ != uint64_t{targets.width} * targets.height) {
+        // The plane after the groups' is what no group holds of a path traced frame.
+        if (aov.primvar > lightGroupCount_ || (aov.primvar == lightGroupCount_ && !groupRestValid_) ||
+            lightGroupPixels_ != uint64_t{targets.width} * targets.height) {
             return view;
         }
         // The raster's shading writes the planes; a path traced frame's means
@@ -2706,7 +2731,22 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         }
         return out;
     };
-    if (technique == Technique::RayTraced && pathSeed_ > 0 && bake == nullptr && antialias_.load()) {
+    // The offset is the next pass's of a mean under way. A frame that is
+    // about to start its mean again -- an image asked for, a camera that
+    // moved -- is a first pass and takes none: `pathSeed_` still counts the
+    // frame before it here, and with it a view's first pass took the last
+    // view's offset, so a view drawn after another was not the view drawn
+    // alone. (A scene or a setting that changed under a still camera is not
+    // known yet at this point, and that one pass keeps the old offset.)
+    bool continues = pathSeed_ > 0 && !pathRestart_.load() && pathState_.traced &&
+                     base.focalX == pathState_.focalX && base.focalY == pathState_.focalY &&
+                     base.centreX == pathState_.centreX && base.centreY == pathState_.centreY;
+    for (int r = 0; continues && r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            continues = continues && base.worldToView.at(r, c) == pathState_.worldToView.at(r, c);
+        }
+    }
+    if (technique == Technique::RayTraced && continues && bake == nullptr && antialias_.load()) {
         projection.centreX += halton(pathSeed_, 2) - 0.5;
         projection.centreY += halton(pathSeed_, 3) - 0.5;
     }
@@ -3694,7 +3734,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
         lightGroupCount_ = static_cast<uint32_t>(aovRequest.lightGroups.size());
         if (lightGroupCount_ > 0) {
             const uint64_t pixels = uint64_t{settings.width} * settings.height;
-            const uint64_t bytes = pixels * lightGroupCount_ * 16;
+            // A plane a group, and one more: what no group holds of a path traced frame (restOfGroups).
+            const uint64_t bytes = pixels * (lightGroupCount_ + 1) * 16;
             if (!lightGroupColour_.valid() || lightGroupColour_.bytes() < bytes || lightGroupPixels_ != pixels) {
                 gpu::BufferDesc desc;
                 desc.bytes = bytes;
@@ -3837,8 +3878,15 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             paths.adaptive = pathAdaptive_.load();
             paths.mis = pathMis_.load();
             paths.glassShadows = glassShadows_.load();
+            paths.rayMargin = rayMargin_.load();
+            paths.sceneCache = sceneCache_.valid() ? &sceneCache_ : nullptr;
+            paths.cacheSide = sceneCacheSide_;
+            paths.cachePlanes = sceneCachePlanes_;
+            paths.cacheMin = sceneCacheMin_;
+            paths.cacheCell = sceneCacheCell_;
+            paths.cacheRevision = sceneCacheRevision_;
             paths.errorTarget = pathError_.load();
-            paths.headlight = frame.lights == nullptr || frame.lights->count() == 0;
+            paths.headlight = headlight_.load() && (frame.lights == nullptr || frame.lights->count() == 0);
             PathState now;
             now.worldToView = projection.worldToView;
             now.focalX = projection.focalX;
@@ -3861,6 +3909,8 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             now.adaptive = paths.adaptive;
             now.mis = paths.mis;
             now.glassShadows = paths.glassShadows;
+            now.headlight = paths.headlight;
+            now.rayMargin = paths.rayMargin;
             now.cameraMoves = projection.cameraMoves;
             now.cameraStart = projection.viewToWorldStart;
             now.cameraEnd = projection.viewToWorldEnd;
@@ -3890,7 +3940,10 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             // scene that changed or a setting that did all start the mean
             // again, and only an identical frame adds to it. This is what
             // makes a viewport converge while it is left alone.
-            const bool same = now == pathState_;
+            // An image (StageRenderer::render) asks for its own start: left to
+            // this, a view rendered twice in a row came back the second time
+            // with a pass more than its total.
+            const bool same = !pathRestart_.exchange(false) && now == pathState_;
             paths.accumulate = same;
             if (!same) {
                 pathTracer_->restart();
@@ -4036,6 +4089,31 @@ Result<void> Engine::render(const render::Projection& base, const render::Render
             auto progress = pathTracer_->progress(visibility_);
             if (!progress) return std::move(progress).error();
             pathProgress_ = *progress;
+        }
+        // WHAT NO LIGHT GROUP HOLDS, before the denoiser reaches the colour: the frame's colour times the share
+        // of it the path tracer's sums say no group put there, in the plane after the groups'.
+        groupRestValid_ = false;
+        if (pathTracing && lightGroupCount_ > 0 && lightGroupColour_.valid() && pathTracer_.has_value() &&
+            pathTracer_->lightGroups() >= lightGroupCount_ &&
+            lightGroupPixels_ == uint64_t{settings.width} * settings.height) {
+            if (!groupsRest_.has_value()) {
+                auto made = gpu::ComputeKernel::create(*library_, "athenea/technique/exposure", "restOfGroups");
+                if (!made) return std::move(made).error();
+                groupsRest_.emplace(std::move(*made));
+            }
+            const uint32_t pixels = settings.width * settings.height;
+            gpu::CommandBatch rest(*device_);
+            groupsRest_->dispatch(rest, {pixels, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["source"].setBinding(pathTracer_->sum().rhi());
+                cursor["whole"].setBinding(meshLayer_.colour.rhi());
+                cursor["colour"].setBinding(lightGroupColour_.rhi());
+                cursor["colourBase"].setData(pixels * lightGroupCount_);
+                cursor["groups"].setData(pathTracer_->lightGroups());
+                cursor["params"]["scale"].setData(1.0F);
+                cursor["params"]["pixels"].setData(pixels);
+            });
+            ATHENEA_TRY(rest.submit(true));
+            groupRestValid_ = true;
         }
         // After the frame's batch, never inside it: the denoiser submits work
         // of its own and waits for OIDN. It runs on a path traced frame that
@@ -4327,11 +4405,69 @@ Result<void> Engine::gatherLightGroups(bool traced, uint32_t width, uint32_t hei
     groupsScaled_->dispatch(batch, {entries, 1, 1}, [&](rhi::ShaderCursor cursor) {
         cursor["source"].setBinding(pathTracer_->sum().rhi());
         cursor["sourceBase"].setData(static_cast<uint32_t>(pathTracer_->lightGroupMeanOffset(0)));
+        cursor["colourBase"].setData(uint32_t{0});
         cursor["colour"].setBinding(lightGroupColour_.rhi());
         cursor["params"]["scale"].setData(1.0F);
         cursor["params"]["pixels"].setData(entries);
     });
-    return batch.submit();
+    // A DENOISED FRAME'S GROUPS ARE DENOISED AS IT IS: each plane is what one group of lights puts in the
+    // colour, gathered by the same paths, and a clean colour over noisy groups is not their sum. A plane at a
+    // time, out to a buffer of its own and back -- the denoiser takes a whole buffer -- with the frame's own
+    // albedo and normal.
+    if (!denoise_.load() || denoiserFailed_ || !denoiser_.has_value() || pathTracer_->accumulated() < pathTotal_.load()) {
+        return batch.submit();
+    }
+    ATHENEA_TRY(batch.submit(true));
+    if (!groupPlane_.valid() || groupPlane_.bytes() < pixels * 16) {
+        gpu::BufferDesc desc;
+        desc.bytes = pixels * 16;
+        desc.elementBytes = 16;
+        desc.label = "lightGroup.plane";
+        auto made = gpu::Buffer::create(*device_, desc);
+        if (!made) return std::move(made).error();
+        groupPlane_ = std::move(*made);
+    }
+    for (uint32_t g = 0; g < lightGroupCount_ + (groupRestValid_ ? 1u : 0u); ++g) {
+        const auto copy = [&](const gpu::Buffer& from, uint32_t fromBase, gpu::Buffer& to, uint32_t toBase) -> Result<void> {
+            gpu::CommandBatch one(*device_);
+            groupsScaled_->dispatch(one, {static_cast<uint32_t>(pixels), 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["source"].setBinding(from.rhi());
+                cursor["sourceBase"].setData(fromBase);
+                cursor["colourBase"].setData(toBase);
+                cursor["colour"].setBinding(to.rhi());
+                cursor["params"]["scale"].setData(1.0F);
+                cursor["params"]["pixels"].setData(static_cast<uint32_t>(pixels));
+            });
+            return one.submit(true);
+        };
+        const uint32_t base = static_cast<uint32_t>(g * pixels);
+        ATHENEA_TRY(copy(lightGroupColour_, base, groupPlane_, 0));
+        if (auto ran = denoiser_->denoise(groupPlane_, &pathAux_.planes, 0, pathAux_.normalOffsetBytes(), groupPlane_, width,
+                                         height);
+            !ran) {
+            log::warn("hdAthenea: a light group's plane was not denoised: {}", ran.error().toString());
+            return ok();
+        }
+        ATHENEA_TRY(copy(groupPlane_, 0, lightGroupColour_, base));
+    }
+    // And the denoised planes made to add up to the denoised colour again (groupsToWhole).
+    if (groupRestValid_ && meshLayer_.colour.valid()) {
+        if (!groupsWhole_.has_value()) {
+            auto made = gpu::ComputeKernel::create(*library_, "athenea/technique/exposure", "groupsToWhole");
+            if (!made) return std::move(made).error();
+            groupsWhole_.emplace(std::move(*made));
+        }
+        gpu::CommandBatch whole(*device_);
+        groupsWhole_->dispatch(whole, {static_cast<uint32_t>(pixels), 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["whole"].setBinding(meshLayer_.colour.rhi());
+            cursor["colour"].setBinding(lightGroupColour_.rhi());
+            cursor["groups"].setData(lightGroupCount_);
+            cursor["params"]["scale"].setData(1.0F);
+            cursor["params"]["pixels"].setData(static_cast<uint32_t>(pixels));
+        });
+        ATHENEA_TRY(whole.submit(true));
+    }
+    return ok();
 }
 
 Result<void> Engine::applyExposure(double stops, uint32_t width, uint32_t height, render::RenderTargets& targets) {
@@ -4352,7 +4488,7 @@ Result<void> Engine::applyExposure(double stops, uint32_t width, uint32_t height
     });
     // The light groups are what the colour is made of, and take its exposure.
     if (lightGroupCount_ > 0 && lightGroupColour_.valid() && lightGroupPixels_ == pixels) {
-        const uint32_t entries = pixels * lightGroupCount_;
+        const uint32_t entries = pixels * (lightGroupCount_ + (groupRestValid_ ? 1u : 0u));
         exposure_->dispatch(batch, {entries, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["colour"].setBinding(lightGroupColour_.rhi());
             cursor["params"]["scale"].setData(static_cast<float>(std::exp2(stops)));

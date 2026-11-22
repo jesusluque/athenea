@@ -73,7 +73,8 @@ public bool materialCuts(CameraParams camera, uint2 pixel, uint4 seen) {
 )";
 
 /// HOW MANY LOBES A MATERIAL CAN PUSH: its generated source walked from its
-/// function down, a BSDF node's call one lobe (UsdPreviewSurface's node five),
+/// function down, a BSDF node's call one lobe (UsdPreviewSurface's node five, OpenPBR's
+/// eleven, Standard Surface's and glTF PBR's eight),
 /// a function of the graph's as many as its body's calls push. An upper
 /// bound -- both sides of a branch count -- and kBuildLobes (16) where the
 /// source is not what the generator writes (a call to itself).
@@ -84,6 +85,8 @@ uint32_t lobesPushed(const std::string& source, const std::string& entry) {
         {"athenea_dielectric_bsdf", 1},         {"athenea_conductor_bsdf", 1},
         {"athenea_generalized_schlick_bsdf", 1}, {"athenea_sheen_bsdf", 1},
         {"athenea_chiang_hair_bsdf", 1},        {"athenea_preview_bsdf", 5},
+        {"athenea_open_pbr_bsdf", 11},          {"athenea_standard_surface_bsdf", 8},
+        {"athenea_gltf_pbr_bsdf", 8},
     };
     constexpr uint32_t kMost = 16;
     // The functions the source defines, by their bodies: a definition opens
@@ -203,7 +206,7 @@ Result<void> MaterialPrograms::setModules(std::span<const material::CompiledMate
             source += "import " + m.module + ";\n";
         }
     }
-    source += "\npublic void evaluateMaterial(uint function, MaterialInputs inputs, uint blob) {\n    switch (function) {\n";
+    source += "\npublic void evaluateMaterial(uint function, __constref MaterialInputs inputs, uint blob) {\n    switch (function) {\n";
     for (size_t k = 0; k < modules.size(); ++k) {
         source += "    case " + std::to_string(k + 1) + ": " + modules[k].function + "(inputs, blob); break;\n";
     }
@@ -230,7 +233,7 @@ Result<void> MaterialPrograms::setModules(std::span<const material::CompiledMate
     // compiled without the BSDF (ClosureVariant::Opacity), so asking costs
     // the compiler a small function a cut-out and not a second copy of every
     // material. A module no cut-out uses has none, and is opaque.
-    source += "\npublic float evaluateOpacity(uint function, MaterialInputs inputs, uint blob) {\n    switch (function) {\n";
+    source += "\npublic float evaluateOpacity(uint function, __constref MaterialInputs inputs, uint blob) {\n    switch (function) {\n";
     for (size_t k = 0; k < opacities.size() && k < modules.size(); ++k) {
         if (!opacities[k].module.empty()) {
             source += "    case " + std::to_string(k + 1) + ": " + opacities[k].function +

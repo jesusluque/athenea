@@ -1,5 +1,6 @@
 // Copyright (c) 2026 jesus luque.
 #include "athenea/render/TileRasterizer.h"
+#include "athenea/render/NeuralWall.h"
 
 #include <algorithm>
 #include <cmath>
@@ -157,6 +158,20 @@ Result<TileRasterizer> TileRasterizer::create(gpu::ShaderLibrary& library) {
     ATHENEA_TRY(make(r.blendComposite_, "athenea/splat/splat_blend", "splatBlendComposite"));
     ATHENEA_TRY(make(r.blendCrypto_, "athenea/splat/splat_blend", "splatBlendCrypto"));
     ATHENEA_TRY(make(r.blendCompositeCrypto_, "athenea/splat/splat_blend", "splatBlendCompositeCrypto"));
+    ATHENEA_TRY(make(r.blendTrace_, "athenea/splat/splat_blend", "splatBlendTrace"));
+    ATHENEA_TRY(make(r.neuralShade_, "athenea/neural/neural_shade", "neuralShade"));
+    ATHENEA_TRY(make(r.neuralMatt_, "athenea/neural/neural_shade", "neuralMatt"));
+    ATHENEA_TRY(make(r.neuralMattDone_, "athenea/neural/neural_shade", "neuralMattDone"));
+    ATHENEA_TRY(make(r.blendFeatures8_, "athenea/splat/splat_blend", "splatBlendFeatures8"));
+    ATHENEA_TRY(make(r.blendFeatures16_, "athenea/splat/splat_blend", "splatBlendFeatures16"));
+    ATHENEA_TRY(make(r.blendFeatures32_, "athenea/splat/splat_blend", "splatBlendFeatures32"));
+    ATHENEA_TRY(make(r.blendMatte_, "athenea/splat/splat_blend", "splatBlendMatte"));
+    ATHENEA_TRY(make(r.blendMatteComposite_, "athenea/splat/splat_blend", "splatBlendMatteComposite"));
+    ATHENEA_TRY(make(r.pixelFeatures_, "athenea/neural/neural_pixel", "neuralPixelFeatures"));
+    ATHENEA_TRY(make(r.pixelDecode_, "athenea/neural/neural_pixel", "neuralPixelDecode"));
+    ATHENEA_TRY(make(r.blendTraceCrypto_, "athenea/splat/splat_blend", "splatBlendTraceCrypto"));
+    ATHENEA_TRY(make(r.blendTraceComposite_, "athenea/splat/splat_blend", "splatBlendTraceComposite"));
+    ATHENEA_TRY(make(r.blendTraceCompositeCrypto_, "athenea/splat/splat_blend", "splatBlendTraceCompositeCrypto"));
     return r;
 }
 
@@ -232,7 +247,7 @@ Result<void> TileRasterizer::reservePairs(uint32_t count) {
 }
 
 Result<void> TileRasterizer::reserveTargets(RenderTargets& targets, uint32_t width,
-                                            uint32_t height, uint32_t tiles, bool crypto) {
+                                            uint32_t height, uint32_t tiles, bool crypto, bool trace) {
     if (tiles > tileCapacity_) {
         auto made = buffer(*device_, uint64_t{tiles} * 2, 4, "tile.ranges");
         if (!made) return std::move(made).error();
@@ -250,6 +265,7 @@ Result<void> TileRasterizer::reserveTargets(RenderTargets& targets, uint32_t wid
         targets.width = width;
         targets.height = height;
         targets.crypto = {};
+        targets.trace = {};
     }
     // Three float4 a pixel, allocated only where a frame asks for a matte:
     // it is a quarter again of the frame's memory, and most frames want none.
@@ -257,6 +273,13 @@ Result<void> TileRasterizer::reserveTargets(RenderTargets& targets, uint32_t wid
         auto made = buffer(*device_, uint64_t{width} * height * 3, 16, "target.crypto");
         if (!made) return std::move(made).error();
         targets.crypto = *made;
+    }
+    // The trace is eleven words a pixel, nearly three times the colour: kept
+    // only by the frame that asks what its pixels are made of.
+    if (trace && !targets.trace.valid()) {
+        auto made = buffer(*device_, uint64_t{width} * height * kTraceWords, 4, "target.trace");
+        if (!made) return std::move(made).error();
+        targets.trace = *made;
     }
     return ok();
 }
@@ -302,10 +325,51 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     }
     const uint32_t splatCount = static_cast<uint32_t>(total);
     ATHENEA_TRY(reserveSplats(std::max(splatCount, 1u)));
-    ATHENEA_TRY(reserveTargets(targets, settings.width, settings.height, tiles, settings.cryptomatte));
+    ATHENEA_TRY(reserveTargets(targets, settings.width, settings.height, tiles, settings.cryptomatte, settings.trace));
 
     FrameStats stats;
     stats.splats = splatCount;
+
+    // A STILL FRAME (`RenderSettings::still`): the camera, the clouds and where they stand are the last
+    // frame's, and only what their gaussians' colours are has changed -- a wall showing another picture,
+    // a light turned. Everything before the blend that is not a colour is then the last frame's too: what
+    // is in view, its order, the tiles' lists. Checked here as far as a number can: the projection, the
+    // size, each cloud and its place. Only clouds drawn by their latents, whose colours a kernel of their
+    // own writes whole each frame, with nothing under them.
+    bool stillAble = settings.still && points.empty() && under == nullptr && settings.flatten == nullptr &&
+                     settings.neuralFeatures == 0 && splatCount > 0 &&
+                     (lights == nullptr || lights->visibilityFactors != nullptr);
+    uint64_t stillKey = 0xCBF29CE484222325ull;
+    {
+        const auto mix = [&](uint64_t v) { stillKey = (stillKey ^ v) * 0x100000001B3ull; };
+        const auto real = [&](double v) {
+            uint64_t bits = 0;
+            std::memcpy(&bits, &v, sizeof(bits));
+            mix(bits);
+        };
+        for (const double v : projection.worldToView.m) real(v);
+        real(projection.focalX);
+        real(projection.focalY);
+        real(projection.centreX);
+        real(projection.centreY);
+        real(projection.nearZ);
+        real(projection.farZ);
+        mix(projection.orthographic ? 1u : 0u);
+        mix((uint64_t{settings.width} << 32) | settings.height);
+        for (const SplatInstance& instance : instances) {
+            const scene::GpuSplats* cloud = instance.splats;
+            if (cloud == nullptr || cloud->count == 0) {
+                continue;
+            }
+            stillAble = stillAble && instance.neural != nullptr && instance.neural->count == cloud->count &&
+                        !cloud->hasVolume() && !instance.relight && !instance.catcher;
+            mix(reinterpret_cast<uintptr_t>(cloud));
+            mix((uint64_t{cloud->revision} << 32) | cloud->count);
+            for (const double v : instance.objectToWorld.m) real(v);
+        }
+    }
+    const bool still = stillAble && stillValid_ && stillKey == stillKey_;
+    stillValid_ = false;   // until this frame is drawn to its end
 
     // --- batch 1: project; how many are visible and how many pairs --------
     //
@@ -322,9 +386,11 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     const bool measured = lights != nullptr && lights->any() && lights->visibilityFactors != nullptr &&
                           lights->visibilityLights > 0;
     const bool splatShadows = !measured && lights != nullptr && lights->any() && lights->shadows() && shadowsSupported_ &&
-                              std::any_of(instances.begin(), instances.end(),
-                                          [](const SplatInstance& i) { return i.relight; });
+                              std::any_of(instances.begin(), instances.end(), [](const SplatInstance& i) {
+                                  return i.relight || (i.neural != nullptr && i.neural->lit && i.neural->shadowed);
+                              });
     const uint32_t shadowLights = splatShadows ? std::min(lights->count, uint32_t{8}) : 0u;
+    shadowFactorLights_ = shadowLights;
     if (splatShadows) {
         uint64_t wanted = 0;
         for (const SplatInstance& instance : instances) {
@@ -342,7 +408,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             if (cloud == nullptr || cloud->count == 0) {
                 continue;
             }
-            if (instance.relight) {
+            if (instance.relight || (instance.neural != nullptr && instance.neural->lit && instance.neural->shadowed)) {
                 const std::array<float, 12> rows = instance.objectToWorld.rows3x4();
                 splatShadow_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
                     cursor["positions"].setBinding(cloud->positions.rhi());
@@ -391,11 +457,49 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         }
         ATHENEA_TRY(batch.submit(true));
     }
+    // Decoded once a pixel (RenderSettings::neuralFeatures): the words a slot and a pixel carry, and
+    // the buffers that hold them.
+    const uint32_t featureWords = settings.neuralFeatures == 8 || settings.neuralFeatures == 16 ||
+                                          settings.neuralFeatures == 32
+                                      ? settings.neuralFeatures / 2
+                                      : 0u;
+    if (featureWords != 0) {
+        const uint64_t slotBytes = uint64_t{splatCapacity_} * featureWords * 4;
+        if (!slotFeatures_.valid() || slotFeatures_.bytes() < slotBytes) {
+            auto made = buffer(*device_, uint64_t{splatCapacity_} * featureWords, 4, "splat.features");
+            if (!made) return std::move(made).error();
+            slotFeatures_ = *made;
+        }
+        const uint64_t pixelBytes = uint64_t{settings.width} * settings.height * featureWords * 4;
+        if (!targets.features.valid() || targets.features.bytes() != pixelBytes) {
+            auto made = buffer(*device_, uint64_t{settings.width} * settings.height * featureWords, 4, "target.features");
+            if (!made) return std::move(made).error();
+            targets.features = *made;
+        }
+        if (!targets.decoded.valid() || targets.decoded.bytes() != uint64_t{settings.width} * settings.height * 16) {
+            auto made = buffer(*device_, uint64_t{settings.width} * settings.height, 16, "target.decoded");
+            if (!made) return std::move(made).error();
+            targets.decoded = *made;
+        }
+        if (!pixelWeights_.valid()) {
+            // (16 + 32) x 32 + 32 x 32 + 3 x 32, zeroed: a network that has learnt nothing.
+            const std::vector<float> zeros(48 * 32 + 32 * 32 + 3 * 32, 0.0F);
+            gpu::BufferDesc desc;
+            desc.bytes = zeros.size() * sizeof(float);
+            desc.elementBytes = sizeof(float);
+            desc.label = "neural.pixelWeights";
+            auto made = gpu::Buffer::create(*device_, desc, zeros.data());
+            if (!made) return std::move(made).error();
+            pixelWeights_ = *made;
+        }
+    }
     Stopwatch watch(batch, settings.timeStages);
     ++frameOfCaches_;
     uint32_t base = 0;
     size_t turnedSkies = 0;
+    stats.slotBases.reserve(instances.size());
     for (const SplatInstance& instance : instances) {
+        stats.slotBases.push_back(base);
         const scene::GpuSplats* cloud = instance.splats;
         if (cloud == nullptr || cloud->count == 0) {
             continue;
@@ -580,6 +684,12 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             setFrame(cursor, common);
             cursor["params"]["cryptoMode"].setData(cryptoMode);
             cursor["params"]["splatView"].setData(settings.splatView);
+            // A cloud drawn from its latents has its colours written over
+            // after this: its harmonics past the first are not evaluated to
+            // be thrown away.
+            if (instance.neural != nullptr && instance.neural->count == cloud->count) {
+                cursor["params"]["shLimit"].setData(uint32_t{0});
+            }
             setObject(cursor, objectToView, eyeObject);
             cursor["params"]["count"].setData(cloud->count);
             cursor["params"]["base"].setData(base);
@@ -778,12 +888,160 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
             base += cloud->count;
             continue;
         }
-        if (kept != nullptr && keep) {
+        if (kept != nullptr && keep && !still) {
             viewless = true;
             (instance.catcher ? catcherViewless_ : viewless_).dispatch(batch, {cloud->count, 1, 1}, bindProject);
             viewless = false;
         }
-        project.dispatch(batch, {cloud->count, 1, 1}, bindProject);
+        if (!still) {
+            project.dispatch(batch, {cloud->count, 1, 1}, bindProject);
+        }
+        if (featureWords != 0 && instance.neural != nullptr && instance.neural->count == cloud->count) {
+            // Decoded once a pixel: this cloud's gaussians give the walk their
+            // features, and their colour stays the base its first harmonic is.
+            const NeuralCloud& neural = *instance.neural;
+            pixelFeatures_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["latent"].setBinding(neural.latent.rhi());
+                cursor["visible"].setBinding(visible_.rhi());
+                cursor["slotFeatures"].setBinding(slotFeatures_.rhi());
+                cursor["features"].setBinding(slotFeatures_.rhi());
+                cursor["weights"].setBinding(pixelWeights_.rhi());
+                cursor["colour"].setBinding(targets.colour.rhi());
+                cursor["decoded"].setBinding(targets.decoded.rhi());
+                cursor["params"]["count"].setData(cloud->count);
+                cursor["params"]["base"].setData(base);
+                cursor["params"]["words"].setData(featureWords);
+                cursor["params"]["latentStride"].setData(kNeuralStride);
+                cursor["params"]["width"].setData(settings.width);
+                cursor["params"]["height"].setData(settings.height);
+            });
+        } else if (instance.neural != nullptr && instance.neural->count == cloud->count) {
+            // The colours again, from the cloud's latent and network, over
+            // what its harmonics gave the records.
+            const NeuralCloud& neural = *instance.neural;
+            MattCache* kept = nullptr;
+            bool keptAll = false;
+            const auto bindNeural = [&](rhi::ShaderCursor cursor) {
+                cursor["mattRead"].setBinding(kept != nullptr ? kept->matt.rhi() : placeholderColour_.rhi());
+                cursor["mattOut"].setBinding(placeholderColour_.rhi());
+                cursor["chunkChanged"].setBinding(neural.chunkChanged.valid() ? neural.chunkChanged.rhi()
+                                                                              : cloud->shape.rhi());
+                cursor["chunkDone"].setBinding(placeholderDepth_.rhi());
+                cursor["params"]["cached"].setData(uint32_t{kept != nullptr ? 1u : 0u});
+                cursor["params"]["all"].setData(uint32_t{keptAll ? 1u : 0u});
+                cursor["params"]["stamp"].setData(neural.stamp);
+                cursor["positions"].setBinding(cloud->positions.rhi());
+                cursor["shape"].setBinding(cloud->shape.rhi());
+                cursor["visible"].setBinding(visible_.rhi());
+                cursor["latent"].setBinding(neural.latent.rhi());
+                cursor["weights"].setBinding(neural.weights.rhi());
+                cursor["made"].setBinding(placeholderDepth_.rhi());
+                cursor["proj"].setBinding(proj_.rhi());
+                cursor["params"]["count"].setData(cloud->count);
+                cursor["params"]["base"].setData(base);
+                cursor["params"]["linearCloud"].setData(uint32_t{0});
+                cursor["params"]["seed"].setData(uint32_t{0});
+                cursor["params"]["eyeX"].setData(static_cast<float>(eyeObject.x));
+                cursor["params"]["eyeY"].setData(static_cast<float>(eyeObject.y));
+                cursor["params"]["eyeZ"].setData(static_cast<float>(eyeObject.z));
+                cursor["params"]["spread"].setData(0.0F);
+                // The frame's light, where the cloud answers one: its
+                // direction in the cloud's own space, as the view's is.
+                const NeuralLight white;
+                const NeuralLight* given = instance.neuralLight != nullptr ? instance.neuralLight : &white;
+                const uint32_t lightCount =
+                    instance.neuralLight != nullptr ? std::min(instance.neuralLightCount, kNeuralLights) : 1u;
+                const Mat4 worldToObject = aofx::xform::inverseAffine(instance.objectToWorld);
+                for (uint32_t l = 0; l < lightCount; ++l) {
+                    const NeuralLight& light = given[l];
+                    Vec3 towards = worldToObject.direction({light.towards[0], light.towards[1], light.towards[2]});
+                    const double length =
+                        std::sqrt(towards.x * towards.x + towards.y * towards.y + towards.z * towards.z);
+                    if (length > 0.0) {
+                        towards = towards * (1.0 / length);
+                    }
+                    const std::array<float, 4> direction{static_cast<float>(towards.x), static_cast<float>(towards.y),
+                                                         static_cast<float>(towards.z), 0.0F};
+                    const std::array<float, 4> radiance{light.radiance[0], light.radiance[1], light.radiance[2], 0.0F};
+                    cursor["params"]["lightTowards"][static_cast<int>(l)].setData(direction);
+                    cursor["params"]["lightRadiance"][static_cast<int>(l)].setData(radiance);
+                }
+                cursor["params"]["lightCount"].setData(lightCount);
+                // What reaches each gaussian from the light, where the cloud
+                // leaves that to the engine and the frame cast shadows.
+                // By a ray this frame cast, or measured before it (a shadow
+                // map's, a baked field's: `SplatLights::visibilityFactors`).
+                const bool shadowed = neural.lit && neural.shadowed && (splatShadows || measured);
+                cursor["shadowFactors"].setBinding(!shadowed ? placeholderDepth_.rhi()
+                                                   : measured ? lights->visibilityFactors->rhi()
+                                                              : shadowFactors_.rhi());
+                cursor["params"]["shadowLights"].setData(!shadowed ? 0u : measured ? lights->visibilityLights
+                                                                                  : shadowLights);
+                cursor["params"]["lit"].setData(uint32_t{neural.lit ? 1u : 0u});
+                cursor["params"]["split"].setData(uint32_t{neural.split ? 1u : 0u});
+            };
+            // THE MATT PART, KEPT. Under what lights it was said is a number made of them; a cloud whose
+            // shadows this frame casts by ray, or whose lights say nothing of when they change, keeps nothing.
+            const bool shadowedNow = neural.lit && neural.shadowed && (splatShadows || measured);
+            const bool keepable = settings.neuralKeep && neural.split && neural.chunkChanged.valid() &&
+                                  (!shadowedNow || (measured && lights->revision != 0));
+            if (keepable) {
+                uint64_t key = 0x9E3779B97F4A7C15ull ^ (neural.lit ? 1u : 0u) ^ (uint64_t{base} << 8);
+                const auto mix = [&](uint64_t v) { key = (key ^ v) * 0x100000001B3ull; };
+                if (neural.lit) {
+                    const NeuralLight white;
+                    const NeuralLight* given = instance.neuralLight != nullptr ? instance.neuralLight : &white;
+                    const uint32_t lightCount =
+                        instance.neuralLight != nullptr ? std::min(instance.neuralLightCount, kNeuralLights) : 1u;
+                    mix(lightCount);
+                    for (uint32_t l = 0; l < lightCount; ++l) {
+                        for (int c = 0; c < 3; ++c) {
+                            uint32_t bits = 0;
+                            std::memcpy(&bits, &given[l].towards[static_cast<size_t>(c)], sizeof(bits));
+                            mix(bits);
+                            std::memcpy(&bits, &given[l].radiance[static_cast<size_t>(c)], sizeof(bits));
+                            mix(bits);
+                        }
+                    }
+                    for (int k = 0; k < 16; ++k) {
+                        uint64_t bits = 0;
+                        const double v = instance.objectToWorld.m[static_cast<size_t>(k)];
+                        std::memcpy(&bits, &v, sizeof(bits));
+                        mix(bits);
+                    }
+                    mix(shadowedNow ? lights->revision : 0u);
+                }
+                MattCache& cache = mattCaches_[&neural];
+                const bool fresh = !cache.matt.valid() || cache.matt.bytes() < uint64_t{cloud->count} * 16;
+                if (fresh) {
+                    auto matt = buffer(*device_, std::max<uint64_t>(cloud->count, 1), 16, "neural.matt");
+                    if (!matt) return std::move(matt).error();
+                    auto done = buffer(*device_, cloud->count / kNeuralChunk + 2, 4, "neural.mattDone");
+                    if (!done) return std::move(done).error();
+                    cache.matt = *matt;
+                    cache.done = *done;
+                }
+                if (fresh || cache.key != key || cache.stamp != neural.stamp) {
+                    keptAll = fresh || cache.key != key;
+                    neuralMatt_.dispatch(batch, {cloud->count, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                        bindNeural(cursor);
+                        cursor["mattOut"].setBinding(cache.matt.rhi());
+                        cursor["chunkDone"].setBinding(cache.done.rhi());
+                    });
+                    neuralMattDone_.dispatch(batch, {cloud->count / kNeuralChunk + 1, 1, 1}, [&](rhi::ShaderCursor cursor) {
+                        bindNeural(cursor);
+                        cursor["chunkDone"].setBinding(cache.done.rhi());
+                    });
+                    cache.key = key;
+                    cache.stamp = neural.stamp;
+                }
+                kept = &cache;
+            }
+            neuralShade_.dispatch(batch, {cloud->count, 1, 1}, bindNeural);
+        }
+        if (instance.wall != nullptr && instance.wall->count() == cloud->count && featureWords == 0) {
+            instance.wall->shade(batch, base, proj_, visible_);
+        }
         base += cloud->count;
     }
     if (settings.flatten != nullptr) {
@@ -826,7 +1084,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     const uint32_t all = std::max(splatCount, 1u);
     // A FRAME OF NO SPLATS -- meshes alone, composited by the blend below --
     // has nothing to count: its sums are skipped, unless a panel counts it.
-    if (splatCount > 0 || settings.countSplats) {
+    if (!still && (splatCount > 0 || settings.countSplats)) {
         ATHENEA_TRY(prefix_.apply(batch, visible_, visibleOffsets_, visibleTotal_, all));
         ATHENEA_TRY(prefix_.apply(batch, tilesTouched_, touchedOffsets_, touchedTotal_, all));
     }
@@ -835,7 +1093,10 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     ATHENEA_TRY(batch.submit());
     uint32_t visibleCount = 0;
     uint32_t pairs = 0;
-    if (splatCount > 0) {
+    if (still) {
+        visibleCount = stillVisible_;
+        pairs = stillPairs_;
+    } else if (splatCount > 0) {
         ATHENEA_TRY(visibleTotal_.read(*device_, 0, sizeof(visibleCount), &visibleCount));
         ATHENEA_TRY(touchedTotal_.read(*device_, 0, sizeof(pairs), &pairs));
     }
@@ -847,7 +1108,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     ATHENEA_TRY(reservePairs(std::max(pairs, 1u)));
 
     // --- batch 2: sort the visible, emit, tile sort, ranges, blend ---------
-    if (visibleCount > 0) {
+    if (visibleCount > 0 && !still) {
         compact_.dispatch(batch, {splatCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["visible"].setBinding(visible_.rhi());
             cursor["visibleOffsets"].setBinding(visibleOffsets_.rhi());
@@ -865,7 +1126,7 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     if (!ms) return std::move(ms).error();
     stats.depthSortMs = *ms;
 
-    if (pairs > 0) {
+    if (pairs > 0 && !still) {
         gather_.dispatch(batch, {visibleCount, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["order"].setBinding(depthSort_.values.rhi());
             cursor["tilesTouched"].setBinding(tilesTouched_.rhi());
@@ -891,20 +1152,20 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     if (!ms) return std::move(ms).error();
     stats.emitMs = *ms;
 
-    if (pairs > 1) {
+    if (pairs > 1 && !still) {
         ATHENEA_TRY(sort_.sort(batch, tileSort_, pairs, bitsFor(tiles)));
     }
     // The tiles' ranges, cleared where a frame of pairs left them written:
     // after a frame of none they stay empty, and the next such frame of no
     // more tiles leaves them as they are.
-    if (pairs > 0 || rangesEmpty_ < tiles) {
+    if (!still && (pairs > 0 || rangesEmpty_ < tiles)) {
         clear_.dispatch(batch, {tiles, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["ranges"].setBinding(ranges_buffer_.rhi());
             setFrame(cursor, common);
         });
         rangesEmpty_ = pairs > 0 ? 0u : tiles;
     }
-    if (pairs > 0) {
+    if (pairs > 0 && !still) {
         ranges_.dispatch(batch, {pairs, 1, 1}, [&](rhi::ShaderCursor cursor) {
             cursor["pairTiles"].setBinding(tileSort_.keysLo.rhi());
             cursor["ranges"].setBinding(ranges_buffer_.rhi());
@@ -920,8 +1181,25 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     const bool composite = under != nullptr || !points.empty();
     const bool matte = settings.cryptomatte && targets.crypto.valid();
     const bool underCrypto = matte && under != nullptr && under->cryptoIds.valid();
-    gpu::ComputeKernel& blend = matte ? (composite ? blendCompositeCrypto_ : blendCrypto_)
-                                      : (composite ? blendComposite_ : blend_);
+    const bool traced = settings.trace && targets.trace.valid();
+    const bool featured = featureWords != 0 && !traced && !matte && !composite;
+    // A matte summed by the walk: the plain walk's twin, or the composite one's.
+    const bool lifted = settings.matteLift != nullptr && !traced && !matte && !featured;
+    if (lifted) {
+        const uint64_t bytes = uint64_t{settings.width} * settings.height * sizeof(float);
+        if (!targets.matte.valid() || targets.matte.bytes() != bytes) {
+            auto made = buffer(*device_, uint64_t{settings.width} * settings.height, 4, "target.matte");
+            if (!made) return std::move(made).error();
+            targets.matte = *made;
+        }
+    }
+    gpu::ComputeKernel& blend = lifted ? (composite ? blendMatteComposite_ : blendMatte_)
+                                : featured ? (featureWords == 4 ? blendFeatures8_ : featureWords == 8 ? blendFeatures16_
+                                                                                                      : blendFeatures32_)
+                                : traced  ? (matte ? (composite ? blendTraceCompositeCrypto_ : blendTraceCrypto_)
+                                                 : (composite ? blendTraceComposite_ : blendTrace_))
+                                : matte ? (composite ? blendCompositeCrypto_ : blendCrypto_)
+                                        : (composite ? blendComposite_ : blend_);
     blend.dispatch(batch, {settings.width, settings.height, 1}, [&](rhi::ShaderCursor cursor) {
         cursor["ranges"].setBinding(ranges_buffer_.rhi());
         cursor["pairSplats"].setBinding(tileSort_.values.rhi());
@@ -940,19 +1218,54 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
         cursor["underCrypto"].setBinding(underCrypto ? under->cryptoIds.rhi()
                                                      : placeholderCrypto_.rhi());
         cursor["crypto"].setBinding(matte ? targets.crypto.rhi() : placeholderOut_.rhi());
+        cursor["trace"].setBinding(traced ? targets.trace.rhi() : placeholderOut_.rhi());
+        cursor["slotLift"].setBinding(lifted ? settings.matteLift->rhi() : placeholderCrypto_.rhi());
+        cursor["matteOut"].setBinding(lifted ? targets.matte.rhi() : placeholderDepth_.rhi());
+        cursor["slotFeatures"].setBinding(featured ? slotFeatures_.rhi() : placeholderCrypto_.rhi());
+        cursor["features"].setBinding(featured ? targets.features.rhi() : placeholderOut_.rhi());
         cursor["contribution"].setBinding(settings.contribution != nullptr ? settings.contribution->rhi()
                                                                            : visible_.rhi());
         setFrame(cursor, common);
         cursor["finalColour"].setBinding(settings.finalColour != nullptr ? settings.finalColour->rhi()
                                                                           : placeholderColour_.rhi());
+        cursor["liftMask"].setBinding(settings.liftMask != nullptr ? settings.liftMask->rhi()
+                                                                  : placeholderDepth_.rhi());
         cursor["params"]["contributionMode"].setData(settings.contribution == nullptr ? 0u
+                                                     : settings.contributionMode == 3u
+                                                         ? (settings.liftMask != nullptr ? 3u : 0u)
+                                                     : settings.contributionMode == 4u
+                                                         ? (settings.finalColour != nullptr ? 4u : 0u)
                                                      : settings.contributionMode == 2u && settings.finalColour != nullptr
                                                          ? 2u
                                                          : 1u);
+        cursor["params"]["matteHard"].setData(uint32_t{settings.matteHard ? 1u : 0u});
+        cursor["params"]["matteThreshold"].setData(settings.matteThreshold);
         cursor["params"]["hasUnder"].setData(uint32_t{under != nullptr ? 1u : 0u});
         cursor["params"]["hasUnderCrypto"].setData(uint32_t{underCrypto ? 1u : 0u});
         cursor["params"]["envBaseSide"].setData(sky ? lights->envBaseSide : 1u);
     });
+    if (featured) {
+        // The network, once a pixel, on what the walk left it.
+        pixelDecode_.dispatch(batch, {settings.width, settings.height, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["latent"].setBinding(pixelWeights_.rhi());
+            cursor["visible"].setBinding(visible_.rhi());
+            cursor["slotFeatures"].setBinding(slotFeatures_.rhi());
+            cursor["features"].setBinding(targets.features.rhi());
+            cursor["weights"].setBinding(pixelWeights_.rhi());
+            cursor["colour"].setBinding(targets.colour.rhi());
+            cursor["decoded"].setBinding(targets.decoded.rhi());
+            cursor["params"]["count"].setData(uint32_t{0});
+            cursor["params"]["base"].setData(uint32_t{0});
+            cursor["params"]["words"].setData(featureWords);
+            cursor["params"]["latentStride"].setData(kNeuralStride);
+            cursor["params"]["width"].setData(settings.width);
+            cursor["params"]["height"].setData(settings.height);
+            cursor["params"]["focalX"].setData(static_cast<float>(projection.focalX));
+            cursor["params"]["focalY"].setData(static_cast<float>(projection.focalY));
+            cursor["params"]["centreX"].setData(static_cast<float>(projection.centreX));
+            cursor["params"]["centreY"].setData(static_cast<float>(projection.centreY));
+        });
+    }
     if (settings.countSplats) {
         // What the panel shows, counted from what the frame already wrote
         // and copied out with the submit the frame makes anyway.
@@ -973,6 +1286,11 @@ Result<FrameStats> TileRasterizer::render(const Projection& projection,
     stats.totalMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
                                                               frameStart)
                         .count();
+    stillValid_ = stillAble;
+    stillKey_ = stillKey;
+    stillVisible_ = visibleCount;
+    stillPairs_ = pairs;
+    stats.still = still;
     return stats;
 }
 

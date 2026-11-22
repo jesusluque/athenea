@@ -3,7 +3,7 @@
 // <add>
 #include "pbrlib/genglsl/lib/mx_closure_type.glsl"
 
-void athenea_add_bsdf(ClosureData closureData, BSDF in1, BSDF in2, out BSDF result)
+void athenea_add_bsdf(ClosureData closureData, __constref BSDF in1, __constref BSDF in2, out BSDF result)
 {
     result = athenea_bsdf_zero();
     for (uint k = 0; k < kBuildLobes; ++k)

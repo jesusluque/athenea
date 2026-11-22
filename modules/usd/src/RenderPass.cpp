@@ -174,6 +174,15 @@ void HdAtheneaRenderPass::_Execute(HdRenderPassStateSharedPtr const& state, TfTo
         } else if (binding.aovName == TfToken("shadingNormal")) {
             source.kind = athenea::usd::AovKind::ShadingNormal;
             request.aux = true;
+        } else if (binding.aovName == TfToken("material") || binding.aovName == TfToken("materialRow") ||
+                   binding.aovName == TfToken("throughPosition") || binding.aovName == TfToken("throughTint") ||
+                   binding.aovName == TfToken("transmissionColour")) {
+            source.kind = binding.aovName == TfToken("material")      ? athenea::usd::AovKind::Material
+                          : binding.aovName == TfToken("materialRow") ? athenea::usd::AovKind::MaterialRow
+                          : binding.aovName == TfToken("throughPosition") ? athenea::usd::AovKind::ThroughPosition
+                          : binding.aovName == TfToken("throughTint")     ? athenea::usd::AovKind::ThroughTint
+                                                                          : athenea::usd::AovKind::TransmissionColour;
+            request.aux = true;
         } else if (binding.aovName == HdAovTokens->Neye) {
             source.kind = athenea::usd::AovKind::EyeNormal;
             request.normals = true;
@@ -237,6 +246,8 @@ void HdAtheneaRenderPass::_Execute(HdRenderPassStateSharedPtr const& state, TfTo
         _engine->setVolumeFilter(_delegate->GetVolumeFilter());
         _engine->setEmissionLevels(_delegate->GetLightLevels());
         _engine->setGlassShadows(_delegate->GetGlassShadows());
+        _engine->setHeadlight(_delegate->GetHeadlight());
+        _engine->setRayMargin(_delegate->GetRayMargin());
         _engine->setPathError(_delegate->GetPathError());
         _engine->setMotionBuckets(_delegate->GetDisableMotionBlur() ? 1u : _delegate->GetMotionBuckets());
     }

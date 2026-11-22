@@ -43,25 +43,90 @@ public static const uint kScatterReflect = 0;
 public static const uint kScatterTransmit = 1;
 public static const uint kScatterBoth = 2;
 
+/// 128 BYTES ON EVERY TARGET: a float3 beside a float is one float4 here,
+/// each half read and written through a property under the name it had.
+/// Metal gives a float3 sixteen bytes of its own, so the same fields as
+/// members were 224 bytes there -- and a lobe is what a shading kernel keeps
+/// most of in a thread's memory: the stack a material builds, the one it
+/// leaves, and each one a path holds (docs/decisions.md, 18 Nov, "The margin
+/// of every kernel").
 public struct Lobe {
     public uint   kind;
     public uint   flags;
     public uint   scatter;
     public uint   pad0;
-    public float3 weight;       // the node's weight, times what mixing and layering made of it
-    public float  roughness;    // diffuse and sheen
-    public float3 colour0;      // diffuse colour, dielectric tint, conductor n, Schlick F0
-    public float  ior;          // dielectric
-    public float3 colour1;      // conductor k, Schlick F90
-    public float  exponent;     // Schlick
-    public float3 colour2;      // Schlick F82
-    public float  pad1;
-    public float2 alpha;        // GGX
-    public float2 pad2;
-    public float3 normal;
-    public float  pad3;
-    public float3 tangent;      // anisotropy's, or the fibre's direction
-    public float  pad4;
+    float4 weightRoughness;
+    float4 colour0Ior;
+    float4 colour1Exponent;
+    float4 colour2Pad1;
+    float4 alphaPad2;
+    float4 normalPad3;
+    float4 tangentPad4;
+    /// The node's weight, times what mixing and layering made of it.
+    public property float3 weight {
+        get { return weightRoughness.xyz; }
+        set { weightRoughness.xyz = newValue; }
+    }
+    /// Diffuse and sheen.
+    public property float roughness {
+        get { return weightRoughness.w; }
+        set { weightRoughness.w = newValue; }
+    }
+    /// Diffuse colour, dielectric tint, conductor n, Schlick F0.
+    public property float3 colour0 {
+        get { return colour0Ior.xyz; }
+        set { colour0Ior.xyz = newValue; }
+    }
+    /// Dielectric.
+    public property float ior {
+        get { return colour0Ior.w; }
+        set { colour0Ior.w = newValue; }
+    }
+    /// Conductor k, Schlick F90.
+    public property float3 colour1 {
+        get { return colour1Exponent.xyz; }
+        set { colour1Exponent.xyz = newValue; }
+    }
+    /// Schlick.
+    public property float exponent {
+        get { return colour1Exponent.w; }
+        set { colour1Exponent.w = newValue; }
+    }
+    /// Schlick F82.
+    public property float3 colour2 {
+        get { return colour2Pad1.xyz; }
+        set { colour2Pad1.xyz = newValue; }
+    }
+    public property float pad1 {
+        get { return colour2Pad1.w; }
+        set { colour2Pad1.w = newValue; }
+    }
+    /// GGX.
+    public property float2 alpha {
+        get { return alphaPad2.xy; }
+        set { alphaPad2.xy = newValue; }
+    }
+    public property float2 pad2 {
+        get { return alphaPad2.zw; }
+        set { alphaPad2.zw = newValue; }
+    }
+    public property float3 normal {
+        get { return normalPad3.xyz; }
+        set { normalPad3.xyz = newValue; }
+    }
+    public property float pad3 {
+        get { return normalPad3.w; }
+        set { normalPad3.w = newValue; }
+    }
+    /// Anisotropy's, or the fibre's direction.
+    public property float3 tangent {
+        get { return tangentPad4.xyz; }
+        set { tangentPad4.xyz = newValue; }
+    }
+    public property float pad4 {
+        get { return tangentPad4.w; }
+        set { tangentPad4.w = newValue; }
+    }
 };
 
 /// Hair keeps the Lobe at 128 bytes: colour0/1/2 are the R, TT and TRT
@@ -72,10 +137,13 @@ public struct Lobe {
 /// which hair has no use for) and pad0 (float bits in the uint). Growing the
 /// struct by two float4 made the shadowed shading kernel draw the umbra
 /// wrong on Metal (2583 pixels off a closed form that had been exact), and
-/// putting the fields here made it exact again; the cause is unexplained.
-public float3 hairAbsorption(Lobe lobe) { return float3(lobe.pad1, lobe.pad2.x, lobe.pad2.y); }
-public float2 hairRoughnessTT(Lobe lobe) { return float2(lobe.pad3, lobe.pad4); }
-public float2 hairRoughnessTRT(Lobe lobe) { return float2(lobe.exponent, asfloat(lobe.pad0)); }
+/// putting the fields here made it exact again; the cause is unexplained --
+/// of a kind with the changes of no meaning that have made the path tracer's
+/// kernels draw other values (docs/development.md, section 2), and not
+/// checked again since the lobe was packed.
+public float3 hairAbsorption(__constref Lobe lobe) { return float3(lobe.pad1, lobe.pad2.x, lobe.pad2.y); }
+public float2 hairRoughnessTT(__constref Lobe lobe) { return float2(lobe.pad3, lobe.pad4); }
+public float2 hairRoughnessTRT(__constref Lobe lobe) { return float2(lobe.exponent, asfloat(lobe.pad0)); }
 /// WHAT A LOBE'S COLOUR WAS MULTIPLIED BY, AND HOW MANY LAYERS LIE OVER IT,
 /// in the pads every lobe but hair leaves free: the colours `multiply` nodes
 /// put on it (standard_surface's coat colour over its base) and the `layer`
@@ -83,12 +151,12 @@ public float2 hairRoughnessTRT(Lobe lobe) { return float2(lobe.exponent, asfloat
 /// reads a material back into a gaussian's few numbers does
 /// (material_sample.slang), since a lobe's weight mixes the two with
 /// everything else.
-public float3 lobeTint(Lobe lobe) { return float3(lobe.pad1, lobe.pad2.x, lobe.pad2.y); }
+public float3 lobeTint(__constref Lobe lobe) { return float3(lobe.pad1, lobe.pad2.x, lobe.pad2.y); }
 public void setLobeTint(inout Lobe lobe, float3 tint) {
     lobe.pad1 = tint.x;
     lobe.pad2 = tint.yz;
 }
-public float lobeLayersOver(Lobe lobe) { return lobe.pad3; }
+public float lobeLayersOver(__constref Lobe lobe) { return lobe.pad3; }
 public void setHair(inout Lobe lobe, float3 absorption, float2 roughnessTT, float2 roughnessTRT) {
     lobe.pad1 = absorption.x;
     lobe.pad2 = absorption.yz;
@@ -112,7 +180,7 @@ bool smooth(float2 alpha) {
     return max(alpha.x, alpha.y) < 1e-3;
 }
 
-Frame frameOf(Lobe lobe, float3 wo) {
+Frame frameOf(__constref Lobe lobe, float3 wo) {
     if (lobe.kind == kLobeHair) {
         return Frame(lobe.normal, lobe.tangent);   // the fibre's normal as the hit gave it
     }
@@ -120,7 +188,7 @@ Frame frameOf(Lobe lobe, float3 wo) {
     return Frame(n, lobe.tangent);
 }
 
-float relativeIor(Lobe lobe) {
+float relativeIor(__constref Lobe lobe) {
     const float ior = max(lobe.ior, 1e-4);
     return (lobe.flags & kFlagInside) != 0 ? 1.0 / ior : ior;
 }
@@ -132,17 +200,17 @@ float relativeIor(Lobe lobe) {
 /// them summed, `2R / (1 + R)`, and what passes is the rest. A feather card
 /// is one: made a solid, each card bent the light twice and a bird of a
 /// thousand of them went black.
-bool thinWalled(Lobe lobe) {
+bool thinWalled(__constref Lobe lobe) {
     return lobe.kind == kLobeDielectric && (lobe.flags & kFlagThinWalled) != 0;
 }
 
 /// The dielectric's Fresnel at `cosine`, a thin wall's where it is one.
-float dielectricF(Lobe lobe, float cosine) {
+float dielectricF(__constref Lobe lobe, float cosine) {
     const float R = fresnelDielectric(cosine, relativeIor(lobe));
     return thinWalled(lobe) ? 2.0 * R / (1.0 + R) : R;
 }
 
-float3 schlickF(Lobe lobe, float cosTheta) {
+float3 schlickF(__constref Lobe lobe, float cosTheta) {
     return fresnelHoffmanSchlick(cosTheta, max(lobe.colour0, 0.0), max(lobe.colour2, 0.0), max(lobe.colour1, 0.0),
                                  lobe.exponent);
 }
@@ -255,7 +323,7 @@ struct HairState {
     float alpha;         // the cuticle's tilt, radians
 };
 
-HairState hairState(Lobe lobe, float3 wo) {
+HairState hairState(__constref Lobe lobe, float3 wo) {
     HairState h;
     h.sinThetaO = clamp(wo.x, -1.0, 1.0);
     h.cosThetaO = sqrt(max(1.0 - h.sinThetaO * h.sinThetaO, 0.0));
@@ -387,7 +455,7 @@ float3 hairSampleDirection(HairState h, float3 u, out int chosen) {
 
 // ---- one lobe, local directions ----------------------------------------------
 
-float3 microfacetReflection(Lobe lobe, float3 wo, float3 wi, float3 F) {
+float3 microfacetReflection(__constref Lobe lobe, float3 wo, float3 wi, float3 F) {
     const float3 h = normalize(wo + wi);
     const float avg = averageAlpha(lobe.alpha);
     const float D = ggxD(h, lobe.alpha);
@@ -396,7 +464,7 @@ float3 microfacetReflection(Lobe lobe, float3 wo, float3 wi, float3 F) {
     return D * F * G * comp / (4.0 * wo.z);
 }
 
-float3 microfacetTransmission(Lobe lobe, float3 wo, float3 wi, float eta, float F) {
+float3 microfacetTransmission(__constref Lobe lobe, float3 wo, float3 wi, float eta, float F) {
     float3 h;
     if (!transmissionNormal(wo, wi, eta, h)) {
         return float3(0.0);
@@ -409,12 +477,12 @@ float3 microfacetTransmission(Lobe lobe, float3 wo, float3 wi, float eta, float 
     return float3(abs(oh) * abs(ih) * eta * eta * (1.0 - F) * D * G / (wo.z * denominator * denominator));
 }
 
-float reflectionPdf(Lobe lobe, float3 wo, float3 wi) {
+float reflectionPdf(__constref Lobe lobe, float3 wo, float3 wi) {
     const float3 h = normalize(wo + wi);
     return ggxVisibleNormalPdf(wo, h, lobe.alpha) / (4.0 * max(dot(wo, h), kEpsilon));
 }
 
-float transmissionPdf(Lobe lobe, float3 wo, float3 wi, float eta, out float F) {
+float transmissionPdf(__constref Lobe lobe, float3 wo, float3 wi, float eta, out float F) {
     float3 h;
     F = 1.0;
     if (!transmissionNormal(wo, wi, eta, h)) {
@@ -427,7 +495,7 @@ float transmissionPdf(Lobe lobe, float3 wo, float3 wi, float eta, out float F) {
 }
 
 /// How likely a dielectric or Schlick lobe is to reflect at microfacet normal h.
-float reflectChance(Lobe lobe, float cosine) {
+float reflectChance(__constref Lobe lobe, float cosine) {
     if (lobe.scatter == kScatterReflect) {
         return 1.0;
     }
@@ -440,11 +508,11 @@ float reflectChance(Lobe lobe, float cosine) {
     return saturate(dot(schlickF(lobe, cosine), float3(1.0 / 3.0)));
 }
 
-float schlickIor(Lobe lobe) {
+float schlickIor(__constref Lobe lobe) {
     return f0ToIor(dot(max(lobe.colour0, 0.0), float3(1.0 / 3.0)));
 }
 
-float3 evalLocal(Lobe lobe, float3 wo, float3 wi, float3 woWorld, float3 wiWorld) {
+float3 evalLocal(__constref Lobe lobe, float3 wo, float3 wi, float3 woWorld, float3 wiWorld) {
     if (lobe.kind == kLobeHair) {
         float3 f;
         float pdf;
@@ -529,7 +597,7 @@ float3 evalLocal(Lobe lobe, float3 wo, float3 wi, float3 woWorld, float3 wiWorld
     }
 }
 
-float pdfLocal(Lobe lobe, float3 wo, float3 wi) {
+float pdfLocal(__constref Lobe lobe, float3 wo, float3 wi) {
     if (lobe.kind == kLobeHair) {
         float3 f;
         float pdf;
@@ -591,14 +659,14 @@ float pdfLocal(Lobe lobe, float3 wo, float3 wi) {
 
 // ---- one lobe, world directions ---------------------------------------------
 
-public float3 lobeEval(Lobe lobe, float3 wo, float3 wi) {
+public float3 lobeEval(__constref Lobe lobe, float3 wo, float3 wi) {
     const Frame frame = frameOf(lobe, wo);
     float3 o = frame.toLocal(wo);
     o.z = max(o.z, kEpsilon);
     return evalLocal(lobe, o, frame.toLocal(wi), wo, wi);
 }
 
-public float lobePdf(Lobe lobe, float3 wo, float3 wi) {
+public float lobePdf(__constref Lobe lobe, float3 wo, float3 wi) {
     const Frame frame = frameOf(lobe, wo);
     float3 o = frame.toLocal(wo);
     o.z = max(o.z, kEpsilon);
@@ -607,7 +675,7 @@ public float lobePdf(Lobe lobe, float3 wo, float3 wi) {
 
 /// Without the lobe's weight: the fraction of light from `wo` it returns,
 /// as MaterialX's directional albedo fits have it.
-public float3 lobeAlbedo(Lobe lobe, float3 wo) {
+public float3 lobeAlbedo(__constref Lobe lobe, float3 wo) {
     const float NdotV = clamp(abs(dot(lobe.normal, wo)), kEpsilon, 1.0);
     const float avg = averageAlpha(max(lobe.alpha, kEpsilon));
     switch (lobe.kind) {
@@ -673,7 +741,7 @@ public float3 lobeAlbedo(Lobe lobe, float3 wo) {
 }
 
 /// One direction from the lobe alone; its weight excludes the lobe's weight.
-public LobeSample lobeSample(Lobe lobe, float3 woWorld, float3 u) {
+public LobeSample lobeSample(__constref Lobe lobe, float3 woWorld, float3 u) {
     LobeSample s;
     s.wi = float3(0.0);
     s.weight = float3(0.0);
@@ -814,6 +882,25 @@ public struct LobeStack {
     public float  opacity;
 };
 
+/// A stack copied as far as it holds lobes: an assignment copies all kMaxLobes of them, whatever the
+/// count, and a kernel is sized to the material of its stage that pushes most -- a stage of two-lobe
+/// surfaces and one of eleven copied eight lobes at every vertex (docs/decisions.md, 16 Nov).
+public void copyStack(inout LobeStack to, __constref LobeStack from) {
+    to.count = from.count;
+    to.emission = from.emission;
+    to.opacity = from.opacity;
+    for (uint k = 0; k < from.count; ++k) {
+        to.lobes[k] = from.lobes[k];
+    }
+}
+
+/// And emptied where it is.
+public void clearStack(inout LobeStack stack) {
+    stack.count = 0;
+    stack.emission = float3(0.0);
+    stack.opacity = 1.0;
+}
+
 public LobeStack emptyStack() {
     LobeStack stack;
     stack.count = 0;
@@ -825,11 +912,11 @@ public LobeStack emptyStack() {
     return stack;
 }
 
-float selectionWeight(Lobe lobe, float3 wo) {
+float selectionWeight(__constref Lobe lobe, float3 wo) {
     return max(dot(lobe.weight * lobeAlbedo(lobe, wo), kLuminance), 0.0);
 }
 
-public float3 stackEval(LobeStack stack, float3 wo, float3 wi) {
+public float3 stackEval(__constref LobeStack stack, float3 wo, float3 wi) {
     float3 sum = float3(0.0);
     for (uint k = 0; k < stack.count; ++k) {
         sum += stack.lobes[k].weight * lobeEval(stack.lobes[k], wo, wi);
@@ -841,7 +928,7 @@ public float3 stackEval(LobeStack stack, float3 wo, float3 wi) {
 /// arriving from there it returns, summed over the lobes with their weights.
 /// The denoiser's albedo input, and what a layered material's throughput is
 /// derived from.
-public float3 stackAlbedo(LobeStack stack, float3 wo) {
+public float3 stackAlbedo(__constref LobeStack stack, float3 wo) {
     float3 sum = float3(0.0);
     for (uint k = 0; k < stack.count; ++k) {
         sum += stack.lobes[k].weight * lobeAlbedo(stack.lobes[k], wo);
@@ -849,7 +936,7 @@ public float3 stackAlbedo(LobeStack stack, float3 wo) {
     return sum;
 }
 
-public float stackPdf(LobeStack stack, float3 wo, float3 wi) {
+public float stackPdf(__constref LobeStack stack, float3 wo, float3 wi) {
     float total = 0.0;
     float weighted = 0.0;
     for (uint k = 0; k < stack.count; ++k) {
@@ -860,7 +947,7 @@ public float stackPdf(LobeStack stack, float3 wo, float3 wi) {
     return total > 0.0 ? weighted / total : 0.0;
 }
 
-public LobeSample stackSample(LobeStack stack, float3 wo, float3 u) {
+public LobeSample stackSample(__constref LobeStack stack, float3 wo, float3 u) {
     LobeSample none;
     none.wi = float3(0.0);
     none.weight = float3(0.0);

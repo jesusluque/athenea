@@ -18,6 +18,7 @@
 #include "athenea/gpu/Texture.h"
 #include "athenea/gpu/algo/PrefixSum.h"
 #include "athenea/gpu/algo/RadixSort.h"
+#include "athenea/render/NeuralAppearance.h"
 #include "athenea/render/Camera.h"
 #include "athenea/render/Flatten.h"
 #include "athenea/render/Points.h"
@@ -79,6 +80,8 @@ struct SplatOverride {
     bool                 replaceColour = false;
 };
 
+class NeuralWall;
+
 struct SplatInstance {
     const scene::GpuSplats* splats = nullptr;
     Mat4                    objectToWorld = Mat4::identity();
@@ -129,6 +132,22 @@ struct SplatInstance {
     /// Object to view, the difference over the shutter: the camera's motion
     /// and this prim's, together. Zero: neither moves.
     std::array<float, 12>   viewStep{};
+    /// A NEURAL APPEARANCE (NeuralAppearance.h): this cloud's colours from a
+    /// latent a gaussian and one network rather than from its harmonics,
+    /// written over what the projection made of them. Of this cloud, gaussian
+    /// for gaussian; a cut of levels of detail has none. Null: its harmonics.
+    const NeuralCloud*      neural = nullptr;
+    /// The lights a lit neural cloud is drawn under (`NeuralCloud::lit`):
+    /// `neuralLightCount` of them, at most `kNeuralLights`, the answer to
+    /// each summed. Null: one white light from +z. Where the frame casts
+    /// shadows they are the frame's lights, in that order.
+    const NeuralLight*      neuralLight = nullptr;
+    uint32_t                neuralLightCount = 1;
+    /// A WALL OF LIGHT THE CLOUD STANDS BEFORE (NeuralWall.h): what the
+    /// picture the wall shows adds to each gaussian's colour, read off the
+    /// wall's mip chain where the gaussian learnt to. The wall's reads are
+    /// this cloud's, gaussian for gaussian. Null: none.
+    NeuralWall*             wall = nullptr;
     /// `primvars:athenea:splat:catcher`: a shadow catcher (athenea mesh2splat
     /// --shadow-catcher), projected by a kernel of its own: black, as opaque
     /// as what its object took of the light reaching it.
@@ -236,6 +255,12 @@ struct RenderSettings {
     /// Set: every cloud drawn with the compensation (true) or without
     /// (false), whatever its file says -- `athenea render --no-antialias`.
     std::optional<bool> antialiasOverride;
+    /// A CLOUD DRAWN WITHOUT THE COMPENSATION PAYS FROM THE SIZE IT WAS MADE AT. Its discs were made this
+    /// many pixels wide (sigma) for the eye that found them, to stand opaque there: one that projects that
+    /// wide or wider keeps its opacity, and one that projects narrower -- the same scene from further, or at
+    /// fewer pixels -- pays the filter's share over what a disc of the made size would pay. 0: such a cloud
+    /// pays nothing however small it is drawn.
+    float    madeSpread = 0.0f;
     /// SURFELS: a gaussian with a flat axis (a scale of exactly 0) drawn as
     /// the disc it is, by the ray through each pixel, with the 2DGS screen
     /// filter (docs/decisions.md, surfels). Off, it is the thin gaussian it
@@ -254,6 +279,51 @@ struct RenderSettings {
     /// under layer's own ids are named; a capture has no ancestry to name and
     /// is left out rather than named wrongly.
     bool     cryptomatte = false;
+    /// THE TRACE. Keep, beside the colour, which gaussians each pixel is made
+    /// of: `RenderTargets::trace` (shaders/athenea/splat/splat_trace.slang),
+    /// the `kTraceSlots` heaviest of a pixel by slot, weight and view depth,
+    /// with what the list had no room for and what closed the walk. A slot is
+    /// a gaussian's place in the frame, `FrameStats::slotBases` of its
+    /// instance plus its index in its cloud.
+    bool     trace = false;
+    /// DECODED ONCE A PIXEL rather than once a gaussian: 8, 16 or 32 feature
+    /// channels of a neural cloud blended as its colour is
+    /// (`RenderTargets::features`) and a perceptron run on each pixel's
+    /// (`RenderTargets::decoded`; shaders/athenea/neural/neural_pixel.slang).
+    /// 0: a neural cloud is decoded a gaussian at a time. Nothing fits this
+    /// way yet: it is here to be timed against the other.
+    uint32_t neuralFeatures = 0;
+    /// KEPT FROM FRAME TO FRAME AND CAMERA TO CAMERA: a split neural cloud's
+    /// matt part (`NeuralCloud::split`), which has no eye in it, is said once
+    /// for all its gaussians and read by every frame after, this camera's or
+    /// another's, until the cloud says gaussians changed (`NeuralCloud::touch`)
+    /// or the frame's lights are others. A frame then runs one network a
+    /// gaussian in view and not two. Off: a fit's frames, whose gaussians all
+    /// move every step. A shadowed cloud's is kept only where what reaches
+    /// its gaussians was measured before the frame and its lights carry a
+    /// `revision`.
+    bool     neuralKeep = false;
+    /// A STILL FRAME: the caller says the camera, the clouds, where they
+    /// stand and every setting that decides what is in view are the last
+    /// frame's this rasteriser drew, and only colours have changed -- an LED
+    /// wall showing its next picture, a light turned. The rasteriser then
+    /// keeps what is in view, its order and the tiles' lists, and runs only
+    /// the kernels that write colours and the blend. It checks the
+    /// projection, the size and each cloud (its `revision`, its place) and
+    /// draws the frame whole where any differs; a cloud's edit and the other
+    /// settings are the caller's word. Only frames whose clouds are all
+    /// drawn by their latents, with no points and nothing under them. A
+    /// rasteriser holds one camera's frame: two still cameras are two
+    /// rasterisers.
+    bool     still = false;
+    /// THE MATTE, SUMMED BY THE BLEND: what a lift told the frame's gaussians
+    /// (`SplatLift::sums`, two uints a slot) read as each is blended, and a
+    /// pixel's share of the mask over every gaussian of its walk written to
+    /// `RenderTargets::matte`. `render::matteWhileBlending` sets these. It
+    /// needs no trace. Null: no matte.
+    const gpu::Buffer* matteLift = nullptr;
+    bool               matteHard = false;
+    float              matteThreshold = 0.5F;
     /// A PARAMETER OF THE GAUSSIANS DRAWN IN PLACE OF THEIR LIGHT (splat
     /// projection's `splatView`, splat_relight.slang's kSplatView*: albedo,
     /// roughness, normal, size, sky visibility, ...); 0 draws the light.
@@ -288,8 +358,16 @@ struct RenderSettings {
     /// taking each splat away would leave in its pixels, in 2^-24 (a pixel
     /// capped at one) as two uint a slot (low, high), against `finalColour` -- the frame drawn whole from
     /// the same camera, float4 a pixel as `RenderTargets::colour` holds it.
+    /// 4 a loss's derivative with respect to each gaussian's colour
+    /// (NeuralFit.h): four words a slot -- three signed, the weight times
+    /// `finalColour` -- here the loss's derivative at each pixel -- in 1/256.
+    /// 3 a mask lifted to the gaussians (SplatLift.h): two uint a slot, the
+    /// weight times `liftMask` and the weight, in 1/1024 of a pixel, over
+    /// every gaussian of every pixel's walk.
     uint32_t           contributionMode = 1;
     const gpu::Buffer* finalColour = nullptr;
+    /// Mode 3's mask: one float a pixel of this frame, 0 to 1.
+    const gpu::Buffer* liftMask = nullptr;
 };
 
 /// WHAT A FRAME OF SPLATS DID, as the device counted it
@@ -322,12 +400,22 @@ struct SplatCounters {
     std::vector<Cloud> clouds;   ///< by instance, in the order the frame was given them
 };
 
+/// The trace's size, as shaders/athenea/splat/splat_trace.slang has it: the
+/// gaussians a pixel names, and the uints a pixel takes.
+inline constexpr uint32_t kTraceSlots = 4;
+inline constexpr uint32_t kTraceWords = kTraceSlots * 2 + kTraceSlots / 2 + 1;
+
 struct FrameStats {
     uint32_t splats = 0;
     uint32_t visible = 0;
     uint32_t pairs = 0;
+    bool     still = false;   ///< the frame kept the last one's geometry (`RenderSettings::still`)
     double   projectMs = 0, depthSortMs = 0, countsMs = 0, emitMs = 0, tileSortMs = 0,
              blendMs = 0, totalMs = 0;
+    /// Where each instance's gaussians start among the frame's slots, in the
+    /// order the instances were given (an instance with no cloud takes none):
+    /// what turns a slot of `RenderTargets::trace` into (instance, gaussian).
+    std::vector<uint32_t> slotBases;
 };
 
 /// The images a frame writes: bottom row first, width * height.
@@ -345,13 +433,31 @@ struct RenderTargets {
     /// layer under the splats hands the blend so its coverage is named. Empty
     /// where nothing wrote ids.
     gpu::Buffer cryptoIds;
+    /// THE TRACE, where the frame asked for one: `kTraceWords` uints a pixel,
+    /// plane after plane (`trace[word * width * height + pixel]`), laid out
+    /// as splat_trace.slang says; a pixel nothing reached holds its first word alone.
+    gpu::Buffer trace;
+    /// The feature sums a pixel-decoded frame keeps (`neuralFeatures / 2`
+    /// uints a pixel, two halves each, a plane a word) and what the decoder
+    /// made of them (float4, as `colour`).
+    gpu::Buffer features;
+    gpu::Buffer decoded;
+    /// The matte a frame summed as it blended (`RenderSettings::matteLift`): one float a pixel.
+    gpu::Buffer matte;
 
     [[nodiscard]] bool hasCrypto() const noexcept { return crypto.valid(); }
+    [[nodiscard]] bool hasTrace() const noexcept { return trace.valid(); }
 };
 
 class TileRasterizer {
 public:
     [[nodiscard]] static Result<TileRasterizer> create(gpu::ShaderLibrary& library);
+
+    /// What reached each splat from each light in the last frame that cast
+    /// splat shadows: one float a (slot, light), `shadowFactorLights()` a
+    /// slot. For whoever walks that frame backwards (NeuralFit).
+    [[nodiscard]] const gpu::Buffer& shadowFactors() const noexcept { return shadowFactors_; }
+    [[nodiscard]] uint32_t shadowFactorLights() const noexcept { return shadowFactorLights_; }
 
     /// `points` are drawn as opaque discs in the same depth order as the
     /// splats. `under`, when given, is an opaque layer (a rasterised point
@@ -386,7 +492,7 @@ private:
     [[nodiscard]] Result<void> reserveSplats(uint32_t count);
     [[nodiscard]] Result<void> reservePairs(uint32_t count);
     [[nodiscard]] Result<void> reserveTargets(RenderTargets& targets, uint32_t width,
-                                              uint32_t height, uint32_t tiles, bool crypto);
+                                              uint32_t height, uint32_t tiles, bool crypto, bool trace);
 
     gpu::Device*       device_ = nullptr;
     gpu::ShaderLibrary* library_ = nullptr;
@@ -435,6 +541,33 @@ private:
     gpu::ComputeKernel blendComposite_;
     gpu::ComputeKernel blendCrypto_;
     gpu::ComputeKernel blendCompositeCrypto_;
+    gpu::ComputeKernel neuralShade_;
+    gpu::ComputeKernel neuralMatt_;
+    gpu::ComputeKernel neuralMattDone_;
+    /// A split neural cloud's matt part as it was last said, a float4 a
+    /// gaussian; `done` a chunk, the cloud's stamp it was said at; `key` what
+    /// lights it was said under.
+    struct MattCache {
+        gpu::Buffer matt;
+        gpu::Buffer done;
+        uint64_t    key = 0;
+        uint32_t    stamp = 0;
+    };
+    std::unordered_map<const NeuralCloud*, MattCache> mattCaches_;
+    /// The last frame, for `RenderSettings::still`: what it was a frame of, and its counts.
+    bool     stillValid_ = false;
+    uint64_t stillKey_ = 0;
+    uint32_t stillVisible_ = 0;
+    uint32_t stillPairs_ = 0;
+    gpu::ComputeKernel blendFeatures8_, blendFeatures16_, blendFeatures32_;
+    gpu::ComputeKernel blendMatte_, blendMatteComposite_;
+    gpu::ComputeKernel pixelFeatures_, pixelDecode_;
+    gpu::Buffer        slotFeatures_;     ///< what each slot's gaussian gives the feature sums
+    gpu::Buffer        pixelWeights_;     ///< the pixel decoder's network: zeros, until something fits it
+    gpu::ComputeKernel blendTrace_;
+    gpu::ComputeKernel blendTraceComposite_;
+    gpu::ComputeKernel blendTraceCrypto_;
+    gpu::ComputeKernel blendTraceCompositeCrypto_;
 
     bool     tight_ = false;   ///< grow to the need exactly (after releaseScratch)
     uint32_t splatCapacity_ = 0;
@@ -474,6 +607,7 @@ private:
     gpu::Buffer emptyShadow_;      ///< bound where a frame casts no splat shadow
     gpu::Buffer emptyMotion_;      ///< bound where nothing moves under the shutter
     gpu::Buffer shadowFactors_;    ///< one float a (splat, light), where a relit cloud shadows
+    uint32_t    shadowFactorLights_ = 0;
     gpu::ComputeKernel splatShadow_;
     /// THE SKY TURNED INTO A TURNED CLOUD'S FRAME (splat/sky_turn.slang): a
     /// transfer is a direction of the file it was baked in, so a cloud the

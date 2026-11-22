@@ -391,6 +391,14 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     glassShadows.name = "Shadow rays pass clear glass, tinted (rt)";
     glassShadows.key = TfToken("athenea:glassShadows");
     glassShadows.defaultValue = VtValue(true);
+    HdRenderSettingDescriptor headlight;
+    headlight.name = "A stage with no light is lit from the eye (rt)";
+    headlight.key = TfToken("athenea:headlight");
+    headlight.defaultValue = VtValue(true);
+    HdRenderSettingDescriptor rayMargin;
+    rayMargin.name = "How far a ray leaves a surface, as a share of its distance from the origin (rt)";
+    rayMargin.key = TfToken("athenea:rayMargin");
+    rayMargin.defaultValue = VtValue(1.0e-3f);
     HdRenderSettingDescriptor motion;
     motion.name = "Motion blur: shutter slices, 1 to 8 (rt)";
     motion.key = _atheneaSettings->motionBuckets;
@@ -449,7 +457,7 @@ HdRenderSettingDescriptorList HdAtheneaRenderDelegate::GetRenderSettingDescripto
     return {technique, settle,      visibility,  samples,     choose,     paths,       bounces,
             total,     denoise,     adaptive,    error,       mis,        glassShadows, motion,     transferIndirect, displayBlend, reflectCloud, splatShadows,
             cloudShadows, cloudTexels, cloudTerms, cloudDensity, antialias, domePrefiltered, domeVisible, splatView,
-            screenSpaceReflections, meshAntialias, meshLights, meshLightSamples, volumeCache, volumeFilter};
+            screenSpaceReflections, meshAntialias, meshLights, meshLightSamples, volumeCache, volumeFilter, rayMargin, headlight};
 }
 
 athenea::world::VolumeFilter HdAtheneaRenderDelegate::GetVolumeFilter() const {
@@ -656,9 +664,21 @@ uint32_t HdAtheneaRenderDelegate::GetSplatView() const {
                : 0u;
 }
 
+bool HdAtheneaRenderDelegate::GetHeadlight() const {
+    const VtValue value = GetRenderSetting(TfToken("athenea:headlight"));
+    return !value.IsHolding<bool>() || value.UncheckedGet<bool>();
+}
+
 bool HdAtheneaRenderDelegate::GetGlassShadows() const {
     const VtValue value = GetRenderSetting(TfToken("athenea:glassShadows"));
     return !value.IsHolding<bool>() || value.UncheckedGet<bool>();
+}
+
+float HdAtheneaRenderDelegate::GetRayMargin() const {
+    const VtValue value = GetRenderSetting(TfToken("athenea:rayMargin"));
+    if (value.IsHolding<float>()) return value.UncheckedGet<float>();
+    if (value.IsHolding<double>()) return static_cast<float>(value.UncheckedGet<double>());
+    return 1.0e-3F;
 }
 
 bool HdAtheneaRenderDelegate::GetPathAdaptive() const {
@@ -862,7 +882,10 @@ HdAovDescriptor HdAtheneaRenderDelegate::GetDefaultAovDescriptor(TfToken const& 
         return HdAovDescriptor(HdFormatInt32, false, VtValue(-1));
     }
     if (name == HdAovTokens->Neye || name == HdAovTokens->normal || name == TfToken("albedo") ||
-        name == TfToken("shadingNormal") || name.GetString().rfind("primvars:", 0) == 0) {
+        name == TfToken("shadingNormal") || name == TfToken("material") || name == TfToken("materialRow") ||
+        name == TfToken("throughPosition") || name == TfToken("throughTint") ||
+        name == TfToken("transmissionColour") ||
+        name.GetString().rfind("primvars:", 0) == 0) {
         return HdAovDescriptor(HdFormatFloat32Vec3, false, VtValue(GfVec3f(0.0F)));
     }
     return HdAovDescriptor();

@@ -160,6 +160,125 @@ hilos cargadores, cualquier hilo), y un test la llama desde el equivocado.
    lo hace `GpuScene::placementRevision()`, así que una cámara que se mueve
    no reconstruye nada de ella.
 
+### 1.3.1 Lo que un frame rasterizado de splats puede además guardar, y con qué puede dibujarse
+
+Tres cosas van sobre el rasterizador de splats sin cambiar un frame que no pide
+ninguna (la rama `neural`; `docs/decisions.md`, 11 nov, tiene lo que midió
+cada una):
+
+- **La trace** (`RenderSettings::trace`, `shaders/athenea/splat/splat_trace.slang`):
+  las cuatro gaussianas de más peso de cada píxel por slot, peso y profundidad, con lo
+  que no cupo en la lista y lo que cerró el recorrido. La guardan los entry points
+  con trace del blend; `ReferenceRenderer` guarda la del recorrido exacto, que es
+  contra lo que la mide `[trace]`.
+- **Un lift** (`render/SplatLift.h`, `splat_lift.slang`): una máscara sobre un frame
+  llevada a las gaussianas -- por la trace, o mientras el frame hace el blend
+  (`contributionMode` 3) -- y dibujada como matte desde la trace de otro frame.
+  `athenea lift` es su comando.
+- **Una apariencia neural** (`render/NeuralAppearance.h`, `render/NeuralFit.h`,
+  `shaders/athenea/neural/`): los colores de una nube desde un latente por gaussiana y
+  un perceptrón, decodificados una vez por gaussiana visible tras su proyección
+  (`SplatInstance::neural`), iluminada o no; ajustada en el dispositivo por
+  `NeuralFit::step`, cuyo backward pass está escrito a mano y cuyos gradientes de
+  color lleva de vuelta el blend (`contributionMode` 4); guardada junto a la
+  nube como un `.athn` (`io/NeuralFile.h`). `athenea neural-fit` ajusta una y
+  `athenea render --neural` dibuja con ella. Un decoder una vez por píxel
+  (`RenderSettings::neuralFeatures`, `neural_pixel.slang`) está para cronometrarlo
+  y nada lo ajusta.
+  Una nube split (`NeuralCloud::split`) tiene dos redes, y a la primera nunca se le dice
+  la vista; con `RenderSettings::neuralKeep` el rasteriser guarda esa
+  primera respuesta por gaussiana (`neuralMatt`) y la vuelve a decir solo para los
+  chunks de 1024 gaussianas que la nube ha sellado como cambiados (`NeuralCloud::touch`)
+  o cuando las luces del frame son otras. Quien escriba los latentes de una nube
+  fuera de un fit llama a `touch`.
+  Un frame quieto (`RenderSettings::still`) conserva la geometría del frame anterior --
+  lo que se ve, su orden, las listas de los tiles -- y ejecuta solo los kernels
+  que escriben colores y el blend, para una cámara y unas nubes que no se han
+  movido; el rasteriser comprueba la proyección y cada nube y si no
+  dibuja el frame entero (`FrameStats::still` dice cuál hizo).
+- **Una pared de luz como textura** (`render/NeuralWall.h`,
+  `shaders/athenea/neural/neural_wall.slang`): las lecturas que cada gaussiana hace de la imagen
+  de una pared LED -- u, v, un nivel de mip y el logaritmo de una ganancia por canal, seis
+  números por lectura -- sumadas a su color tras la proyección
+  (`SplatInstance::wall`), se dibuje la nube con lo que se dibuje. Las imágenes de la
+  pared son pirámides en un buffer (`NeuralWall::pattern`, `picture`);
+  `NeuralWall::step` ajusta las lecturas por las derivadas de la propia lectura, con el
+  blend llevando el error de vuelta como hace para una apariencia neural.
+  `athenea wall-fit` es su comando.
+  En vez de lecturas una gaussiana puede guardar un grid: un peso por texel de un nivel
+  grueso de la pared y una ganancia por canal (el `gridLevel` de `NeuralWall::start`),
+  que es la forma de lo que toma una cosa mate. Una pared ajustada se hace más fina
+  (`NeuralWall::finer`) para mostrar imágenes de la resolución real de la pared.
+  Las nubes de las que aprende un fit son las de una malla bajo una luz cada una y deben
+  seguir gaussiana por gaussiana: `scene::CloudLoader::keepFaint` conserva en su sitio
+  los registros que un bake vació.
+- **Una escena neural** (`io/NeuralScene.h`, `apps/athenea/src/CmdNeuralScene.cpp`):
+  un directorio de piezas, cada una con sus gaussianas y su propia apariencia neural,
+  bajo un manifest (`scene.json`) que el lector y el escritor enmarcan y no
+  calculan. Para añadir algo que guarde una escena -- las lecturas de una pared, el
+  campo de sombra de una luz -- se da a la pieza o a la escena una clave en los structs de
+  `NeuralScene`, se lee con un valor por defecto para que los manifests antiguos sigan cargando, y
+  se sube `kVersion` solo cuando un lector antiguo dibujaría mal la escena.
+  `render/Discovery.h` (`shaders/athenea/neural/scene_discover.slang`) es de lo que
+  está hecha una mirada: sella las gaussianas que las contribuciones de un frame dicen que se
+  vieron, las cuenta, y devuelve una pieza con las no vistas sin
+  opacidad, que es como se dibuja la escena tal como se conoce. `Discovery::fromFrame`
+  (`scene_frame.slang`) crea gaussianas a partir del color y la profundidad de un frame, un
+  disco por píxel que la escena no tiene ya, como los registros de un PLY de 3DGS.
+  `Discovery::fromRender` (`scene_render.slang`) es la misma mirada tomada por el
+  path tracer del propio motor, que le da más que una imagen: los planos de
+  `technique::PathAux` (`pathGuides` en `PathTracer.cpp`) -- la normal de la
+  superficie, de qué está hecha, y donde deja pasar la vista lo que hay
+  detrás. Sus registros son propios (`Discovery::renderEncoding`, 26 floats)
+  y se quedan en el dispositivo. Para darle a una gaussiana algo más de su superficie,
+  escríbelo en `pathGuides` en un plano (sube `PathAux::kPlanes`), léelo en
+  `renderPack`, y dale un campo al registro: uno que `io::SplatEncoding` nombre
+  donde el loader le dé uso, o uno después de esos, que solo guarda el fichero.
+  `athenea neural-scene shoot` (`CmdNeuralScene.cpp`) es el bucle: una
+  pasada del render cada vez, y una mirada cuando están los caminos de una huella.
+  El ancho de una gaussiana es su level of detail: aquello sobre lo que se pone
+  una mirada más fina se sella como refinado y no como ido (el `only` de
+  `frameSeenThrough`, en un registro propio), cada gaussiana más fina guarda en su
+  registro el ancho de su padre, y `Discovery::cut` (`discoverCut`) elige una
+  gaussiana o lo que se puso encima según sus anchos en pantalla, sin recorrer
+  ni guardar ningún árbol.
+  `render/SceneGlass.h` (`scene_glass.slang`) es lo que el vidrio macizo muestra
+  desde una vista: de qué está hecha una gaussiana se reúne en la nube del corte
+  junto a ella (`pbr` y `normals` como los guarda toda nube, y `matter`: lo que
+  tiñe un cruce y el índice), y `see` escribe el color de cada gaussiana de vidrio
+  con dos rayos lanzados por el árbol que el ray tracer de gaussianas construye
+  sobre esa nube (`GaussianRayTracer::treeOf`, los recorridos de
+  `rt/rt_glass.slang`). Un kernel que quiere un rayo a través de las gaussianas
+  de una nube toma el árbol de ahí; no construye uno.
+  Lo que `neural-scene export` entrega se elige también en el dispositivo:
+  `Discovery::recordsOf` (`scene_level.slang`) reúne los registros de una pieza
+  por clase -- lente, espejo, el resto -- donde un corte los dibuja, y
+  `Discovery::worldWidths` es la proyección bajo la cual ese corte es un level
+  of detail en las unidades de la escena, sea cual sea el ojo.
+  De qué prim se hizo una gaussiana (`scene_matte.slang`) es el id Cryptomatte
+  del motor en el píxel del centro de su celda, guardado junto a los registros
+  de la pieza y cargado como el `crypto` de la nube: un matte por objeto es
+  entonces el propio Cryptomatte del rasterizador de la escena dibujada, sumado
+  sobre los ids pedidos (`Discovery::matte`). Lo que reúne las gaussianas de un
+  corte reúne sus ids (`gatherPrims`); un array por gaussiana añadido a una
+  escena encontrada va por el mismo camino, un fichero índice a índice y un
+  gather junto a `gatherCut`.
+  Un cambio en cómo una mirada crea o retira gaussianas se califica con
+  `scripts/examples/neural-scene-qa`: `make_materials_stage.py` (catorce
+  bolas de un material cada una) con `qa.py`, y `make_animated_stage.py` (un
+  stage que se mueve) con `qa_time.py`; `qa_options.py` toma un mismo recorrido
+  una vez por cada opción de `shoot`, `qa.py --frame` admite cualquier stage,
+  encuadrado por el motor, y `qa_relight.py` escribe un fichero de lámparas como
+  luces UsdLux sobre el stage, hace el path tracing de eso y compara ahí la
+  escena dibujada con `--lamps`. Dos filas a un dB de distancia no se distinguen con
+  él: de qué frame del recorrido queda cada gaussiana mueve la cifra eso mismo.
+  Ejecutan el motor y ponen en una tabla lo que imprime; tanto los huecos del 14 nov como el path tracer que no se
+  reiniciaba se encontraron mirando las imágenes que dejan, no por una cifra.
+
+Un kernel que añade algo a `shaders/athenea/neural/neural_appearance.slang` lo añade a
+las dos pasadas: la forward y, a mano, la backward junto a ella, y las diferencias
+centrales de `[neural]` son las que dicen que las dos siguen de acuerdo.
+
 ### 1.4 Un frame, trazado
 
 La diferencia empieza en el paso 3: `technique::PathTracer` integra desde el
@@ -216,7 +335,40 @@ comprobación.
   `lobesPushed` (`technique/src/MaterialPrograms.cpp`) con cuántos empuja:
   las pilas de lóbulos tienen la profundidad que pueden empujar los
   materiales del frame, y un nodo que la cuenta no conoce no empuja nada en
-  ellas: sus lóbulos se descartan y nadie avisa.
+  ellas: sus lóbulos se descartan y nadie avisa. Una superficie cuyo grafo es
+  un solo nodo (`athenea_preview_bsdf`, cinco; `athenea_open_pbr_bsdf`, once;
+  `athenea_standard_surface_bsdf` y `athenea_gltf_pbr_bsdf`, ocho cada uno) se
+  añade con todos los que empuja.
+- El nodo único de OpenPBR Surface, el de Standard Surface y el de glTF PBR
+  están escritos a
+  mano a partir del nodegraph de MaterialX, y un MaterialX cuyo grafo haya
+  cambiado los deja como estaban. Al actualizar MaterialX: (1) `python3
+  scripts/materialx/make_surface_node_mtlx.py <raíz>/libraries` vuelve a
+  escribir `shaders/athenea/material/mx/athenea_open_pbr_surface.mtlx`,
+  `athenea_standard_surface.mtlx` y `athenea_gltf_pbr.mtlx` -- el grafo de MaterialX sin sus nodos BSDF
+  y VDF y con el nodo único en su lugar --, y su diff enseña un nodo de los
+  que leían los closures que haya cambiado; (2) se compila, para que se
+  copien los shaders; (3) `athenea_material_tests "[openpbr]"`,
+  `"[standardsurface]"` y `"[gltfpbr]"` compilan la superficie por las dos
+  rutas (`MaterialCompilerOptions::openPbr`, `standardSurface`, `gltfPbr`) y
+  comparan, en el dispositivo, las pilas de lóbulos que construyen sobre
+  diecinueve, veintiséis y veinticinco juegos de parámetros, con y sin las
+  marcas que pide un bake (`kAtheneaMarkLobes`). Esos tests son los que dicen
+  si `athenea_open_pbr_bsdf.slang`, `athenea_standard_surface_bsdf.slang` y
+  `athenea_gltf_pbr_bsdf.slang` siguen coincidiendo: una cuenta, un tipo, un flag o un valor que se aparte más de
+  1e-5 los hace fallar, y la línea que imprimen dice en qué juego y cuál de
+  ellos.
+- Una superficie recibe su nodo único por los mismos pasos: sus lóbulos,
+  pesos y marcas leídos de un módulo generado del grafo de MaterialX
+  (`ATHENEA_SHADER_DUMP`) y escritos como `athenea_<superficie>_bsdf.slang`
+  sobre los pasos que los nodos comparten (`athenea_surface_node.slang`: el
+  empuje de un closure, el efecto de una capa y el de un multiply de color
+  sobre un lóbulo); una entrada en `make_surface_node_mtlx.py` (las entradas
+  del nodo, su nodedef) y en `kSurfaceNodes`
+  (`material/src/MaterialCompiler.cpp`: el grafo que sustituye, su fichero,
+  su variable de entorno, su opción); su cuenta en `lobesPushed`; y un caso
+  de test sobre `compareRoutes` (`tests/material/test_material_compiler.cpp`)
+  cuyos juegos alcancen cada lóbulo y cada combinador del grafo.
 
 ## 2. Las reglas, y qué evita cada una
 
@@ -236,6 +388,71 @@ ficheros, analiza cabeceras, descomprime y lleva cuentas.
 slots, y contar slots es como salieron los bugs de la D30 de openFXplayer: un
 parámetro añadido en medio de una estructura mueve a todos los de después, y
 nada deja de compilar. `cursor["nombre"].setBinding(...)` falla en voz alta.
+
+**Un struct que una función de shader solo lee se recibe `__constref`.** Slang
+entrega un parámetro normal por copia: el struct entero se copia a una local
+antes de cada llamada, y un kernel que lleva uno grande -- una pila de
+lóbulos, un estado de shading, las entradas de un material, el registro de
+una luz -- gasta su tiempo copiándolo (el path tracer: de 17,1 s por rebote a
+7,1 s, la misma imagen). Una función que cambia su parámetro como copia de
+trabajo lo deja normal (`atheneaPushLobe`): Slang no rechaza una escritura en
+un parámetro `__constref`, el compilador de Metal sí, y otro backend puede
+escribir en la variable del llamador.
+
+**Un kernel guarda en la memoria de un hilo solo lo que vuelve a leer.** Un
+struct local es memoria del hilo, y un kernel que hace shading tiene ahí
+varios de los más grandes que hay (un estado de shading es una pila de
+lóbulos y lo que el camino vuelve a leer de las entradas de un material,
+1,2 KB). También es lo que un kernel copia: los rebotes del path tracer fueron
+un quinto más rápidos cuando un lóbulo pasó de 224 bytes a 128 en Metal -- un
+`float3` junto a un `float` es ahí un `float4`, leído a través de propiedades
+(el `Lobe` de `lobes.slang`), porque Metal da a un `float3` dieciséis bytes
+propios. Así que un estado se escribe donde se guarda, no en una local que
+luego se copia, y `scripts/kernel-memory.py` dice lo que guarda cada kernel
+generado (sección 3.2).
+
+**A un kernel que hace shading se le exige dibujar lo mismo dos veces, y un
+cambio en uno no está bien hasta que lo hace cada variante suya.** En Metal un
+cambio que no altera ningún significado ha hecho que un kernel dibuje otros
+valores: los fotogramas del path tracer diferían de una ejecución a otra en
+una escena de materiales OpenPBR, una tira de píxeles del ancho de un grupo
+SIMD aquí y allá, y una línea que no cambiaba nada lo convertía en medio
+fotograma; un `Found` puesto a cero donde se declara, y más tarde la copia
+elegida entre dos de ellos sustituida por una escritura, hicieron que el
+kernel con medios dibujara basura mientras el kernel sin ellos dibujaba la
+misma imagen bit a bit. No es el tamaño de lo que guarda un hilo: un array de
+128 KB en la memoria de un hilo se lee como se escribió y a 256 KB Metal
+rechaza el pipeline (`athenea_gpu_tests "[threadmemory]"`), donde estos
+kernels guardan de 15 a 35 KB (`docs/decisions.md`, «What a thread's memory
+bears» y «A lobe of 128 bytes»). Del kernel con medios se conoce la clase de
+causa y no el sitio: lee una local que nadie escribió. Con el compilador de
+Apple inicializando todas las locales (`ATHENEA_METAL_LOCALS=zero`) ese kernel
+sale bien a cualquier nivel de optimización y desde cualquiera de los dos
+textos, y una escena con niebla dibujada por una compilación de otra
+disposición es la misma imagen tres veces donde difería en 6.200 píxeles de
+129.600; ningún inicializador suelto en el texto del propio
+kernel lo consigue, y las matemáticas rápidas, el nivel de optimización y la
+validación de Metal solo lo mueven de sitio (`docs/decisions.md`, «The kernel
+with media reads an undefined local»). Así que una local no se pone a cero
+«por si acaso» -- un inicializador que arregla una disposición no es un
+arreglo --, y `athenea_usd_tests "[repeat]"` dibuja con cada kernel que hace
+shading -- los caminos con y sin un medio, el raster, las guías, un bake --
+desde dos renderers y pide que no difieran en un bit, junto a los tests que
+atan cada uno a su forma cerrada.
+
+**`ATHENEA_METAL_LOCALS=zero|pattern` distingue una local indefinida de una
+causa real.** Es un discriminador para quien desarrolla, leído donde se crea
+el dispositivo (`modules/gpu/src/Device.cpp`) y apagado salvo que se pida: en
+Metal todos los kernels se compilan con `-ftrivial-auto-var-init`, con sus
+locales a cero o con un patrón antes de escribirse. Un kernel que cambia entre
+dos cargas, o con una edición sin significado, y que sale bien e igual dos
+veces con `zero` lee una local indefinida; uno que sigue cambiando tiene otra
+causa (el Sponza plano con el caballero de cristal sigue cambiando un píxel
+entre cargas con él, de causa desconocida). No es una forma de ejecutar: a la
+escena de materiales le costó un 8 % por vista y al Sponza plano con cristal
+cinco minutos de compilación donde eran 50 s. La caché de shaders no sabe
+nada de él, así que pide un `ATHENEA_SHADER_CACHE` vacío. Y Vulkan y CUDA no
+tienen esa red: un kernel tiene que estar bien sin ella.
 
 **`Result<T>` y `ATHENEA_TRY`, sin excepciones.** Un renderer que lanza a través
 de un command buffer deja el dispositivo en un estado que nadie sabe
@@ -374,7 +591,12 @@ Para comprobar que un shader compila sin compilar nada más:
 Los shaders generados — los materiales, los kernels de sombreado y de path
 tracing — los escribe `ATHENEA_SHADER_DUMP=<dir>`, y compilan con `slangc -I
 shaders -I <dir>`, que es como se mide el tiempo de compilación de un kernel
-fuera del proceso.
+fuera del proceso. `scripts/kernel-memory.py <dir>` lee del mismo volcado lo
+que cada kernel guarda en la memoria de un hilo, sin dispositivo: slangc a
+Metal, el front end de Apple a LLVM IR (`xcrun metal -S -emit-llvm`), y cada
+local que sigue siendo memoria, sumada -- la de la entrada, la cadena de
+llamadas más profunda y todas las funciones que alcanza (`-v` lista las
+mayores y lo que contienen).
 
 ### 3.3 Mirar dentro de una ejecución
 
@@ -382,6 +604,9 @@ fuera del proceso.
 |---|---|
 | `ATHENEA_SHADER_DUMP` | escribe cada módulo Slang generado en ese directorio |
 | `ATHENEA_MTLX_DUMP` | escribe el documento MaterialX que se le da al generador, uno por material |
+| `ATHENEA_OPENPBR_GRAPH` | con cualquier valor: OpenPBR Surface se compila desde el grafo de nodos BSDF del propio MaterialX en vez de desde el nodo único del motor (`athenea_open_pbr_bsdf`), para comparar las dos rutas en una misma compilación (imágenes y tiempos; `athenea_material_tests "[openpbr]"` compara sus pilas de lóbulos sin ella, mediante `MaterialCompilerOptions::openPbr`, a la que da valor cuando quien llama deja la elección al entorno) |
+| `ATHENEA_STANDARD_SURFACE_GRAPH` | lo mismo para Autodesk Standard Surface: el grafo de MaterialX en vez del nodo único del motor (`athenea_standard_surface_bsdf`); `athenea_material_tests "[standardsurface]"` compara los dos sin ella, mediante `MaterialCompilerOptions::standardSurface` |
+| `ATHENEA_GLTF_PBR_GRAPH` | lo mismo para glTF PBR: el grafo de MaterialX en vez del nodo único del motor (`athenea_gltf_pbr_bsdf`); `athenea_material_tests "[gltfpbr]"` compara los dos sin ella, mediante `MaterialCompilerOptions::gltfPbr` |
 | `ATHENEA_SHADOW_DEBUG` | loguea los mapas de sombra de nube: emisores, luces, texels, transmitancia media |
 | `ATHENEA_VISIBILITY_DEBUG` | loguea los factores de visibilidad por partes |
 | `ATHENEA_CUDA_LDG` | `=1` deja en su sitio el camino de caché de solo lectura de CUDA, reproduciendo un defecto que el prelude normalmente esquiva |

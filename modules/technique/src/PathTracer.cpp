@@ -103,6 +103,12 @@ struct PathParams {
     // that reaches the same light through the same glass is weighed against
     // it (glassPasses); 0: glass stops a shadow ray as anything does.
     uint glassShadows;
+    // HOW FAR A RAY LEAVES A SURFACE THAT IS NO CROSSING (`athenea:rayMargin`),
+    // as a share of how far the position is from the origin: off along the
+    // normal and along the ray by it, with a TMin as long. A thousandth by
+    // default, which is two centimetres at twenty metres: at a concave join
+    // nearer than that the ray starts past the wall it should have met.
+    float leave;
     // A BAKE SEEN FROM ONE PLACE (BakePoints::toward): 1, a gaussian facing
     // the point looks from within `towardRadius` of it, its polish kept.
     uint  bakeToward;
@@ -113,6 +119,23 @@ struct PathParams {
     // 1: the groups gather the emission groups' indirect light only
     // (PathSettings::groupsIndirect).
     uint  groupsIndirect;
+    // WHAT A BOUNCE MEETS, KNOWN ALREADY (PathSettings::sceneCache): cells of
+    // the world after the planes of `sum`, from `cacheBase`, `cacheSide` an
+    // axis and `cachePlanes` planes of them. 0 planes: none.
+    uint  cachePlanes;
+    uint  cacheBase;
+    uint  cacheSide;
+    float cacheMinX;
+    float cacheMinY;
+    float cacheMinZ;
+    float cacheCell;
+    // THE PATHS KEPT FOR A DISPATCH OF THEIR OWN (kKept): how many `moments`
+    // has room for after its planes (0: none are kept), which of the two
+    // dispatches this is (0: the pixels'; 1: the kept paths', one a thread),
+    // and how many thread groups across the second is.
+    uint  keptCapacity;
+    uint  keptPhase;
+    uint  keptAcross;
 };
 
 Texture2D<uint4>               visibility;   // (instance + 1, triangle); row 0 on top
@@ -257,8 +280,8 @@ float3 shadowWalk(float3 p, float3 n, float3 wi, float distance, uint shadowCate
     const float scale = max(1.0, length(p));
     const float3 away = dot(n, wi) < 0.0 ? -n : n;
     RayDesc ray;
-    ray.Origin = p + (away + wi) * (1.0e-3 * scale);
-    ray.TMin = 1.0e-3 * scale;
+    ray.Origin = p + (away + wi) * (path.leave * scale);
+    ray.TMin = path.leave * scale;
     // AIMED AT THE POINT IT ENDS AT, `p + wi * distance`, from the origin it
     // actually leaves: the origin stands a millimetre off p, across the ray
     // as well as along it, and a ray sent along `wi` from there for
@@ -449,8 +472,8 @@ float3 shadowWalk(float3 p, float3 n, float3 wi, float distance, uint shadowCate
     const float scale = max(1.0, length(p));
     const float3 away = dot(n, wi) < 0.0 ? -n : n;
     RayDesc ray;
-    ray.Origin = p + (away + wi) * (1.0e-3 * scale);
-    ray.TMin = 1.0e-3 * scale;
+    ray.Origin = p + (away + wi) * (path.leave * scale);
+    ray.TMin = path.leave * scale;
     // AIMED AT THE POINT IT ENDS AT, `p + wi * distance`, from the origin it
     // actually leaves: the origin stands a millimetre off p, across the ray
     // as well as along it, and a ray sent along `wi` from there for
@@ -561,9 +584,9 @@ float splatVisibility(float3 p, float3 n, float3 wi, float distance) {
     const float scale = max(1.0, length(p));
     const float3 away = dot(n, wi) < 0.0 ? -n : n;
     AtheneaRay ray;
-    ray.Origin = p + (away + wi) * (1.0e-3 * scale);
+    ray.Origin = p + (away + wi) * (path.leave * scale);
     ray.Direction = wi;
-    ray.TMin = 1.0e-3 * scale;
+    ray.TMin = path.leave * scale;
     ray.TMax = max(distance - ray.TMin, 0.0);
     if (ray.TMax <= ray.TMin) {
         return 1.0;
@@ -591,7 +614,7 @@ float splatVisibility(float3 p, float3 n, float3 wi, float distance) { return 1.
 /// and the guides' buffer no longer competes for the 31 Metal binds with a
 /// cloud's shadows.
 const char* kAux = R"(
-RWStructuredBuffer<float4> aux;   // the albedo's plane, then the normal's
+RWStructuredBuffer<float4> aux;   // the albedo's plane, the normal's, and four of what the surface is made of (PathAux)
 )";
 
 /// Baking: the first hit of every path comes from a ray a caller wrote down,
@@ -640,7 +663,7 @@ float bakeMetalness(uint at) {
 
 /// THE MATERIAL AT THE FIRST VERTEX, read back (BakePoints::material): one
 /// sample of it into the point's sums, before the bake keeps only its body.
-void bakeMaterialAdd(inout MaterialSums sums, LobeStack stack, uint at) {
+void bakeMaterialAdd(inout MaterialSums sums, __constref LobeStack stack, uint at) {
     materialSumsAdd(sums, materialSampleOf(stack, bakeMetalness(at) > 0.0));
 }
 
@@ -665,9 +688,11 @@ float3 bakeFacing(uint at) {
 /// gold black. What it drops is the dielectric polish and the sheen, which
 /// `splat_relight` puts back at render time, from the metallic and roughness
 /// the gaussian carries, and puts back *with a direction in it*.
-LobeStack bakeBody(LobeStack stack, uint at) {
-    LobeStack body = stack;
-    body.count = 0;
+///
+/// In place: the lobes kept are moved down over the ones dropped. Returned
+/// by value, the body was a second lobe stack beside the path's.
+void bakeBody(inout LobeStack stack, uint at) {
+    uint kept = 0;
     // A METAL IS WHAT THE MATERIAL SAYS IS ONE, not only what reflects like
     // one. The test below by reflectivity drops a dark metal: a car's paint
     // is OpenPBR at metalness 1 over a base of 0.05, its metal a Schlick of
@@ -706,11 +731,11 @@ LobeStack bakeBody(LobeStack stack, uint at) {
         const bool metal = lobe.kind == kLobeConductor || (lobe.kind == kLobeSchlick && (f0 > 0.2 || saidMetal));
         const bool through = lobe.scatter == kScatterTransmit;
         if (diffuse || metal || through) {
-            body.lobes[body.count] = lobe;
-            body.count += 1;
+            stack.lobes[kept] = lobe;
+            kept += 1;
         }
     }
-    return body;
+    stack.count = kept;
 }
 
 
@@ -952,8 +977,8 @@ const char* kNoBake = R"(
 static const bool kBake = false;
 static const uint kCellOrigins = 4u;
 Found foundBaked(uint at, uint sample, uint mask) { return foundNothing(); }
-LobeStack bakeBody(LobeStack stack, uint at) { return stack; }
-void bakeMaterialAdd(inout MaterialSums sums, LobeStack stack, uint at) {}
+void bakeBody(inout LobeStack stack, uint at) {}
+void bakeMaterialAdd(inout MaterialSums sums, __constref LobeStack stack, uint at) {}
 bool bakeTowardFaces(uint at) { return false; }
 float3 bakeDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
 float3 bakeSphereDirection(uint at, uint sample) { return float3(0.0, 0.0, 1.0); }
@@ -1026,6 +1051,18 @@ void endGroups(uint at, uint pixels, Groups g, float alpha, float totalSamples) 
         sum[(1u + groupCount + k) * pixels + at] = totalSamples > 0.0 ? now / totalSamples : float4(0.0);
     }
 }
+void groupsAdd(inout Groups g, float3 a0, float3 a1, float3 a2, float3 a3, float3 a4, float3 a5, float3 a6, float3 a7) {
+    g.g0 += a0; g.g1 += a1; g.g2 += a2; g.g3 += a3; g.g4 += a4; g.g5 += a5; g.g6 += a6; g.g7 += a7;
+}
+/// A pixel's kept paths' shares added to the groups' sums its thread wrote (pathResolve).
+void resolveGroups(uint at, uint pixels, Groups g, float totalSamples) {
+    for (uint k = 0; k < groupCount && k < 8; ++k) {
+        const uint slot = (1u + k) * pixels + at;
+        const float4 now = sum[slot] + float4(groupOf(g, k), 0.0);
+        sum[slot] = now;
+        sum[(1u + groupCount + k) * pixels + at] = totalSamples > 0.0 ? now / totalSamples : float4(0.0);
+    }
+}
 )";
 
 const char* kNoGroups = R"(
@@ -1033,7 +1070,10 @@ static const bool kLightGroups = false;
 struct Groups { float3 g0; };
 Groups groupsZero() { Groups g; g.g0 = float3(0.0); return g; }
 void addGroup(inout Groups g, uint group, float3 c) {}
+float3 groupOf(Groups g, uint k) { return float3(0.0); }
 void endGroups(uint at, uint pixels, Groups g, float alpha, float totalSamples) {}
+void groupsAdd(inout Groups g, float3 a0, float3 a1, float3 a2, float3 a3, float3 a4, float3 a5, float3 a6, float3 a7) {}
+void resolveGroups(uint at, uint pixels, Groups g, float totalSamples) {}
 )";
 
 /// The volumes: the medium module and the frame's words, in the kernel of
@@ -1106,7 +1146,84 @@ float hgPhase(float cosTheta, float g) { return 0.0; }
 float3 hgSample(float3 wo, float g, float2 u) { return -wo; }
 )";
 
+/// THE PATHS THAT LAND ON GLASS ARE KEPT, AND GO ON IN A DISPATCH OF THEIR OWN.
+///
+/// The threads of a group run together, and a group pays for every branch
+/// any of its threads takes (docs/decisions.md, 17 Nov): one thread shading
+/// a glass makes its group pay that material at every face the path crosses.
+/// So a path whose ray lands on a row that transmits, past its first vertex,
+/// is not shaded where it landed: what the rest of it needs is written into
+/// `moments` after its planes -- an entry a path, taken by an atomic count --
+/// and the pixel's thread goes on to its next sample. A second dispatch of
+/// the same kernel, a thread an entry, takes each from the step it stopped at
+/// to its end and leaves its colour in the entry; `pathResolve`, a thread a
+/// pixel, adds a pixel's entries to its sums by the list the pixel's thread
+/// made of them. The random numbers are the pixel's, the sample's and the
+/// bounce's, so the path is the one the pixel's thread would have traced;
+/// what differs is the order a pixel's samples are summed in, and the lot a
+/// shadow ray draws at a cut-out, which is keyed by how many its thread has
+/// drawn (gShadowDraws): another draw of the same lot. (A material that
+/// takes a screen derivative from the thread's quad, a bump, takes it past
+/// the first vertex from whatever its neighbours shade, here as there.)
+///
+/// A path is kept once: taken up again, it goes to its end whatever it
+/// lands on. Kept again each time it changed between glass and the rest,
+/// a dispatch for each, was slower (17.8 s where 16.4, the flat Sponza with
+/// the glass knight).
+///
+/// `moments` after its two planes: a plane of list heads (entry + 1, 0 for
+/// none), the count, then the entries. An entry, in words:
+///   0 the pixel; 1 the sample and the step; 2 bounce, crossed, passed, the
+///   glass layers and two flags; 3 the next entry of the pixel (+ 1);
+///   4-6 throughput; 7-9 the light carried so far; 10 the opacity; 11 the
+///   density of the direction that reached here; 12-14 where it was drawn;
+///   15-17 the normal there; 18-19 its categories; 20-24 the hit (instance
+///   + 1, triangle, t, barycentrics); 25-27 where the ray left; 28-30 along
+///   what.
+/// And once it has gone on: 4-6 its colour times its opacity, 7 the square
+/// of that luminance, 8-31 what it added to each light group.
+const char* kKept = R"(
+static const bool kKeptBuilt = true;
+static const uint kKeptWords = 32u;
+
+uint keptHeadAt(uint at) { return 2u * camera.width * camera.height + at; }
+uint keptCountAt() { return 3u * camera.width * camera.height; }
+uint keptEntryAt(uint slot) { return 3u * camera.width * camera.height + 1u + slot * kKeptWords; }
+uint keptCount() { return min(moments[keptCountAt()], path.keptCapacity); }
+uint keptTake() {
+    uint was;
+    InterlockedAdd(moments[keptCountAt()], 1u, was);
+    return was;
+}
+void keptPut3(uint e, float3 v) {
+    moments[e] = asuint(v.x);
+    moments[e + 1u] = asuint(v.y);
+    moments[e + 2u] = asuint(v.z);
+}
+float3 keptGet3(uint e) {
+    return float3(asfloat(moments[e]), asfloat(moments[e + 1u]), asfloat(moments[e + 2u]));
+}
+)";
+
+/// Where no path is kept: a ray tracing pipeline's kernel.
+const char* kNoKept = R"(
+static const bool kKeptBuilt = false;
+static const uint kKeptWords = 32u;
+uint keptHeadAt(uint at) { return 0u; }
+uint keptCountAt() { return 0u; }
+uint keptEntryAt(uint slot) { return 0u; }
+uint keptCount() { return 0u; }
+uint keptTake() { return 0xFFFFFFFFu; }
+void keptPut3(uint e, float3 v) {}
+float3 keptGet3(uint e) { return float3(0.0); }
+)";
+
 const char* kBody = R"(
+/// Paths are kept where the kernel traces inline, draws a frame and has no
+/// medium: a bake's sums are a point's own, and a medium's collisions carry
+/// a random stream the entry has no word for.
+static const bool kKept = kKeptBuilt && kTraces && !kBake && !kVolumes;
+
 /// THE LIGHT A TRANSPARENT SURFACE LETS THROUGH (UsdPreviewSurface 2.6,
 /// opacityMode transparent): what its specular lobes -- every lobe but the
 /// diffuse ones, which the opacity already scales -- do not reflect back
@@ -1120,7 +1237,7 @@ const char* kBody = R"(
 /// cent each. The sparrow's belly is dozens of feather cards, transparent by
 /// default and a quarter metallic: under a dome of radiance one it read 7.
 /// A clear glass sheet passes 1 - F, and so does this.
-float3 transparentPasses(LobeStack stack, float3 toEye) {
+float3 transparentPasses(__constref LobeStack stack, float3 toEye) {
     float3 reflected = float3(0.0);
     for (uint k = 0; k < stack.count; ++k) {
         const uint kind = stack.lobes[k].kind;
@@ -1132,9 +1249,19 @@ float3 transparentPasses(LobeStack stack, float3 toEye) {
     return saturate(float3(1.0) - reflected);
 }
 
+/// What a path reads again of the inputs its material was evaluated with:
+/// the point, its shading normal and where it was seen from. The whole
+/// MaterialInputs (the mesh's record, the object's frame, the footprint) was
+/// 352 bytes a shading state kept and copied for these three.
+struct ShadedPoint {
+    float3 positionWorld;
+    float3 normalWorld;
+    float3 viewPosition;
+};
+
 struct Shaded {
     LobeStack      stack;
-    MaterialInputs inputs;
+    ShadedPoint    inputs;
     float3         toEye;
     float          depth;
     uint           categoriesLo;   // the instance's, for a light's link
@@ -1148,21 +1275,47 @@ struct Shaded {
     float3         geometricNormal;   // world, unit: the triangle's own, which a ray leaving it leaves by (leaveSurface)
 };
 
+/// A shading state copied with its stack as far as that holds lobes (copyStack).
+void copyShaded(inout Shaded to, __constref Shaded from) {
+    copyStack(to.stack, from.stack);
+    to.inputs = from.inputs;
+    to.toEye = from.toEye;
+    to.depth = from.depth;
+    to.categoriesLo = from.categoriesLo;
+    to.categoriesHi = from.categoriesHi;
+    to.valid = from.valid;
+    to.coverage = from.coverage;
+    to.transparent = from.transparent;
+    to.rowFlags = from.rowFlags;
+    to.rayOrigin = from.rayOrigin;
+    to.rayT = from.rayT;
+    to.geometricNormal = from.geometricNormal;
+}
+
 /// Evaluates whatever material a surface wears. `pixel` is only the uv
 /// footprint's: materialInputsAt takes it from the neighbouring pixels' rays,
 /// which is right for the camera's hit and an approximation for a bounce's.
-Shaded shadeSurface(uint2 pixel, Surface s) {
-    Shaded out;
+// Written where it is kept: a shading state returned by value is copied whole,
+// and again where it is assigned. `emission` is what the surface gives off,
+// and with `emissionOnly` that is all that is written: a light point is
+// shaded for its emission alone, and `out` stays the vertex that chose it.
+void shadeSurface(uint2 pixel, __constref Surface s, bool emissionOnly, inout Shaded out, out float3 emission) {
+    // A bake takes no footprint from the camera it does not have.
+    const MaterialInputs inputs = materialInputsAt(camera, toWorld, pixel.x, pixel.y, s, lookup.time, !kBake);
+    const MaterialRecord m = materials[materialRowOf(s)];
+    evaluateMaterial(m.function, inputs, m.blob);
+    // A MeshLightAPI prim's own emission, and an emission group's level.
+    emission = meshLightEmission(iesValues, meshLightWords, s.instance.flags, inputs.inside, gAtheneaResult.emission);
+    if (emissionOnly) {
+        return;
+    }
     out.categoriesLo = s.instance.categoriesLo;
     out.categoriesHi = s.instance.categoriesHi;
-    // A bake takes no footprint from the camera it does not have.
-    out.inputs = materialInputsAt(camera, toWorld, pixel.x, pixel.y, s, lookup.time, !kBake);
-    const MaterialRecord m = materials[materialRowOf(s)];
-    evaluateMaterial(m.function, out.inputs, m.blob);
-    out.stack = gAtheneaResult;
-    // A MeshLightAPI prim's own emission, and an emission group's level.
-    out.stack.emission = meshLightEmission(iesValues, meshLightWords, s.instance.flags, out.inputs.inside,
-                                           out.stack.emission);
+    out.inputs.positionWorld = inputs.positionWorld;
+    out.inputs.normalWorld = inputs.normalWorld;
+    out.inputs.viewPosition = inputs.viewPosition;
+    copyStack(out.stack, gAtheneaResult);
+    out.stack.emission = emission;
     out.coverage = (m.flags & (kMaterialCutout | kMaterialTransparent)) != 0;
     out.transparent = (m.flags & kMaterialTransparent) != 0;
     out.rowFlags = m.flags;
@@ -1172,7 +1325,6 @@ Shaded shadeSurface(uint2 pixel, Surface s) {
     out.rayOrigin = out.inputs.viewPosition;
     out.rayT = length(out.inputs.positionWorld - out.inputs.viewPosition);
     out.geometricNormal = normalize(applyRows(toWorld, s.geometricNormal, 0.0));
-    return out;
 }
 
 /// A surface a ray found, before its material is evaluated. Finding and
@@ -1317,7 +1469,7 @@ float3 glassPasses(PathHit hit, float3 from, float3 direction) {
 /// Through, not off it: `wi` leaves on the other side of the surface from
 /// the eye -- a reflection inside a solid stays in the glass, and no straight
 /// shadow ray follows it.
-bool glassCarriesWeight(Shaded sh, float3 wi) {
+bool glassCarriesWeight(__constref Shaded sh, float3 wi) {
     if (path.glassShadows == 0 || !sh.valid || (sh.rowFlags & kMaterialGlassShadow) == 0u) {
         return false;
     }
@@ -1344,8 +1496,8 @@ bool glassCarriesWeight(Shaded sh, float3 wi) {
 float pathThrough(float3 p, float3 n, float3 wi, uint mask) {
     const float scale = max(1.0, length(p));
     const float3 away = dot(n, wi) < 0.0 ? -n : n;
-    float3 origin = p + (away + wi) * (1.0e-3 * scale);
-    float tMin = 1.0e-3 * scale;
+    float3 origin = p + (away + wi) * (path.leave * scale);
+    float tMin = path.leave * scale;
     float through = 1.0;
     for (uint passes = 0; passes < 8u; ++passes) {
         const PathHit hit = traceNearestFrom(origin, wi, tMin, mask, false);
@@ -1376,7 +1528,7 @@ float pathThrough(float3 p, float3 n, float3 wi, uint mask) {
 
 /// Whether a point's own surface lets light through: a transmitting lobe
 /// with any weight.
-bool stackTransmits(LobeStack stack) {
+bool stackTransmits(__constref LobeStack stack) {
     for (uint k = 0; k < stack.count; ++k) {
         if (stack.lobes[k].scatter != kScatterReflect && any(stack.lobes[k].weight > float3(0.0))) {
             return true;
@@ -1414,22 +1566,26 @@ R"(float cellThrough(float3 p, float3 n, float3 wi, uint mask, bool selfTransmit
 }
 
 /// What was found, its material evaluated: the kernel's one call of it.
-Shaded shadeFound(uint2 pixel, Found f) {
-    Shaded out;
-    out.valid = false;
-    out.coverage = false;
-    out.transparent = false;
-    out.rowFlags = 0u;
-    out.depth = 0.0;
-    out.geometricNormal = float3(0.0, 0.0, 1.0);
-    if (!f.valid) {
-        return out;
+void shadeFound(uint2 pixel, __constref Found f, bool emissionOnly, inout Shaded out, out float3 emission) {
+    emission = float3(0.0);
+    if (!emissionOnly) {
+        out.valid = false;
+        out.coverage = false;
+        out.transparent = false;
+        out.rowFlags = 0u;
+        out.depth = 0.0;
+        out.geometricNormal = float3(0.0, 0.0, 1.0);
     }
-    out = shadeSurface(pixel, f.s);
+    if (!f.valid) {
+        return;
+    }
+    shadeSurface(pixel, f.s, emissionOnly, out, emission);
+    if (emissionOnly) {
+        return;
+    }
     out.toEye = normalize(f.eye - out.inputs.positionWorld);
     out.rayOrigin = f.rayOrigin;
     out.rayT = f.rayT;
-    return out;
 }
 
 /// The camera's hit found by a ray of the tracer's own, for a lens with a
@@ -1614,7 +1770,7 @@ float emissiveShare() {
 }
 
 /// A surface's triangle in world space, as the record that drew it holds it.
-void worldTriangle(InstanceRecord r, MeshRecord m, uint triangle, out float3 a, out float3 b, out float3 c) {
+void worldTriangle(__constref InstanceRecord r, __constref MeshRecord m, uint triangle, out float3 a, out float3 b, out float3 c) {
     const uint t = m.firstTriangle + triangle;
     const uint base = m.firstPoint + r.pointsOffset;
     a = rowsApply(r.world0, r.world1, r.world2, positions[base + indices[t * 3]].xyz, 1.0);
@@ -1625,7 +1781,7 @@ void worldTriangle(InstanceRecord r, MeshRecord m, uint triangle, out float3 a, 
 /// The density, per solid angle at `from`, that next event estimation gives
 /// the direction that met surface s at `at` -- by the table's own weights
 /// (area times the row's luminance), so the two strategies' weights sum to one.
-float emissivePdfAt(Surface s, float3 at, float3 from, float3 fromNormal) {
+float emissivePdfAt(__constref Surface s, float3 at, float3 from, float3 fromNormal) {
     const float share = emissiveShare();
     if (!(share > 0.0)) {
         return 0.0;
@@ -1818,7 +1974,7 @@ static const uint kMisLightLimit = 64;
 /// material's ray is stopped by any surface, so the two strategies would
 /// see different visibilities. Not through media: a volume between would
 /// have to dim the material's ray as it dims the shadow ray.
-bool misWeighs(LightRecord l) {
+bool misWeighs(__constref LightRecord l) {
     return path.mis != 0 && !kVolumes && lightCount <= kMisLightLimit && (l.flags & kLightShadow) != 0 &&
            l.shadowCategory == kLightUnlinked;
 }
@@ -1838,7 +1994,7 @@ float3 refractInto(float3 wi, float3 n, float ior) {
 /// (`kFlagInside`) and a reflection stays in the glass. A back face of
 /// anything else, a room seen from inside its walls, is a surface like any
 /// other: the closed furnace is one, and counted its bounces free.
-bool throughGlass(Shaded sh, float3 wi) {
+bool throughGlass(__constref Shaded sh, float3 wi) {
     const bool crosses = dot(sh.inputs.normalWorld, wi) < 0.0;
     for (uint k = 0; k < sh.stack.count; ++k) {
         const Lobe lobe = sh.stack.lobes[k];
@@ -1858,7 +2014,7 @@ bool throughGlass(Shaded sh, float3 wi) {
 /// the lens it said did not cross left by the millimetre, past the far face
 /// 1.1 mm in -- the tail lamps' lens gaussians baked one tint, B/R 0.146
 /// where the frame reads 0.0149.
-bool entersGlass(Shaded sh, float3 wi) {
+bool entersGlass(__constref Shaded sh, float3 wi) {
     if (dot(sh.geometricNormal, wi) * dot(sh.geometricNormal, sh.toEye) >= 0.0) {
         return false;
     }
@@ -1875,14 +2031,14 @@ bool entersGlass(Shaded sh, float3 wi) {
 /// and through a glass while free crossings are (`kFreeCrossings`).
 /// `charged` is the bounces spent, `crossed` the crossings that were not
 /// charged.
-bool pathGoesOn(uint charged, uint crossed, Shaded sh, float3 wi) {
+bool pathGoesOn(uint charged, uint crossed, __constref Shaded sh, float3 wi) {
     if (!kTraces) {
         return false;
     }
     return charged < path.bounces || (crossed < kFreeCrossings && throughGlass(sh, wi));
 }
 
-float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crossed, uint mask, out uint group) {
+float3 gatherLight(__constref Shaded sh, uint2 pixel, uint sample, uint bounce, uint crossed, uint mask, out uint group) {
     group = 0;
     if (lightCount == 0) {
         // A stage without lights is lit as the raster lights it, when the
@@ -1943,7 +2099,7 @@ float3 gatherLight(Shaded sh, uint2 pixel, uint sample, uint bounce, uint crosse
     float transmittance = 1.0;
     if (kVolumes && (light.flags & kLightShadow) != 0) {
         uint2 rng = mediumSeed(pixel, sample, bounce, 21u);
-        transmittance = mediumTransmittanceAny(sh.inputs.positionWorld, ls.wi, 1.0e-3 * max(1.0, length(sh.inputs.positionWorld)),
+        transmittance = mediumTransmittanceAny(sh.inputs.positionWorld, ls.wi, path.leave * max(1.0, length(sh.inputs.positionWorld)),
                                                ls.distance, rng);
     }
     const float density = ls.pdf * choice.probability * (1.0 - share);
@@ -2033,9 +2189,23 @@ float3 gatherLightMedium(float3 p, float3 wo, float g, float share, uint2 catego
 }
 
 void tracePathsAt(uint2 group, uint index) {
-    const uint2 tid = atheneaQuadPixel(group, index);
-    if (tid.x >= camera.width || tid.y >= camera.height) {
-        return;
+    // A kept path's thread (kKept): its entry, and the pixel it is of.
+    const bool keptThread = kKept && path.keptPhase != 0u;
+    uint keptAt = 0u;
+    uint2 tid;
+    if (keptThread) {
+        const uint slot = (group.y * path.keptAcross + group.x) * 256u + index;
+        if (slot >= keptCount()) {
+            return;
+        }
+        keptAt = keptEntryAt(slot);
+        const uint pixel = moments[keptAt];
+        tid = uint2(pixel % camera.width, pixel / camera.width);
+    } else {
+        tid = atheneaQuadPixel(group, index);
+        if (tid.x >= camera.width || tid.y >= camera.height) {
+            return;
+        }
     }
     const uint at = tid.y * camera.width + tid.x;
     // A bake has no visibility buffer: its first hits are rays of its own,
@@ -2043,7 +2213,9 @@ void tracePathsAt(uint2 group, uint index) {
     const uint4 seen = kBake ? uint4(0, 0, 0, 0)
                              : visibility.Load(int3(int(tid.x), int(camera.height - 1 - tid.y), 0));
     const uint pixels = camera.width * camera.height;
-    if (path.accumulated == 0) {
+    if (keptThread) {
+        // its pixel's thread decided
+    } else if (path.accumulated == 0) {
         moments[pixels + at] = 0;   // a frame of its own: no flag from the last one
     } else if (path.adaptive != 0 && moments[pixels + at] != 0) {
         return;   // converged: its mean stands
@@ -2054,9 +2226,12 @@ void tracePathsAt(uint2 group, uint index) {
     // evaluated once a path. With a lens it does depend on the sample, and
     // each path casts its own.
     const bool ownRays = kTraces && path.ownRays != 0;
-    const Found firstFound = kBake      ? foundBaked(at, 0u, sampleMask(tid, 0u))
-                             : ownRays  ? foundLensSample(tid, 0u, sampleMask(tid, 0u))
-                                        : foundAt(tid, seen);
+    Found firstFound = foundNothing();
+    if (!keptThread) {
+        firstFound = kBake      ? foundBaked(at, 0u, sampleMask(tid, 0u))
+                     : ownRays  ? foundLensSample(tid, 0u, sampleMask(tid, 0u))
+                                : foundAt(tid, seen);
+    }
     Shaded first;
     first.valid = false;
     first.depth = 0.0;
@@ -2146,14 +2321,38 @@ R"(    bool firstShaded = false;
     float  squares = 0.0;   // sum of each sample's luminance squared
     uint group = 0;
     Groups groups = groupsZero();
-    for (uint sample = 0; sample < samples && (firstFound.valid || ownRays || kVolumes); ++sample) {
+    // The pixel's kept paths, newest first (entry + 1).
+    uint keptHead = 0u;
+    // A kept path's thread traces that one sample, from the hit it was kept at.
+    const uint sampleFirst = keptThread ? (moments[keptAt + 1u] & 0xFFFFu) : 0u;
+    const uint sampleEnd = keptThread ? sampleFirst + 1u : samples;
+    for (uint sample = sampleFirst; sample < sampleEnd && (keptThread || firstFound.valid || ownRays || kVolumes); ++sample) {
         const uint mask = sampleMask(tid, sample);
+        // The hit `found` was rebuilt from, where a ray of the path found it:
+        // what an entry keeps of it.
+        PathHit foundBy;
+        foundBy.seen = uint4(0);
+        foundBy.t = 0.0;
+        foundBy.barycentrics = float2(0.0);
+        float3 foundFrom = float3(0.0);
+        float3 foundAlong = float3(0.0, 0.0, 1.0);
+        bool   foundByRay = false;
         // A bake looks from a new direction every sample (foundBaked says
         // why); a frame's first hit is the same one for all of them unless a
         // lens moves it.
-        Found found = kBake ? (sample == 0 ? firstFound : foundBaked(at, sample, mask))
-                      : ownRays && sample > 0 ? foundLensSample(tid, sample, mask)
-                                              : firstFound;
+        Found found;
+        if (keptThread) {
+            foundBy.seen = uint4(moments[keptAt + 20u], moments[keptAt + 21u], 0u, 0u);
+            foundBy.t = asfloat(moments[keptAt + 22u]);
+            foundBy.barycentrics = float2(asfloat(moments[keptAt + 23u]), asfloat(moments[keptAt + 24u]));
+            foundFrom = keptGet3(keptAt + 25u);
+            foundAlong = keptGet3(keptAt + 28u);
+            found = foundHit(foundBy, foundFrom, foundAlong);
+        } else {
+            found = kBake ? (sample == 0 ? firstFound : foundBaked(at, sample, mask))
+                    : ownRays && sample > 0 ? foundLensSample(tid, sample, mask)
+                                            : firstFound;
+        }
         // The ray to the first vertex: from the surface it found, or the
         // pixel's ray to nothing -- along which a volume may still lie.
         float3 o;
@@ -2216,11 +2415,17 @@ R"(    bool firstShaded = false;
         uint   lightStepBounce = 0;   // and the bounce of the vertex that chose it
 )"
 R"(
+        // Declared and not written: it is read only on a step a vertex
+        // chose a point for. Zeroed here it is a struct more in the thread's
+        // memory -- Slang no longer lends its storage to a temporary -- and
+        // the kernel with media drew garbage (docs/decisions.md, 18 Nov,
+        // "What a thread's memory bears").
         Found  lightPoint;
         float3 lightScale = float3(0.0);
         bool   mediumResume = false;   // the light point was a medium collision's, and the path goes on from it
         bool   mediumEnds = false;     // or ends there
         float  previousPdf = 0.0;     // the material's density for the direction that reached `found`
+        bool   previousBroad = false;  // and whether it was drawn from a broad lobe: what it meets may be read from the cache
         bool   previousWeighs = false;   // and whether emission met there is weighed against it
         // Where that direction was drawn: the last vertex that sampled its
         // material with a density, and its normal. A path that has gone on
@@ -2235,9 +2440,41 @@ R"(
         uint   glassLayers = 0;
         const uint steps = 2 * (path.bounces + kFreeCrossings) + 3;
         uint stepsTaken = 0;   // what the path cost, for a bake that shares its paths out
-        for (uint step = 0; step < steps; ++step) {
+        // KEPT (kKept). `resumed`: this thread takes a kept path up at the
+        // step it stopped at, past what its pixel's thread did of that step;
+        // `keptSlot`: the entry this path is to be written into, once the
+        // loop is left -- a buffer written inside it is what the Metal
+        // compiler does not get through (kGroups).
+        bool resumed = false;
+        bool keptOut = false;
+        uint keptSlot = 0u;
+        uint keptStep = 0u;
+        uint stepFirst = 0u;
+        if (keptThread) {
+            const uint w1 = moments[keptAt + 1u];
+            const uint w2 = moments[keptAt + 2u];
+            stepFirst = w1 >> 16u;
+            bounce = w2 & 0xFFu;
+            crossed = (w2 >> 8u) & 0xFFu;
+            passed = (w2 >> 16u) & 0xFFu;
+            glassLayers = (w2 >> 24u) & 0xFu;
+            previousBroad = (w2 & 0x10000000u) != 0u;
+            previousWeighs = (w2 & 0x20000000u) != 0u;
+            throughput = keptGet3(keptAt + 4u);
+            carried = keptGet3(keptAt + 7u);
+            opacity = asfloat(moments[keptAt + 10u]);
+            previousPdf = asfloat(moments[keptAt + 11u]);
+            previousFrom = keptGet3(keptAt + 12u);
+            previousNormal = keptGet3(keptAt + 15u);
+            previousLo = moments[keptAt + 18u];
+            previousHi = moments[keptAt + 19u];
+            vertexSeen = true;
+            foundByRay = true;
+            resumed = true;
+        }
+        for (uint step = stepFirst; step < steps; ++step) {
             stepsTaken = step + 1;
-            if (!lightStep) {
+            if (!lightStep && !resumed) {
                 float tS;
                 float3 albedo;
                 float g;
@@ -2318,6 +2555,10 @@ R"(
                     o = p;
                     const PathHit hit = traceNearestFrom(o, d, 1.0e-4 * max(1.0, length(o)), mask, true);
                     found = foundHit(hit, o, d);
+                    foundBy = hit;
+                    foundFrom = o;
+                    foundAlong = d;
+                    foundByRay = true;
                     tHit = hit.seen.x == 0 ? 1.0e30 : hit.t;
                     // What the phase's ray meets of the emitters is weighed
                     // against the draw above, where that drew any.
@@ -2378,6 +2619,46 @@ R"(
 R"(                    }
                 }
             }
+            // WHAT THE BOUNCE MET IS KNOWN ALREADY (path.cachePlanes): the light
+            // leaving the surfaces of the cell it landed in, kept from what
+            // earlier frames found. The path takes it and ends -- no material,
+            // no light, no further bounce. Only for a direction drawn from a
+            // broad lobe, which gathers over a hemisphere and does not see a
+            // cell's edge; a mirror's ray is shaded as ever.
+            if (path.cachePlanes != 0u && !lightStep && bounce >= 1u && previousBroad && found.valid && !kBake &&
+                !resumed) {
+                const float3 at = (found.positionWorld - float3(path.cacheMinX, path.cacheMinY, path.cacheMinZ)) / path.cacheCell;
+                if (all(at >= float3(0.0)) && all(at < float3(float(path.cacheSide)))) {
+                    const uint3 c = uint3(at);
+                    const uint cellsIn = path.cacheSide * path.cacheSide * path.cacheSide;
+                    const uint slot = path.cacheBase + (c.z * path.cacheSide + c.y) * path.cacheSide + c.x;
+                    const float4 known = sum[slot];
+                    if (known.a > 0.0) {
+                        carried += throughput * known.rgb;
+                        for (uint g = 1u; kLightGroups && g < path.cachePlanes; ++g) {
+                            const float3 of = sum[slot + g * cellsIn].rgb;
+                            carried += throughput * of;
+                            addGroup(groups, g, throughput * of * opacity);
+                        }
+                        break;
+                    }
+                }
+            }
+            // WHAT LANDED ON GLASS IS KEPT (kKept): past the path's first
+            // vertex -- the camera's hit is shaded once a pixel, by threads
+            // that are all on it -- and while there is room; without, the
+            // path goes on here as it always did.
+            if (kKept && !keptThread && path.keptCapacity != 0u && !lightStep && vertexSeen && foundByRay && found.valid &&
+                (materials[materialRowOf(found.s)].flags & kMaterialTransmits) != 0u) {
+                const uint slot = keptTake();
+                if (slot < path.keptCapacity) {
+                    keptSlot = slot;
+                    keptStep = step;
+                    keptOut = true;
+                    break;
+                }
+            }
+            resumed = false;
             // The one place materials are evaluated; the camera's hit once a pixel.
             const Found target = lightStep ? lightPoint : found;
             // A bake looks at its point from a new direction every sample, so
@@ -2385,25 +2666,32 @@ R"(                    }
             // every sample would answer with sample zero's eye and the
             // harmonics past the constant would come back as noise about zero.
             const bool cameraHit = !lightStep && bounce == 0 && passed == 0 && !ownRays && !kBake;
-            Shaded shaded;
+            // Into `cur`, where the path keeps its vertex: a state of its
+            // own for the step was one more lobe stack in the thread's
+            // memory, and a copy of it a step (docs/decisions.md, 18 Nov,
+            // "What a thread's memory bears"). A light point leaves `cur` as
+            // it is and gives its emission alone. A surface the sample's lot
+            // sees through is written here as well: the next step shades
+            // what is behind it before anything reads `cur`.
+            float3 lit = float3(0.0);
             if (cameraHit && firstShaded) {
-                shaded = first;
+                copyShaded(cur, first);
             } else {
-                shaded = shadeFound(tid, target);
+                shadeFound(tid, target, lightStep, cur, lit);
                 if (cameraHit) {
-                    first = shaded;
+                    copyShaded(first, cur);
                     firstShaded = true;
                 }
             }
             if (lightStep) {
                 // The light point's emission, back to the vertex that chose it,
                 // and into its emission group's output where it is in one.
-                carried += lightScale * shaded.stack.emission;
+                carried += lightScale * lit;
                 // Gathered as indirect only where a bounce came before the
                 // vertex that chose it (groupsIndirect).
                 if (kLightGroups && (path.groupsIndirect == 0u || lightStepBounce >= 1u)) {
                     addGroup(groups, meshGroupAov(iesValues, meshLightWords, meshInstanceGroup(target.s.instance.flags)),
-                             lightScale * shaded.stack.emission * opacity);
+                             lightScale * lit * opacity);
                 }
                 lightStep = false;
                 // A collision in a medium chose that point: the path goes on
@@ -2429,16 +2717,16 @@ R"(                    }
                 // (1 - p) -- has exactly that expectation, and p is held off
                 // zero so a window at opacity 0 still reflects the sky, five
                 // samples in a hundred at twenty times the weight.
-                const float o = shaded.stack.opacity;
-                const float keep = shaded.transparent ? max(o, 0.05) : o;
-                if (kTraces && shaded.coverage && o < 1.0 && passed < 64 &&
+                const float o = cur.stack.opacity;
+                const float keep = cur.transparent ? max(o, 0.05) : o;
+                if (kTraces && cur.coverage && o < 1.0 && passed < 64 &&
                     random(tid, sample, bounce, 29u + passed) >= keep) {
-                    if (shaded.transparent) {
+                    if (cur.transparent) {
                         // What goes straight through is what the surface
                         // neither covers nor reflects: the specular it keeps
                         // at full weight is light that does not also pass.
                         throughput *= (1.0 - o) / (1.0 - keep) *
-                                      transparentPasses(shaded.stack, shaded.toEye);
+                                      transparentPasses(cur.stack, cur.toEye);
                     }
                     // Coverage: for this sample the surface is not there.
                     // The ray goes on from the hit along its own direction,
@@ -2459,47 +2747,73 @@ R"(                    }
                         // sky is gathered here -- the lights the ray meets
                         // at infinity, as a bounce that escapes gathers
                         // them, at a weight of one since no lobe drew it.
-                        if (lightCount <= kMisLightLimit) {
-                            for (uint k = 0; k < lightCount; ++k) {
-                                const LightRecord light = lightFor(k, tid, sample);
-                                if (!lightLinked(light.lightCategory, shaded.categoriesLo, shaded.categoriesHi)) {
-                                    continue;
-                                }
-                                const LightHit lh = lightHitImaged(light, o, d);
-                                if (lh.valid) {
-                                    carried += throughput * lh.radiance;
-                                }
-                            }
-                        }
+                        // The sample's opacity first: a group's share is
+                        // weighed by it as it is added, the colour at the end.
                         if (!vertexSeen) {
                             vertexSeen = true;
                             opacity = 1.0;
                             depthHere = target.depth;
                         }
+                        if (lightCount <= kMisLightLimit) {
+                            for (uint k = 0; k < lightCount; ++k) {
+                                const LightRecord light = lightFor(k, tid, sample);
+                                if (!lightLinked(light.lightCategory, cur.categoriesLo, cur.categoriesHi)) {
+                                    continue;
+                                }
+                                const LightHit lh = lightHitImaged(light, o, d);
+                                if (lh.valid) {
+                                    // A bounce's ray that went on through is
+                                    // still the draw of the vertex before
+                                    // it, whose next event estimation reached
+                                    // this light through the same surface
+                                    // (shadowPassesThrough): weighed against
+                                    // it, as a ray that escapes is below. The
+                                    // camera's own ray keeps a weight of one.
+                                    float weight = 1.0;
+                                    if (previousWeighs && misWeighs(light)) {
+                                        const float other = lightChoiceProbability(k, previousFrom, previousNormal) *
+                                                            lightPdfImaged(light, previousFrom, previousNormal, d);
+                                        weight = previousPdf * previousPdf / (previousPdf * previousPdf + other * other);
+                                    }
+                                    const float3 reachedLight = throughput * lh.radiance * weight;
+                                    carried += reachedLight;
+                                    // Into the light's group, as the light a
+                                    // material's ray meets is (below): this
+                                    // was the one gathering of a light's
+                                    // radiance that no group took.
+                                    if (kLightGroups) {
+                                        addGroup(groups, light.group, reachedLight * opacity);
+                                    }
+                                }
+                            }
+                        }
                         break;
                     }
                     found = foundHit(hit, o, d);
+                    foundBy = hit;
+                    foundFrom = o;
+                    foundAlong = d;
+                    foundByRay = true;
                     ++passed;
                     --step;
                     continue;
                 }
-                if (shaded.transparent && o < 1.0) {
+                if (cur.transparent && o < 1.0) {
                     // Kept by the lot: the specular at 1/p, the diffuse at
                     // opacity/p, which with the lot's p is the whole specular
                     // and opacity of the diffuse.
-                    for (uint k = 0; k < shaded.stack.count; ++k) {
-                        const uint kind = shaded.stack.lobes[k].kind;
+                    for (uint k = 0; k < cur.stack.count; ++k) {
+                        const uint kind = cur.stack.lobes[k].kind;
                         const bool diffuse = kind == kLobeOrenNayar || kind == kLobeBurley || kind == kLobeTranslucent;
-                        shaded.stack.lobes[k].weight *= (diffuse ? o : 1.0) / keep;
+                        cur.stack.lobes[k].weight *= (diffuse ? o : 1.0) / keep;
                     }
-                    shaded.stack.emission /= keep;
+                    cur.stack.emission /= keep;
                 }
-                cur = shaded;
                 if (cellsMode && bounce == 0) {
                     // Before the body is kept: a glass's transmission is
                     // its dielectric, which the body drops as polish.
-                    for (uint k = 0; k < shaded.stack.count; ++k) {
-                        const Lobe lobe = shaded.stack.lobes[k];
+                    for (uint k = 0; k < cur.stack.count; ++k) {
+                        const Lobe lobe = cur.stack.lobes[k];
                         const bool passes = lobe.scatter != kScatterReflect && any(lobe.weight > float3(0.0));
                         firstTransmits = firstTransmits || passes;
                         if (passes && lobe.kind == kLobeDielectric && (lobe.flags & kFlagThinWalled) == 0u &&
@@ -2527,7 +2841,7 @@ R"(
                     // Seen from one place, the whole material: the polish
                     // is what that camera sees, and one direction holds it.
                     if (!bakeTowardFaces(at)) {
-                        cur.stack = bakeBody(cur.stack, at);
+                        bakeBody(cur.stack, at);
                     }
                 }
                 if (!vertexSeen) {
@@ -2602,7 +2916,7 @@ R"(
                             if (kVolumes) {
                                 uint2 lightRng = mediumSeed(tid, sample, bounce, 27u);
                                 throughMedia = mediumTransmittanceAny(cur.inputs.positionWorld, lp.wi,
-                                                                      1.0e-3 * max(1.0, length(cur.inputs.positionWorld)),
+                                                                      path.leave * max(1.0, length(cur.inputs.positionWorld)),
                                                                       lp.distance - shortOf, lightRng);
                             }
                             lightScale = throughput * f * glassThrough * weight * throughSplats * throughMedia / lp.pdf;
@@ -2794,7 +3108,7 @@ const char* kBodyRest = R"(                const float3 np = cur.inputs.normalWo
             const bool crossing = through || entersGlass(cur, ms.wi);
             const float scale = max(1.0, length(p));
             const float margin = crossing ? rayMargin(max(length(p), length(p - cur.inputs.viewPosition)))
-                                          : 1.0e-3 * scale;
+                                          : path.leave * scale;
             if (crossing) {
                 o = leaveSurface(p, cur.geometricNormal, ms.wi, margin);
             } else {
@@ -2859,11 +3173,16 @@ const char* kBodyRest = R"(                const float3 np = cur.inputs.normalWo
             // Rebuilt from where the ray met the triangle, its eye where the
             // bounce left from; shaded when the next step comes to it.
             found = foundHit(hit, p, d);
+            foundBy = hit;
+            foundFrom = p;
+            foundAlong = d;
+            foundByRay = true;
             tHit = hit.seen.x == 0 ? 1.0e30 : hit.t;
             if (glassCarried) {
                 ++glassLayers;   // the draw, its density and where it was made stand
             } else {
                 previousPdf = ms.pdf;
+                previousBroad = !ms.delta && ms.pdf < 1.0;
                 previousWeighs = path.mis != 0 && !ms.delta;
                 previousFrom = p;
                 previousNormal = n;
@@ -2885,6 +3204,49 @@ R"(            // deep before the ray is out again, and at the default of one
                 directPart = carried;
             }
             ++bounce;
+        }
+        if (keptOut) {
+            // Kept: what the rest of the path needs, and the pixel's list.
+            // Its opacity and its depth are the first vertex's, known here;
+            // its colour is added when it has gone on (pathResolve).
+            const uint e = keptEntryAt(keptSlot);
+            moments[e] = at;
+            moments[e + 1u] = sample | (keptStep << 16u);
+            moments[e + 2u] = (bounce & 0xFFu) | ((crossed & 0xFFu) << 8u) | ((passed & 0xFFu) << 16u) |
+                              ((glassLayers & 0xFu) << 24u) | (previousBroad ? 0x10000000u : 0u) |
+                              (previousWeighs ? 0x20000000u : 0u);
+            moments[e + 3u] = keptHead;
+            keptPut3(e + 4u, throughput);
+            keptPut3(e + 7u, carried);
+            moments[e + 10u] = asuint(opacity);
+            moments[e + 11u] = asuint(previousPdf);
+            keptPut3(e + 12u, previousFrom);
+            keptPut3(e + 15u, previousNormal);
+            moments[e + 18u] = previousLo;
+            moments[e + 19u] = previousHi;
+            moments[e + 20u] = foundBy.seen.x;
+            moments[e + 21u] = foundBy.seen.y;
+            moments[e + 22u] = asuint(foundBy.t);
+            moments[e + 23u] = asuint(foundBy.barycentrics.x);
+            moments[e + 24u] = asuint(foundBy.barycentrics.y);
+            keptPut3(e + 25u, foundFrom);
+            keptPut3(e + 28u, foundAlong);
+            keptHead = keptSlot + 1u;
+            hitDepth = depthHere;
+            alpha += opacity;
+            continue;
+        }
+        if (keptThread) {
+            // A kept path at its end: its colour, the square of its
+            // luminance and what it added to the groups, left in its entry.
+            const float3 c = carried * opacity;
+            const float lum = dot(c, kPathLuminance);
+            keptPut3(keptAt + 4u, c);
+            moments[keptAt + 7u] = asuint(lum * lum);
+            for (uint k = 0; kLightGroups && k < 8u; ++k) {
+                keptPut3(keptAt + 8u + 3u * k, groupOf(groups, k));
+            }
+            return;
         }
         if (!vertexSeen) {
             continue;   // nothing along the ray at all: transparent, and counted
@@ -2926,6 +3288,9 @@ R"(            // deep before the ray is out again, and at the default of one
         total += sampleColour * opacity;
         const float lum = dot(sampleColour * opacity, kPathLuminance);
         squares += lum * lum;
+    }
+    if (keptThread) {
+        return;   // a kept path's thread writes its entry, never a pixel
     }
     // A mean of products, not a product of means: `total` already carries each
     // sample's colour times that sample's opacity, so the sum is the sum. The
@@ -3037,6 +3402,50 @@ R"(            // deep before the ray is out again, and at the default of one
     // without a race.
     const float keptSquares = path.accumulated != 0 ? asfloat(moments[at]) : 0.0;
     moments[at] = asuint(keptSquares + squares);
+    if (kKept && path.keptCapacity != 0u) {
+        moments[keptHeadAt(at)] = keptHead;
+    }
+}
+
+// The kept paths added to their pixels (kKept), one thread a pixel, after the
+// dispatch that took them to their ends: the pixel's list, newest first, into
+// the sums its own thread wrote, and the means made again. The first thread
+// clears the count for the next pass.
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void pathResolve(uint3 tid: SV_DispatchThreadID) {
+    const uint at = tid.x;
+    const uint pixels = camera.width * camera.height;
+    if (at >= pixels) {
+        return;
+    }
+    if (at == 0u) {
+        moments[keptCountAt()] = 0u;
+    }
+    uint next = moments[keptHeadAt(at)];
+    if (next == 0u) {
+        return;
+    }
+    moments[keptHeadAt(at)] = 0u;
+    float3 colourSum = float3(0.0);
+    float  squares = 0.0;
+    Groups groups = groupsZero();
+    for (uint k = 0; k < 4096u && next != 0u; ++k) {
+        const uint e = keptEntryAt(next - 1u);
+        colourSum += keptGet3(e + 4u);
+        squares += asfloat(moments[e + 7u]);
+        if (kLightGroups) {
+            groupsAdd(groups, keptGet3(e + 8u), keptGet3(e + 11u), keptGet3(e + 14u), keptGet3(e + 17u),
+                      keptGet3(e + 20u), keptGet3(e + 23u), keptGet3(e + 26u), keptGet3(e + 29u));
+        }
+        next = moments[e + 3u];
+    }
+    const float totalSamples = float(path.accumulated) + float(max(path.samples, 1u));
+    const float4 now = sum[at] + float4(colourSum, 0.0);
+    sum[at] = now;
+    colour[at] = now / totalSamples;
+    moments[at] = asuint(asfloat(moments[at]) + squares);
+    resolveGroups(at, pixels, groups, totalSamples);
 }
 
 // The adaptive stop rule, one thread a pixel, after a pass. A pixel stops when
@@ -3158,7 +3567,9 @@ void pathGuides(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
     const uint4 seen = visibility.Load(int3(int(tid.x), int(camera.height - 1 - tid.y), 0));
     const bool ownRays = kTraces && path.ownRays != 0;
     const Found found = ownRays ? foundLensSample(tid, 0u, sampleMask(tid, 0u)) : foundAt(tid, seen);
-    Shaded sh = shadeFound(tid, found);
+    Shaded sh;
+    float3 gives;
+    shadeFound(tid, found, false, sh, gives);
     float4 albedo = float4(0.0);
     float4 normal = float4(0.0);
     if (sh.valid) {
@@ -3176,6 +3587,101 @@ void pathGuides(uint3 group: SV_GroupID, uint index: SV_GroupIndex) {
     }
     aux[at] = albedo;
     aux[pixels + at] = normal;
+    // WHAT THE SURFACE IS MADE OF, for whoever makes something of the frame
+    // other than a picture (render::Discovery: a gaussian a pixel, of the
+    // pixel's material): the metal's share, the roughness and how much goes
+    // through; the material's row, whether it is a sheet, and its index.
+    float4 made = float4(0.0);
+    float4 row = float4(0.0);
+    // AND WHAT STANDS BEHIND IT WHERE IT LETS THE EYE THROUGH: the first
+    // surface that does not, along the pixel's own ray bent at each face as
+    // a path's is, and what the faces crossed let through between them. The
+    // pixel's colour is that surface's seen through this one; a gaussian made
+    // of the pixel at this one's depth would carry a picture of the other.
+    float4 behind = float4(0.0);
+    float4 passed = float4(0.0);
+    float4 tint = float4(0.0);   // what this surface itself lets through a crossing, before Fresnel
+    float4 flat = float4(0.0);   // the triangle's own normal, world, facing the eye: where the surface is, whatever a normal map says
+    if (sh.valid) {
+        flat = float4(dot(sh.geometricNormal, sh.toEye) < 0.0 ? -sh.geometricNormal : sh.geometricNormal, 1.0);
+        const MaterialRecord m = materials[materialRowOf(found.s)];
+        const MaterialSample ms = materialSampleOf(sh.stack, false);
+        const bool transmits = (m.flags & kMaterialTransmits) != 0u;
+        const bool sheer = sh.transparent && sh.stack.opacity < 1.0;
+        const float3 firstTint = transmits ? transmissionTint(m) : sheer ? float3(1.0 - sh.stack.opacity) : float3(0.0);
+        const bool thin = (m.flags & kMaterialThinGlass) != 0u || !transmits;
+        made = float4(ms.metallic, ms.roughnessSeen > 0.0 ? ms.roughness : 1.0, max(firstTint.x, max(firstTint.y, firstTint.z)), 1.0);
+        // WHAT IS OPAQUE KEEPS ITS BASE COLOUR HERE, apart from the light the pixel saw leave it: what its
+        // matt lobes return of the light that reaches them (a lobe's weight is its colour times its share),
+        // or, of a metal, which has none, what the stack returns towards the eye -- what a mirror made of
+        // the gaussian needs, and what a lamp added to a found scene is multiplied by.
+        float3 matt = float3(0.0);
+        for (uint k = 0; k < sh.stack.count; ++k) {
+            const uint kind = sh.stack.lobes[k].kind;
+            if (kind == kLobeOrenNayar || kind == kLobeBurley || kind == kLobeTranslucent) {
+                matt += sh.stack.lobes[k].weight * lobeAlbedo(sh.stack.lobes[k], sh.toEye);
+            }
+        }
+        const float3 base = any(matt > float3(0.0)) ? matt : albedo.rgb;
+        tint = float4(!transmits && !sheer ? saturate(base) : firstTint, 1.0);
+        row = float4(float(materialRowOf(found.s) + 1u), transmits && !thin ? 0.0 : 1.0, transmits ? transmissionIndex(m) : 1.0, 1.0);
+        if (kTraces && (transmits || sheer)) {
+            const uint mask = sampleMask(tid, 0u);
+            float3 through = float3(1.0);
+            // Along the way the eye looks at it: `toEye`, which every route to a first hit fills; a hit read
+            // from the visibility buffer has no `eye` of its own, and a ray sent on from the world's origin
+            // found what stands behind glass somewhere off to its side.
+            float3 d = -sh.toEye;
+            Found cur = found;
+            for (uint face = 0; face < 8u; ++face) {
+                const MaterialRecord mc = materials[materialRowOf(cur.s)];
+                const bool lets = (mc.flags & kMaterialTransmits) != 0u;
+                if (face > 0u && !lets) {
+                    // Sheer rows past the first are taken as solid: what one
+                    // lets through is its opacity's, which only shading it says.
+                    behind = float4(cur.positionWorld, 1.0);
+                    passed = float4(through, 1.0);
+                    break;
+                }
+                float3 n = normalize(applyRows(toWorld, cur.s.geometricNormal, 0.0));
+                const bool entering = dot(n, d) < 0.0;
+                n = entering ? n : -n;
+                float3 on = d;
+                if (lets) {
+                    const float index = transmissionIndex(mc);
+                    const bool sheet = (mc.flags & kMaterialThinGlass) != 0u;
+                    const float cosine = abs(dot(n, d));
+                    const float R = index > 1.001 ? fresnelDielectric(max(cosine, 1.0e-3), index) : 0.0;
+                    through *= transmissionTint(mc) * (1.0 - (sheet ? 2.0 * R / (1.0 + R) : R));
+                    if (!sheet && index > 1.001) {
+                        const float eta = entering ? 1.0 / index : index;
+                        const float k = 1.0 - eta * eta * (1.0 - cosine * cosine);
+                        if (k < 0.0) {
+                            break;   // turned back whole inside the glass: nothing behind by this ray
+                        }
+                        on = normalize(eta * d + (eta * cosine - sqrt(k)) * n);
+                    }
+                } else {
+                    through *= firstTint;
+                }
+                const float3 p = cur.positionWorld;
+                const float margin = rayMargin(max(length(p), cur.depth));
+                const float3 from = p - n * margin;
+                const PathHit hit = traceNearestFrom(from, on, margin, mask, false);
+                cur = foundHit(hit, from, on);
+                d = on;
+                if (!cur.valid) {
+                    break;   // the sky, which is no surface to make anything of
+                }
+            }
+        }
+    }
+    aux[2u * pixels + at] = made;
+    aux[3u * pixels + at] = row;
+    aux[4u * pixels + at] = behind;
+    aux[5u * pixels + at] = passed;
+    aux[6u * pixels + at] = tint;
+    aux[7u * pixels + at] = flat;
 }
 )";
 
@@ -3218,15 +3724,28 @@ Result<void> PathTracer::setPrograms(const MaterialPrograms& programs, bool grou
     // Splats shadow meshes only where the rays are inline: the pipeline route
     // would need the traversal again as an any hit program, and it carries two.
     const bool withSplats = traces && splats;
+    // The keeping is in the kernel only where paths are kept (Metal, below):
+    // compiled in and never taken it cost Vulkan a fifth of a frame with no
+    // bounce and two fifths with three (docs/decisions.md, 18-19 Nov, the RTX 3070 laptop).
+    const bool keepsHere = device_->backend() == gpu::Backend::Metal;
     const std::string source = "import " + programs.module() + ";\n" +
                                (volumes ? std::string("import athenea.volume.medium;\n") : std::string()) +
                                (withSplats ? std::string("import athenea.rt.rt_shadow_packed;\n") : std::string()) + kPrelude +
                                (groups ? kGroups : kNoGroups) + (volumes ? kVolumes : kNoVolumes) +
                                (traces ? kRays : pipeline ? kRaysPipeline : kNoRays) +
                                (withSplats ? kSplats : kNoSplats) +
-                               (bake_ ? kBake : kNoBake) + kBody + kBodyRest +
+                               (bake_ ? kBake : kNoBake) + (traces && keepsHere ? kKept : kNoKept) + kBody +
+                               kBodyRest +
                                (pipeline ? kEntryRays : kEntryCompute);
+    // Paths are kept where the rays are inline, the kernel draws a frame and
+    // has no medium (kKept): `pathResolve` adds them to their pixels. On
+    // Metal, where it was measured; Vulkan would take the same kernel and has
+    // not been run with it.
+    const bool keeps = traces && !bake_ && !volumes && keepsHere;
     std::vector<std::string> entries{pipeline ? "tracePathsGen" : "tracePaths", "pathDecide"};
+    if (keeps) {
+        entries.emplace_back("pathResolve");
+    }
     if (pipeline) {
         entries.insert(entries.end(), {"pathNearestMiss", "pathNearestHit", "pathShadowMiss", "pathShadowAnyHit"});
     }
@@ -3253,6 +3772,12 @@ Result<void> PathTracer::setPrograms(const MaterialPrograms& programs, bool grou
     auto progressKernel = gpu::ComputeKernel::create(*library_, name, "pathDecide");
     if (!progressKernel) return std::move(progressKernel).error();
     progressKernel_.emplace(std::move(*progressKernel));
+    resolveKernel_.reset();
+    if (keeps) {
+        auto resolveKernel = gpu::ComputeKernel::create(*library_, name, "pathResolve");
+        if (!resolveKernel) return std::move(resolveKernel).error();
+        resolveKernel_.emplace(std::move(*resolveKernel));
+    }
     module_ = programs.module();
     groups_ = groups;
     volumes_ = volumes;
@@ -3271,7 +3796,7 @@ Result<void> PathTracer::setGuides(const MaterialPrograms& programs) {
     const bool traces = device_->caps().rayQuery && device_->caps().accelerationStructure;
     const std::string name = programs.module() + (traces ? "_path_guides_traced" : "_path_guides");
     const std::string source = "import " + programs.module() + ";\n" + kPrelude + kNoGroups + kNoVolumes +
-                               (traces ? kRays : kNoRays) + kNoSplats + kAux + kNoBake + kBody + kBodyRest +
+                               (traces ? kRays : kNoRays) + kNoSplats + kAux + kNoBake + kNoKept + kBody + kBodyRest +
                                kEntryGuides;
     auto program = library_->loadSource(name, source, {"pathGuides"});
     if (!program) return std::move(program).error();
@@ -3360,9 +3885,33 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
     // The sum holds the colour's plane and, with light groups, their sums
     // and their means after it.
     const uint32_t planes = 1 + 2 * groupCount;
-    if (resized || width_ != width || height_ != height || !sum_.valid() || planes != sumPlanes_) {
+    // And, after them, the cells of what a bounce meets (PathSettings::sceneCache): this kernel is at the
+    // number of buffers a Metal kernel binds, so they ride in this one.
+    const bool cached = settings.sceneCache != nullptr && settings.sceneCache->valid() && settings.cacheSide > 0 &&
+                        settings.cachePlanes > 0 && settings.cacheCell > 0.0F && bake == nullptr;
+    const uint64_t cacheEntries =
+        cached ? uint64_t{settings.cacheSide} * settings.cacheSide * settings.cacheSide * settings.cachePlanes : 0;
+    // THE PATHS KEPT (kKept): room for them after the moments' planes, where
+    // this kernel keeps any.
+    // A quarter of a pass's paths, and no more than half a gigabyte of
+    // entries (the flat Sponza with a glass knight over a ninth of the frame
+    // keeps an eighth); a path that finds no room goes on where it is. An
+    // accumulation under way keeps the room it has: making more would start
+    // its sums again.
+    uint32_t keptCapacity = 0;
+    if (settings.keepPaths && resolveKernel_.has_value() && kernel_.has_value() && bake == nullptr) {
+        keptCapacity = static_cast<uint32_t>(
+            std::min<uint64_t>(pixels * std::max(settings.samples, 1u) / 4, uint64_t{1} << 22));
+        if (settings.accumulate && accumulated_ != 0 && width_ == width && height_ == height) {
+            keptCapacity = std::min(keptCapacity, keptRoom_);
+        }
+    }
+    if (resized || width_ != width || height_ != height || !sum_.valid() || planes != sumPlanes_ ||
+        cacheEntries != cacheEntries_ || keptCapacity > keptRoom_) {
+        cacheEntries_ = cacheEntries;
+        cacheRevision_ = 0;
         gpu::BufferDesc sum;
-                sum.bytes = pixels * 16 * planes;
+                sum.bytes = pixels * 16 * planes + cacheEntries * 16;
         sum.elementBytes = 16;
         sum.label = "path.sum";
         auto made = gpu::Buffer::create(*device_, sum);
@@ -3371,11 +3920,20 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         sumPlanes_ = planes;
         gpu::BufferDesc moments;
         moments.bytes = pixels * 4 * 2;
+        if (keptCapacity != 0) {
+            // The heads' plane, the count, the entries (kKeptWords).
+            moments.bytes = (pixels * 3 + 1 + uint64_t{keptCapacity} * 32) * 4;
+        }
         moments.elementBytes = 4;
         moments.label = "path.moments";
         auto madeMoments = gpu::Buffer::create(*device_, moments);
         if (!madeMoments) return std::move(madeMoments).error();
         moments_ = std::move(*madeMoments);
+        keptRoom_ = keptCapacity;
+        if (keptCapacity != 0) {
+            const uint32_t none = 0;
+            ATHENEA_TRY(moments_.write(*device_, pixels * 3 * 4, sizeof(none), &none));
+        }
         if (!progress_.valid()) {
             gpu::BufferDesc progress;
             progress.bytes = 2 * 4;
@@ -3392,9 +3950,26 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
     if (!settings.accumulate) {
         accumulated_ = 0;
     }
+    if (cached && settings.cacheRevision != cacheRevision_) {
+        // The cells copied in after the planes, by a kernel, in the frame's batch before the paths read them.
+        if (!cacheCopy_.has_value()) {
+            auto made = gpu::ComputeKernel::create(*library_, "athenea/technique/exposure", "copyScaled");
+            if (!made) return std::move(made).error();
+            cacheCopy_.emplace(std::move(*made));
+        }
+        cacheCopy_->dispatch(batch, {static_cast<uint32_t>(cacheEntries), 1, 1}, [&](rhi::ShaderCursor cursor) {
+            cursor["source"].setBinding(settings.sceneCache->rhi());
+            cursor["sourceBase"].setData(uint32_t{0});
+            cursor["colourBase"].setData(static_cast<uint32_t>(pixels * planes));
+            cursor["colour"].setBinding(sum_.rhi());
+            cursor["params"]["scale"].setData(1.0F);
+            cursor["params"]["pixels"].setData(static_cast<uint32_t>(cacheEntries));
+        });
+        cacheRevision_ = settings.cacheRevision;
+    }
     if (aux != nullptr && (aux->width != width || aux->height != height || !aux->valid())) {
         gpu::BufferDesc desc;
-        desc.bytes = pixels * 16 * 2;
+        desc.bytes = pixels * 16 * PathAux::kPlanes;
         desc.elementBytes = 16;
         desc.label = "path.aux";
         auto planes = gpu::Buffer::create(*device_, desc);
@@ -3452,9 +4027,20 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
             bake == nullptr || !bake->transfer ? 0u : bake->cellSide >= 32 ? 3u : bake->cellSide >= 16 ? 2u : 1u});
         cursor["path"]["headlight"].setData(uint32_t{settings.headlight ? 1u : 0u});
         cursor["path"]["groupsIndirect"].setData(uint32_t{settings.groupsIndirect ? 1u : 0u});
+        cursor["path"]["cachePlanes"].setData(cached ? settings.cachePlanes : 0u);
+        cursor["path"]["cacheBase"].setData(static_cast<uint32_t>(pixels * planes));
+        cursor["path"]["cacheSide"].setData(settings.cacheSide);
+        cursor["path"]["cacheMinX"].setData(settings.cacheMin[0]);
+        cursor["path"]["cacheMinY"].setData(settings.cacheMin[1]);
+        cursor["path"]["cacheMinZ"].setData(settings.cacheMin[2]);
+        cursor["path"]["cacheCell"].setData(cached ? settings.cacheCell : 1.0F);
+        cursor["path"]["keptCapacity"].setData(keptCapacity);
+        cursor["path"]["keptPhase"].setData(uint32_t{0});
+        cursor["path"]["keptAcross"].setData(uint32_t{256});
         cursor["path"]["mis"].setData(uint32_t{settings.mis ? 1u : 0u});
         cursor["path"]["shadowCutouts"].setData(uint32_t{frame.cutouts ? 1u : 0u});
         cursor["path"]["glassShadows"].setData(uint32_t{settings.glassShadows && frame.glass ? 1u : 0u});
+        cursor["path"]["leave"].setData(settings.rayMargin);
         cursor["path"]["bakeSplit"].setData(uint32_t{bake != nullptr && bake->split ? 1u : 0u});
         cursor["path"]["bakeMaterial"].setData(uint32_t{bake != nullptr && bake->transfer && bake->material ? 1u : 0u});
         const bool toward = bake != nullptr && bake->toward && !bake->transfer;
@@ -3525,6 +4111,28 @@ Result<void> PathTracer::trace(gpu::CommandBatch& batch, const VisibilityTargets
         rayKernel_->dispatch(batch, groupsAcross * groupsDown * 256, 1, 1, bindPath);
     } else {
         kernel_->dispatch(batch, {width, height, 1}, bindPath);
+        if (keptCapacity != 0) {
+            // The kept paths to their ends, a thread an entry: as many as
+            // there is room for, a thread past the count leaving at once
+            // (the count is the device's, and nothing waits to read it).
+            const uint32_t rows = (keptCapacity + 65535) / 65536;
+            kernel_->dispatch(batch, {4096, rows * 16, 1}, [&](rhi::ShaderCursor cursor) {
+                bindPath(cursor);
+                cursor["path"]["keptPhase"].setData(uint32_t{1});
+            });
+            resolveKernel_->dispatch(batch, {static_cast<uint32_t>(pixels), 1, 1}, [&](rhi::ShaderCursor cursor) {
+                cursor["sum"].setBinding(sum_.rhi());
+                cursor["colour"].setBinding(out.colour.rhi());
+                cursor["moments"].setBinding(moments_.rhi());
+                setCamera(cursor["camera"], projection, width, height);
+                cursor["path"]["samples"].setData(samples);
+                cursor["path"]["accumulated"].setData(already);
+                cursor["path"]["keptCapacity"].setData(keptCapacity);
+                if (const rhi::ShaderCursor count = cursor["groupCount"]; groups && count.isValid()) {
+                    count.setData(groupCount);
+                }
+            });
+        }
     }
     accumulated_ = already + samples;
     lastErrorTarget_ = settings.errorTarget;

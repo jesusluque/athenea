@@ -37,6 +37,8 @@ public struct DecodeParams {
     // Where the thirteen fields of the layers over the base start
     // (packing's `SplatLobes`, in its record order), or kNoField.
     public uint lobes;
+    // splatValidate: a gaussian too faint to draw is kept all the same (CloudLoader::keepFaint).
+    public uint keepFaint;
 };
 
 /// The thirteen fields of a record's layers, in packing's record order.

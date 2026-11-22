@@ -31,7 +31,7 @@ uniform float                   sceneRadius;   // the scene's reach, in its unit
 
 static const float3 kPrefixLuminance = float3(0.2126, 0.7152, 0.0722);
 
-float powerOf(LightRecord l) {
+float powerOf(__constref LightRecord l) {
     float power = max(dot(l.colour, kPrefixLuminance), 0.0) * exp2(l.exposure);
     const bool normalized = (l.flags & kLightNormalize) != 0;
     switch (l.kind) {

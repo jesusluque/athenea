@@ -6,7 +6,7 @@
 // in a kernel that asks for the marks (kAtheneaMarkLobes).
 #include "pbrlib/genglsl/lib/mx_closure_type.glsl"
 
-void athenea_multiply_bsdf_color3(ClosureData closureData, BSDF in1, float3 in2, out BSDF result)
+void athenea_multiply_bsdf_color3(ClosureData closureData, __constref BSDF in1, float3 in2, out BSDF result)
 {
     result = in1;
     const float3 tint = clamp(in2, 0.0, 1.0);

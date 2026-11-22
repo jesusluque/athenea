@@ -69,7 +69,7 @@ public struct LightRecord {
 /// colour rather than by black), and beyond `shadow:distance` from the light
 /// it fades out over `shadow:falloff`, by `falloffGamma`. A distant light is
 /// at infinity, so the distance controls do nothing there.
-public float3 shadowTint(LightRecord l, float through, float distance) {
+public float3 shadowTint(__constref LightRecord l, float through, float distance) {
     float shadowing = 1.0 - saturate(through);
     if (l.shadowDistance >= 0.0 && distance > l.shadowDistance) {
         if (l.shadowFalloff > 0.0) {
@@ -146,7 +146,7 @@ public float iesLookup(IesRecord r, float thetaDeg, float phiDeg) {
 /// `wi`: the emission direction in the light's own axes, straight down its
 /// -Z at theta 0, as UsdLux orients a profile. One where there is no
 /// profile. Radiance only -- never the density, so every pdf stands.
-public float iesIntensity(LightRecord l, float3 wi) {
+public float iesIntensity(__constref LightRecord l, float3 wi) {
     if (l.ies == 0xFFFFFFFF) {
         return 1.0;
     }
@@ -236,17 +236,17 @@ public struct LightSample {
 
 static const float kLightInfinity = 1.0e30;
 
-float3 lightApply(LightRecord l, float3 v, float w) {
+float3 lightApply(__constref LightRecord l, float3 v, float w) {
     return float3(dot(l.row0.xyz, v) + l.row0.w * w, dot(l.row1.xyz, v) + l.row1.w * w,
                   dot(l.row2.xyz, v) + l.row2.w * w);
 }
 
 /// The light's axes in world space. UsdLux shines down -Z and its shapes lie
 /// in the xy plane.
-public float3 lightAxisX(LightRecord l) { return normalize(float3(l.row0.x, l.row1.x, l.row2.x)); }
-public float3 lightAxisY(LightRecord l) { return normalize(float3(l.row0.y, l.row1.y, l.row2.y)); }
-public float3 lightAxisZ(LightRecord l) { return normalize(float3(l.row0.z, l.row1.z, l.row2.z)); }
-public float3 lightOrigin(LightRecord l) { return float3(l.row0.w, l.row1.w, l.row2.w); }
+public float3 lightAxisX(__constref LightRecord l) { return normalize(float3(l.row0.x, l.row1.x, l.row2.x)); }
+public float3 lightAxisY(__constref LightRecord l) { return normalize(float3(l.row0.y, l.row1.y, l.row2.y)); }
+public float3 lightAxisZ(__constref LightRecord l) { return normalize(float3(l.row0.z, l.row1.z, l.row2.z)); }
+public float3 lightOrigin(__constref LightRecord l) { return float3(l.row0.w, l.row1.w, l.row2.w); }
 
 /// Planck's law through the CIE curves, as a colour normalised to luminance
 /// 1: the analytic fit USD's own renderers use (Krystek's uv, then sRGB).
@@ -281,7 +281,7 @@ public float3 blackbody(float kelvin) {
 /// longitude +pi/2 pointing +x -- Storm's `ProjectToLatLong`. The rows of a
 /// texture here start at the bottom (texture_decode.slang, v = 0 there), so
 /// the pole is at v = 1: a sky read with v = 0 at the pole hung upside down.
-public float2 domeUv(LightRecord l, float3 wi) {
+public float2 domeUv(__constref LightRecord l, float3 wi) {
     const float3 d = normalize(float3(dot(lightAxisX(l), wi), dot(lightAxisY(l), wi), dot(lightAxisZ(l), wi)));
     const float u = frac((atan2(d.z, d.x) + 0.5 * 3.14159265358979) * (0.5 / 3.14159265358979));
     const float v = 1.0 - acos(clamp(d.y, -1.0, 1.0)) * (1.0 / 3.14159265358979);
@@ -291,14 +291,14 @@ public float2 domeUv(LightRecord l, float3 wi) {
 
 /// A distant light's half angle, as UsdLux clips it: `angle` is the disc's
 /// angular diameter, from 0 to 360 degrees.
-float distantHalfAngle(LightRecord l) {
+float distantHalfAngle(__constref LightRecord l) {
     return clamp(0.5 * l.sizeX, 0.0, 3.14159265358979);
 }
 
 /// 1 - cos of a distant light's half angle, without the cancellation of
 /// 1 - cos(a) in float: for UsdLux's 0.53 degree sun that is 1.07e-5, and
 /// as a difference of two numbers near 1 it carried 0.6% of rounding.
-float distantOneMinusCos(LightRecord l) {
+float distantOneMinusCos(__constref LightRecord l) {
     const float s = sin(0.5 * distantHalfAngle(l));
     return 2.0 * s * s;
 }
@@ -306,7 +306,7 @@ float distantOneMinusCos(LightRecord l) {
 /// True where a distant light is a direction rather than a disc: an angle
 /// of 0, and only that. A disc too small for a cosine to tell from 1 is
 /// still a disc, sampled through `distantOneMinusCos`.
-public bool distantIsDelta(LightRecord l) {
+public bool distantIsDelta(__constref LightRecord l) {
     return !(l.sizeX > 0.0);
 }
 
@@ -317,7 +317,7 @@ public bool distantIsDelta(LightRecord l) {
 /// 1 for a parallel light. A surface facing the light takes radiance times
 /// this as its irradiance, so with normalize on the intensity is that
 /// irradiance, in lux.
-public float distantSizeFactor(LightRecord l) {
+public float distantSizeFactor(__constref LightRecord l) {
     if (distantIsDelta(l)) {
         return 1.0;
     }
@@ -328,7 +328,7 @@ public float distantSizeFactor(LightRecord l) {
 
 /// The area a light's `normalize` divides by, 0 where it has none. For a
 /// distant light, the projected solid angle of its disc.
-float lightArea(LightRecord l) {
+float lightArea(__constref LightRecord l) {
     switch (l.kind) {
     case kLightDistant: return distantSizeFactor(l);
     case kLightSphere: return 4.0 * 3.14159265358979 * l.sizeX * l.sizeX;
@@ -344,7 +344,7 @@ float lightArea(LightRecord l) {
 /// within its length, with its outward normal facing the ray. False for a
 /// miss, a hit past the ends, or the far wall seen from inside -- a cylinder
 /// emits outward and has no inside to light from.
-public bool cylinderHit(LightRecord l, float3 p, float3 w, out float t, out float3 normal, out float along) {
+public bool cylinderHit(__constref LightRecord l, float3 p, float3 w, out float t, out float3 normal, out float along) {
     t = 0.0;
     normal = float3(0.0);
     along = 0.0;
@@ -388,7 +388,7 @@ public bool cylinderHit(LightRecord l, float3 p, float3 w, out float t, out floa
 
 /// What the light emits, before any shaping: colour, intensity, exposure,
 /// colour temperature, and `normalize` where it applies.
-public float3 lightEmission(LightRecord l) {
+public float3 lightEmission(__constref LightRecord l) {
     float3 emission = l.colour * exp2(l.exposure);
     if ((l.flags & kLightTemperature) != 0) {
         emission *= blackbody(l.temperature);
@@ -402,7 +402,7 @@ public float3 lightEmission(LightRecord l) {
 
 /// The shaping cone's falloff along `wi` (the direction the light travels is
 /// -wi), 1 where the light has no cone.
-float lightCone(LightRecord l, float3 wi) {
+float lightCone(__constref LightRecord l, float3 wi) {
     if (l.coneCos <= -1.0) {
         return 1.0;
     }
@@ -445,7 +445,7 @@ public void lightFrame(float3 z, out float3 x, out float3 y) {
 
 
 /// Where a direction lands in the image, and back again.
-public float3 domeDirection(LightRecord l, float2 uv) {
+public float3 domeDirection(__constref LightRecord l, float2 uv) {
     // The inverse of domeUv: longitude from the column, latitude from the
     // row counted up from the bottom, in the light's own axes.
     const float phi = uv.x * 2.0 * 3.14159265358979 - 0.5 * 3.14159265358979;
@@ -461,7 +461,7 @@ public float3 domeDirection(LightRecord l, float2 uv) {
 /// what a chi-square asks for, and what MIS will weigh a hit by. Zero where
 /// the light cannot be reached that way, and zero for a delta light, which
 /// has no density at all.
-public float lightPdf(LightRecord l, float3 p, float3 n, float3 wi) {
+public float lightPdf(__constref LightRecord l, float3 p, float3 n, float3 wi) {
     switch (l.kind) {
     case kLightDistant: {
         if (distantIsDelta(l)) {
@@ -547,7 +547,7 @@ public struct LightHit {
     public bool   valid;
 };
 
-public LightHit lightHit(LightRecord l, float3 p, float3 wi) {
+public LightHit lightHit(__constref LightRecord l, float3 p, float3 wi) {
     LightHit h;
     h.t = kLightInfinity;
     h.radiance = float3(0.0);
@@ -639,7 +639,7 @@ public LightHit lightHit(LightRecord l, float3 p, float3 wi) {
 
 /// One sample of `l` as seen from `p`, whose surface faces `n`. Only a dome
 /// reads the normal: the rest are somewhere rather than everywhere.
-public LightSample sampleLight(LightRecord l, float3 p, float3 n, float2 u) {
+public LightSample sampleLight(__constref LightRecord l, float3 p, float3 n, float2 u) {
     LightSample s;
     s.wi = float3(0.0, 0.0, 1.0);
     s.distance = kLightInfinity;

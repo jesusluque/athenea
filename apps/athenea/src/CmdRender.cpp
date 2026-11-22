@@ -16,6 +16,8 @@
 #include "athenea/gpu/Device.h"
 #include "athenea/gpu/ShaderLibrary.h"
 #include "athenea/io/Exr.h"
+#include "athenea/io/NeuralFile.h"
+#include "athenea/render/NeuralAppearance.h"
 #include "athenea/io/Readers.h"
 #include "athenea/lod/Lod.h"
 #include "athenea/lod/Athc.h"
@@ -50,6 +52,9 @@ struct RenderOptions {
     std::string              size = "1920x1080";
     unsigned                 degree = 3;
     bool                     noAntialias = false;
+    bool                     trace = false;
+    std::string              neural;   ///< a .athn: the one cloud's colours from its latents
+    unsigned                 features = 0;   ///< bench: decode once a pixel from this many blended channels
     int                      repeat = 1;
     bool                     stages = false;
 };
@@ -151,6 +156,36 @@ int run(const RenderOptions& options, bool bench) {
     for (const auto& cloud : clouds) {
         instances.push_back({cloud.get(), model, {}});
     }
+    // A neural appearance in place of the cloud's harmonics: of one cloud,
+    // gaussian for gaussian.
+    std::optional<render::NeuralCloud> neural;
+    if (!options.neural.empty()) {
+        if (clouds.size() != 1 || options.lod > 0.0F) {
+            std::fprintf(stderr, "--neural is one cloud's appearance: give one --splats file, and no --lod\n");
+            return 1;
+        }
+        auto file = io::readNeural(options.neural);
+        if (!file) {
+            return cli::report(file.error());
+        }
+        if (file->count != clouds[0]->count || file->stride != render::kNeuralStride ||
+            file->wordsEach != render::kNeuralWords) {
+            std::fprintf(stderr, "%s is of a cloud of %u gaussians, %u numbers each; this cloud has %u, and the engine %u\n",
+                         options.neural.c_str(), file->count, file->stride, clouds[0]->count, render::kNeuralStride);
+            return 1;
+        }
+        if (file->lit) {
+            std::fprintf(stderr, "%s is a lit appearance; athenea render has no light to give it\n",
+                         options.neural.c_str());
+            return 1;
+        }
+        auto made = render::neuralCloudFrom(library, file->count, file->latent, file->weights, file->lit);
+        if (!made) {
+            return cli::report(made.error());
+        }
+        neural.emplace(std::move(*made));
+        instances[0].neural = &*neural;
+    }
     std::vector<render::PointInstance> pointInstances;
     for (const auto& cloud : pointClouds) {
         render::PointInstance instance{cloud.get(), model, {}};
@@ -185,6 +220,8 @@ int run(const RenderOptions& options, bool bench) {
         settings.antialiasOverride = false;   // over what any file says
     }
     settings.timeStages = options.stages;
+    settings.trace = options.trace;
+    settings.neuralFeatures = options.features;
     render::RenderTargets targets;
     std::optional<render::PointRasterizer> pointRaster;
     render::RenderTargets pointLayer;
@@ -444,6 +481,7 @@ void addOptions(CLI::App* cmd, RenderOptions& o) {
     cmd->add_option("--stream-budget", o.streamBudget,
                     ".athc: splats kept on the device, loaded as the view wants them (0: read whole)");
     cmd->add_flag("--no-antialias", o.noAntialias, "no Mip-Splatting 2D filter compensation");
+    cmd->add_option("--neural", o.neural, "a .athn: the cloud's colours from its latents (athenea neural-fit --save)");
 }
 
 }   // namespace
@@ -467,6 +505,8 @@ void addBench(CLI::App& app) {
     addOptions(cmd, *options);
     cmd->add_option("--repeat", options->repeat, "frames");
     cmd->add_flag("--stages", options->stages, "wait after each stage to time it");
+    cmd->add_flag("--trace", options->trace, "keep which gaussians each pixel is made of (raster)");
+    cmd->add_option("--features", options->features, "with --neural: decode once a pixel from 8, 16 or 32 blended feature channels, to time it (the network is untrained)");
     cmd->callback([options] {
         if (int code = run(*options, true); code != 0) {
             throw CLI::RuntimeError(code);

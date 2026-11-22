@@ -1,0 +1,2493 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--
+  A scene found by rendering: athenea's `neural-scene shoot` path traces a USD stage and what it leaves is
+  gaussians, not pictures. This page shows such a scene: every rendered frame added a part (an SPZ of the
+  gaussians that frame found), named in order by scenes/<name>.json, and the timeline shows the scene as it
+  stood after each frame. While a shoot is still running (`shoot --grow`) the index says `growing` and the
+  page keeps reading it. Where the index carries levels of detail (`neural-scene export --levels`) the page
+  draws the one the device can hold, and a coarser one if frames come too slowly.
+    ?scene=<name>    scenes/<name>.json (default sponza_growth)
+    ?detail=<n>      full, auto, or a level counted from one
+    ?unit=<metres>   the scene's unit, where its index does not say
+    ?glass=0         glass and mirrors drawn as the pictures they were found with
+  The page keeps what is being looked at in its address, so that a view can be handed on: the scene and
+  the detail, and
+    ?frame=<n>       where the timeline is: so many frames of the scene as it grew, or a camera of the walk
+    ?ride=1          riding the render camera
+    ?light.<group>=<level>   a group of lights at a level other than the one it was shot at (0 to 2)
+    ?object=<prim path>      the object chosen: the gaussians made from the stage's prims at or under that path
+    ?object.view=<how>       how it is shown: matte, isolate or highlight (highlight where it is not said)
+    ?orbit=0                 a drag turns the camera where it stands, as it did (Alt held does the same for one drag)
+  and things said only there (docs/operations.md has the table):
+    ?filter=fixed    the filter a third of a pixel whatever the canvas (as it was before the index said frameSize)
+    ?rooms=0         no room is drawn: glass and chrome as found (the page sets it after a lost graphics context;
+                     a line in the options takes it out)
+    ?room=<n>        gaussians in the scene the rooms are drawn from (400000; 150000 on a phone)
+    ?ahead=0         a group's files only when its lamp is first moved, not ahead of it
+    ?keep=1          the page keeps its copies of what is on the device
+    ?progressive=0   the detail asked for as it comes, no coarser level first
+    ?base=<url>      where the scenes are, when not beside the page
+-->
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>A scene found by rendering · athenea neural</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./site.css">
+  <style>
+    .timeline { position: fixed; left: 10px; right: 10px; bottom: 34px; background: var(--panel); padding: 8px 12px;
+      border-radius: 8px; backdrop-filter: blur(6px); display: flex; gap: 10px; align-items: center; z-index: 3; }
+    .timeline input[type=range] { flex: 1; accent-color: var(--accent); }
+    .timeline button, .options button { background: none; color: var(--fg); border: 1px solid var(--dim);
+      border-radius: 6px; padding: 3px 10px; font: inherit; cursor: pointer; min-width: 64px; }
+    .timeline label { color: var(--dim); white-space: nowrap; }
+    .timeline .where { font-family: ui-monospace, Menlo, monospace; white-space: nowrap; min-width: 250px; text-align: right; }
+    .timeline input:disabled, .timeline button:disabled { opacity: 0.35; }
+    .timeline button.playing { background: var(--accent); color: #0b0d12; border-color: var(--accent); font-weight: 600; }
+    .live { color: #ff6b6b; font-weight: 600; }
+    .touch { display: none; }
+    .short { display: none; }
+    @media (pointer: coarse) { .keys { display: none; } .touch { display: inline; } }
+
+    /* WHAT IS BEING READ: a bar under the status line while parts come in, which nothing waits on. A folded
+       text keeps its status line while there is a bar to show. */
+    .progress { height: 4px; margin-top: 6px; border-radius: 2px; background: rgba(255, 255, 255, 0.14); overflow: hidden;
+      pointer-events: none; }
+    .progress[hidden] { display: none; }
+    .progress > div { height: 100%; width: 0; background: var(--accent); border-radius: 2px; transition: width 0.25s ease-out; }
+    .hud.folded .stats.reading { display: block; }
+
+    /* THE OPTIONS: a panel at the right, opened by the button in the bar. */
+    .options { position: fixed; top: 10px; right: 10px; width: 300px; max-height: calc(100dvh - 110px); overflow-y: auto;
+      background: var(--panel); padding: 10px 12px 12px; border-radius: 8px; backdrop-filter: blur(6px); z-index: 4;
+      display: none; }
+    .options.open { display: block; }
+    .options h2 { font-size: 13px; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; }
+    .options h3 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim);
+      margin: 12px 0 4px; font-weight: 600; }
+    .options .row { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+    .options .row[hidden] { display: none; }
+    .options .row > span:first-child { flex: 0 0 104px; color: var(--dim); }
+    .options .row select, .options .row input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
+    .options .row select { background: #15151d; color: var(--fg); border: 1px solid var(--dim); border-radius: 5px;
+      padding: 3px 4px; font: inherit; }
+    .options .row output { flex: 0 0 44px; text-align: right; font: 11px ui-monospace, Menlo, monospace; }
+    .options .row input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
+    .options .note { color: var(--dim); font-size: 10px; margin: 2px 0 0; }
+    .options .close { min-width: 0; padding: 0 8px; }
+    /* THE OBJECTS: the stage's prims as a tree by their paths, and a box that finds one by a part of its path. */
+    .options .row input[type=search] { flex: 1; min-width: 0; background: #15151d; color: var(--fg);
+      border: 1px solid var(--dim); border-radius: 5px; padding: 3px 6px; font: inherit; }
+    .objects { max-height: 230px; overflow-y: auto; margin: 4px 0 0; padding: 4px 2px; border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 6px; font: 11px ui-monospace, Menlo, monospace; }
+    .objects details { margin-left: 10px; }
+    .objects > details, .objects > .leaf { margin-left: 0; }
+    .objects summary { cursor: pointer; white-space: nowrap; }
+    .objects .leaf { margin-left: 22px; white-space: nowrap; }
+    .objects > .leaf { margin-left: 12px; }
+    .objects button { min-width: 0; border: none; padding: 1px 4px; border-radius: 4px; font: inherit; text-align: left; }
+    .objects button:hover { background: rgba(255, 255, 255, 0.12); }
+    .objects button.chosen { background: var(--accent); color: #0b0d12; font-weight: 600; }
+    .objects .count { color: var(--dim); }
+    .objects button.none { color: var(--dim); opacity: 0.6; }
+
+    /* A PHONE: the text folds to its title (the i opens it, and the credits are inside it, off the
+       controls); the controls are a bar at the bottom in two rows, the timeline whole across the first,
+       clear of the browser's own bar; what is pressed is 44 px high; the options are a sheet over the bar. */
+    @media (max-width: 640px) {
+      html, body { height: 100dvh; overflow: hidden; }
+      .hud { top: calc(8px + env(safe-area-inset-top)); left: 8px; right: 8px; max-width: none; padding: 8px 10px;
+        max-height: calc(100dvh - 190px); overflow-y: auto; }
+      .hud h1 { display: flex; align-items: center; justify-content: space-between; font-size: 15px; margin: 0; }
+      .hud:not(.folded) h1 { margin-bottom: 6px; }
+      .hud-toggle { width: 34px; height: 34px; border-radius: 17px; font: italic 17px / 30px Georgia, serif; flex: none; }
+      .hud .credits { position: static; margin-top: 8px; font-size: 10px; line-height: 1.5; text-shadow: none;
+        pointer-events: auto; }
+      .hud.folded .credits { display: none; }
+      .timeline { left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); padding: 8px 10px;
+        flex-wrap: wrap; gap: 8px; }
+      .timeline input[type=range] { order: 1; flex: 1 0 100%; height: 44px; margin: 0; }
+      .timeline button { order: 2; min-height: 44px; min-width: 64px; padding: 0 10px; font-size: 14px; }
+      .timeline label { order: 3; min-height: 44px; display: flex; align-items: center; gap: 6px; font-size: 14px; }
+      .timeline label input { width: 22px; height: 22px; }
+      .long { display: none; } .short { display: inline; }
+      .timeline .where { order: 4; flex: 1 0 100%; min-width: 0; text-align: left; white-space: normal; font-size: 12px; }
+      .options { top: auto; left: 8px; right: 8px; width: auto; bottom: calc(8px + env(safe-area-inset-bottom));
+        max-height: calc(100dvh - 80px - env(safe-area-inset-top)); z-index: 6; font-size: 14px; }
+      .options .row { min-height: 44px; }
+      .options .row input[type=checkbox] { width: 22px; height: 22px; }
+      .options .row select { min-height: 36px; }
+      .options .row input[type=search] { min-height: 36px; }
+      .objects button { min-height: 32px; }
+      .options button { min-height: 44px; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="hud">
+    <h1 id="title"><span>A scene found by rendering</span><button class="hud-toggle" id="fold" aria-label="About this scene" aria-expanded="true">i</button></h1>
+    <p>Every point here is a gaussian that a path traced frame left behind. Each frame kept only what the scene
+      did not already hold, so the scene grows as it is rendered: drag the timeline to see it as it stood after
+      each frame. There is no mesh and no stored picture. Black is what no camera has seen yet.</p>
+    <p class="help">The <span style="color:#ffd166">yellow frustum</span> is the camera of the frame being
+      taken in; the line is the path the frames were rendered along.
+      <span class="keys">Drag to turn about what is under the pointer (Alt: look from where you stand) · W A S D to move, Q E down and up · Shift faster</span><span class="touch">Drag
+      to turn about what is under the finger · two fingers to move: pinch forward and back, drag sideways</span></p>
+    <div class="stats" id="stats">loading…</div>
+  </div>
+  <div class="timeline">
+    <button id="play">Play</button>
+    <input type="range" id="frame" min="0" max="1" value="0" step="1">
+    <button id="overview">Overview</button>
+    <label><input type="checkbox" id="follow"> <span class="long">ride the render camera</span><span class="short">ride camera</span></label>
+    <button id="optionsButton" aria-controls="options" aria-expanded="false">Options</button>
+    <span class="where" id="where"></span>
+  </div>
+  <div class="options" id="options">
+    <h2><span>Options</span><button class="close" id="optionsClose" aria-label="Close the options">✕</button></h2>
+    <h3>Scene</h3>
+    <div class="row"><span>Scene</span><select id="optScene"></select></div>
+    <div class="row"><span>Detail</span><select id="optDetail"></select></div>
+    <p class="note" id="detailNote"></p>
+    <div id="optObjects" hidden>
+      <h3>Objects</h3>
+      <div class="row"><span>Show</span><select id="optObjectView">
+        <option value="off">the scene as it is</option>
+        <option value="highlight">the object tinted</option>
+        <option value="isolate">the object alone</option>
+        <option value="matte">its matte, white on black</option></select></div>
+      <div class="row"><span>Find</span><input type="search" id="optObjectFind" placeholder="part of a path" autocomplete="off" spellcheck="false"><button id="optObjectNone">None</button></div>
+      <div class="objects" id="optObjectTree"></div>
+      <p class="note" id="objectNote"></p>
+    </div>
+    <h3>Picture</h3>
+    <div class="row"><span>Resolution</span><input type="range" id="optPixels" min="0.5" max="2" step="0.25"><output id="outPixels"></output></div>
+    <div class="row"><span>Field of view</span><input type="range" id="optFov" min="20" max="100" step="1"><output id="outFov"></output></div>
+    <div class="row"><span>Glass and chrome</span><input type="checkbox" id="optGlass"><span class="note">shaded by where the eye is</span></div>
+    <div class="row" id="optRoomsRow" hidden><span>Their rooms</span><button id="optRooms">Draw them again</button><span class="note">off: the graphics were lost once</span></div>
+    <div id="optGroups"></div>
+    <div class="row"><span>Sky</span><input type="color" id="optSky"><span class="note">behind the scene</span></div>
+    <div class="row"><span>Reflections</span><select id="optCube"><option value="256">256</option><option value="512">512</option><option value="1024">1024</option></select></div>
+    <h3>Camera</h3>
+    <div class="row"><span>Move speed</span><input type="range" id="optSpeed" min="0.25" max="10" step="0.25"><output id="outSpeed"></output></div>
+    <div class="row"><span>Render frustum</span><input type="checkbox" id="optFrustum"></div>
+    <div class="row"><span>Camera path</span><input type="checkbox" id="optPath"></div>
+    <div class="row"><span>Pivot marker</span><input type="checkbox" id="optMarker"></div>
+    <h3>Playback</h3>
+    <div class="row"><span>Frames a second</span><input type="range" id="optRate" min="1" max="30" step="1"><output id="outRate"></output></div>
+    <div class="row"><span>Loop</span><input type="checkbox" id="optLoop"></div>
+    <h3>Readout</h3>
+    <div class="row"><span>Frame rate</span><input type="checkbox" id="optFps"></div>
+    <div class="row"><span></span><button id="optReset">Reset the options</button></div>
+  </div>
+  <div class="credits" id="credits">
+    Made with <a href="https://github.com/jesusluque/athenea">athenea</a> (neural branch) by jesus luque ·
+    scene: Intel Sponza by Frank Meinl and Anton Kaplanyan,
+    <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>, rendered and converted to gaussians ·
+    the chess knights: <a href="https://github.com/usd-wg/assets/tree/main/full_assets/OpenChessSet">Open Chess Set</a>
+    by Moeen and Mujtaba Sayed, © Academy Software Foundation,
+    <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>, placed in the scene as glass and as chrome and converted to gaussians ·
+    <a href="https://github.com/sparkjsdev/spark">Spark</a> (MIT) · <a href="https://threejs.org">three.js</a> (MIT)
+  </div>
+  <canvas id="canvas" tabindex="0"></canvas>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three/three.module.min.js",
+        "three/addons/": "./vendor/three/addons/",
+        "@sparkjsdev/spark": "./vendor/spark/150d926a74f3/spark.module.min.js"
+      }
+    }
+  </script>
+  <script type="module">
+    import * as THREE from "three";
+    import { SparkRenderer, SplatMesh, PackedSplats, SparkControls, dyno } from "@sparkjsdev/spark";
+
+    const params = new URLSearchParams(location.search);
+    const name = (params.get("scene") ?? window.__sceneName ?? "sponza_growth").replace(/[^\w-]/g, "");
+    const $ = (id) => document.getElementById(id);
+    const status = $("stats");
+    // The status area is a line of text and, while parts are being read, a bar under it.
+    const statusLine = document.createElement("span");
+    statusLine.textContent = status.textContent;
+    const progressBar = document.createElement("div");
+    progressBar.className = "progress";
+    progressBar.setAttribute("role", "progressbar");
+    progressBar.setAttribute("aria-label", "Reading the scene");
+    progressBar.setAttribute("aria-valuemin", "0");
+    progressBar.setAttribute("aria-valuemax", "100");
+    progressBar.hidden = true;
+    progressBar.append(document.createElement("div"));
+    status.replaceChildren(statusLine, progressBar);
+    // How much is read, from nothing to one; null when nothing is being read.
+    const setProgress = (fraction) => {
+      const reading = fraction !== null;
+      progressBar.hidden = !reading;
+      status.classList.toggle("reading", reading);
+      if (!reading) { progressBar.firstChild.style.width = "0"; progressBar.removeAttribute("aria-valuenow"); return; }
+      const percent = Math.round(Math.max(0, Math.min(fraction, 1)) * 100);
+      progressBar.firstChild.style.width = `${percent}%`;
+      progressBar.setAttribute("aria-valuenow", String(percent));
+    };
+    const slider = $("frame");
+    const where = $("where");
+    const playButton = $("play");
+    const follow = $("follow");
+    window.__scene = { loaded: false, error: null, parts: 0 };
+
+    // On a phone the text is folded to its title and the credits go inside it: the bottom is the controls'.
+    const hud = document.querySelector(".hud");
+    const fold = $("fold");
+    const narrow = matchMedia("(max-width: 640px)");
+    const touchScreen = matchMedia("(pointer: coarse)").matches;
+    const arrange = () => {
+      const credits = $("credits");
+      if (narrow.matches) hud.appendChild(credits);
+      else document.body.insertBefore(credits, $("canvas"));
+    };
+    const setFolded = (folded) => {
+      hud.classList.toggle("folded", folded);
+      fold.setAttribute("aria-expanded", String(!folded));
+    };
+    arrange();
+    setFolded(narrow.matches || touchScreen);
+    narrow.addEventListener("change", arrange);
+    fold.addEventListener("click", () => setFolded(!hud.classList.contains("folded")));
+
+    // THE OPTIONS, kept between visits where the browser lets them be: what the panel sets.
+    const phone = narrow.matches || (touchScreen && Math.min(screen.width, screen.height) < 700);
+    const defaults = {
+      detail: "auto",                                  // auto, full, or a level counted from one
+      pixels: Math.min(devicePixelRatio || 1, phone ? 1.5 : 2),
+      sky: "#000000",                                  // what is behind the scene: it holds no sky of its own
+      fov: 40, glass: true, cube: phone ? 256 : 512, speed: 2, frustum: true, path: true, marker: true,
+      rate: 6, loop: false, fps: false,
+    };
+    const stored = (() => { try { return JSON.parse(localStorage.getItem("neural-player") ?? "{}"); } catch { return {}; } })();
+    const settings = { ...defaults, ...stored };
+    if (params.get("detail")) settings.detail = params.get("detail");
+    if (params.get("glass") === "0") settings.glass = false;
+    const remember = () => { try { localStorage.setItem("neural-player", JSON.stringify(settings)); } catch { /* private mode */ } };
+
+    const canvas = $("canvas");
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
+    renderer.setPixelRatio(settings.pixels);
+    renderer.setSize(innerWidth, innerHeight);
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(settings.fov, innerWidth / innerHeight, 0.05, 500);
+    window.__camera = camera;   // for whoever drives the page from outside
+    const spark = new SparkRenderer({ renderer });
+    scene.add(spark);
+    addEventListener("resize", () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    // WHERE THE SCENE'S FILES ARE: beside the page (./scenes/), at another address (?base=https://.../scenes/),
+    // or in a folder the reader opened (a standalone page read from the disk: window.__sceneFiles, a map of a
+    // file's name to its URL, which the page's opener fills). A part is named to Spark as well as addressed:
+    // a folder's URL carries no extension to tell a format by.
+    const base = (() => {
+      const said = params.get("base");
+      if (!said) return "./scenes/";
+      try { const at = new URL(said, location.href); return at.protocol === "https:" || at.protocol === "http:" ? at.href.replace(/\/?$/, "/") : "./scenes/"; }
+      catch { return "./scenes/"; }
+    })();
+    const urlOf = (file) => window.__sceneFiles?.get(file) ?? `${base}${file}`;
+    // A folder's file is handed to Spark as its bytes: Spark reads a part in a worker, and a worker cannot
+    // reach the object URL of a file the page was handed when the page itself was read from a disk.
+    const splatOf = async (file, more = {}) => {
+      const local = window.__sceneBlobs?.get(file);
+      return local ? new SplatMesh({ fileBytes: new Uint8Array(await local.arrayBuffer()), fileName: file, ...more })
+                   : new SplatMesh({ url: urlOf(file), fileName: file, ...more });
+    };
+    const began = performance.now();
+    const readIndex = async () => (await fetch(urlOf(`${name}.json`), { cache: "no-store" })).json();
+
+    try {
+      let index = await readIndex();
+      // A scene drawn without the 2D filter's compensation (`antialiased: false` in its index): each gaussian
+      // is spread a third of a pixel and keeps its opacity, as the engine draws it. With the compensation,
+      // which is Spark's default, its discs of half a pixel are thin and the surfaces show through.
+      // DRAWN ON MORE PIXELS THAN IT WAS FOUND FROM, the filter is as much wider: a gaussian was made `spread`
+      // of a pixel of its frame (`frameSize`), and on a canvas of more pixels the rows of gaussians on a floor
+      // seen at a slant part and show dark lines (a canvas a third taller than the frames: lines at 0.3 and
+      // at 0.5 of a pixel, none at 0.8). Without the frame's size in the index, a third of a pixel as before.
+      // `?filter=fixed` keeps the third of a pixel, to see one beside the other.
+      const filterFor = () => {
+        const frameWidth = Array.isArray(index.frameSize) ? index.frameSize[0] : 0;
+        if (!(frameWidth > 0) || new URLSearchParams(location.search).get("filter") === "fixed") return 0.3;
+        // Pixels a unit of slope across, the canvas's over the frame's: the canvas's from its own projection
+        // (a narrow canvas fits the frame across, and is then fewer pixels than the frame however tall it
+        // is), the frame's from its lens -- a focal length over a 24.576 mm aperture across.
+        const focal = index.cameras?.[0]?.focal ?? 20;
+        const drawn = 0.5 * renderer.domElement.width * camera.projectionMatrix.elements[0];
+        const made = 0.5 * frameWidth * focal / 12.288;
+        return Math.min(Math.max(1.2 * (index.spread ?? 0.5) * drawn / made, 0.3), 2.0);
+      };
+      if (index.antialiased === false) {
+        spark.preBlurAmount = filterFor();
+        spark.blurAmount = 0.0;
+        // Set again as the canvas or the lens changes (riding a frame's camera takes that frame's lens).
+        setInterval(() => { const wide = filterFor(); if (Math.abs(wide - spark.preBlurAmount) > 0.01) spark.preBlurAmount = wide; }, 500);
+        window.__filter = () => spark.preBlurAmount;
+      }
+      // The scene's own space into three's: metres, y up. A stage that is z up is turned a quarter about x.
+      // An index that does not say its unit is taken as centimetres where its box is hundreds across.
+      const across = Math.max(index.max[0] - index.min[0], index.max[1] - index.min[1], index.max[2] - index.min[2]);
+      const unit = Number(params.get("unit")) || index.unit || (across > 200 ? 0.01 : 1);
+      const zUp = index.upAxis === "Z";
+      const place = (p) => zUp ? new THREE.Vector3(p[0] * unit, p[2] * unit, -p[1] * unit)
+                               : new THREE.Vector3(p[0] * unit, p[1] * unit, p[2] * unit);
+      const root = new THREE.Group();
+      if (zUp) root.rotation.x = -Math.PI / 2;
+      root.scale.setScalar(unit);
+      scene.add(root);
+
+      // WHAT IS DRAWN. The parts in the order the scene grew (a part is a name, or what a frame added: its
+      // file, how many gaussians, and the frame, its time and the camera it was rendered through); or, at a
+      // level of detail, the scene whole in that level's parts. A part's mesh, and beside it the meshes of
+      // its glass and of its mirrors where it has them.
+      const partOf = (p) => typeof p === "string" ? { file: p, gaussians: 0 } : p;
+      const countOf = (p) => p.gaussians + (p.glass?.gaussians ?? 0) + (p.mirror?.gaussians ?? 0);
+      // The frame a part is of: what its history is counted against (a part with none is as its place says).
+      const frameOf = (k) => parts[k]?.frame ?? k + 1;
+      const levels = index.levels ?? [];
+      let detail = 0;           // 0: the scene as it grew; k: the k-th level of detail
+      let parts = [];
+      let meshes = [];          // a part's meshes, once they are in: [{ mesh, until }] -- the part's own, which
+                                // stands to the end (until 0), and its history's, each until a frame
+      let shaded = [];          // and their glass and mirrors: [{ mesh, kind, shading, until }]
+      let generation = 0;       // what is being loaded: a change of detail leaves the older load behind
+      // COARSE FIRST. Where the scene has levels of detail, the coarsest is read and drawn first -- a small
+      // file, a picture at once -- and the detail the device is to draw is read behind it, out of the scene,
+      // and takes its place when it is whole: `outgoing` is what stays drawn meanwhile, `staging` where the
+      // next is gathered.
+      const staging = new THREE.Group();
+      staging.rotation.copy(root.rotation);   // placed as the scene is: what is gathered is measured there
+      staging.scale.copy(root.scale);
+      // THE ROOMS ARE DRAWN FROM A SCENE OF THEIR OWN, OF FEW GAUSSIANS. What a glass or a mirror shows is read
+      // from a cube through a cone of rays: it does not want the eight million gaussians the eye is drawn,
+      // and a Spark that draws them holds a set of them (20 bytes a gaussian on the device) beside the
+      // page's own. Each part that is read leaves here one gaussian in so many of its own (`roomCap` in all,
+      // whatever the detail), each as much wider as it stands for more, with its groups' light thinned the
+      // same way; the rooms' Sparks see this scene and no other. `?room=<gaussians>` sets how many.
+      const roomScene = new THREE.Scene();
+      const roomRoot = new THREE.Group();
+      roomRoot.rotation.copy(root.rotation);
+      roomRoot.scale.copy(root.scale);
+      roomScene.add(roomRoot);
+      // On a phone 150 000: looked at beside 400 000 from three eyes of three scenes at the level of a
+      // million a phone draws, the knights are the same to the eye, and it is a fifth off what the device holds.
+      const roomCap = Math.max(Number(params.get("room")) || (phone ? 150000 : 400000), 20000);
+      let outgoing = [];
+      let keeping = false;
+      // The level drawn first is, where the index has one, a level of the scene with its lamps on
+      // (`litLevels`): a picture as the scene is found, with no group's part to wait for.
+      const litLevels = index.litLevels ?? [];
+      let litFirst = false;
+      // What is let go takes its textures with it -- its groups' light, its ids, its normals: they were left
+      // on the device when a level was swapped for another.
+      const letGo = (list) => {
+        for (const m of list) {
+          m.gone = true;
+          for (const mesh of [m.mesh, m.room?.mesh]) { mesh?.parent?.remove(mesh); mesh?.dispose?.(); }
+          for (const t of m.textures ?? []) t.dispose();
+        }
+      };
+      let cameras = new Map((index.cameras ?? []).map((c) => [c.name, c]));
+      let shown = 0;            // parts drawn: the scene as it stood after that many
+      let atEnd = true;         // the timeline is at its end: new parts are shown as they arrive
+      let playing = false;
+      let loading = false;
+      // Playing is said by the button itself: its word and its colour.
+      const setPlaying = (on) => {
+        playing = on;
+        playButton.textContent = on ? "Pause" : "Play";
+        playButton.classList.toggle("playing", on);
+        playButton.setAttribute("aria-pressed", String(on));
+      };
+      const timed = () => detail === 0 && parts.some((p) => p.frame);
+      const totalOf = (list) => list.reduce((sum, p) => sum + countOf(partOf(p)), 0);
+      const fullCount = index.gaussians || totalOf(index.parts);
+
+      // GLASS AND CHROME, SHADED BY THE EYE. A part's solid glass and its polished metal come in files of
+      // their own (the index's `glass`, with its index and tint, and `mirror`): what those gaussians are
+      // made of, which is theirs whatever the eye. What they show is worked out here: the scene without
+      // them is drawn into a cube from their middle, and each gaussian takes the cube along the eye's ray
+      // mirrored at its disc and, for glass, along it bent in -- so the room turns as the camera does. Each
+      // kind has its cube, drawn with the other kind in it: the chrome shows the glass and the glass the
+      // chrome. A room read from one point, and a far face that is guessed (a ball's, see the shading): what
+      // stands near and the solid's own inner faces are not there. Where the room holds nothing a gaussian
+      // keeps the colour it was found with.
+      const kindOf = (which) => ({
+        which, eye: dyno.dynoVec3(new THREE.Vector3()), middle: dyno.dynoVec3(new THREE.Vector3()),
+        reach: dyno.dynoFloat(1.0), room: dyno.dynoSamplerCube(new THREE.WebGLCubeRenderTarget(1).texture),
+        ready: false, target: null, spark: null, drawnFrom: null,
+      });
+      const kinds = { glass: kindOf("glass"), mirror: kindOf("mirror") };
+      // What the page draws behind the scene, as light: what a glass shows through where the room holds nothing.
+      const skyLight = dyno.dynoVec3(new THREE.Vector3());
+
+      // GROUPS OF LIGHTS. A scene handed on with its lamps as groups (index.groups: a name and the stem of
+      // that group's own export, the same gaussians in the same order with the group's light alone as their
+      // colour) is its own light and each group's times a level: light is linear, so a lamp is dimmed,
+      // tinted or put out here with nothing traced. A group's light is read once a part into a texture, a
+      // texel a gaussian, and a modifier adds them at the levels the panel sets.
+      const groupWide = 2048;
+      const groups = (index.groups ?? []).map((g) => ({
+        name: g.name, stem: g.stem, level: 1, tint: [1, 1, 1], parts: null,
+        gain: dyno.dynoVec3(new THREE.Vector3(1, 1, 1)),
+      }));
+      window.__groups = groups;
+      const setGroup = (g) => g.gain.value.set(g.level * g.tint[0], g.level * g.tint[1], g.level * g.tint[2]);
+      // A GROUP'S LIGHT IS READ WHEN A LAMP IS FIRST MOVED. A level of detail handed on with its lamps on
+      // (`litLevels`) is the picture the scene was found with, in one file a part; the same level with its
+      // groups is that file and one as large for each group, read for lamps that may never be touched -- on
+      // a phone two thirds of what a load fetched. So a level is drawn from its lit files, and the first
+      // time a group's level or tint is set away from the one it was shot with the level is read again with
+      // its groups, behind what is drawn (the row says "reading" meanwhile). An address that sets a group
+      // reads them at once, and the scene whole (no level) has no lit files and reads them as it did.
+      let groupsWanted = false;
+      let readGroups = () => {};   // the page's, once there is a detail to read again
+      const groupLabels = [];
+      const sayGroups = (now) => { for (const [label, g] of groupLabels) label.textContent = `Light: ${g.name}${now ? " (reading…)" : ""}`; };
+      // SO MANY FILES ARE READ AT A TIME: a part's files side by side and the parts after it begun while it
+      // is read, with this many at once at most -- each is a request, a worker's decoding and its bytes held.
+      // What is being read is kept by its file's name, for whoever asks why a load stands still
+      // (`window.__player.reading()`: each file, whether it waits its turn, and for how long).
+      const beingRead = new Map();
+      const gate = (most) => {
+        let busy = 0;
+        const waiting = [];
+        return async (work, what) => {
+          const key = {};
+          if (what) beingRead.set(key, { what, since: performance.now(), waits: busy >= most });
+          try {
+            if (busy >= most) await new Promise((go) => waiting.push(go)); else busy += 1;
+            if (what) beingRead.get(key).waits = false;
+            try { return await work(); } finally { const next = waiting.shift(); if (next) next(); else busy -= 1; }
+          } finally { beingRead.delete(key); }
+        };
+      };
+      const reading = gate(8);
+      // A FILE THAT DOES NOT COME IS ASKED FOR AGAIN. A request the network drops (a connection reset, a
+      // server that answers nothing) rejected the part it was of, and the load stood for ever at "refining…
+      // 3 of 20 parts" with nothing said: seen once in five loads from a test server that reset a
+      // connection, and the same in every page before this one. Each file is now tried three times, a
+      // moment apart; one that has begun to come and then stops for `stallMs` is given up and tried again
+      // too (only where its coming can be watched: a file that says nothing of its progress is waited
+      // for). The status line says that a file was asked for again, and, when three tries fail, which file
+      // it was -- and the load ends there, what is drawn staying drawn.
+      // A REQUEST THAT NEVER ANSWERS AT ALL has shown nothing to time a stall by, and stood for as long as
+      // the browser let it (100 s seen). It is given up when nothing has come from ANY file for `silentMs`:
+      // a file that is only waiting its turn -- behind the six connections a browser opens to a server,
+      // or for one of Spark's workers -- is silent while the files before it come, and on a phone's slow
+      // line that is minutes; but while they come the line is not dead, and their coming keeps this one
+      // waiting. A minute of nothing at all, from a line that was asked for several files, is a request to
+      // make again.
+      const stallMs = 30000, silentMs = 60000;
+      let lastAny = performance.now();   // when a byte of any file last came
+      let readNote = "";
+      let retold = () => {};   // the status line said again, once there is one
+      const patient = async (what, attempt) => {
+        for (let tried = 1; ; ++tried) {
+          let last = 0, timer = 0;
+          const asked = performance.now();
+          const went = attempt(() => { last = lastAny = performance.now(); window.__player.progress = (window.__player.progress ?? 0) + 1; });
+          const stalled = new Promise((_, no) => {
+            timer = setInterval(() => {
+              const now = performance.now();
+              if (last > 0 && now - last > stallMs) no(new Error(`${what} stopped coming`));
+              else if (last === 0 && now - Math.max(asked, lastAny) > silentMs) no(new Error(`${what} was not answered`));
+            }, 1000);
+          });
+          try { return await Promise.race([went, stalled]); }
+          catch (error) {
+            went.then((late) => late?.dispose?.(), () => {});   // what comes after all is let go
+            if (tried >= 3) throw new Error(`${what} did not come in three tries (${String(error?.message ?? error).slice(0, 80)})`);
+            window.__player.retried = (window.__player.retried ?? 0) + 1;
+            readNote = ` · a file did not come and was asked for again${window.__player.retried === 1 ? "" : ` (${window.__player.retried} times)`}`;   // tries, not files: one file may be asked for twice
+            retold();
+            console.warn(`${what} did not come (${error?.message ?? error}): asked for again`);
+            await new Promise((go) => setTimeout(go, 600 * tried));
+          } finally { clearInterval(timer); }
+        }
+      };
+      // A file of gzip, undone as it comes: its bytes.
+      const gunzipped = (file) => patient(file, async (came) => {
+        const local = window.__sceneBlobs?.get(file);
+        let from = local?.stream();
+        if (!from) { const got = await fetch(urlOf(file)); if (!got.ok) throw new Error(`${got.status}`); from = got.body; }
+        came();
+        const seen = new TransformStream({ transform(chunk, to) { came(); to.enqueue(chunk); } });
+        return new Uint8Array(await new Response(from.pipeThrough(seen).pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
+      });
+      // A file of gaussians through Spark, which reads it in a worker.
+      const splatRead = (file, more) => patient(file, async (came) => {
+        const mesh = await splatOf(file, { ...more, onProgress: came });
+        try { await mesh.initialized; } catch (error) { mesh.dispose?.(); throw error; }
+        return mesh;
+      });
+      // WHAT THE PAGE KEEPS OF A FILE IS LET GO ONCE THE DEVICE HAS IT. Spark keeps a file's gaussians in the
+      // page (32 bytes each) beside the texture it makes of them, and three keeps the array a texture was
+      // made from: at eight million gaussians 300 MB of the first and 90 MB of the page's own textures a
+      // gaussian. The page reads them only while a part is read -- its points for the pointer, its gaussians
+      // for the rooms, its glass's axes and box -- and a graphics context that is lost is met by reading the
+      // page again, not by sending them a second time. So each is let go when three says it was sent
+      // (`onUpdate`). Spark's ray through a mesh then finds nothing; the page asks its own points.
+      // `?keep=1` leaves them where they were.
+      const kept = params.get("keep") === "1";
+      const onDevice = (texture, then) => {
+        const was = texture.onUpdate;
+        texture.onUpdate = (...said) => { was?.(...said); texture.onUpdate = was; setTimeout(then, 0); };
+      };
+      const forget = (texture) => {
+        if (!kept) onDevice(texture, () => { if (texture.image) texture.image.data = null; });
+        return texture;
+      };
+      const forgetFile = (mesh) => {
+        const held = mesh.extSplats;
+        if (kept || !held || !Array.isArray(held.textures) || !Array.isArray(held.extArrays)) return;
+        let left = held.textures.length;
+        for (const texture of held.textures) {
+          if (!texture?.image?.data?.length) return;   // not a texture of its gaussians: left as it is
+          onDevice(texture, () => {
+            if (mesh.extSplats !== held || !texture.image) return;   // let go meanwhile
+            texture.image.data = null;
+            if (--left === 0) held.extArrays = [new Uint32Array(), new Uint32Array()];
+          });
+        }
+      };
+      // A GROUP'S COLOURS IN A FILE OF THEIR OWN. A group's part is a whole file of gaussians -- places,
+      // shapes, opacities -- read through Spark for its colours alone: three fifths of what a load of the
+      // scene whole fetches. Where a group's (or the base colours') index names beside a part's `file` an
+      // `rgb` file, that is read in its place: gzip over three bytes a gaussian in the file's order, the
+      // bytes an SPZ keeps a colour in (its colour stream as it is). The bytes go to the texture as they
+      // are, flagged `raw`, and the shader makes of them the colour Spark makes of the same bytes.
+      const rawColours = async (file) => {
+        const bytes = await reading(() => gunzipped(file), file);
+        const count = Math.floor(bytes.length / 3);
+        const high = Math.max(Math.ceil(count / groupWide), 1);
+        const texels = new Uint8Array(groupWide * high * 4);
+        for (let i = 0; i < count; ++i) { texels[i * 4] = bytes[i * 3]; texels[i * 4 + 1] = bytes[i * 3 + 1]; texels[i * 4 + 2] = bytes[i * 3 + 2]; texels[i * 4 + 3] = 255; }
+        const texture = new THREE.DataTexture(texels, groupWide, high, THREE.RGBAFormat, THREE.UnsignedByteType);
+        texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
+        texture.needsUpdate = true;
+        texture.userData.raw = true;
+        return forget(texture);
+      };
+      const groupTexture = async (file) => {
+        if (/\.rgb$/i.test(file)) return rawColours(file);
+        // The group's part, read for its colours alone and let go: Spark's packed splat keeps a colour in
+        // the first word of four, a byte a channel.
+        const read = await reading(() => splatRead(file), file);
+        const packed = read.packedSplats?.packedArray;
+        const count = read.packedSplats?.numSplats ?? 0;
+        const high = Math.max(Math.ceil(count / groupWide), 1);
+        const texels = new Uint8Array(groupWide * high * 4);
+        if (packed) {
+          for (let i = 0; i < count; ++i) {
+            const word = packed[i * 4];
+            texels[i * 4] = word & 255; texels[i * 4 + 1] = (word >>> 8) & 255; texels[i * 4 + 2] = (word >>> 16) & 255;
+            texels[i * 4 + 3] = 255;
+          }
+        }
+        read.dispose?.();
+        const texture = new THREE.DataTexture(texels, groupWide, high, THREE.RGBAFormat, THREE.UnsignedByteType);
+        texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
+        texture.needsUpdate = true;
+        return forget(texture);
+      };
+      // A LAMP OF THE PLAYER'S OWN. Where the scene was handed on with its base colours (index.base: the same
+      // gaussians with each one's base colour as its colour), a lamp is added a gaussian: the base colour
+      // times what the lamp sends there, by the way the gaussian's disc faces it. It rides with the eye or is
+      // left where the eye was. No shadow: the lamp lights through walls; the engine's `render --lamps`
+      // is the one that asks the scene what stands in the way.
+      const lamp = {
+        on: false, held: false, level: 15, tint: [1, 0.85, 0.65], parts: null,
+        place: dyno.dynoVec3(new THREE.Vector3()), sends: dyno.dynoVec3(new THREE.Vector3()),
+      };
+      window.__lamp = lamp;
+      // What it sends is in the scene's light: the stops the scene was handed on with are the lamp's too.
+      const lampGain = Math.pow(2, Number(index.exposure) || 0);
+      const setLamp = () => lamp.sends.value.set(...lamp.tint.map((c) => (lamp.on ? lamp.level * lampGain * c : 0)));
+      if (index.base) {
+        try { const of = await (await fetch(urlOf(`${index.base}.json`), { cache: "no-store" })).json(); lamp.parts = of.parts; lamp.levels = of.levels ?? []; }
+        catch (error) { lamp.parts = null; }
+      }
+      const groupLight = (textures, base) => dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
+        const inTypes = { gsplat: dyno.Gsplat };
+        const inputs = { gsplat };
+        if (base) {
+          inTypes.base = "sampler2D"; inputs.base = dyno.dynoSampler2D(base);
+          inTypes.place = "vec3"; inputs.place = lamp.place;
+          inTypes.sends = "vec3"; inputs.sends = lamp.sends;
+        }
+        textures.forEach((texture, k) => {
+          inTypes[`light${k}`] = "sampler2D"; inputs[`light${k}`] = dyno.dynoSampler2D(texture);
+          inTypes[`gain${k}`] = "vec3"; inputs[`gain${k}`] = groups[k].gain;
+        });
+        const add = new dyno.Dyno({
+          inTypes, outTypes: { gsplat: dyno.Gsplat }, inputs,
+          globals: () => [dyno.defineGsplat, dyno.unindent(`
+            vec3 discAxis(vec4 q, vec3 scales) {
+              vec3 axis = scales.x <= scales.y ? (scales.x <= scales.z ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0))
+                                               : (scales.y <= scales.z ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0));
+              return normalize(axis + 2.0 * cross(q.xyz, cross(q.xyz, axis) + q.w * axis));
+            }
+            // A colour from an SPZ's byte, as Spark makes it and keeps it in a byte of its own: the byte is
+            // the first harmonic over 0.15 about a half, the colour that harmonic times 0.2820948 about a half.
+            vec3 rawColour(vec3 kept) {
+              return floor(clamp((kept * 255.0 - 127.5) * (0.2820948 / 0.15) + 127.5, 0.0, 255.0) + 0.5) / 255.0;
+            }
+          `)],
+          statements: ({ inputs, outputs }) => dyno.unindentLines(`
+            ${outputs.gsplat} = ${inputs.gsplat};
+            if (isGsplatActive(${outputs.gsplat}.flags)) {
+              ivec2 at = ivec2(${inputs.gsplat}.index % ${groupWide}, ${inputs.gsplat}.index / ${groupWide});
+              vec3 light = pow(max(${inputs.gsplat}.rgba.rgb, vec3(0.0)), vec3(2.2));
+              ${base ? `
+              vec3 toLamp = ${inputs.place} - ${inputs.gsplat}.center;
+              float far2 = max(dot(toLamp, toLamp), 0.01);
+              float faces = abs(dot(discAxis(${inputs.gsplat}.quaternion, ${inputs.gsplat}.scales), toLamp * inversesqrt(far2)));
+              light += pow(${base.userData.raw ? "rawColour" : ""}(texelFetch(${inputs.base}, at, 0).rgb), vec3(2.2)) * ${inputs.sends} * (faces / far2);` : ""}
+              ${textures.map((texture, k) => `light += ${inputs[`gain${k}`]} * pow(${texture.userData.raw ? "rawColour" : ""}(texelFetch(${inputs[`light${k}`]}, at, 0).rgb), vec3(2.2));`).join("\n              ")}
+              ${outputs.gsplat}.rgba.rgb = pow(max(light, vec3(0.0)), vec3(1.0 / 2.2));
+            }
+          `),
+        });
+        return { gsplat: add.outputs.gsplat };
+      });
+      for (const g of groups) {
+        // Each group's own index: its parts are the scene's, one for one.
+        try { const of = await (await fetch(urlOf(`${g.stem}.json`), { cache: "no-store" })).json(); g.parts = of.parts; g.levels = of.levels ?? []; }
+        catch (error) { g.parts = null; }
+      }
+      // OBJECTS. A scene handed on with which prim each gaussian was made from (index.prims: the stage's prims,
+      // a path and its Cryptomatte id each, and beside every file an `ids` file: sixteen bits a gaussian in the
+      // file's order, a place in that list counted from one, 0 for none) shows an object by itself: the
+      // gaussians of the prims at or under a path. Its matte -- those white and every other black, by the
+      // same blend, so what stands in front takes its share: the matte from this camera -- the object alone,
+      // or the scene with the object tinted. An id is read once a file into a texture, a texel a gaussian;
+      // the prims chosen are a texture of their own, a texel a prim, so choosing another writes that one alone.
+      // The modifier is a mesh's last: after its groups' light and after glass and chrome are shaded, which
+      // both make a colour the matte is to replace. An index without `prims` has none of this.
+      const objectViews = ["off", "highlight", "isolate", "matte"];
+      const prims = Array.isArray(index.prims) ? index.prims.filter((p) => typeof p?.path === "string") : [];
+      const pickHigh = Math.max(Math.ceil((prims.length + 1) / groupWide), 1);
+      const pickTexels = new Uint8Array(groupWide * pickHigh * 4);
+      const pickTexture = new THREE.DataTexture(pickTexels, groupWide, pickHigh, THREE.RGBAFormat, THREE.UnsignedByteType);
+      pickTexture.magFilter = THREE.NearestFilter; pickTexture.minFilter = THREE.NearestFilter;
+      pickTexture.needsUpdate = true;
+      const objects = {
+        prims, path: "", view: "off", chosen: 0,
+        gaussians: new Float64Array(prims.length + 1),                  // a prim's among what stands, as they are read
+        how: dyno.dynoFloat(0),                                         // 0 as it is, 1 tinted, 2 alone, 3 matte
+        tint: dyno.dynoVec3(new THREE.Vector3(1.0, 0.42, 0.08)),
+      };
+      window.__objects = objects;
+      const howNow = () => (objects.path ? objectViews.indexOf(objects.view) : 0);
+      const matteShown = () => objects.path !== "" && objects.view === "matte";
+      // A prim is of the object where it is at the path or under it, as the engine's `render --matte` reads one.
+      const under = (prim, path) => path === "/" || prim === path || (prim.length > path.length && prim.startsWith(path) && prim[path.length] === "/");
+      const idsTexture = async (file, count, counted) => {
+        // A file of sixteen bits a gaussian inside gzip, which the browser undoes: two bytes a texel, as they are.
+        const bytes = await reading(() => gunzipped(file), file);
+        // How many gaussians each prim has: what the panel says of one, and dims one without. Kept beside
+        // the texture and counted when the part comes to stand -- a part read ahead may never.
+        const tally = counted ? new Float64Array(prims.length + 1) : null;
+        if (tally) for (let i = 0; i + 1 < bytes.length; i += 2) { const prim = bytes[i] | (bytes[i + 1] << 8); if (prim < tally.length) tally[prim] += 1; }
+        const high = Math.max(Math.ceil(Math.max(count, bytes.length / 2) / groupWide), 1);
+        const texels = new Uint8Array(groupWide * high * 2);
+        texels.set(bytes.subarray(0, texels.length));
+        const texture = new THREE.DataTexture(texels, groupWide, high, THREE.RGFormat, THREE.UnsignedByteType);
+        texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
+        texture.needsUpdate = true;
+        texture.userData.tally = tally;
+        return forget(texture);
+      };
+      // The modifier of a mesh whose ids are `ids`; of one that has none (null), whose gaussians are no object's.
+      const objectsOf = (ids) => dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
+        const inTypes = { gsplat: dyno.Gsplat, how: "float", tint: "vec3" };
+        const inputs = { gsplat, how: objects.how, tint: objects.tint };
+        if (ids) {
+          inTypes.ids = "sampler2D"; inputs.ids = dyno.dynoSampler2D(ids);
+          inTypes.pick = "sampler2D"; inputs.pick = dyno.dynoSampler2D(pickTexture);
+        }
+        const mark = new dyno.Dyno({
+          inTypes, outTypes: { gsplat: dyno.Gsplat }, inputs,
+          globals: () => [dyno.defineGsplat],
+          statements: ({ inputs, outputs }) => dyno.unindentLines(`
+            ${outputs.gsplat} = ${inputs.gsplat};
+            if (${inputs.how} > 0.5 && isGsplatActive(${outputs.gsplat}.flags)) {
+              bool chosen = false;
+              ${ids ? `
+              vec2 word = texelFetch(${inputs.ids}, ivec2(${inputs.gsplat}.index % ${groupWide}, ${inputs.gsplat}.index / ${groupWide}), 0).rg;
+              int prim = int(word.r * 255.0 + 0.5) + 256 * int(word.g * 255.0 + 0.5);
+              chosen = prim > 0 && texelFetch(${inputs.pick}, ivec2(prim % ${groupWide}, prim / ${groupWide}), 0).r > 0.5;` : ""}
+              if (${inputs.how} > 2.5) { ${outputs.gsplat}.rgba.rgb = vec3(chosen ? 1.0 : 0.0); }
+              else if (${inputs.how} > 1.5) { if (!chosen) { ${outputs.gsplat}.rgba.a = 0.0; } }
+              else if (chosen) { ${outputs.gsplat}.rgba.rgb = mix(${outputs.gsplat}.rgba.rgb, ${inputs.tint}, 0.6); }
+            }
+          `),
+        });
+        return { gsplat: mark.outputs.gsplat };
+      });
+      // A mesh's modifiers in the world, in their order: its light, its shading by the eye, then the objects'.
+      const setWorld = (mesh, ...modifiers) => {
+        const list = modifiers.filter(Boolean);
+        mesh.worldModifiers = list.length > 0 ? list : undefined;
+        mesh.updateGenerator();
+      };
+      // A gaussian's colour is made when its mesh says it changed: what is drawn is told that the objects did.
+      const objectsChanged = () => {
+        for (const m of [...meshes.flat(), ...shaded.flat(), ...outgoing]) if (m.objects) m.mesh.updateVersion();
+      };
+      let objectsShown = () => {};   // the panel's, once it is made
+      let applySky = null;           // the sky's, the same: a matte is over black
+      const setObject = (path, view) => {
+        let to = String(path ?? "").trim();
+        while (to.length > 1 && to.endsWith("/")) to = to.slice(0, -1);
+        if (to && !to.startsWith("/")) to = `/${to}`;
+        let count = 0;
+        pickTexels.fill(0);
+        if (to) prims.forEach((p, k) => { if (under(p.path, to)) { pickTexels[(k + 1) * 4] = 255; count += 1; } });
+        pickTexture.needsUpdate = true;
+        objects.path = count > 0 ? to : "";
+        objects.chosen = count;
+        const wanted = objectViews.includes(view) ? view : objects.view;
+        // An object chosen with nothing said of how is tinted; with no object there is nothing to show.
+        objects.view = count > 0 && wanted === "off" && view === undefined ? "highlight" : wanted;
+        objects.how.value = howNow();
+        objectsChanged();
+        objectsShown();
+        applySky?.();
+        showLines();
+        keepAddress();
+      };
+      objects.set = setObject;
+
+      // THE VIEW IN THE ADDRESS. The scene, the detail, where the timeline is, whether the render camera is
+      // ridden and each group's level are kept in the page's query, in place (no entry in the history), and
+      // read back when the page is: an address copied is the view handed on. What else the query says
+      // (?base=, ?unit=, ?progressive=, ?glass=) stays as it came. It is written a moment after the last
+      // change, not at each: a browser allows only so many a second, and a timeline dragged makes many.
+      // A scene read from a folder on the disk has no address to hand on, and writes none.
+      const asked = {
+        frame: /^\d+$/.test(params.get("frame") ?? "") ? Number(params.get("frame")) : null,   // until it is shown
+        ride: params.get("ride") === "1",
+      };
+      let addressTimer = 0;
+      const writeAddress = () => {
+        if (window.__sceneFiles) return;
+        const to = new URLSearchParams(location.search);
+        to.set("scene", name);
+        to.set("detail", String(settings.detail));
+        // The timeline's place where it is not where the scene opens by itself: the end of the scene as it
+        // grew, the first of a level's walk.
+        const frame = asked.frame ?? (detail === 0 ? (atEnd ? null : cursor) : (cursor > 0 ? cursor : null));
+        if (frame === null) to.delete("frame"); else to.set("frame", String(frame));
+        if (follow.checked) to.set("ride", "1"); else to.delete("ride");
+        for (const g of groups) {
+          const key = `light.${g.name}`;
+          if (Math.abs(g.level - 1) < 1e-6) to.delete(key); else to.set(key, String(Number(g.level.toFixed(2))));
+        }
+        if (objects.path) { to.set("object", objects.path); to.set("object.view", objects.view); }
+        else { to.delete("object"); to.delete("object.view"); }
+        // A prim's path is kept as it reads: its slashes are not escaped.
+        const query = to.toString().replace(/%2F/gi, "/");
+        if (query === location.search.replace(/^\?/, "")) return;
+        try { history.replaceState(history.state, "", `${location.pathname}?${query}${location.hash}`); }
+        catch (error) { /* a browser that will not: the view is only not kept */ }
+      };
+      const keepAddress = () => { clearTimeout(addressTimer); addressTimer = setTimeout(writeAddress, 250); };
+
+      // A row a group in the panel: its level, and a tint over the colour it was shot with.
+      for (const g of groups) {
+        const row = document.createElement("div");
+        row.className = "row";
+        const label = document.createElement("span");
+        label.textContent = `Light: ${g.name}`;
+        groupLabels.push([label, g]);
+        const level = document.createElement("input");
+        level.type = "range"; level.min = "0"; level.max = "2"; level.step = "0.05"; level.value = "1";
+        const tint = document.createElement("input");
+        tint.type = "color"; tint.value = "#ffffff";
+        const said = document.createElement("output");
+        said.textContent = "1.00";
+        const changed = () => {
+          g.level = Number(level.value);
+          const hex = tint.value;
+          g.tint = [1, 3, 5].map((at) => parseInt(hex.slice(at, at + 2), 16) / 255);
+          said.textContent = g.level.toFixed(2);
+          setGroup(g);
+          if (!groupsWanted && (Math.abs(g.level - 1) > 1e-6 || g.tint.some((c) => c < 1))) { groupsWanted = true; readGroups(); }
+          shadeStale = true;   // what the glass and the chrome show changed with it
+          keepAddress();
+        };
+        level.addEventListener("input", changed);
+        tint.addEventListener("input", changed);
+        g.set = (to) => { level.value = String(to); changed(); };   // as the address says
+        row.append(label, level, tint, said);
+        document.getElementById("optGroups").append(row);
+      }
+      if (lamp.parts) {
+        // The player's own lamp: on, how much, its colour, and whether it stays where it is.
+        const row = document.createElement("div");
+        row.className = "row";
+        const label = document.createElement("span");
+        label.textContent = "Lamp";
+        const on = document.createElement("input");
+        on.type = "checkbox";
+        const level = document.createElement("input");
+        level.type = "range"; level.min = "0"; level.max = "100"; level.step = "1"; level.value = String(lamp.level);
+        const tint = document.createElement("input");
+        tint.type = "color"; tint.value = "#ffd9a6";
+        const hold = document.createElement("button");
+        hold.textContent = "Leave it here";
+        const changed = () => {
+          // THE LAMP'S COLOURS ARE READ WHEN IT IS FIRST LIT: a base colour a gaussian, a file a part as large
+          // as a group's -- a quarter of what a load fetched, for a lamp that is off until it is asked for.
+          if (on.checked && !lamp.wanted) { lamp.wanted = true; readLamp(label); }
+          lamp.on = on.checked;
+          lamp.level = Number(level.value);
+          lamp.tint = [1, 3, 5].map((at) => parseInt(tint.value.slice(at, at + 2), 16) / 255);
+          setLamp();
+          shadeStale = true;
+        };
+        on.addEventListener("change", changed);
+        level.addEventListener("input", changed);
+        tint.addEventListener("input", changed);
+        hold.addEventListener("click", () => { lamp.held = !lamp.held; hold.textContent = lamp.held ? "Take it up" : "Leave it here"; });
+        row.append(label, on, level, tint, hold);
+        document.getElementById("optGroups").append(row);
+        // With the eye until it is left somewhere.
+        setInterval(() => { if (lamp.on && !lamp.held) lamp.place.value.copy(camera.position); }, 33);
+      }
+      // A texture of a texel a gaussian, thinned to every so-many-th: what a part's gaussians in the rooms read.
+      const thin = (texture, stride) => {
+        const from = texture.image.data, count = Math.floor(from.length / 4);
+        const high = Math.max(Math.ceil(Math.ceil(count / stride) / groupWide), 1);
+        const texels = new Uint8Array(groupWide * high * 4);
+        for (let k = 0, at = 0; at < count; ++k, at += stride) texels.set(from.subarray(at * 4, at * 4 + 4), k * 4);
+        const thinned = new THREE.DataTexture(texels, groupWide, high, THREE.RGBAFormat, THREE.UnsignedByteType);
+        thinned.magFilter = THREE.NearestFilter; thinned.minFilter = THREE.NearestFilter;
+        thinned.needsUpdate = true;
+        thinned.userData.raw = texture.userData.raw;
+        return thinned;
+      };
+      // A part as the rooms see it: one gaussian in `stride`, wider by the root of that (it stands for as many
+      // times the surface), lit by its groups as the part is. Its place in the thinned textures is its own.
+      const roomOf = (mesh, stride, groupTextures, base) => {
+        try {
+          const held = mesh.extSplats ?? mesh.packedSplats;
+          const count = held?.numSplats ?? 0;
+          if (typeof held?.getSplat !== "function" || !(count > 0)) return null;
+          const packed = new PackedSplats();
+          const wider = Math.sqrt(stride);
+          for (let at = 0; at < count; at += stride) {
+            const { center, scales, quaternion, opacity, color } = held.getSplat(at);
+            packed.pushSplat(center, scales.multiplyScalar(wider), quaternion, opacity, color);
+          }
+          packed.needsUpdate = true;
+          const room = { mesh: new SplatMesh({ packedSplats: packed }), stride, groups: groupTextures.map((t) => thin(t, stride)), textures: [] };
+          room.textures.push(...room.groups);
+          const lamp_ = base ? thin(base, stride) : null;
+          if (lamp_) room.textures.push(lamp_);
+          if (room.groups.length > 0 || lamp_) { room.mesh.worldModifiers = [groupLight(room.groups, lamp_)]; room.mesh.updateGenerator(); }
+          room.mesh.visible = false;
+          return room;
+        } catch (error) { return null; }
+      };
+      // What stands takes the lamp's colours, a file each, side by side; what is read after it is lit reads
+      // them with its own. Until a part's are in the lamp does not light it.
+      const readLamp = async (label) => {
+        const all = () => [...meshes.flat(), ...shaded.flat(), ...outgoing].filter((m) => m.baseFile && !m.gone);
+        if (label) label.textContent = "Lamp (reading…)";
+        try {
+          await Promise.all(all().map(async (m) => {
+            const file = m.baseFile;
+            m.baseFile = undefined;
+            const base = await groupTexture(file);
+            if (m.gone) { base.dispose(); return; }
+            m.textures.push(base);
+            if (m.room) {
+              const thinned = thin(base, m.room.stride);
+              m.textures.push(thinned);
+              m.room.mesh.worldModifiers = [groupLight(m.room.groups, thinned)];
+              m.room.mesh.updateGenerator();
+            }
+            m.light = groupLight(m.groupTextures ?? [], base);
+            setWorld(m.mesh, m.light, m.kind ? m.applied : undefined, m.objects);
+          }));
+        } catch (error) { /* a part whose colours could not be read is not lit by the lamp */ }
+        if (label) label.textContent = "Lamp";
+        shadeStale = true;
+      };
+      let shadeStale = false;   // what is shown changed: the cubes are drawn again
+      let shadeBusy = false;
+      let shadeFresh = false;   // a cube was just drawn: the gaussians are shaded from it
+      // `?rooms=0`: no room is drawn and glass and chrome are shown as they were found. The page puts it in
+      // its own address when the browser takes the graphics back while there are rooms' Sparks, and reads
+      // itself again: a room's Spark is memory, and a page that lost its graphics with them does not make
+      // them a second time.
+      const roomsWanted = params.get("rooms") !== "0";
+      let shadeFailed = !roomsWanted;  // the rooms could not be drawn: glass and chrome are shown as they were found
+      let roomKeyDrawn = null;  // what the rooms were last drawn of (`roomKey`)
+      let roomsAt = -Infinity;  // when the last pass ended, by the frames' clock
+      // WHAT IS UNDER A POINTER is asked of one gaussian in sixteen, kept as points when a part is read. Spark's
+      // own ray goes through every gaussian that is drawn, on the page's thread: a second at eight million
+      // and a quarter of one at two (headless, a desktop's processor), at every drag's first touch, with
+      // nothing drawn or answered meanwhile. A point about which to turn does not want the very gaussian.
+      const pickStride = 16;
+      const pickOf = (mesh) => {
+        try {
+          const held = mesh.extSplats ?? mesh.packedSplats;
+          const count = held?.numSplats ?? 0;
+          if (typeof held?.getSplat !== "function" || !(count > 0)) return null;
+          const points = new Float32Array(Math.ceil(count / pickStride) * 3);
+          for (let k = 0; k * 3 < points.length; ++k) {
+            const { center } = held.getSplat(k * pickStride);
+            points[k * 3] = center.x; points[k * 3 + 1] = center.y; points[k * 3 + 2] = center.z;
+          }
+          return points;
+        } catch (error) { return null; }
+      };
+      // WHERE A KIND'S ROOM IS DRAWN FROM: the middle of where its gaussians are, not of the box that holds
+      // them all. A few gaussians found far from the object (a part's strays) stretch the box, and its middle
+      // was then a metre and more from the chrome knight -- beside the glass one, whose cube the chrome read.
+      // A mesh's middle is the median of one gaussian in so many, an axis at a time, in the mesh's own space;
+      // a kind's is its meshes' by how many gaussians each holds.
+      const heartOf = (shape, count) => {
+        const step = Math.max(1, Math.floor(shape.count / 4096));
+        const xs = [], ys = [], zs = [];
+        for (let at = 0; at < shape.count; at += step) { xs.push(shape.centres[at * 3]); ys.push(shape.centres[at * 3 + 1]); zs.push(shape.centres[at * 3 + 2]); }
+        if (xs.length === 0) return null;
+        const median = (list) => Float32Array.from(list).sort()[list.length >> 1];
+        return { at: new THREE.Vector3(median(xs), median(ys), median(zs)), count: Math.max(count, xs.length) };
+      };
+      // A SMOOTH NORMAL A GAUSSIAN. A gaussian's axis is its own disc's, and the discs of a surface lie a
+      // little apart from one another: each read the room along its own ray and the surface drew as a mosaic,
+      // which a wide cone of rays hid by blurring what the glass shows. The surface's normal at a gaussian is
+      // taken from its neighbours instead: the axes of the kind's gaussians are gathered a cell of a grid
+      // (as n n^T, which does not ask which way an axis points), a gaussian blends the eight cells about it,
+      // and the direction that sum holds most of is its normal. It is kept a texel a gaussian, as a group's
+      // light and the ids are, and worked out again when the kind's parts change. Until it is, the texel says
+      // so (alpha nought) and the gaussian keeps its own axis and the wide cone.
+      const smoothCell = 1 / 60;   // a cell, of the thing's size
+      const shapeOf = (mesh) => {
+        const centres = [], axes = [];
+        const axis = new THREE.Vector3();
+        // The mesh's box of centres, as Spark's `getBoundingBox(true)` gives it: asked of Spark later, it
+        // would go through gaussians the page no longer keeps.
+        const box = new THREE.Box3();
+        let count = 0;
+        mesh.forEachSplat((at, centre, scales, quaternion) => {
+          box.expandByPoint(centre);
+          // The shortest of the three, as the shader's `lensAxis` picks it.
+          if (scales.x <= scales.y) axis.set(scales.x <= scales.z ? 1 : 0, 0, scales.x <= scales.z ? 0 : 1);
+          else axis.set(0, scales.y <= scales.z ? 1 : 0, scales.y <= scales.z ? 0 : 1);
+          axis.applyQuaternion(quaternion);
+          centres[at * 3] = centre.x; centres[at * 3 + 1] = centre.y; centres[at * 3 + 2] = centre.z;
+          axes[at * 3] = axis.x; axes[at * 3 + 1] = axis.y; axes[at * 3 + 2] = axis.z;
+          count = Math.max(count, at + 1);
+        });
+        const high = Math.max(Math.ceil(count / groupWide), 1);
+        const texels = new Uint8Array(groupWide * high * 4);
+        const texture = new THREE.DataTexture(texels, groupWide, high, THREE.RGBAFormat, THREE.UnsignedByteType);
+        texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter;
+        texture.needsUpdate = true;
+        return { count, centres: Float32Array.from(centres), axes: Float32Array.from(axes), texels, texture, box };
+      };
+      // The normals of one kind's parts, from all of them together: `cell` is in the parts' own units.
+      // WORKED OUT IN A WORKER. On the page's thread, in slices of thirty milliseconds between its frames, the
+      // 1.3 M gaussians of a scene's glass and mirrors took two to three seconds by the clock for 0.6 s of
+      // arithmetic -- a third of a load, and the detail waits for it before it is shown. The function below
+      // is the worker's whole source; where a worker cannot be made it is called here, in one piece.
+      const normalsOf = (parts, cell, turn) => {
+        const slots = new Map();
+        let sums = new Float64Array(6 * 4096), used = 0;
+        const keyOf = (x, y, z) => (x & 4095) + (y & 4095) * 4096 + (z & 4095) * 16777216;
+        for (const { centres, axes, count } of parts) {
+          for (let i = 0; i < count; ++i) {
+            const key = keyOf(Math.floor(centres[i * 3] / cell), Math.floor(centres[i * 3 + 1] / cell), Math.floor(centres[i * 3 + 2] / cell));
+            let slot = slots.get(key);
+            if (slot === undefined) {
+              slot = used++;
+              slots.set(key, slot);
+              if (used * 6 > sums.length) { const more = new Float64Array(sums.length * 2); more.set(sums); sums = more; }
+            }
+            const x = axes[i * 3], y = axes[i * 3 + 1], z = axes[i * 3 + 2], o = slot * 6;
+            sums[o] += x * x; sums[o + 1] += x * y; sums[o + 2] += x * z; sums[o + 3] += y * y; sums[o + 4] += y * z; sums[o + 5] += z * z;
+          }
+        }
+        // Into the world, where the shader reads them: the parts' turn is the scene's.
+        const [qx, qy, qz, qw] = turn;
+        const t = new Float64Array(6);
+        return parts.map(({ centres, axes, count }) => {
+          const texels = new Uint8Array(count * 4);
+          for (let i = 0; i < count; ++i) {
+            const gx = centres[i * 3] / cell - 0.5, gy = centres[i * 3 + 1] / cell - 0.5, gz = centres[i * 3 + 2] / cell - 0.5;
+            const ix = Math.floor(gx), iy = Math.floor(gy), iz = Math.floor(gz);
+            const fx = gx - ix, fy = gy - iy, fz = gz - iz;
+            t.fill(0);
+            for (let c = 0; c < 8; ++c) {
+              const dx = c & 1, dy = (c >> 1) & 1, dz = c >> 2;
+              const slot = slots.get(keyOf(ix + dx, iy + dy, iz + dz));
+              if (slot === undefined) continue;
+              const w = (dx ? fx : 1 - fx) * (dy ? fy : 1 - fy) * (dz ? fz : 1 - fz), o = slot * 6;
+              for (let k = 0; k < 6; ++k) t[k] += w * sums[o + k];
+            }
+            // The direction the sum holds most of, from the gaussian's own axis: a few turns of the product.
+            let x = axes[i * 3], y = axes[i * 3 + 1], z = axes[i * 3 + 2];
+            for (let turnOf = 0; turnOf < 4; ++turnOf) {
+              const nx = t[0] * x + t[1] * y + t[2] * z, ny = t[1] * x + t[3] * y + t[4] * z, nz = t[2] * x + t[4] * y + t[5] * z;
+              const length = Math.hypot(nx, ny, nz);
+              if (!(length > 1e-9)) break;
+              x = nx / length; y = ny / length; z = nz / length;
+            }
+            // Turned by the quaternion, as three's Vector3 does it.
+            const tx = 2 * (qy * z - qz * y), ty = 2 * (qz * x - qx * z), tz = 2 * (qx * y - qy * x);
+            const wx = x + qw * tx + qy * tz - qz * ty, wy = y + qw * ty + qz * tx - qx * tz, wz = z + qw * tz + qx * ty - qy * tx;
+            texels[i * 4] = Math.round(wx * 127.5 + 127.5); texels[i * 4 + 1] = Math.round(wy * 127.5 + 127.5);
+            texels[i * 4 + 2] = Math.round(wz * 127.5 + 127.5); texels[i * 4 + 3] = 255;
+          }
+          return texels;
+        });
+      };
+      const normalsWorker = { worker: undefined, asked: 0, waiting: new Map() };
+      const smoothNormals = async (entries, cell) => {
+        const parts = entries.map(({ shape }) => ({ centres: shape.centres, axes: shape.axes, count: shape.count }));
+        const turn = root.getWorldQuaternion(new THREE.Quaternion()).toArray();
+        if (normalsWorker.worker === undefined) {
+          try {
+            const source = `const normalsOf = ${normalsOf.toString()};\nonmessage = (e) => { const texels = normalsOf(e.data.parts, e.data.cell, e.data.turn); postMessage({ id: e.data.id, texels }, texels.map((t) => t.buffer)); };`;
+            normalsWorker.worker = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
+            normalsWorker.worker.onmessage = (e) => { normalsWorker.waiting.get(e.data.id)?.(e.data.texels); normalsWorker.waiting.delete(e.data.id); };
+            normalsWorker.worker.onerror = () => { for (const answer of normalsWorker.waiting.values()) answer(null); normalsWorker.waiting.clear(); normalsWorker.worker = null; };
+          } catch (error) { normalsWorker.worker = null; }
+        }
+        let texels = null;
+        if (normalsWorker.worker) {
+          texels = await new Promise((answer) => {
+            const id = ++normalsWorker.asked;
+            normalsWorker.waiting.set(id, answer);
+            normalsWorker.worker.postMessage({ id, parts, cell, turn });
+          });
+        }
+        texels ??= normalsOf(parts, cell, turn);
+        entries.forEach(({ shape }, k) => { shape.texels.set(texels[k]); shape.texture.needsUpdate = true; });
+      };
+      // The cones a look is read over (a part of a radian about its ray): with a smooth normal, and without.
+      // HOW A KIND LOOKS, four numbers the shading reads: how far a glass's look through is the one a ball of
+      // glass gives (0: the eye's own ray, a pane's; 1: bent in at the face met and out again at a far face
+      // that mirrors it), the cone about the mirrored ray, the cone about the look through, and how much of
+      // the room's brightest is added as a highlight.
+      // With the eye's own ray and cones of a tenth of a radian the glass was frosted and even where the
+      // engine's is clear; these are the ones looked at beside the engine's pictures from three eyes.
+      // `window.__player.look(kind, ...four)` sets them on a page that is open, to see others.
+      const looks = {
+        glass: dyno.dynoVec4(new THREE.Vector4(0.85, 0.03, 0.015, 1.5)),
+        mirror: dyno.dynoVec4(new THREE.Vector4(0.0, 0.04, 0.0, 1.0)),
+      };
+      const shadingOf = (kind, ior, tint, normals) => {
+        const index = dyno.dynoFloat(ior);
+        const through = dyno.dynoVec3(new THREE.Vector3(tint[0], tint[1], tint[2]));
+        const mirror = kind.which === "mirror";
+        return dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
+          const shade = new dyno.Dyno({
+            inTypes: { gsplat: dyno.Gsplat, eye: "vec3", middle: "vec3", reach: "float", room: "samplerCube",
+                       index: "float", through: "vec3", normals: "sampler2D", sky: "vec3", look: "vec4" },
+            outTypes: { gsplat: dyno.Gsplat },
+            inputs: { gsplat, eye: kind.eye, middle: kind.middle, reach: kind.reach, room: kind.room, index, through,
+                      normals: dyno.dynoSampler2D(normals), sky: skyLight, look: looks[kind.which] },
+            globals: () => [dyno.defineGsplat, dyno.unindent(`
+              vec3 lensAxis(vec4 q, vec3 scales) {
+                vec3 axis = scales.x <= scales.y ? (scales.x <= scales.z ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0))
+                                                 : (scales.y <= scales.z ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0));
+                return normalize(axis + 2.0 * cross(q.xyz, cross(q.xyz, axis) + q.w * axis));
+              }
+              // The cube was drawn from the middle of what is shaded: a ray from elsewhere is read where it
+              // would meet a ball of the room's reach about that middle.
+              vec3 lensLook(vec3 from, vec3 along, vec3 middle, float reach) {
+                vec3 o = from - middle;
+                float b = dot(o, along);
+                float t = -b + sqrt(max(b * b - dot(o, o) + reach * reach, 0.0));
+                return o + along * t;
+              }
+              // The cube is read as light; a gaussian's colour is kept as a display shows it.
+              vec3 lensEncoded(vec3 light) { return pow(max(light, vec3(0.0)), vec3(1.0 / 2.2)); }
+              // A mirror's look, softened: each gaussian is one flat disc with one colour, and discs side by
+              // side whose axes differ a little read the room far apart -- one the wall, the next nothing --
+              // which from near was a mosaic of black and bright facets. The room is read at thirteen rays in
+              // a cone about the mirrored one and averaged, so neighbours share most of what they read.
+              vec4 lensSoft(samplerCube room, vec3 p, vec3 r, vec3 middle, float reach, float spread) {
+                vec4 sum = texture(room, lensLook(p, r, middle, reach));
+                if (spread <= 0.0) { return sum; }
+                vec3 t = normalize(cross(r, abs(r.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+                vec3 b = cross(r, t);
+                sum *= 2.0;
+                for (int k = 0; k < 6; ++k) {
+                  float a = float(k) * 1.0471976;
+                  sum += texture(room, lensLook(p, normalize(r + spread * (cos(a) * t + sin(a) * b)), middle, reach));
+                }
+                for (int k = 0; k < 6; ++k) {
+                  float a = (float(k) + 0.5) * 1.0471976;
+                  sum += texture(room, lensLook(p, normalize(r + 0.5 * spread * (cos(a) * t + sin(a) * b)), middle, reach));
+                }
+                return sum / 14.0;
+              }
+            `)],
+            statements: ({ inputs, outputs }) => dyno.unindentLines(`
+              ${outputs.gsplat} = ${inputs.gsplat};
+              if (isGsplatActive(${outputs.gsplat}.flags)) {
+                vec3 p = ${inputs.gsplat}.center;
+                vec3 v = normalize(p - ${inputs.eye});
+                vec3 n = lensAxis(${inputs.gsplat}.quaternion, ${inputs.gsplat}.scales);
+                // The surface's normal where it has been worked out from the neighbours, and then a narrow cone.
+                vec4 smoothed = texelFetch(${inputs.normals}, ivec2(${inputs.gsplat}.index % ${groupWide}, ${inputs.gsplat}.index / ${groupWide}), 0);
+                bool smooth_ = smoothed.a > 0.5;
+                if (smooth_) { n = normalize(smoothed.rgb * 2.0 - 1.0); }
+                if (dot(n, v) > 0.0) { n = -n; }
+                // Where the room holds nothing along a ray -- what no camera saw, and the sky a found scene
+                // does not have -- the cube's alpha says so, and the gaussian shows there the colour it was
+                // found with, not black.
+                vec3 found = pow(max(${inputs.gsplat}.rgba.rgb, vec3(0.0)), vec3(2.2));
+                // Without the neighbours' normal the cones are three times as wide, as they were before it.
+                float wide = smooth_ ? 1.0 : 3.0;
+                vec3 back = reflect(v, n);
+                vec4 mirrored4 = lensSoft(${inputs.room}, p, back, ${inputs.middle}, ${inputs.reach}, ${inputs.look}.y * wide);
+                vec3 seenMirrored = mirrored4.rgb + (1.0 - mirrored4.a) * found;
+                // A HIGHLIGHT: the room is kept as a display shows it, and a lamp or a sunlit wall in it is no
+                // brighter than white. What the mirrored ray itself meets -- one read, no cone -- is taken for
+                // a light where it is near that white, and added.
+                vec3 hot = texture(${inputs.room}, lensLook(p, back, ${inputs.middle}, ${inputs.reach})).rgb;
+                vec3 shine = ${inputs.look}.w * hot * smoothstep(0.55, 0.95, max(hot.r, max(hot.g, hot.b)));
+                ${mirror ? `
+                vec3 light = ${inputs.through} * (seenMirrored + shine);` : `
+                float cosine = clamp(-dot(n, v), 0.0, 1.0);
+                float f0 = (${inputs.index} - 1.0) / (${inputs.index} + 1.0);
+                f0 *= f0;
+                float mirrored = f0 + (1.0 - f0) * pow(1.0 - cosine, 5.0);
+                vec3 bent = refract(v, n, 1.0 / ${inputs.index});
+                if (dot(bent, bent) < 1.0e-6) { bent = v; }
+                // A SOLID HAS A FAR FACE. Each gaussian is one face, and the ray bent at it alone was read as
+                // what the glass shows: a look that turns with the face and hardly with the eye, so the glass
+                // seemed painted. Read along the eye's own ray instead -- a pane's far face undoes the first --
+                // every gaussian showed what is straight behind it, and the glass was frosted and even. The
+                // far face is taken here as a ball's: the one that mirrors the face met about the ray inside,
+                // where the ray is bent as much again. A solid is neither, and the look is most of the way
+                // to the ball's (look.x): what is behind comes through turned and gathered, bright and dark
+                // side by side, as through the engine's. With the discs' own axes (no normal from the
+                // neighbours yet) it stays near the eye's ray: a ball's bend there is facets.
+                vec3 farNormal = n - 2.0 * dot(n, bent) * bent;
+                vec3 out_ = refract(bent, -farNormal, ${inputs.index});
+                if (dot(out_, out_) < 1.0e-6) { out_ = bent; }
+                bent = normalize(mix(v, out_, smooth_ ? ${inputs.look}.x : 0.15));
+                // Softened as a mirror's look is, and for the same reason: one ray a face, the faces' axes a
+                // little apart, drew the glass in facets.
+                vec4 behind4 = lensSoft(${inputs.room}, p, bent, ${inputs.middle}, ${inputs.reach}, ${inputs.look}.z * wide);
+                // Through the glass, where the room holds nothing, is what the eye sees past it there: the
+                // page's sky. (Mirrored, it is the colour the gaussian was found with: a found scene has no
+                // sky to mirror.) With the found colour here a glass before a dark door stayed milky.
+                vec3 seenBehind = behind4.rgb + (1.0 - behind4.a) * ${inputs.sky};
+                vec3 light = mirrored * seenMirrored + shine + (1.0 - mirrored) * ${inputs.through} * ${inputs.through} * seenBehind;`}
+                ${outputs.gsplat}.rgba.rgb = lensEncoded(light);
+              }
+            `),
+          });
+          return { gsplat: shade.outputs.gsplat };
+        });
+      };
+      // A PART'S HISTORY IN ONE FILE: its spans one after another by the frame each stands until, so what stands
+      // at a frame is the file's gaussians from a count on. The ones before it are drawn with no opacity.
+      const cutOf = (mesh, column, spans) => {
+        const from = dyno.dynoFloat(0);
+        mesh.objectModifier = dyno.dynoBlock({ gsplat: dyno.Gsplat }, { gsplat: dyno.Gsplat }, ({ gsplat }) => {
+          const cut = new dyno.Dyno({
+            inTypes: { gsplat: dyno.Gsplat, from: "float" }, outTypes: { gsplat: dyno.Gsplat }, inputs: { gsplat, from },
+            globals: () => [dyno.defineGsplat],
+            statements: ({ inputs, outputs }) => dyno.unindentLines(`
+              ${outputs.gsplat} = ${inputs.gsplat};
+              if (float(${inputs.gsplat}.index) < ${inputs.from}) ${outputs.gsplat}.rgba.a = 0.0;
+            `),
+          });
+          return { gsplat: cut.outputs.gsplat };
+        });
+        mesh.updateGenerator();
+        return { from, spans: spans.map((span) => [span[0], span[column]]) };
+      };
+      // How many of a history's gaussians no longer stand at frame `at`, set where its mesh reads it.
+      const cutAt = (cut, at) => {
+        let gone = 0;
+        for (const [until, count] of cut.spans) if (until <= at) gone += count;
+        cut.from.value = gone;
+        return gone;
+      };
+      // WHAT IS ON THE SCREEN while a finer detail is read behind it (`keeping`) is the level that was drawn
+      // first, in `outgoing`; otherwise the parts read so far. The room is drawn from these and for these, so
+      // the glass and the chrome are shaded by the eye while the page still reads, not only once it has.
+      const drawnOwn = () => (keeping ? outgoing.filter((m) => !m.kind) : meshes.flat());
+      const drawnShaded = () => (keeping ? outgoing.filter((m) => m.kind) : shaded.flat());
+      // A GLASS OR A CHROME IS NOT DRAWN UNTIL IT IS SHADED. Whether a mesh stands at the frame the timeline is
+      // at is kept beside it (`stands`); a glass's or a mirror's is drawn where it stands and its kind's room
+      // has been drawn -- or the option is off, or the rooms could not be drawn, and it is shown as found.
+      // Before, the level drawn first showed its knights as they were found for the seconds its room took,
+      // and then swapped them. What has once been drawn is not taken away again.
+      const revealed = (s) => !s.kind || s.seen || !settings.glass || kinds[s.kind].ready || shadeFailed;
+      const setStands = (m, stands) => {
+        m.stands = stands;
+        m.mesh.visible = stands && revealed(m);
+        if (m.mesh.visible) m.seen = true;
+      };
+      const reveal = () => { for (const s of [...shaded.flat(), ...outgoing.filter((m) => m.kind)]) setStands(s, Boolean(s.stands)); };
+      const shadedShown = (which) => drawnShaded().filter((s) => s.kind === which && s.stands);
+      // What a room is drawn of: the parts that stand to the end and the glass and mirrors that stand now.
+      // The timeline moved over frames that change none of them leaves the rooms as they are.
+      const roomKey = () => [...drawnOwn().filter((m) => m.until === 0), ...drawnShaded().filter((s) => s.stands)]
+        .map((m) => m.mesh.uuid).join(" ");
+      // By the eye, or as the picture each was found with: the option's. What is being gathered behind the
+      // scene takes its shading as it is read, so it comes in shaded.
+      const applyShading = () => {
+        for (const s of [...shaded.flat(), ...outgoing.filter((m) => m.kind)]) {
+          // What is set is kept here: Spark's mesh takes a modifier and does not hand it back.
+          const wanted = settings.glass && kinds[s.kind].ready ? s.shading : undefined;
+          if (s.applied !== wanted) { setWorld(s.mesh, s.light, wanted, s.objects); s.applied = wanted; }
+        }
+        reveal();
+      };
+
+      // THE CAMERA BEING PROCESSED, drawn: the frustum of the frame the timeline is at -- its eye, its four
+      // edges out to a few metres and the frame at their end -- and, dimmer, the path of every frame's eye.
+      const frustum = new THREE.LineSegments(new THREE.BufferGeometry(),
+        new THREE.LineBasicMaterial({ color: 0xffd166, depthTest: false, transparent: true }));
+      frustum.renderOrder = 10;
+      frustum.frustumCulled = false;
+      scene.add(frustum);
+      const path = new THREE.Line(new THREE.BufferGeometry(),
+        new THREE.LineBasicMaterial({ color: 0x8ab4ff, depthTest: false, transparent: true, opacity: 0.55 }));
+      path.renderOrder = 9;
+      path.frustumCulled = false;
+      scene.add(path);
+      const marker = new THREE.Mesh(new THREE.RingGeometry(0.72, 1, 40),
+        new THREE.MeshBasicMaterial({ color: 0xffd166, depthTest: false, transparent: true, opacity: 0.95,
+                                      side: THREE.DoubleSide }));
+      marker.renderOrder = 11;
+      marker.visible = false;
+      marker.raycast = () => {};
+      scene.add(marker);
+      let frustumOf = null;     // the view the frustum is drawn for, when there is one
+      const drawPath = () => {
+        const source = index.parts.map(partOf);
+        const eyes = source.filter((p) => cameras.has(p.camera)).map((p) => place(cameras.get(p.camera).eye));
+        path.geometry.dispose();   // a path that grows wants a geometry of its new length
+        path.geometry = new THREE.BufferGeometry().setFromPoints(eyes);
+      };
+      const drawFrustum = (view) => {
+        frustumOf = view ?? null;
+        if (!view) { frustum.visible = false; return; }
+        const eye = place(view.eye);
+        const forward = place(view.target).sub(eye).normalize();
+        const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+        const up = new THREE.Vector3().crossVectors(right, forward);
+        // The frame's lens: a focal length over a 24.576 mm aperture across, sixteen by nine.
+        const halfWide = 12.288 / (view.focal ?? 20);
+        const halfHigh = halfWide * 9 / 16;
+        const reach = Math.max(across * unit * 0.12, 1.0);
+        const corner = (x, y, d) => eye.clone().addScaledVector(forward, d).addScaledVector(right, x * halfWide * d)
+                                              .addScaledVector(up, y * halfHigh * d);
+        const far = [corner(-1, -1, reach), corner(1, -1, reach), corner(1, 1, reach), corner(-1, 1, reach)];
+        const near = [corner(-1, -1, reach * 0.08), corner(1, -1, reach * 0.08), corner(1, 1, reach * 0.08),
+                      corner(-1, 1, reach * 0.08)];
+        const lines = [];
+        for (let k = 0; k < 4; ++k) {
+          lines.push(eye, far[k], far[k], far[(k + 1) % 4], near[k], near[(k + 1) % 4]);
+        }
+        frustum.geometry.setFromPoints(lines);
+      };
+      // What of the page's own lines is drawn: the options', and never the frustum while it is ridden.
+      const showLines = () => {
+        // A matte is the gaussians' alone: none of the page's own lines over it.
+        frustum.visible = settings.frustum && frustumOf !== null && !follow.checked && !matteShown();
+        path.visible = settings.path && !matteShown();
+      };
+
+      const aim = (view) => {
+        camera.position.copy(place(view.eye));
+        camera.lookAt(place(view.target));
+        // The lens the frame was rendered through: a focal length over a 24.576 mm aperture, across.
+        const wide = 2 * Math.atan(12.288 / (view.focal ?? 20));
+        camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(wide / 2) / camera.aspect));
+        camera.updateProjectionMatrix();
+      };
+      // THE TIMELINE. Of the scene as it grew it is the frames: so many of its parts are drawn. Of a level of
+      // detail -- the scene whole, with no frames of its own -- it is the walk the scene was rendered along:
+      // every part is drawn and the timeline is at one of the frames' cameras, which Play rides. Either way
+      // there is something to play.
+      const walk = () => index.parts.map(partOf).filter((p) => cameras.has(p.camera));
+      const steps = () => detail === 0 ? meshes.length : walk().length;
+      let cursor = 0;           // where the timeline is: parts drawn (the grown scene), or a camera of the walk
+      // THE HISTORY IS READ WHEN THE TIMELINE FIRST LEAVES ITS END. What a part's frame found that a later
+      // frame took out or refined stands only until that frame: at the end of the timeline, where the page
+      // opens, none of it is drawn -- and it was read with the rest, a file a span with its groups' and its
+      // ids beside it (three fifths of a load's requests at eight million gaussians, a seventh of its
+      // bytes, and its gaussians held on the device). It is read the first time the timeline is at an
+      // earlier frame -- dragged, played, or asked for by the address -- behind the scene, which shows that
+      // frame without it until it is in (holes where a later frame refined what stood). A span that would
+      // stand at the end (none is written so) is read with its part.
+      let historyWanted = false, historyBusy = false;
+      let reader = null;        // the load at hand's way of reading a part: { mine, readPart }
+      const laterSpan = (span) => { const until = span.until ?? 0; return until > 0 && until <= frameOf(parts.length - 1); };
+      const byOrder = (a, b) => a.order - b.order;
+      const readHistory = async () => {
+        if (historyBusy || detail !== 0 || !reader || reader.mine !== generation) return;
+        const mine = generation;
+        const lacking = () => meshes.map((_, k) => k).filter((k) => !meshes[k].history);
+        const weight = (k) => (parts[k].history ?? []).filter(laterSpan).reduce((sum, span) => sum + countOf({ gaussians: 0, ...span }), 0);
+        const total = lacking().reduce((sum, k) => sum + weight(k), 0);
+        if (total === 0) { for (const own of meshes) own.history = true; return; }
+        historyBusy = true;
+        let read = 0;
+        const tell = (n) => {
+          read += n;
+          if (mine !== generation || loading) return;
+          report(`reading the scene's earlier frames… ${(read / 1e6).toFixed(2)} of ${(total / 1e6).toFixed(2)} M gaussians`);
+          setProgress(read / total);
+        };
+        tell(0);
+        try {
+          while (mine === generation) {
+            const next = lacking().slice(0, 4);
+            if (next.length === 0) break;
+            await Promise.all(next.map(async (k) => {
+              const standing = meshes[k];
+              standing.history = true;
+              if (weight(k) === 0) return;
+              try {
+                const { own, beside } = await reader.readPart(parts[k], k, true, tell);
+                if (mine !== generation || meshes[k] !== standing) { letGo([...own, ...beside]); return; }
+                for (const m of [...own, ...beside]) {
+                  // In the rooms' scene too, as a part read with its history puts it: a glass that stood
+                  // at an earlier frame is in the chrome's room at that frame.
+                  if (m.room) roomRoot.add(m.room.mesh);
+                  m.mesh.visible = false;
+                  (keeping ? staging : root).add(m.mesh);
+                }
+                meshes[k].push(...own);
+                meshes[k].sort(byOrder);
+                shaded[k].push(...beside);
+                shaded[k].sort(byOrder);
+              } catch (error) {
+                // A file that did not come is asked for again, twice; after that its frames are shown without it.
+                standing.tried = (standing.tried ?? 0) + 1;
+                if (standing.tried < 3 && mine === generation && meshes[k] === standing) { standing.history = false; await new Promise((go) => setTimeout(go, 400 * standing.tried)); }
+                else console.warn("a part's history could not be read: its frames are shown without it", error);
+              }
+            }));
+            if (mine === generation) { applyShading(); show(cursor, false); }
+          }
+        } finally {
+          historyBusy = false;
+          if (mine === generation && !loading) { report(summary()); setProgress(null); }
+        }
+      };
+      const show = (count, moveCamera) => {
+        cursor = Math.max(0, Math.min(count, steps()));
+        if (detail === 0 && !historyWanted && cursor < meshes.length) { historyWanted = true; readHistory(); }
+        shown = detail === 0 ? cursor : meshes.length;
+        let gaussians = 0;
+        // THE SCENE AS IT STOOD at the frame the timeline is at: a part is drawn from its frame on, and what
+        // of it a later frame took out or refined (its history) only until that frame.
+        const at = shown > 0 ? frameOf(shown - 1) : 0;
+        const stands = (k, until) => k < shown && (until === 0 || at < until);
+        meshes.forEach((list, k) => {
+          for (const m of [...list, ...shaded[k]]) {
+            setStands(m, stands(k, m.until));
+            if (m.stands) gaussians += m.gaussians - (m.cut ? cutAt(m.cut, at) : 0);
+          }
+        });
+        if (roomKey() !== roomKeyDrawn) shadeStale = true;
+        const count_ = detail === 0 ? parts.length : walk().length;
+        slider.max = String(Math.max(count_, 1));
+        slider.value = String(cursor);
+        const playable = detail === 0 ? timed() : count_ > 1;
+        slider.disabled = !playable;
+        playButton.disabled = !playable;
+        const part = cursor > 0 ? (detail === 0 ? parts[cursor - 1] : walk()[cursor - 1]) : null;
+        const of = `${cursor} of ${count_}${index.growing && detail === 0 ? "+" : ""}`;
+        const million = `${(gaussians / 1e6).toFixed(2)} M gaussians`;
+        where.innerHTML = (index.growing && detail === 0 ? '<span class="live">● rendering</span> · ' : "") +
+          (detail > 0 ? `level ${detail} of ${levels.length} · ${million}${count_ > 1 ? ` · camera ${of}` : ""}`
+                      : part && part.frame ? `frame ${of} · ${million}` : `part ${of} · ${million}`);
+        drawFrustum(part && cameras.has(part.camera) ? cameras.get(part.camera) : null);
+        showLines();
+        if (moveCamera && follow.checked && part && cameras.has(part.camera)) aim(cameras.get(part.camera));
+        keepAddress();
+      };
+      // Where the timeline stands as parts come in: at the frame the address asked for, as far as what is
+      // read reaches it; else at the end of a scene that is growing, or where it was.
+      const stand = () => {
+        if (asked.frame !== null) {
+          const to = Math.min(asked.frame, steps());
+          show(to, to !== cursor || shown === 0);
+          atEnd = detail === 0 && asked.frame >= parts.length;
+        } else if (detail === 0 && atEnd && !playing) show(meshes.length, true);
+        else show(cursor, false);
+      };
+      // From outside and above, the whole of what the frames reached in view: where the frustum is seen at work.
+      const overview = () => {
+        const middle = place([(index.min[0] + index.max[0]) / 2, (index.min[1] + index.max[1]) / 2,
+                              (index.min[2] + index.max[2]) / 2]);
+        const far = across * unit;
+        camera.position.copy(middle).add(new THREE.Vector3(-0.8 * far, 0.95 * far, 0.8 * far));
+        camera.lookAt(middle.clone().add(new THREE.Vector3(0, -0.18 * far, 0)));
+        camera.fov = settings.fov;
+        camera.updateProjectionMatrix();
+      };
+
+      const summary = () => {
+        const total = totalOf(parts);
+        const seconds = index.parts.map(partOf).reduce((sum, p) => sum + (p.seconds ?? 0), 0);
+        const frames = index.parts.map(partOf).filter((p) => p.frame).length;
+        return `${(total / 1e6).toFixed(2)} M gaussians` +
+               (detail > 0 ? ` of ${(fullCount / 1e6).toFixed(2)} M (level ${detail})` : "") +
+               (frames > 0 ? ` · ${frames} rendered frames` : "") + (seconds > 0 ? ` · ${Math.round(seconds)} s of rendering` : "");
+      };
+      let fpsText = "";
+      // Whether the glass and the chrome are shaded by the eye, said with the rest: a device that cannot draw
+      // their room leaves them as they were found, the same from anywhere, and says so here and why.
+      let shadeNote = roomsWanted ? "" : " · glass and chrome as found, not by the eye (?rooms=0: the graphics were lost once with their rooms; Options draws them again)";
+      // THE WAY BACK FROM `?rooms=0`: the flag stays in the address, and in an address handed on, after the
+      // one time the graphics were lost; a line in the options takes it out and reads the page again.
+      if (!roomsWanted) {
+        $("optRoomsRow").hidden = false;
+        $("optRooms").addEventListener("click", () => {
+          const to = new URLSearchParams(location.search);
+          to.delete("rooms");
+          location.search = to.toString();
+        });
+      }
+      const say = (text) => { statusLine.textContent = text + readNote + shadeNote + (settings.fps && fpsText ? ` · ${fpsText}` : ""); };
+      let said = "loading…";
+      const report = (text) => { said = text; say(text); };
+      retold = () => say(said);
+
+      // Parts are read in order, so the scene is seen growing while it loads too.
+      const loadMore = async () => {
+        if (loading) return;
+        loading = true;
+        const mine = generation;
+        // HOW FAR THE READING IS, said and drawn as a bar: parts read of the parts there are, and gaussians
+        // of theirs -- the index gives a part's gaussians, not its bytes -- counted a file at a time, a part's
+        // history and its glass and mirrors with it. It is the load at hand that is measured: the coarse
+        // level drawn first fills the bar once, and the detail read behind it ("refining") fills it again.
+        const weigh = (p) => [p, ...(p.history ?? []).filter((span) => historyWanted || !laterSpan(span))].reduce((sum, span) => sum + countOf({ gaussians: 0, ...span }), 0);
+        // A file's ids, or null where it has none or they cannot be read: its gaussians are then no object's.
+        const idsOf = async (file, count, counted) => {
+          if (!file) return null;
+          try { return await idsTexture(file, count, counted); } catch (error) { return null; }
+        };
+        let readAhead = 0;        // gaussians read of the parts being read, not yet in the scene
+        const tell = () => {
+          if (mine !== generation) return;
+          const total = parts.reduce((sum, p) => sum + weigh(p), 0);
+          const read = Math.min(parts.slice(0, meshes.length).reduce((sum, p) => sum + weigh(p), 0) + readAhead, total);
+          const counted = total > 0 ? ` · ${(read / 1e6).toFixed(2)} of ${(total / 1e6).toFixed(2)} M gaussians` : "";
+          report(`${keeping ? "refining" : "loading"}… ${meshes.length} of ${parts.length} parts${counted}`);
+          setProgress(total > 0 ? read / total : meshes.length / Math.max(parts.length, 1));
+        };
+        if (meshes.length < parts.length) tell();
+        // A PART'S FILES ARE READ SIDE BY SIDE, AND THE NEXT PARTS ARE BEGUN WHILE IT IS READ. Read one file
+        // after another, a part waited for its own file, then each group's, then its ids, then the same for
+        // its glass and its mirrors: at eight million gaussians three fifths of the load was the groups'
+        // files, each waited for alone. The parts still come to stand in their order.
+        const level = detail, lit = litFirst;   // of this load: a change of detail leaves it behind
+        const stride = Math.max(1, Math.ceil(totalOf(parts) / roomCap));   // one gaussian in so many, for the rooms
+        // The part as the rooms see it, its textures let go with the part's.
+        const withRoom = (entry, textures, base) => {
+          entry.room = roomOf(entry.mesh, stride, entry.groupTextures, base);
+          if (entry.room) entry.textures.push(...entry.room.textures);
+          return entry;
+        };
+        // `later`: the spans of its history left for later, alone (see `readHistory`), counted by `said`.
+        const readPart = async (part, place_, later = false, said = null) => {
+          const own = [], beside = [];
+          let counted = 0;
+          const count = (n) => { counted += n; if (said) said(n); else if (mine === generation) { readAhead += n; tell(); } };
+          const withHistory = later || historyWanted;
+          const reads = [];
+          [part, ...(part.history ?? [])].forEach((span, spanOrder) => {
+            const left = span !== part && laterSpan(span);
+            if (later ? !left : left && !withHistory) return;
+            // The part itself and, where the scene was handed on with its history, what the part's frame
+            // found that stood only for a while: each a file, with its glass and its mirrors beside it.
+            const until = span === part ? 0 : span.until ?? 0;
+            const spanAt = spanOrder - 1;
+            const of = (held) => {
+              const entry = (level === 0 ? held.parts : held.levels?.[level - 1]?.parts)?.[place_];
+              return span === part ? entry : entry?.history?.[spanAt];
+            };
+            const fileOf = (entry) => typeof entry === "string" ? entry : entry?.rgb ?? entry?.file;   // its colours alone, where it has them so
+            // The light of a file of the span: the span's own (`which` undefined), its glass's or its mirrors'.
+            // A GLASS AND A MIRROR TAKE THEIR GROUPS' LIGHT TOO: where the room holds nothing along a ray a
+            // gaussian shows the colour it was found with, and found without the lamps that was near black.
+            // A GROUP'S LIGHT AT A LEVEL OF DETAIL: where each group was handed on with the same levels as
+            // the scene (the same gaussians in the same order, a level), the level takes its groups' light
+            // as the whole scene does. The level drawn first (`litFirst`) is the scene with its lamps on
+            // already, and takes none. A part's history takes the groups' light as the part does, where
+            // each group was handed on with its history too (the same spans, in order).
+            const lightOf = async (which) => {
+              const at = (held) => (which ? fileOf(of(held)?.[which]) : fileOf(of(held)));
+              const grouped = !lit && groups.length > 0 && groups.every((g) => at(g));
+              const baseFile = at(lamp);
+              const based = lamp.wanted ? baseFile : undefined;
+              if (!grouped && !based) return { light: undefined, groupTextures: [], textures: [], baseFile };
+              const [textures, base] = await Promise.all([Promise.all(grouped ? groups.map((g) => groupTexture(at(g))) : []),
+                                                          based ? groupTexture(based) : null]);
+              return { light: groupLight(textures, base), groupTextures: textures, textures: base ? [...textures, base] : [...textures],
+                       baseFile: base ? undefined : baseFile, base };
+            };
+            if (span.file) reads.push((async () => {
+              // extSplats: Spark's packed splat keeps a centre in three half floats, a part in 2048 of its
+              // distance from the origin -- a centimetre in a stage of centimetres twenty metres across -- and
+              // gaussians a millimetre wide fell into rows with gaps between them, seen from near.
+              const [mesh, lightOfIt, ids] = await Promise.all([
+                reading(() => splatRead(span.file, { extSplats: true }), span.file),
+                lightOf(),
+                // Which prim each gaussian was made from, where the scene says: the objects' modifier after the light's.
+                prims.length > 0 ? idsOf(span.ids, span.gaussians ?? 0, span === part) : null]);
+              const marks = prims.length > 0 ? objectsOf(ids) : undefined;
+              if (lightOfIt.light || marks) setWorld(mesh, lightOfIt.light, marks);
+              const entry = { order: spanOrder * 3, mesh, until, gaussians: span.gaussians ?? 0, objects: marks, light: lightOfIt.light,
+                         groupTextures: lightOfIt.groupTextures, baseFile: lightOfIt.baseFile, ids,
+                         textures: [...lightOfIt.textures, ...(ids ? [ids] : [])], pick: pickOf(mesh), cut: span.spans ? cutOf(mesh, 1, span.spans) : null };
+              // What a later frame took out or refined is in no room: a room is the scene as it stands at the end.
+              own.push(until === 0 ? withRoom(entry, entry.textures, lightOfIt.base) : entry);
+              forgetFile(mesh);
+              count(span.gaussians ?? 0);
+            })());
+            [["glass", span.glass], ["mirror", span.mirror]].forEach(([which, made], kindOrder) => {
+              if (!made) return;
+              reads.push((async () => {
+                const [other, lightOfIt, ids] = await Promise.all([
+                  reading(() => splatRead(made.file, { extSplats: true }), made.file),
+                  lightOf(which),
+                  prims.length > 0 ? idsOf(made.ids, made.gaussians ?? 0, span === part) : null]);
+                const marks = prims.length > 0 ? objectsOf(ids) : undefined;
+                const light = lightOfIt.light;
+                if (light || marks) setWorld(other, light, marks);
+                const shape = shapeOf(other);
+                beside.push(withRoom({ order: spanOrder * 3 + 1 + kindOrder, mesh: other, kind: which, until, gaussians: made.gaussians ?? 0, shape,
+                              groupTextures: lightOfIt.groupTextures, baseFile: lightOfIt.baseFile, ids,
+                              textures: [...lightOfIt.textures, ...(ids ? [ids] : []), shape.texture], pick: pickOf(other), heart: heartOf(shape, made.gaussians ?? 0), light, objects: marks,
+                              cut: span.spans ? cutOf(other, which === "glass" ? 2 : 3, span.spans) : null,
+                              shading: shadingOf(kinds[which], made.ior ?? 1.5, made.tint ?? (which === "mirror" ? [0.95, 0.95, 0.95] : [1, 1, 1]), shape.texture) }, null, lightOfIt.base));
+                forgetFile(other);
+                count(made.gaussians ?? 0);
+              })());
+            });
+          });
+          // All of them, whatever becomes of one: what was read is then let go together.
+          const ends = await Promise.allSettled(reads);
+          own.sort((a, b) => a.order - b.order);
+          beside.sort((a, b) => a.order - b.order);
+          const failed = ends.find((end) => end.status === "rejected");
+          if (failed) { letGo([...own, ...beside]); throw failed.reason; }
+          return { own, beside, counted, withHistory };
+        };
+        reader = { mine, readPart };
+        const ahead = new Map();
+        const begin = (k) => { if (!ahead.has(k)) ahead.set(k, readPart(parts[k], k)); return ahead.get(k); };
+        try {
+          while (meshes.length < parts.length && mine === generation) {
+            const at = meshes.length;
+            for (let k = at; k < Math.min(at + 3, parts.length); ++k) begin(k);
+            const { own, beside, counted, withHistory } = await begin(at);
+            ahead.delete(at);
+            own.history = withHistory;
+            if (mine !== generation) { letGo([...own, ...beside]); break; }
+            readAhead -= counted;
+            for (const m of [...own, ...beside]) {
+              if (m.room) roomRoot.add(m.room.mesh);
+              m.mesh.visible = false;
+              (keeping ? staging : root).add(m.mesh);
+              const tally = m.ids?.userData.tally;
+              if (tally) for (let prim = 0; prim < tally.length; ++prim) objects.gaussians[prim] += tally[prim];
+            }
+            meshes.push(own);
+            shaded.push(beside);
+            if (historyWanted && !withHistory) readHistory();
+            if (lamp.wanted && [...own, ...beside].some((m) => m.baseFile)) readLamp();
+            applyShading();
+            objectsShown();
+            window.__scene.parts = meshes.length;
+            if (meshes.length < parts.length) tell();
+            else { report(summary()); setProgress(null); }
+            if (!keeping) {
+              stand();
+              if (window.__player.firstMs === undefined) window.__player.firstMs = Math.round(performance.now() - began);
+            }
+          }
+        } catch (error) {
+          // A part that could not be read: said, and the load ends -- it stood at "refining…" for ever.
+          if (mine === generation) {
+            loading = false;
+            setProgress(null);
+            window.__scene.error = String(error?.message ?? error);
+            report(`${keeping || meshes.length > 0 ? "the scene is not whole" : "the scene could not be read"}: ${String(error?.message ?? error).slice(0, 160)}. Reload the page to try again`);
+            if (window.__player.then !== undefined) window.__player.then = undefined;
+          }
+          return;
+        } finally {
+          // What was begun and will not come to stand -- the load was left behind -- is let go as it arrives.
+          for (const left of ahead.values()) left.then(({ own, beside }) => letGo([...own, ...beside]), () => {});
+        }
+        if (mine === generation && keeping && settings.glass && roomsWanted) {
+          // The finer detail's normals before it is shown: it comes in as smooth as it will be, not in the
+          // discs' own axes and a wide cone for the second its first room takes. (Of what stands to the end;
+          // a timeline held at an earlier frame has its own worked out with its room.)
+          try {
+            staging.updateMatrixWorld(true);
+            for (const kind of Object.values(kinds)) await smoothKind(kind, shaded.flat().filter((s) => s.kind === kind.which && s.until === 0));
+          } catch (error) { /* its room's pass works them out */ }
+        }
+        if (mine === generation) {
+          if (keeping) {
+            // The finer detail is whole: it comes into the scene and what stood for it goes. Its glass and
+            // its chrome come in shaded by the eye already, from the room the coarse level was drawn into;
+            // the room is drawn again from the detail after.
+            for (const m of [...meshes, ...shaded].flat()) root.add(m.mesh);
+            letGo(outgoing);
+            outgoing = [];
+            keeping = false;
+            applyShading();
+            shadeFresh = true;
+            stand();
+          }
+          loading = false;
+          window.__scene.loaded = true;
+          if (window.__player.then !== undefined) {
+            // The coarse level is in: now the detail asked for, behind it.
+            const next = window.__player.then;
+            window.__player.then = undefined;
+            window.__player.coarseMs = Math.round(performance.now() - began);
+            // A level with its lamps on stays where it is the detail asked for and no group is to be moved.
+            if (next !== detail || (litFirst && groupsWanted)) { setDetail(next, true); return; }
+          }
+          if (!litFirst) sayGroups(false);
+          window.__player.wholeMs = Math.round(performance.now() - began);
+          // What did not come at first is all here now: said shortly, for as long as the page is open.
+          if (readNote) { const n = window.__player.retried ?? 0; readNote = ` · a file asked for again ${n === 1 ? "once" : `${n} times`}`; say(said); }
+          asked.frame = null;   // the frame the address asked for is shown: the timeline is the reader's
+          // Spark's ray through the gaussians starts itself on the first one asked and answers from the
+          // second: one is asked here, so that the first finger laid on the scene finds what is under it.
+          const first = meshes.flat()[0];
+          if (first && !first.pick) new THREE.Raycaster(camera.position, new THREE.Vector3(0, 0, -1)).intersectObject(first.mesh, false);
+          slow.since = performance.now();
+          slow.frames = 0;
+        }
+      };
+
+      // THE DETAIL DRAWN. The scene as it grew, or one of its levels of detail: what was drawn is let go and
+      // the other read in its place. The timeline is the grown scene's; a level is the scene whole.
+      const setDetail = (wanted, keep = false, first = false) => {
+        const next = Math.max(0, Math.min(wanted, levels.length));
+        generation += 1;
+        loading = false;
+        // What was being gathered behind the scene is let go; what is drawn stays until the next is whole
+        // (`keep`), or goes now.
+        if (keeping) letGo([...meshes, ...shaded].flat());
+        else if (keep) outgoing = [...outgoing, ...[...meshes, ...shaded].flat()];
+        else letGo([...meshes, ...shaded].flat());
+        if (!keep) { letGo(outgoing); outgoing = []; }
+        keeping = keep && outgoing.length > 0;
+        meshes = [];
+        shaded = [];
+        objects.gaussians.fill(0);
+        if (!keeping) { shown = 0; cursor = 0; }
+        atEnd = true;
+        setPlaying(false);
+        detail = next;
+        // An address that asks for an earlier frame of the scene as it grew reads each part with its history.
+        if (detail === 0 && asked.frame !== null && asked.frame < index.parts.length) historyWanted = true;
+        // With its lamps on where the level has such files: the level drawn first, and any level until a group is moved.
+        litFirst = detail > 0 && litLevels.length >= detail && (first || (!groupsWanted && groups.length > 0));
+        parts = (detail === 0 ? index.parts : (litFirst ? litLevels : levels)[detail - 1].parts).map(partOf);
+        window.__scene.loaded = false;
+        window.__scene.parts = 0;
+        window.__player.detail = detail;
+        $("optDetail").value = settings.detail === "auto" ? "auto" : String(detail);
+        if (!keeping) show(0, false);
+        keepAddress();
+        loadMore();
+      };
+      // WHAT THE DEVICE CAN HOLD: gaussians it is trusted to draw at a frame rate worth having. A phone a
+      // million, a tablet or a machine short of memory two, anything else the scene as it is. The finest
+      // level within that is the one drawn; with no levels in the index, the scene itself.
+      const budget = (() => {
+        const memory = navigator.deviceMemory ?? (phone ? 4 : 8);
+        if (phone) return 1.0e6;
+        if (touchScreen || memory <= 4) return 2.0e6;
+        return Infinity;
+      })();
+      const autoDetail = () => {
+        if (fullCount <= budget || levels.length === 0) return 0;
+        const within = levels.findIndex((level) => level.gaussians <= budget);
+        return within >= 0 ? within + 1 : levels.length;
+      };
+      window.__player = { detail: 0, fps: 0, settings, budget, lowered: 0 };
+      let started = false;   // the first detail has been asked for
+      // THE GROUPS ARE READ AHEAD WHERE THERE IS ROOM FOR THEM. The first move of a lamp waited for its group's
+      // files with the level as found on the screen. Once the level stands and nothing has been touched for
+      // a few seconds they are read behind it, so the lamp answers when it is moved; not on a phone, whose
+      // load is to stay the lit level's alone, until its options are opened -- where the lamps are.
+      let touchedAt = performance.now();
+      for (const type of ["pointerdown", "pointermove", "wheel", "keydown", "touchstart"]) {
+        addEventListener(type, () => { touchedAt = performance.now(); }, { capture: true, passive: true });
+      }
+      // Not on a connection that says it is metered or slow (where the browser says: `saveData`, 2g): there
+      // the groups are read when a lamp is moved.
+      const metered = () => { const line = navigator.connection; return Boolean(line && (line.saveData || /(^|-)2g$/.test(line.effectiveType ?? ""))); };
+      const readAhead = () => {
+        if (metered()) return;
+        if (groupsWanted || !started || !litFirst || loading || window.__player.wholeMs === undefined || document.hidden) return;
+        groupsWanted = true;
+        window.__player.groupsAhead = Math.round(performance.now() - began);
+        readGroups();
+      };
+      if (groups.length > 0 && litLevels.length > 0 && params.get("ahead") !== "0") {
+        if (!phone) setInterval(() => { if (performance.now() - Math.max(touchedAt, began + (window.__player.wholeMs ?? Infinity)) > 4000) readAhead(); }, 1000);
+        $("optionsButton").addEventListener("click", readAhead);
+      }
+      readGroups = () => {
+        // The level drawn first is followed by the detail, which then takes its groups; a level that is the
+        // detail itself, standing or still being read, is read again with them, and stays drawn meanwhile.
+        if (!started || !litFirst) return;
+        sayGroups(true);
+        if (window.__player.then === undefined) setDetail(detail, true);
+      };
+      window.__player.shading = () => ({ stale: shadeStale, busy: shadeBusy, loading: loading || historyBusy, step: window.__player.step, glass: kinds.glass.ready, mirror: kinds.mirror.ready,
+        meshes: shaded.flat().map((s) => ({ kind: s.kind, shaded: Boolean(s.applied), shown: s.mesh.visible, n: s.gaussians })) });
+
+      window.__player.reading = () => [...beingRead.values()].map((r) => ({ file: r.what, waits: r.waits, ms: Math.round(performance.now() - r.since) }));
+      window.__player.kinds = kinds;
+      window.__player.look = (which, ...four) => { if (four.length === 4) { looks[which].value.set(...four); shadeFresh = true; } return looks[which].value.toArray(); };
+      window.__player.eye = () => camera.position.toArray();   // where the eye is, for whoever drives the page   // where the glass and the chrome are, for whoever drives the page
+      // And a camera of the walk by its name, aimed through with the scene left as it stands.
+      window.__player.aim = (camera) => { const view = cameras.get(camera); if (view) aim(view); return Boolean(view); };
+
+      // TOO SLOW: a coarser level. Once the scene is in, the frames of a few seconds are counted; under
+      // fifteen a second with a coarser level to go to, that one is drawn instead, and it is said.
+      const slow = { since: 0, frames: 0 };
+      const judge = (now) => {
+        slow.frames += 1;
+        const span = now - slow.since;
+        if (span < 4000) return;
+        const fps = slow.frames * 1000 / span;
+        window.__player.fps = fps;
+        fpsText = `${fps.toFixed(0)} fps`;
+        say(said);
+        slow.since = now;
+        slow.frames = 0;
+        if (settings.detail === "auto" && !loading && !playing && !document.hidden && fps < 15 && detail < levels.length) {
+          window.__player.lowered += 1;
+          $("detailNote").textContent = `${fps.toFixed(0)} frames a second at ${detail === 0 ? "full detail" : "level " + detail}: a coarser level is drawn.`;
+          setDetail(detail + 1, true);   // what is drawn stays until the coarser level is in
+        }
+      };
+
+      // THE OPTIONS' PANEL.
+      const panel = $("options");
+      const openPanel = (open) => {
+        panel.classList.toggle("open", open);
+        $("optionsButton").setAttribute("aria-expanded", String(open));
+      };
+      $("optionsButton").addEventListener("click", () => openPanel(!panel.classList.contains("open")));
+      $("optionsClose").addEventListener("click", () => openPanel(false));
+      const detailSelect = $("optDetail");
+      const million = (n) => `${(n / 1e6).toFixed(2)} M`;
+      detailSelect.append(new Option(`Auto (this device: ${budget === Infinity ? "everything" : million(budget)})`, "auto"),
+                          new Option(`Full · ${million(fullCount)}`, "0"));
+      levels.forEach((level, k) => detailSelect.append(new Option(`Level ${k + 1} · ${million(level.gaussians)}`, String(k + 1))));
+      if (levels.length === 0) $("detailNote").textContent = "This scene was exported with no levels of detail.";
+      detailSelect.addEventListener("change", () => {
+        settings.detail = detailSelect.value === "auto" ? "auto" : detailSelect.value === "0" ? "full" : detailSelect.value;
+        remember();
+        $("detailNote").textContent = "";
+        setDetail(settings.detail === "auto" ? autoDetail() : Number(detailSelect.value));
+      });
+      // THE OBJECTS' PART OF THE PANEL, where the scene names its prims: how the chosen one is shown, a box
+      // that finds prims by a part of their path, and the prims as a tree by their paths -- a branch chooses
+      // every prim under it. A stage has more prims than a list is read through (Sponza: 117).
+      if (prims.length > 0) {
+        $("optObjects").hidden = false;
+        const viewSelect = $("optObjectView");
+        const find = $("optObjectFind");
+        const tree = $("optObjectTree");
+        const top = { name: "", path: "", kids: new Map(), count: 0 };
+        for (const p of prims) {
+          let node = top;
+          node.count += 1;
+          let at = "";
+          for (const piece of p.path.split("/").filter(Boolean)) {
+            at += `/${piece}`;
+            if (!node.kids.has(piece)) node.kids.set(piece, { name: piece, path: at, kids: new Map(), count: 0 });
+            node = node.kids.get(piece);
+            node.count += 1;
+          }
+        }
+        const buttons = [];
+        // How many gaussians the prims at or under a path have among what stands.
+        const has = (path) => prims.reduce((sum, p, k) => sum + (under(p.path, path) ? objects.gaussians[k + 1] : 0), 0);
+        const buttonOf = (label, path, count, from = path) => {
+          const button = document.createElement("button");
+          button.textContent = label;
+          button.title = path;
+          button.dataset.path = path;
+          button.dataset.from = from;   // a line that stands for several branches in a row: the first of them
+          button.addEventListener("click", (event) => { event.preventDefault(); setObject(button.classList.contains("chosen") ? "" : path); });
+          buttons.push(button);
+          const wrap = document.createDocumentFragment();
+          wrap.append(button);
+          if (count > 1) { const n = document.createElement("span"); n.className = "count"; n.textContent = ` ${count}`; wrap.append(n); }
+          return wrap;
+        };
+        const sorted = (node) => [...node.kids.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+        const draw = (node, into, lead) => {
+          // A branch of one branch is drawn as one line: /World/Scene/Meshes, not three to open.
+          let label = lead + node.name;
+          const from = node.path;
+          while (node.kids.size === 1 && node.count === [...node.kids.values()][0].count) {
+            node = [...node.kids.values()][0];
+            label += `/${node.name}`;
+          }
+          if (node.kids.size === 0) {
+            const leaf = document.createElement("div");
+            leaf.className = "leaf";
+            leaf.append(buttonOf(label, node.path, 1, from));
+            into.append(leaf);
+            return;
+          }
+          const branch = document.createElement("details");
+          branch.dataset.path = node.path;
+          const head = document.createElement("summary");
+          head.append(buttonOf(label, node.path, node.count, from));
+          branch.append(head);
+          for (const kid of sorted(node)) draw(kid, branch, "");
+          into.append(branch);
+        };
+        const drawTree = () => { buttons.length = 0; tree.replaceChildren(); for (const kid of sorted(top)) draw(kid, tree, "/"); };
+        // What the box finds: every prim and every branch whose path holds what was typed.
+        const drawFound = (text) => {
+          buttons.length = 0;
+          tree.replaceChildren();
+          const found = [];
+          const walkDown = (node) => { for (const kid of node.kids.values()) { if (kid.path.toLowerCase().includes(text)) found.push(kid); walkDown(kid); } };
+          walkDown(top);
+          // Those with gaussians first, then the shortest path.
+          found.sort((a, b) => (has(b.path) > 0) - (has(a.path) > 0) || a.path.length - b.path.length || a.path.localeCompare(b.path));
+          for (const node of found.slice(0, 60)) {
+            const leaf = document.createElement("div");
+            leaf.className = "leaf";
+            leaf.append(buttonOf(node.path, node.path, node.count));
+            tree.append(leaf);
+          }
+          if (found.length === 0) tree.textContent = "no prim's path holds that";
+          else if (found.length > 60) tree.append(`… and ${found.length - 60} more: type more of the path`);
+          return found;
+        };
+        let found = [];
+        const drawList = () => {
+          const text = find.value.trim().toLowerCase();
+          if (text) found = drawFound(text); else { found = []; drawTree(); }
+          objectsShown();
+        };
+        find.addEventListener("input", drawList);
+        // Enter takes what was typed as a path where it is one, else the first found.
+        find.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter") return;
+          const typed = find.value.trim();
+          if (typed.startsWith("/") && prims.some((p) => under(p.path, typed.replace(/\/+$/, "") || "/"))) setObject(typed);
+          else if (found.length > 0) setObject(found[0].path);
+        });
+        $("optObjectNone").addEventListener("click", () => { find.value = ""; drawList(); setObject(""); });
+        viewSelect.addEventListener("change", () => {
+          // A way of showing with no object chosen waits for one.
+          if (objects.path) setObject(objects.path, viewSelect.value);
+          else { objects.view = viewSelect.value; objectsShown(); }   // kept for the object chosen next
+        });
+        objectsShown = () => {
+          viewSelect.value = objects.view;
+          for (const button of buttons) {
+            button.classList.toggle("chosen", objects.path !== "" && under(button.dataset.path, objects.path) && under(objects.path, button.dataset.from));
+            // A prim no frame saw has no gaussian: it is there, and dim.
+            button.classList.toggle("none", has(button.dataset.path) === 0);
+          }
+          // The branches down to the one chosen are opened, so it is seen.
+          if (objects.path) for (const branch of tree.querySelectorAll("details")) {
+            if (under(objects.path, branch.dataset.path) && objects.path !== branch.dataset.path) branch.open = true;
+          }
+          $("objectNote").textContent = objects.path
+            ? `${objects.path}: ${objects.chosen} of the stage's ${prims.length} prims, ${has(objects.path).toLocaleString("en")} gaussians`
+            : `${prims.length} prims of the stage; dim, the ones no frame saw. Choose one, or a branch for every prim under it.`;
+        };
+        drawList();
+      }
+      // The scenes there are to see, where the site lists them (scenes/scenes.json).
+      const sceneSelect = $("optScene");
+      sceneSelect.append(new Option(index.title ?? name, name));
+      fetch(urlOf("scenes.json"), { cache: "no-store" }).then((r) => r.ok ? r.json() : []).then((list) => {
+        if (!Array.isArray(list) || list.length === 0) return;
+        sceneSelect.replaceChildren(...list.map((s) => new Option(s.title ?? s.name, s.name)));
+        if (!list.some((s) => s.name === name)) sceneSelect.append(new Option(name, name));
+        sceneSelect.value = name;
+      }).catch(() => {});
+      sceneSelect.addEventListener("change", () => {
+        const to = new URLSearchParams(location.search);
+        to.set("scene", sceneSelect.value);
+        // Another scene: its own detail, timeline and lights.
+        for (const key of [...to.keys()]) if (key === "detail" || key === "frame" || key === "ride" || key.startsWith("light.") || key === "object" || key.startsWith("object.")) to.delete(key);
+        location.search = to.toString();
+      });
+      const controls = new SparkControls({ canvas });
+      const bindRange = (id, out, key, text, apply) => {
+        const input = $(id);
+        const set = () => { $(out).textContent = text(settings[key]); apply(settings[key]); };
+        input.value = String(settings[key]);
+        input.addEventListener("input", () => { settings[key] = Number(input.value); remember(); set(); });
+        set();
+        return () => { input.value = String(settings[key]); set(); };
+      };
+      const bindCheck = (id, key, apply) => {
+        const input = $(id);
+        input.checked = Boolean(settings[key]);
+        input.addEventListener("change", () => { settings[key] = input.checked; remember(); apply(settings[key]); });
+        apply(settings[key]);
+        return () => { input.checked = Boolean(settings[key]); apply(settings[key]); };
+      };
+      const refresh = [
+        bindRange("optPixels", "outPixels", "pixels", (v) => `${v.toFixed(2)}×`, (v) => { renderer.setPixelRatio(v); renderer.setSize(innerWidth, innerHeight); }),
+        bindRange("optFov", "outFov", "fov", (v) => `${v}°`, (v) => { camera.fov = v; camera.updateProjectionMatrix(); }),
+        bindRange("optSpeed", "outSpeed", "speed", (v) => `${v.toFixed(2)}`, (v) => { controls.fpsMovement.moveSpeed = v; }),
+        bindRange("optRate", "outRate", "rate", (v) => `${v}`, () => {}),
+        bindCheck("optGlass", "glass", () => { applyShading(); shadeStale = true; }),
+        bindCheck("optFrustum", "frustum", () => showLines()),
+        bindCheck("optPath", "path", () => showLines()),
+        bindCheck("optMarker", "marker", () => {}),
+        bindCheck("optLoop", "loop", () => {}),
+        bindCheck("optFps", "fps", () => say(said)),
+      ];
+      // THE SKY. A found scene holds none: what is behind it is a colour, the option's. The cubes glass and
+      // chrome read are not drawn over it: where a mirror looks past the scene it keeps the colour it was found with.
+      applySky = () => {
+        scene.background = new THREE.Color(matteShown() ? "#000000" : settings.sky);
+        const hex = /^#[0-9a-f]{6}$/i.test(settings.sky) ? settings.sky : "#000000";
+        skyLight.value.set(...[1, 3, 5].map((at) => Math.pow(parseInt(hex.slice(at, at + 2), 16) / 255, 2.2)));
+        shadeFresh = true;
+      };
+      $("optSky").value = settings.sky;
+      $("optSky").addEventListener("input", () => { settings.sky = $("optSky").value; remember(); applySky(); });
+      applySky();
+      $("optCube").value = String(settings.cube);
+      $("optCube").addEventListener("change", () => { settings.cube = Number($("optCube").value); remember(); shadeStale = true; });
+      $("optReset").addEventListener("click", () => {
+        Object.assign(settings, defaults);
+        remember();
+        for (const again of refresh) again();
+        $("optCube").value = String(settings.cube);
+        $("optSky").value = settings.sky;
+        applySky();
+        detailSelect.value = "auto";
+        $("detailNote").textContent = "";
+        setDetail(autoDetail());
+      });
+
+      // The cubes, drawn again when what is shown changed: the room as it stands from the middle of each
+      // kind that is shown, without that kind or the lines this page draws over the scene.
+      // A ROOM IS DRAWN BY A SPARK OF ITS OWN, AND THE PAGE'S FRAMES GO ON. Spark draws what it last sorted,
+      // not what is shown: its `update` makes the gaussians of what is visible and asks a worker for their
+      // order, and what is drawn until that order is in is the set before. A room's set is not the eye's --
+      // the scene whole, without the kind the room is for -- so with one Spark the page had to hold its own
+      // frames while the room's set was made, sorted, drawn into the cube and the eye's set sorted again:
+      // two seconds at the level drawn first and four or five at eight million gaussians, paid again whenever
+      // a lamp's level or an option changed the room. Each kind now has a SparkRenderer of its own, never in
+      // the scene: what is visible is changed for the moment its gaussians are made and put back before
+      // anything is drawn, its order is worked out by its own worker while the page's frames are drawn from
+      // the page's own Spark, and the cube is drawn through it when the order is in. Where the room's parts
+      // are the ones they were and its middle has not moved -- a lamp's level changed their colours alone --
+      // the order it has still holds and the cube is drawn at once.
+      const roomSpark = (kind) => {
+        if (!kind.spark) {
+          // In the rooms' scene, and drawn there only for its own cube: a Spark that is not in a scene draws nothing.
+          kind.spark = new SparkRenderer({ renderer, autoUpdate: false });
+          kind.spark.visible = false;
+          roomScene.add(kind.spark);
+        }
+        // Drawn as the page's own frames are.
+        for (const key of ["preBlurAmount", "blurAmount", "maxStdDev", "minAlpha", "falloff", "focalAdjustment"]) kind.spark[key] = spark[key];
+        return kind.spark;
+      };
+      const waitFor = async (met, limit) => {
+        const until = performance.now() + limit;
+        while (!met()) {
+          if (performance.now() > until) return false;
+          await new Promise((done) => setTimeout(done, 8));
+        }
+        return true;
+      };
+      // The rooms' scene as a kind's room wants it, for as long as `draw` takes.
+      const asRoom = (kind, draw) => {
+        const alphaWas = renderer.getClearAlpha();
+        try {
+          // THE ROOM A GLASS OR A MIRROR SHOWS IS THE SCENE WHOLE, whatever frame the timeline is at. At an
+          // earlier frame most of the room about it had not been found yet, and a room drawn as the scene
+          // stood then was black: the knights went black ridden from the walk's first cameras. Every part
+          // that stands to the end is in it, and the other kind where it stands now -- not the kind itself,
+          // and as it was found, not as the eye shades it.
+          for (const child of roomRoot.children) child.visible = false;
+          for (const m of [...drawnOwn(), ...drawnShaded()]) {
+            if (m.room) m.room.mesh.visible = m.kind ? m.kind !== kind.which && Boolean(m.stands) : m.until === 0;
+          }
+          for (const other of Object.values(kinds)) if (other.spark) other.spark.visible = other === kind;
+          // The cube is drawn over nothing, not over the sky's colour: its alpha is then how much of the
+          // room there is along a ray, which is what the shading asks.
+          renderer.setClearAlpha(0);
+          return draw();
+        } finally {
+          renderer.setClearAlpha(alphaWas);
+        }
+      };
+      // Where a kind's gaussians are: the middle of each part's, by how many each holds.
+      const middleOf = (seen) => {
+        const box = new THREE.Box3();
+        // A mesh's box is asked of Spark once: it goes through every gaussian of the mesh.
+        for (const s of seen) box.union((s.box ??= s.shape?.box ?? s.mesh.getBoundingBox(true).clone()).clone().applyMatrix4(s.mesh.matrixWorld));
+        const middle = box.getCenter(new THREE.Vector3());
+        const sum = new THREE.Vector3();
+        let weight = 0;
+        for (const s of seen) if (s.heart) { sum.addScaledVector(s.heart.at.clone().applyMatrix4(s.mesh.matrixWorld), s.heart.count); weight += s.heart.count; }
+        if (weight > 0) middle.copy(sum.divideScalar(weight));
+        return { middle, size: box.getSize(new THREE.Vector3()).length() };
+      };
+      // A kind's normals, where its parts are not the ones they were worked out for. The thing's size for it
+      // is where nine in ten of its gaussians are about the middle, twice: strays stretch the box.
+      const smoothKind = async (kind, seen) => {
+        const parts_ = seen.map((s) => s.mesh.uuid).join(" ");
+        if (seen.length === 0 || kind.smoothed === parts_) return;
+        const here = root.worldToLocal(middleOf(seen).middle);
+        const far = [];
+        for (const s of seen) {
+          const step = Math.max(1, Math.floor(s.shape.count / 2048));
+          for (let at = 0; at < s.shape.count; at += step) far.push(Math.hypot(s.shape.centres[at * 3] - here.x, s.shape.centres[at * 3 + 1] - here.y, s.shape.centres[at * 3 + 2] - here.z));
+        }
+        far.sort((a, b) => a - b);
+        const extent = 2 * (far[Math.floor(far.length * 0.9)] ?? 0);
+        const startedAt = performance.now();
+        if (extent > 0) await smoothNormals(seen, extent * smoothCell);
+        kind.smoothed = parts_;
+        kind.extent = extent * unit;
+        window.__player.smoothMs = Math.round(performance.now() - startedAt);
+      };
+      const drawRooms = async () => {
+        if (shadeBusy) return;
+        if (!settings.glass || !roomsWanted) { shadeStale = false; return; }
+        shadeBusy = true;
+        shadeStale = false;
+        roomKeyDrawn = roomKey();
+        const began = performance.now();
+        try {
+          root.updateMatrixWorld(true);
+          roomScene.updateMatrixWorld(true);
+          // First the normals.
+          for (const kind of Object.values(kinds)) await smoothKind(kind, shadedShown(kind.which));
+          // Then the kinds, one after the other. Spark asks for an order after every set it makes, wanted or
+          // not: here a kind's set is sorted only where the order it has does not hold.
+          for (const kind of Object.values(kinds)) {
+            const seen = shadedShown(kind.which);
+            window.__player.step = `${kind.which}: ${seen.length} seen`;
+            if (seen.length === 0) continue;
+            const { middle, size } = middleOf(seen);
+            const own = roomSpark(kind);
+            // Spark makes no new set of other parts while it sorts one.
+            if (!await waitFor(() => !own.sorting, 20000)) throw new Error(`the ${kind.which}'s room was not sorted in 20 s`);
+            const before = own.current;
+            let failed = null;
+            // Spark asks for an order as soon as a set is made, wanted or not: put off here (it then sets a
+            // timer in place of the sort) and asked for below where it is wanted.
+            own.minSortIntervalMs = 1e9;
+            asRoom(kind, () => {
+              const from = new THREE.Camera();
+              from.position.copy(middle);
+              own.update({ scene: roomScene, camera: from }).catch((error) => { failed = error; });
+            });
+            if (own.current === before) throw new Error(`the ${kind.which}'s room was not made`);
+            // The order it has holds where the set is laid out as the one before (Spark then shows it at
+            // once), is sorted from where that one was, and was not let go since.
+            const holds = own.display === own.current && own.orderingTexture && kind.drawnFrom && kind.drawnFrom.distanceTo(middle) < 0.02;
+            if (holds && !own.sorting) {
+              clearTimeout(own.sortTimeoutId);
+              own.sortTimeoutId = undefined;
+              own.sortDirty = false;
+            } else {
+              own.minSortIntervalMs = 0;
+              Promise.resolve(own.driveSort()).catch((error) => { failed = error; });
+              const sorted = () => failed || (own.display === own.current && !own.sorting && !own.sortDirty);
+              if (!await waitFor(sorted, 20000)) throw new Error(`the ${kind.which}'s room was not sorted in 20 s`);
+            }
+            if (failed) throw failed;
+            // Spark keeps one cube, on its class, and would draw every kind into it: each kind's own is put
+            // there for its turn and taken back after.
+            SparkRenderer.cubeRender = kind.target ?? undefined;
+            const drawn = asRoom(kind, () => {
+              const cube = own.renderCubeMap({ scene: roomScene, worldCenter: middle, size: settings.cube, near: 0.02,
+                                               far: Math.max(across * unit * 2, 10), update: false });
+              kind.target = SparkRenderer.cubeRender;
+              return cube;
+            });
+            const texture = await drawn;
+            window.__player.step = `${kind.which}: cube drawn`;
+            kind.room.value = texture;
+            kind.middle.value.copy(middle);
+            kind.drawnFrom = middle.clone();
+            // How far the room is taken to be about the middle: read as near as twice the thing's size, a
+            // look depended on where on the thing it left more than on which way it went, and the room in
+            // a glass or a mirror stayed put as the eye moved.
+            kind.reach.value = Math.max(size * 8.0, 2.0);
+            kind.ready = true;
+          }
+          shadeFailed = false;
+          applyShading();
+          shadeFresh = true;
+          const kindsReady = Object.values(kinds).filter((kind) => kind.ready).map((kind) => kind.which);
+          const applied = drawnShaded().filter((entry) => entry.applied).length;
+          shadeNote = kindsReady.length > 0 ? ` · ${kindsReady.join(" and ")} by the eye (${applied} parts, ${window.__player.shadedTimes ?? 0} looks)` : "";
+          say(said);
+        } catch (error) {
+          // Said, and the gaussians stay as they were found: a page that cannot shade still shows the scene.
+          window.__player.shadeError = String(error?.stack ?? error);
+          console.error("glass and chrome could not be shaded", error);
+          shadeNote = ` · glass and chrome as found, not by the eye: ${String(error?.message ?? error).slice(0, 120)}`;
+          shadeFailed = true;
+          reveal();
+          say(said);
+        } finally {
+          window.__player.roomMs = Math.round(performance.now() - began);
+          window.__player.rooms = (window.__player.rooms ?? 0) + 1;
+          roomsAt = performance.now();
+          shadeBusy = false;
+        }
+      };
+      // WHAT THE PAGE HOLDS, in megabytes, for whoever asks (`window.__player.holds()`): each Spark's sets of
+      // gaussians on the device (a set is 20 bytes a gaussian, in layers of 2048 by 2048) and the order it
+      // keeps; the files' gaussians as Spark keeps them (32 bytes each, on the device and again in the page);
+      // the page's own textures a gaussian (light, ids, normals) and the rooms' cubes.
+      const sparkHolds = (own) => {
+        if (!own) return null;
+        const sets = [...new Set([own.display, own.current, ...own.accumulators])].filter((set) => set?.target);
+        const order = own.orderingTexture?.image;
+        const MB = (bytes) => Math.round(bytes / 1048576);
+        return { sets: sets.length, setsMB: MB(sets.reduce((sum, set) => sum + set.maxSplats * 20, 0)),
+                 orderMB: MB(order ? order.width * order.height * 16 : 0),
+                 pageMB: MB((own.readback32?.byteLength ?? 0) + (order?.data?.byteLength ?? 0)), worker: Boolean(own.sortWorker) };
+      };
+      window.__player.holds = () => {
+        const all = [...meshes.flat(), ...shaded.flat(), ...outgoing];
+        const MB = (bytes) => Math.round(bytes / 1048576);
+        const texels = (t) => (t.image?.width ?? 0) * (t.image?.height ?? 0) * (t.format === THREE.RGFormat ? 2 : 4);
+        const cubes = Object.values(kinds).reduce((sum, kind) => sum + (kind.target ? kind.target.target.width ** 2 * 6 * 4 : 0), 0);
+        return { page: sparkHolds(spark), glass: sparkHolds(kinds.glass.spark), mirror: sparkHolds(kinds.mirror.spark),
+                 gaussians: all.reduce((sum, m) => sum + (m.mesh.numSplats ?? 0), 0),
+                 filesMB: MB(all.reduce((sum, m) => sum + (m.mesh.numSplats ?? 0), 0) * 32),
+                 texturesMB: MB(all.reduce((sum, m) => sum + (m.textures ?? []).reduce((of, t) => of + texels(t), 0), 0)),
+                 roomsGaussians: all.reduce((sum, m) => sum + (m.room?.mesh.numSplats ?? 0), 0),
+                 roomsMB: MB(all.reduce((sum, m) => sum + (m.room?.mesh.numSplats ?? 0), 0) * 16), cubesMB: MB(cubes), rooms: roomsWanted };
+      };
+      // TURNING ABOUT A POINT, on a touch screen. A first finger laid down and kept still fixes a point --
+      // the gaussian under it, or where the view is aimed if there is none -- and a second finger then
+      // turns the camera about that point: sideways about the scene's up, up and down about the camera's
+      // own right. The point stays where it is on the screen. With no finger held still the gestures are
+      // the ones there were (one finger looks, two move).
+      const pivot = { finger: null, at: null, timer: 0, held: false, turner: null, point: new THREE.Vector3() };
+      window.__pivot = pivot;
+      const quiet = () => {
+        // Spark's own gestures saw the same fingers: what it kept of them is dropped, so it does not jump.
+        const own = controls.pointerControls;
+        own.rotating = null;
+        own.sliding = null;
+        own.dualPress = false;
+        for (const key of ["moveVelocity", "rotateVelocity"]) own[key]?.set?.(0, 0, 0);
+      };
+      // A DRAG TURNS ABOUT WHAT IS UNDER IT. Spark's own drag turns the camera where it stands, and from one
+      // place a glass and a mirror show the same whichever way the eye is turned: the user dragged, saw them
+      // stay, and took them for frozen. So the turn Spark makes is carried to the eye's place as well: the
+      // camera goes round the point that was under the pointer when the drag began, and that point stays
+      // where it is on the screen. One pointer only (two fingers still move), not while a frame's camera is
+      // ridden, and not with Alt held or `?orbit=0`, which leave the drag as it was.
+      const drag = { ids: new Set(), point: null, last: new THREE.Quaternion() };
+      const orbits = new URLSearchParams(location.search).get("orbit") !== "0";
+      // The point of the scene a ray meets: the nearest of the kept points within a narrow cone about it that
+      // has another close behind it (one alone may be a stray in the air), in the scene's own space. Where a
+      // part has no points kept, Spark's ray through all of it, as before; where there is nothing, as far
+      // along the ray as the middle of the scene is from the eye.
+      const underRay = (ray) => {
+        const drawn = [...drawnOwn(), ...drawnShaded()].filter((m) => m.mesh.visible);
+        if (drawn.some((m) => !m.pick)) {
+          const hits = ray.intersectObjects(drawn.map((m) => m.mesh), false);
+          if (hits.length > 0) return hits[0].point.clone();
+        } else {
+          root.updateMatrixWorld(true);
+          const from = root.worldToLocal(ray.ray.origin.clone());
+          const along = ray.ray.direction.clone().transformDirection(root.matrixWorld.clone().invert());
+          const ox = from.x, oy = from.y, oz = from.z, dx = along.x, dy = along.y, dz = along.z;
+          const near = 0.05 / unit;
+          const met = [];
+          for (const m of drawn) {
+            const points = m.pick;
+            // A history's gaussians that no longer stand are the first of its file.
+            for (let k = (m.cut ? Math.ceil(m.cut.from.value / pickStride) : 0) * 3; k < points.length; k += 3) {
+              const x = points[k] - ox, y = points[k + 1] - oy, z = points[k + 2] - oz;
+              const t = x * dx + y * dy + z * dz;
+              if (t < near) continue;
+              const wide = t * 0.012;
+              if (x * x + y * y + z * z - t * t < wide * wide) met.push(t);
+            }
+          }
+          if (met.length > 0) {
+            met.sort((a, b) => a - b);
+            let t = met[0];
+            for (let k = 0; k + 1 < met.length; ++k) if (met[k + 1] < met[k] * 1.1) { t = met[k]; break; }
+            return root.localToWorld(new THREE.Vector3(ox + dx * t, oy + dy * t, oz + dz * t));
+          }
+        }
+        const middle = place([(index.min[0] + index.max[0]) / 2, (index.min[1] + index.max[1]) / 2,
+                              (index.min[2] + index.max[2]) / 2]);
+        return ray.ray.origin.clone().addScaledVector(ray.ray.direction, Math.max(camera.position.distanceTo(middle), 1));
+      };
+      const underPointer = (x, y) => {
+        const box = canvas.getBoundingClientRect();
+        const ray = new THREE.Raycaster();
+        ray.setFromCamera(new THREE.Vector2((x - box.left) / box.width * 2 - 1, -((y - box.top) / box.height) * 2 + 1), camera);
+        return underRay(ray);
+      };
+      canvas.addEventListener("pointerdown", (event) => {
+        drag.ids.add(event.pointerId);
+        drag.point = orbits && drag.ids.size === 1 && !event.altKey && (event.pointerType !== "mouse" || event.button === 0)
+          ? underPointer(event.clientX, event.clientY) : null;
+        drag.last.copy(camera.quaternion);
+      }, true);
+      for (const type of ["pointerup", "pointercancel"]) {
+        addEventListener(type, (event) => { drag.ids.delete(event.pointerId); drag.point = null; }, true);
+      }
+      // After Spark has turned the camera: the same turn, about the point.
+      const carryTurn = () => {
+        if (drag.point && !pivot.held && !follow.checked) {
+          const turn = camera.quaternion.clone().multiply(drag.last.clone().invert());
+          if (Math.abs(turn.w) < 1 - 1e-9) camera.position.sub(drag.point).applyQuaternion(turn).add(drag.point);
+        }
+        drag.last.copy(camera.quaternion);
+      };
+      window.__player.drag = drag;
+      const fixPoint = () => {
+        pivot.point.copy(underPointer(pivot.at.x, pivot.at.y));
+        pivot.held = true;
+        controls.pointerControls.enable = false;
+        quiet();
+        marker.visible = settings.marker;
+      };
+      const release = () => {
+        clearTimeout(pivot.timer);
+        if (pivot.held) { controls.pointerControls.enable = true; quiet(); }
+        pivot.finger = null; pivot.held = false; pivot.turner = null;
+        marker.visible = false;
+      };
+      canvas.addEventListener("pointerdown", (event) => {
+        if (event.pointerType !== "touch") return;
+        if (pivot.finger === null) {
+          pivot.finger = event.pointerId;
+          pivot.at = { x: event.clientX, y: event.clientY };
+          pivot.timer = setTimeout(fixPoint, 280);
+        } else if (pivot.held && pivot.turner === null) {
+          pivot.turner = { id: event.pointerId, x: event.clientX, y: event.clientY };
+        } else if (!pivot.held) {
+          clearTimeout(pivot.timer);   // a second finger before the first was still long enough: two fingers move
+        }
+      }, true);
+      addEventListener("pointermove", (event) => {
+        if (event.pointerType !== "touch") return;
+        if (event.pointerId === pivot.finger && !pivot.held &&
+            Math.hypot(event.clientX - pivot.at.x, event.clientY - pivot.at.y) > 10) {
+          clearTimeout(pivot.timer);   // it moved: a finger that looks
+        }
+        if (pivot.held && pivot.turner && event.pointerId === pivot.turner.id) {
+          const dx = event.clientX - pivot.turner.x;
+          const dy = event.clientY - pivot.turner.y;
+          pivot.turner.x = event.clientX;
+          pivot.turner.y = event.clientY;
+          const up = new THREE.Vector3(0, 1, 0);
+          const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+          const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+          // Not over the top: the tilt stops short of looking straight along the scene's up.
+          const tilt = Math.asin(THREE.MathUtils.clamp(forward.dot(up), -1, 1));
+          const pitch = THREE.MathUtils.clamp(-dy * 0.005, -1.45 - tilt, 1.45 - tilt);
+          const turn = new THREE.Quaternion().setFromAxisAngle(up, -dx * 0.005)
+            .multiply(new THREE.Quaternion().setFromAxisAngle(right, pitch));
+          camera.position.sub(pivot.point).applyQuaternion(turn).add(pivot.point);
+          camera.quaternion.premultiply(turn);
+        }
+      }, true);
+      const lifted = (event) => {
+        if (event.pointerType !== "touch") return;
+        if (event.pointerId === pivot.finger) release();
+        else if (pivot.turner && event.pointerId === pivot.turner.id) pivot.turner = null;
+      };
+      addEventListener("pointerup", lifted, true);
+      addEventListener("pointercancel", lifted, true);
+
+      // THE GRAPHICS CONTEXT LOST: the browser took it back, which on a phone is memory. The page is read
+      // again a level coarser where there is one; where there is none it says so.
+      canvas.addEventListener("webglcontextlost", (event) => {
+        event.preventDefault();
+        // What was waiting on the device is given up with it (a sort's readback, a part half read): said
+        // here once, not as an unhandled rejection each.
+        addEventListener("unhandledrejection", (rejected) => rejected.preventDefault());
+        const to = new URLSearchParams(location.search);
+        if (roomsWanted && Object.values(kinds).some((kind) => kind.spark)) {
+          // With rooms' Sparks made: the scene again as it was, without them. Lost again, a level coarser.
+          to.set("rooms", "0");
+          report("the browser took its graphics back: reading the scene again, its glass and chrome as found…");
+          setTimeout(() => { location.search = to.toString(); }, 800);
+        } else if (detail < levels.length) {
+          to.set("detail", String(detail + 1));
+          report("the browser took its graphics back: reading the scene again, coarser…");
+          setTimeout(() => { location.search = to.toString(); }, 800);
+        } else {
+          report("the browser took its graphics back, and this scene has no coarser level to draw");
+        }
+      });
+
+      overview();
+      drawPath();
+      // What the address asked for: the camera ridden and each group's level; its frame is shown as the
+      // parts that reach it are read.
+      follow.checked = asked.ride;
+      for (const g of groups) {
+        const level = params.get(`light.${g.name}`);
+        if (level !== null && level !== "" && Number.isFinite(Number(level))) g.set(Math.max(0, Math.min(Number(level), 2)));
+      }
+      // And the object chosen, shown as the address says (tinted where it does not).
+      if (prims.length > 0 && params.get("object")) {
+        const how = params.get("object.view");
+        setObject(params.get("object"), objectViews.includes(how) ? how : "highlight");
+      }
+      {
+        // The detail to end at, and -- where there is a coarser level than that, and the scene is not still
+        // being rendered -- the coarsest first (?progressive=0: the detail asked for, as it comes).
+        const wanted = settings.detail === "auto" ? autoDetail() : settings.detail === "full" ? 0 : Number(settings.detail) || 0;
+        const coarse = levels.length;
+        if (coarse > 0 && (wanted !== coarse || litLevels.length >= coarse) && !index.growing && params.get("progressive") !== "0") {
+          window.__player.then = wanted;
+          setDetail(coarse, false, true);
+        } else {
+          setDetail(wanted);
+        }
+        started = true;
+      }
+      $("overview").addEventListener("click", () => { asked.frame = null; follow.checked = false; overview(); show(cursor, false); });
+      follow.addEventListener("change", () => show(cursor, true));
+
+      // A SCENE STILL BEING RENDERED: its index is read again every two seconds for the parts that came.
+      const follower = setInterval(async () => {
+        if (!index.growing) { clearInterval(follower); return; }
+        try {
+          const next = await readIndex();
+          index = next;
+          cameras = new Map((next.cameras ?? []).map((c) => [c.name, c]));
+          drawPath();
+          if (detail === 0) {
+            parts = next.parts.map(partOf);
+            loadMore();
+            if (!next.growing) show(cursor, false);
+          }
+        } catch (error) { /* the index is put in place whole; a failed read is tried again */ }
+      }, 2000);
+
+      slider.addEventListener("input", () => {
+        asked.frame = null;
+        setPlaying(false);
+        show(Number(slider.value), true);
+        atEnd = cursor >= steps();
+      });
+      playButton.addEventListener("click", () => {
+        asked.frame = null;
+        setPlaying(!playing);
+        if (!playing) return;
+        // A level of detail is the scene whole: what plays is the walk, and it is ridden to be seen.
+        if (detail > 0 && !follow.checked) follow.checked = true;
+        if (cursor >= steps()) show(0, true);
+        else show(cursor, true);
+      });
+
+      let last = performance.now();
+      let since = 0;
+      const lastEye = new THREE.Vector3(Infinity, 0, 0);
+      renderer.setAnimationLoop((now) => {
+        const dt = Math.min((now - last) / 1000, 0.1);
+        last = now;
+        if (playing) {
+          // The scene as it grew, at the options' rate.
+          since += dt;
+          if (since >= 1 / settings.rate) {
+            since = 0;
+            if (cursor < steps()) show(cursor + 1, true);
+            else if (settings.loop && !index.growing) show(0, true);
+            else if (!index.growing || detail > 0) setPlaying(false);
+            atEnd = cursor >= steps();
+          }
+        }
+        if (!(playing && follow.checked)) { controls.update(camera); carryTurn(); }
+        if (marker.visible) {
+          marker.position.copy(pivot.point);
+          marker.quaternion.copy(camera.quaternion);
+          marker.scale.setScalar(camera.position.distanceTo(pivot.point) * 0.018);
+        }
+        // The eye moved, or a cube is new: glass and chrome are shaded again. A gaussian's colour is made
+        // when its mesh says it changed, and a value handed to the shader does not say so by itself.
+        if (settings.glass && (!lastEye.equals(camera.position) || shadeFresh)) {
+          lastEye.copy(camera.position);
+          shadeFresh = false;
+          for (const kind of Object.values(kinds)) kind.eye.value.copy(camera.position);
+          let told = 0;
+          for (const s of drawnShaded()) if (s.mesh.visible && s.applied) { s.mesh.updateVersion(); ++told; }
+          // How many times the eye's move was handed on, and to how many parts: said in the status, so a
+          // device where it stays at nought shows that it does.
+          if (told > 0) {
+            window.__player.shadedTimes = (window.__player.shadedTimes ?? 0) + 1;
+            {
+              shadeNote = shadeNote.replace(/\(\d+ parts, \d+ looks\)/, `(${told} parts, ${window.__player.shadedTimes} looks)`);
+              say(said);
+            }
+          }
+        }
+        // While the page reads or plays, a room is drawn again a second and a half after the last at the
+        // soonest, and otherwise a quarter of a second: a slider dragged asks for one at each step and gets
+        // the one that is being drawn and one more after it. The level drawn first waits to be whole before
+        // its first room, so its glass and its chrome come in once, in a room that is all there.
+        const firstWhole = loading && window.__player.then !== undefined && !Object.values(kinds).some((kind) => kind.ready);
+        if (shadeStale && !shadeBusy && !firstWhole && now - roomsAt > (loading || playing ? 1500 : 250)) drawRooms();
+        renderer.render(scene, camera);
+        // Frames drawn while a room is made share the device with it and are not its rate: the count begins again after.
+        if (shadeBusy) { slow.since = now; slow.frames = 0; }
+        else if (!loading && window.__scene.loaded) judge(now);
+      });
+    } catch (error) {
+      window.__scene.error = String(error);
+      setProgress(null);
+      statusLine.textContent = `could not load the scene: ${error}`;
+    }
+  </script>
+</body>
+</html>

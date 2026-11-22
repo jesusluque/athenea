@@ -244,6 +244,7 @@ Result<void> SplatShadowMap::factors(gpu::CommandBatch& batch, const ShadowMapCa
         p["resolution"].setData(resolution_);
         p["coefficients"].setData(coefficients_);
         p["lightCount"].setData(lights_);
+        p["spread"].setData(caster.receiverSpread);
         p["boxMin"].setData(caster.cloud->bounds.min);
         p["boxMax"].setData(caster.cloud->bounds.max);
         for (int k = 0; k < 12; ++k) {
