@@ -676,7 +676,7 @@ athenea convert pawn.asg pawn.usdc --no-camera
 | `--occlusion-by-part` | flag | off | `--occlusion-group`: the codebook is shared out by part (`cryptoObject`), not by tree |
 | `--transfer-basis` | path | — | a clustered PCA basis (f32): the transfer is coded with it and decoded again before anything else, so the output draws what that codec keeps |
 | `--transfer-clusters`, `--transfer-components`, `--transfer-bits` | 1..65536; 1..16; `8` \| `4` | `256`; `8`; `8` | `--transfer-basis`: its centroids, its axes a block, and the bits a weight |
-| `--shadow-codebook`, `--shadow-rounds` | 0..65536; rounds | `0`: none; `12` | the shadow bits replaced by the nearest of this many centroids (Hamming k-means on the GPU), so the output draws what an index a gaussian and a codebook keep; and the k-means' rounds |
+| `--shadow-codebook`, `--shadow-rounds` | 0..65536; rounds | `0`: none; `12` | the shadow bits replaced by the nearest of this many centroids (Hamming k-means on the GPU), so the output draws what an index a gaussian and a codebook keep; and the k-means' rounds, at least 1 |
 | `--quantize` | gaussians a chunk | `0`: off | the geometry at a phone chunk's bits, in chunks of this many (8192 is the web format's): 16 bit positions in the chunk's box, 8 bit scales, 32 bit rotations, 8 bit opacity and colour, 16 bit normals, 8 bit curvature -- decoded again, so the output draws what that chunk keeps |
 
 **By pairs** (`--ratio`). Each pass, every gaussian -- or merge so far -- weighs

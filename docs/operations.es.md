@@ -686,7 +686,7 @@ athenea convert pawn.asg pawn.usdc --no-camera
 | `--occlusion-by-part` | flag | apagado | `--occlusion-group`: el codebook se reparte por parte (`cryptoObject`), no por árbol |
 | `--transfer-basis` | ruta | — | una base PCA por clusters (f32): el transfer se codifica con ella y se decodifica otra vez antes de nada más, de modo que la salida dibuja lo que ese códec conserva |
 | `--transfer-clusters`, `--transfer-components`, `--transfer-bits` | 1..65536; 1..16; `8` \| `4` | `256`; `8`; `8` | `--transfer-basis`: sus centroides, sus ejes por bloque y los bits por peso |
-| `--shadow-codebook`, `--shadow-rounds` | 0..65536; rondas | `0`: ninguno; `12` | los bits de sombra sustituidos por el más cercano de estos centroides (k-means de Hamming en la GPU), de modo que la salida dibuja lo que conservan un índice por gaussiana y un codebook; y las rondas del k-means |
+| `--shadow-codebook`, `--shadow-rounds` | 0..65536; rondas | `0`: ninguno; `12` | los bits de sombra sustituidos por el más cercano de estos centroides (k-means de Hamming en la GPU), de modo que la salida dibuja lo que conservan un índice por gaussiana y un codebook; y las rondas del k-means, al menos 1 |
 | `--quantize` | gaussianas por chunk | `0`: apagado | la geometría a los bits de un chunk de móvil, en chunks de este tamaño (8192 es el del formato web): posiciones de 16 bits en la caja del chunk, escalas de 8, rotaciones de 32, opacidad y color de 8, normales de 16, curvatura de 8 -- decodificada otra vez, de modo que la salida dibuja lo que ese chunk conserva |
 
 **Por pares** (`--ratio`). En cada pasada, cada gaussiana -- o fusión hasta

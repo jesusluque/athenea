@@ -27742,3 +27742,46 @@ Not done:
 - A scene or a setting changed under a still camera still takes the old offset for its one first pass:
   that restart is known only after the frame's visibility has been drawn.
 - The scenes published are not found again for this.
+
+## The merged tree, tested whole: Metal, Vulkan, CUDA (22-23 Nov)
+
+Main after the merge of the neural branch (501f15be; the documentation commit after it changes no code).
+
+**Metal, M5 Pro, the whole suite** (`ctest`, release, 577 tests, 10 556 s with the thermal guard's stops
+in): 567 pass, 10 fail, and each of the ten is one main had before the merge.
+
+| test | what fails | known from |
+|---|---|---|
+| 78 a posed cloud refits its ray tracing structure | one pixel between a refitted and a rebuilt BVH | the eight of 17 Nov, the same on the trunk |
+| 131 flatten's fit gives back degree 3 harmonics, 132 PLY and SPZ render alike | the roughness floor; p99 over its bound | the same |
+| 367 a skinned cloud's zonal transfer, 499 a zonal transfer is fitted in the gaussian's frame | relMSE and p99 over their bounds; the fit's exactness | the same |
+| 415 a floor four texels a pixel from the map | p99 over 8 | the same |
+| 564 `sheet_glass_draws_whole`, 574 `tx_conversions_render_like_the_mesh` | the sheet's brightness; two of the conversions | the same |
+| 561 `matx_sampled` | one of twelve: `standard_surface_brass_tiled`, the hollow's hue 6.6% from the path trace's against 5%; copper is reported pending, not failed | failing since 0.4.1 by the backlog; not run on 17 Nov (slow) |
+| 558 `tx_gate_corvette` | one material of those on screen: Chrome, TX 0.505 against first 0.416 | never run to its end before; not compared with the trunk |
+
+The two slow ones were not in the eight because slow tests were not run then. The merge brings no file
+under what the corvette gate bakes with other than the path tracer's, so its Chrome is taken as the chrome
+`tx_conversions` already trips on -- taken, not measured: the gate was not run on the tree before the merge.
+
+**Vulkan, the RTX 3070 laptop**, the same sources (not a file differing): `athenea_usd_tests "[repeat]"`
+6 cases, 43 assertions, with the new case's "0 floats differ at once, 0 after another view";
+`athenea_technique_tests` 64 cases, 2862 assertions; `athenea_render_tests "[scene]"` 14 cases;
+`athenea_material_tests` 16 cases, 3087 assertions; `athenea_usd_tests "[path],[glass]"` 43 cases, 602
+assertions. All pass.
+
+**CUDA, the same laptop under WSL2**: technique 29 cases pass and 35 skip, `[scene]` 14 and the materials'
+16 pass (3087 assertions, as on Vulkan); `[repeat]` skips its six and `[path],[glass]` 42 of 43, as CUDA
+skips what needs triangles traced (the one that runs passes).
+
+**`[threadmemory]` does not end on CUDA.** The array test of 18 Nov had only been run on Metal. On CUDA
+the arrays of 1, 4, 8 and 16 KB read back as written in 262 144 threads, and the kernel that keeps 24 KB
+never comes back: the process span a core for 22 hours until it was stopped, and with a limit of 150 s it
+prints the four sizes and nothing more. The test's own claim, sixteen kilobytes, holds there; the sizes
+past it, which on Metal are the measure, hang the binary -- and with it a whole `ctest` on Linux.
+
+Not done:
+- Whether the 24 KB kernel hangs in CUDA's compile or in its run, and a bound on the sizes the test tries
+  on CUDA so the suite ends there.
+- The whole suite on Vulkan and on CUDA: only the binaries above were run.
+- `tx_gate_corvette` on the tree before the merge.
