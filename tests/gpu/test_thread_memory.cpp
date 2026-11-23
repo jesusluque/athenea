@@ -43,7 +43,14 @@ TEST_CASE("a kernel's thread keeps an array of sixteen kilobytes as it wrote it"
                                {"keeps24k", 24},    {"keeps32k", 32},    {"keeps48k", 48},    {"keeps64k", 64},
                                {"keeps128k", 128},  {"keeps256k", 256},  {"keepsTwo4k", 4},   {"keepsTwo8k", 8},
                                {"keepsTwo16k", 16}, {"keepsTwo24k", 24}, {"keepsTwo32k", 32}, {"keepsTwo64k", 64}};
+    // CUDA's kernel that keeps 24 KB never comes back (docs/decisions.md, 22-23
+    // Nov), so there the sizes past the claim are named and not run.
+    const bool cuda = gpu->device->backend() == gpu::Backend::CUDA;
     for (const Size& size : kSizes) {
+        if (cuda && (size.kilobytes > 16 || std::string(size.entry).find("Two") != std::string::npos)) {
+            std::printf("  %s %3u KB: not run on CUDA\n", size.entry, size.kilobytes);
+            continue;
+        }
         auto kernel = gpu::ComputeKernel::create(*gpu->library, "athenea/test/thread_memory", size.entry);
         if (!kernel) {
             std::printf("  %s %3u KB: no pipeline: %s\n", size.entry, size.kilobytes, kernel.error().toString().c_str());

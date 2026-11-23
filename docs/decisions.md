@@ -27781,7 +27781,7 @@ prints the four sizes and nothing more. The test's own claim, sixteen kilobytes,
 past it, which on Metal are the measure, hang the binary -- and with it a whole `ctest` on Linux.
 
 Not done:
-- Whether the 24 KB kernel hangs in CUDA's compile or in its run, and a bound on the sizes the test tries
-  on CUDA so the suite ends there.
+- Whether the 24 KB kernel hangs in CUDA's compile or in its run. Until then the test runs on CUDA only
+  the four sizes up to its claim and names the rest as not run, so the suite ends there.
 - The whole suite on Vulkan and on CUDA: only the binaries above were run.
 - `tx_gate_corvette` on the tree before the merge.
